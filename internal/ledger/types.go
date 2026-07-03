@@ -29,6 +29,7 @@ const (
 	SlotReview       = "review"
 	SlotMergePending = "merge-pending"
 	SlotMerged       = "merged"
+	SlotPROpened     = "pr-opened"
 	SlotDone         = "done"
 	SlotFailed       = "failed"
 	SlotConflict     = "conflict"
@@ -44,10 +45,12 @@ const (
 	RunAborted     = "aborted"
 )
 
-// Terminal reports whether a slot status is terminal.
+// Terminal reports whether a slot status is terminal. pr-opened is terminal
+// for the run: the agent is done and the slot freed; the branch parks (worktree
+// kept) until a separate landing step fast-forwards the PR.
 func Terminal(status string) bool {
 	switch status {
-	case SlotMerged, SlotDone, SlotFailed, SlotConflict, SlotBlocked, SlotMergePending:
+	case SlotMerged, SlotPROpened, SlotDone, SlotFailed, SlotConflict, SlotBlocked, SlotMergePending:
 		return true
 	}
 	return false

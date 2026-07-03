@@ -90,7 +90,7 @@ After an agent finishes, the engine applies a _merge policy_:
 |---|---|
 | `auto` | Merge automatically when `--auto-merge` is passed and review is clean |
 | `manual` | Leave slot in `merge-pending`; operator runs `koryph merge` |
-| `pr` | Same as manual; caller may open a pull request instead |
+| `pr` | Push the agent branch and open a GitHub PR; slot ends `pr-opened` |
 
 **Epic label wins over project config.** Add `merge:auto`, `merge:manual`, or `merge:pr`
 to an epic bead and every child bead under that epic inherits that policy, overriding
@@ -101,6 +101,24 @@ When an issue has no epic or the epic carries no merge label, the project config
 
 Auto-merge never fires without `--auto-merge` on the command line, even when the policy
 says `auto`. This keeps CI-only runs safe by default.
+
+### `pr` — pull-request merges for protected branches
+
+`merge_policy: pr` is the path for a default branch you never push to directly (branch
+protection, required reviews). It runs the same preflight as an auto-merge — protected-path
+check, signature verification, sync of the local default branch to origin, rebase onto it,
+and the green gate — but then **pushes the agent branch (`agent/<bead-id>`) and opens a PR**
+against the default branch instead of fast-forwarding it. The PR title is
+conventional-commit-shaped and the body carries the bead id, title, and acceptance criteria.
+
+- The slot ends in **`pr-opened`** (terminal for the run); the worktree and branch are kept
+  so a later fast-forward landing step can resume them. Nothing is pushed to the default branch.
+- Opening a PR does **not** require `--auto-merge` — it is the safe alternative to a direct
+  merge, so setting the policy is the opt-in.
+- Requires a git remote and an authenticated [`gh`](https://cli.github.com/) CLI. Without
+  either, the bead is **blocked** with a clear reason (never crashed or silently dropped),
+  and the branch is kept so a `--resume` retries once the remote or `gh` is available.
+- A re-run reuses an already-open PR for the branch rather than opening a duplicate.
 
 ## Post-implement stages
 

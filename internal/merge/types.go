@@ -23,6 +23,8 @@
 //     Merge only reports success.
 package merge
 
+import "context"
+
 // DefaultProtected are path prefixes that may never be merged from a
 // worktree in any managed project (they control what agents may do).
 var DefaultProtected = []string{
@@ -66,14 +68,42 @@ type Opts struct {
 	// no cross-process locking is performed. Acquired at the start of Merge
 	// and released on every exit path.
 	Slot SlotLocker
+
+	// OpenPR diverges after the shared preflight (slot, protected-path,
+	// signing, sync, rebase, gate): instead of fast-forward merging into the
+	// default branch, it pushes o.Branch to origin and opens a pull request
+	// against the default branch. The worktree and branch are always kept
+	// alive so a later fast-forward landing step can resume them. Used for
+	// protected default branches (merge_policy=pr).
+	OpenPR  bool
+	PRTitle string // conventional-commit-shaped PR title
+	PRBody  string // PR body (bead id, title, acceptance criteria)
+
+	// PR opens the pull request on the OpenPR path. A nil PR defaults to the
+	// gh CLI (GhCLI); tests inject a fake to avoid a real GitHub round-trip.
+	PR PROpener
+}
+
+// PROpener publishes a pull request for a pushed branch. The gh-CLI default
+// (GhCLI) shells out to `gh`; the interface exists so tests can substitute a
+// fake without a live GitHub remote.
+type PROpener interface {
+	// Ready reports whether pull requests can be opened from dir (the PR host
+	// CLI is installed and authenticated).
+	Ready(ctx context.Context, dir string) bool
+	// Open returns the existing OPEN pull request for branch, or creates one
+	// against base, and reports its URL and number.
+	Open(ctx context.Context, dir, branch, base, title, body string) (url string, number int, err error)
 }
 
 // Result reports a merge attempt.
 type Result struct {
-	Status     string   `json:"status"` // merged|conflict|gate-failed|protected|unsigned|error
+	Status     string   `json:"status"` // merged|pr-opened|conflict|gate-failed|protected|unsigned|pr-no-remote|pr-no-gh|error
 	MergedSHA  string   `json:"merged_sha,omitempty"`
 	GateOutput string   `json:"gate_output,omitempty"`
 	Protected  []string `json:"protected_paths,omitempty"`
 	ConflictMD string   `json:"conflict_md,omitempty"`
 	Pushed     bool     `json:"pushed"`
+	PRURL      string   `json:"pr_url,omitempty"`
+	PRNumber   int      `json:"pr_number,omitempty"`
 }

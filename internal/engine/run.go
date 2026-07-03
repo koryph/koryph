@@ -251,6 +251,8 @@ func (r *runner) outcome(code int, reason string, drained bool) Outcome {
 			switch sl.Status {
 			case ledger.SlotMerged:
 				o.Merged++
+			case ledger.SlotPROpened:
+				o.PROpened++
 			case ledger.SlotFailed, ledger.SlotConflict:
 				o.Failed++
 			case ledger.SlotBlocked:

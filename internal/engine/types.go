@@ -94,6 +94,7 @@ type Outcome struct {
 	RunID      string `json:"run_id"`
 	Dispatched int    `json:"dispatched"`
 	Merged     int    `json:"merged"`
+	PROpened   int    `json:"pr_opened,omitempty"`
 	Failed     int    `json:"failed"`
 	Blocked    int    `json:"blocked"`
 	Drained    bool   `json:"drained"`

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
@@ -209,6 +210,15 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 		}
 	}
 
+	// merge_policy pr never touches the protected default branch directly:
+	// push the branch and open a PR for a later fast-forward landing step.
+	// This is the safe path for protected branches, so — unlike auto-merge —
+	// it is not gated on --auto-merge (koryph-ufy.1).
+	if policy == "pr" {
+		r.openPRSlot(ctx, sl)
+		return
+	}
+
 	if policy == "auto" && r.opts.AutoMerge {
 		r.mergeSlot(ctx, sl)
 		return
@@ -256,8 +266,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 
-	switch res.Status {
-	case "merged":
+	if res.Status == "merged" {
 		now := time.Now().UTC().Format(time.RFC3339)
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotMerged
@@ -274,12 +283,30 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 			},
 		})
 		r.progress("bead %s: merged (%s)", sl.PhaseID, shortSHA(res.MergedSHA))
+		r.releaseGlobalSlot(sl.PhaseID)
+		return
+	}
 
+	// The gate-failed requeue keeps its slot and returns early; every other
+	// (terminal) failure frees the global slot.
+	if r.handleMergeFailure(ctx, sl, res) {
+		return
+	}
+	r.releaseGlobalSlot(sl.PhaseID)
+}
+
+// handleMergeFailure records the non-success outcomes shared by the ff-merge
+// and PR-open paths (gate-failed, conflict, protected, unsigned, and any
+// unknown status). It returns true when it requeued the slot instead of
+// blocking it (the gate-failed single retry): the caller must then return
+// WITHOUT releasing the global slot, because a requeue keeps it.
+func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res merge.Result) (requeued bool) {
+	switch res.Status {
 	case "gate-failed":
 		if sl.Note != gateRequeueNote && sl.Attempts < ledger.MaxAttempts {
 			r.progress("bead %s: gate failed after rebase — requeueing once", sl.PhaseID)
 			r.requeueSlot(ctx, sl, "", gateRequeueNote)
-			return
+			return true
 		}
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
@@ -321,10 +348,122 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		r.checkpointSlot(sl, "merge-"+res.Status)
 		r.progress("bead %s: merge failed (%s)", sl.PhaseID, res.Status)
 	}
+	return false
+}
 
-	// Every non-requeue outcome above is terminal (the gate-failed requeue
-	// path returned early and keeps its slot); free the global slot.
-	r.releaseGlobalSlot(sl.PhaseID)
+// openPRSlot handles merge_policy pr: it reuses the merge preflight (protected
+// paths, signing, sync, rebase, gate) and then pushes the branch and opens a
+// pull request instead of fast-forward merging. The worktree/branch are kept
+// for a later landing step, so the bead parks in pr-opened rather than merged.
+func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
+	iss := r.issueFor(ctx, sl)
+	res, err := merge.Merge(ctx, merge.Opts{
+		RepoRoot:      r.rec.Root,
+		Branch:        sl.Branch,
+		DefaultBranch: r.rec.DefaultBranch,
+		Gate:          r.cfg.Gate,
+		Extra:         r.cfg.ProtectedPaths,
+		SlotOwner:     r.owner,
+		SlotRetries:   3,
+		Slot:          r.slotLocker(ctx),
+		RequireSigned: r.requireSigned(),
+		OpenPR:        true,
+		KeepWorktree:  true, // the branch parks for a later landing step
+		PRTitle:       prTitle(iss),
+		PRBody:        prBody(iss, r.run.RunID),
+	})
+	if err != nil {
+		// A push or gh error is usually config/auth (not a transient rebase
+		// race), so block with the reason rather than looping. The branch is
+		// kept, so a fixed remote/gh lets a --resume retry.
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "pr error: " + err.Error()
+		})
+		r.checkpointSlot(sl, "pr-error")
+		r.releaseGlobalSlot(sl.PhaseID)
+		r.progress("bead %s: blocked (pr error: %v)", sl.PhaseID, err)
+		return
+	}
+
+	switch res.Status {
+	case "pr-opened":
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotPROpened
+			s.Note = fmt.Sprintf("PR #%d opened: %s", res.PRNumber, res.PRURL)
+		})
+		r.checkpointSlot(sl, "pr-opened")
+		_ = r.reg.Audit(registry.Event{
+			Kind:      "pr-open",
+			ProjectID: r.opts.ProjectID,
+			Actor:     r.owner,
+			Detail: map[string]string{
+				"bead": sl.PhaseID, "branch": sl.Branch, "pr": res.PRURL,
+			},
+		})
+		_ = r.adapter.Comment(ctx, sl.PhaseID,
+			fmt.Sprintf("PR opened for merge: %s (branch %s, run %s)", res.PRURL, sl.Branch, r.run.RunID))
+		r.progress("bead %s: pr-opened (%s, branch %s) — land the PR to complete", sl.PhaseID, res.PRURL, sl.Branch)
+		r.releaseGlobalSlot(sl.PhaseID)
+
+	case "pr-no-remote":
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "merge_policy pr requires a git remote; none configured"
+		})
+		r.checkpointSlot(sl, "pr-no-remote")
+		r.releaseGlobalSlot(sl.PhaseID)
+		r.progress("bead %s: blocked (merge_policy pr needs a git remote; branch %s kept)", sl.PhaseID, sl.Branch)
+
+	case "pr-no-gh":
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "merge_policy pr requires an authenticated gh CLI; unavailable"
+		})
+		r.checkpointSlot(sl, "pr-no-gh")
+		r.releaseGlobalSlot(sl.PhaseID)
+		r.progress("bead %s: blocked (merge_policy pr needs an authenticated gh; branch %s kept)", sl.PhaseID, sl.Branch)
+
+	default:
+		if r.handleMergeFailure(ctx, sl, res) {
+			return
+		}
+		r.releaseGlobalSlot(sl.PhaseID)
+	}
+}
+
+// prTitle renders a conventional-commit-shaped PR title from a bead: the type
+// derives from the bead type (bug→fix, chore→chore, else feat), the scope is
+// the bead id, and the subject is the bead title's first line.
+func prTitle(iss beads.Issue) string {
+	typ := "feat"
+	switch iss.IssueType {
+	case "bug":
+		typ = "fix"
+	case "chore":
+		typ = "chore"
+	}
+	subject := iss.Title
+	if i := strings.IndexByte(subject, '\n'); i >= 0 {
+		subject = subject[:i]
+	}
+	if subject = strings.TrimSpace(subject); subject == "" {
+		subject = iss.ID
+	}
+	return fmt.Sprintf("%s(%s): %s", typ, iss.ID, subject)
+}
+
+// prBody renders a PR body carrying the bead id, title, and acceptance text
+// (the bead description), plus a note that the PR must land fast-forward-only.
+func prBody(iss beads.Issue, runID string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Bead **%s**: %s\n\n", iss.ID, iss.Title)
+	if desc := strings.TrimSpace(iss.Description); desc != "" {
+		b.WriteString(desc)
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "---\nOpened by `koryph run` (merge_policy=pr, run %s). Land fast-forward-only; do not push straight to the default branch.\n", runID)
+	return b.String()
 }
 
 // requeueSlot re-dispatches a slot: backoff, refresh the worktree onto current

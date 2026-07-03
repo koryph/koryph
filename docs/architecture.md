@@ -330,6 +330,19 @@ the merge and discards the dirtied tree; then `git merge --ff-only` (or
 stays dirty). Results are `merged`, `conflict`, `gate-failed`, `protected`, or
 `error`.
 
+**PR path (`OpenPR`).** For a protected default branch (`merge_policy: pr`),
+`merge.Merge` shares that entire preflight (mutex, protected-path check,
+signature verification, sync, rebase, gate) and then **diverges** after the
+gate: instead of the ff-merge it pushes `agent/<bead-id>` to origin and opens a
+PR against the default branch through a `PROpener` (the `gh` CLI by default; an
+interface so tests inject a fake). The worktree and branch are **kept** — the
+default branch is never touched — so a later fast-forward landing step
+(`koryph-ufy.4`) can resume them. Extra results: `pr-opened` (with the PR URL
+and number), plus `pr-no-remote` / `pr-no-gh` when the prerequisites are absent
+(the engine blocks the bead cleanly and keeps the branch for a `--resume`). The
+engine parks the slot in the `pr-opened` ledger status; agents themselves never
+push — the push and PR creation live in this engine merge path.
+
 `DefaultProtected` covers `CLAUDE.md`, `MEMORY.md`, `CLAUDE-ACCOUNTS.md`,
 `koryph.project.json`, `.claude/`, `.beads/`, `scripts/lib/`,
 `.pre-commit-config.yaml`, `.gitignore`, `.github/CODEOWNERS`, and `.envrc`;

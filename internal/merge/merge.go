@@ -169,6 +169,14 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		}
 	}
 
+	// (7) PR path diverges here: the branch is rebased, gated, and green.
+	// Instead of fast-forward merging into the local default, push the branch
+	// and open a pull request. The worktree and branch stay alive so a later
+	// fast-forward landing step can resume them (koryph-ufy.1).
+	if o.OpenPR {
+		return openPR(ctx, o, def, hasRemote)
+	}
+
 	// (7) RepoRoot is already on the synced <def>; the rebased branch is now a
 	// strict fast-forward of it.
 
