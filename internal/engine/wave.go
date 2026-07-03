@@ -418,7 +418,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		SessionID:        sessionID,
 		SessionName:      sessionName,
 		ResumeSessionID:  q.resumeSessionID,
-		BeadsDir:         r.adapter.BeadsDir,
+		BeadsDir:         r.beadsDir,
 		Attempt:          q.attempt,
 		SSHAuthSock:      r.sshAuthSock,
 		EnvPassthrough:   r.rec.EnvPassthrough,

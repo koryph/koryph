@@ -48,7 +48,8 @@ type runner struct {
 	reg      *registry.Store
 	rec      *registry.Record
 	cfg      *project.Config
-	adapter  *beads.Adapter
+	adapter  WorkSource // bd by default; interface so the loop is testable without bd
+	beadsDir string     // .beads path exported to agents (BEADS_DIR)
 	store    *ledger.Store
 	run      *ledger.Run
 	profile  account.Profile
@@ -143,19 +144,20 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	defer func() { _ = lock.Unlock() }()
 
 	r := &runner{
-		opts:    opts,
-		reg:     reg,
-		rec:     rec,
-		cfg:     cfg,
-		adapter: adapter,
-		store:   store,
-		profile: profile,
-		backend: &dispatch.CLIBackend{ClaudeBin: os.Getenv(envClaudeBin)},
-		gov:     govern.NewStore(),
-		owner:   fmt.Sprintf("koryph@%s:%d", hostName(), os.Getpid()),
-		width:   effectiveWidth(opts.Max, cfg.MaxConcurrentSlots),
-		issues:  map[string]beads.Issue{},
-		billing: account.BillingSubscription,
+		opts:     opts,
+		reg:      reg,
+		rec:      rec,
+		cfg:      cfg,
+		adapter:  adapter,
+		beadsDir: adapter.BeadsDir,
+		store:    store,
+		profile:  profile,
+		backend:  &dispatch.CLIBackend{ClaudeBin: os.Getenv(envClaudeBin)},
+		gov:      govern.NewStore(),
+		owner:    fmt.Sprintf("koryph@%s:%d", hostName(), os.Getpid()),
+		width:    effectiveWidth(opts.Max, cfg.MaxConcurrentSlots),
+		issues:   map[string]beads.Issue{},
+		billing:  account.BillingSubscription,
 	}
 	if r.quotaCfg, err = quota.LoadConfig(r.quotaName()); err != nil {
 		return Outcome{Code: ExitFatal}, err
