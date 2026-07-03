@@ -47,9 +47,11 @@ func cmdTail(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project", "", "project id (required)")
 	n := fs.Int("n", 40, "number of trailing lines")
 	follow := fs.Bool("follow", false, "stream new lines as they appear (Ctrl-C to stop)")
+	setUsage(fs, stdout, "tail a phase's session.log + stderr.log; --follow streams new lines",
+		"--project ID <phase-id> [-n 40] [--follow]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "tail: --project is required")
@@ -227,9 +229,11 @@ func tailFile(path string, n int) string {
 func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("nudge", stderr)
 	projectID := fs.String("project", "", "project id (required)")
+	setUsage(fs, stdout, "append an operator note to the phase INBOX (+ bd comment)",
+		`--project ID <phase-id> "text"`)
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "nudge: --project is required")
@@ -285,9 +289,11 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project", "", "project id (required unless --all)")
 	all := fs.Bool("all", false, "stop active agents across ALL managed projects")
 	force := fs.Bool("force", false, "SIGKILL instead of SIGTERM — uncommitted worktree work is LOST")
+	setUsage(fs, stdout, "stop an agent (or every agent with --all) — SIGTERM, or SIGKILL with --force",
+		"--project ID <phase-id> [--force] | --all [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 
 	stop, verb := dispatch.StopGraceful, "SIGTERM"
@@ -379,9 +385,11 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	keepWorktree := fs.Bool("keep-worktree", false, "keep the worktree + branch after merge")
 	closeBead := fs.String("close-bead", "", "bead to close on a successful merge")
 	reason := fs.String("reason", "", "close reason for --close-bead")
+	setUsage(fs, stdout, "land a finished agent branch on the default branch",
+		"--project ID <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "merge: --project is required")
@@ -460,9 +468,11 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project", "", "project id (required)")
 	method := fs.String("method", "", "landing method override: ff|squash (default: project merge_method, else ff)")
 	reason := fs.String("reason", "", "bead close reason")
+	setUsage(fs, stdout, "land an engine-opened PR (a pr-opened bead) fast-forward-only; closes the bead on success",
+		"--project ID <bead> [--method ff|squash] [--reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "land: --project is required")
@@ -518,9 +528,11 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	resume := fs.Bool("resume", false, "re-display the saved analysis for a PR (after an IDE handoff)")
 	closePR := fs.Bool("close", false, "close the PR (optionally with --body as the comment)")
 	body := fs.String("body", "", "review/approval body, or the --close comment")
+	setUsage(fs, stdout, "analyze another author's PR (or every open PR with --all); never approves autonomously",
+		"--project ID <pr> [--approve|--comment|--comment-on path:line:msg|--resume|--close] [--body B] | --all")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "review-pr: --project is required")
@@ -578,8 +590,9 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 func cmdPRSync(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("pr-sync", stderr)
 	projectID := fs.String("project", "", "project id (required)")
+	setUsage(fs, stdout, "reconcile pr-opened beads against live PR state (nothing stranded)", "--project ID")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "pr-sync: --project is required")

@@ -10,15 +10,17 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/commands"
-	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/rules"
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
 // cmdCommands dispatches the commands sub-verbs.
 func cmdCommands(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		return usageErr(stderr, "usage: koryph commands <install> ...")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		parentHelp(stdout, "commands", "manage the koryph-* Claude slash commands in a project", []subVerb{
+			{"install <root> [--force]", "install koryph-* slash commands into <root>/.claude/commands"},
+		})
+		return 0
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -31,8 +33,11 @@ func cmdCommands(args []string, stdout, stderr io.Writer) int {
 
 // cmdRules dispatches the rules sub-verbs.
 func cmdRules(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		return usageErr(stderr, "usage: koryph rules <install> ...")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		parentHelp(stdout, "rules", "manage the koryph hook scripts + settings wiring in a project", []subVerb{
+			{"install <root> [--force]", "install hook scripts + merge hook/permission wiring into settings.json"},
+		})
+		return 0
 	}
 	switch args[0] {
 	case "install":
@@ -47,9 +52,10 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 func cmdRulesInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("rules install", stderr)
 	force := fs.Bool("force", false, "overwrite differing hook scripts; rebuild an unparseable settings.json")
+	setUsage(fs, stdout, "install hook scripts + merge hook/permission wiring into <root>/.claude/settings.json", "<root> [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "rules install: <root> is required")
@@ -112,9 +118,10 @@ func onboardRules(stderr io.Writer, root string) {
 func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("commands install", stderr)
 	force := fs.Bool("force", false, "overwrite existing commands whose content differs")
+	setUsage(fs, stdout, "install koryph-* Claude slash commands into <root>/.claude/commands (idempotent)", "<root> [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "commands install: <root> is required")

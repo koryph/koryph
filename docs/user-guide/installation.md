@@ -82,6 +82,36 @@ koryph project list     # uses /tmp/my-koryph-home
 Per-project run logs are stored inside each project's own repository, under
 `.plan-logs/koryph/`, and are not affected by `KORYPH_HOME`.
 
+### Environment variables
+
+koryph reads a small set of environment variables. They are also listed in the
+`ENVIRONMENT` section of `koryph help`, and `koryph doctor` reports on them.
+
+| Variable | Purpose |
+|---|---|
+| `KORYPH_HOME` | Central registry + governor root (default `~/.koryph`) |
+| `KORYPH_BD_BIN` | Path to the `bd` (beads) binary (default: `bd` on `PATH`) |
+| `KORYPH_GH_BIN` | Path to the `gh` (GitHub CLI) binary (default: `gh` on `PATH`) |
+| `KORYPH_NO_NPX` | Set to any value to disable `npx`-based tool fallbacks (e.g. `ccusage`) |
+
+---
+
+## Getting help
+
+Every command is self-documenting. There is no wrong door:
+
+```sh
+koryph                       # global command listing
+koryph help                  # same global listing
+koryph <command> -h          # one command's purpose, synopsis, and flags
+koryph help <command>        # identical to `koryph <command> -h`
+koryph <parent>              # a parent (project, signing, ...) lists its subcommands
+koryph <parent> -h           # same subcommand listing
+```
+
+For example, `koryph project -h`, `koryph signing help`, and
+`koryph help project add` all resolve to the right help without an error.
+
 ---
 
 ## Troubleshooting

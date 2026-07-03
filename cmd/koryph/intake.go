@@ -30,8 +30,10 @@ func cmdIntake(args []string, stdout, stderr io.Writer) int {
 	limit := fs.Int("limit", 0, "max open issues to poll (overrides per-source config; default 20)")
 	dryRun := fs.Bool("dry-run", false, "print what would be ingested; mutate nothing")
 	comment := fs.Bool("comment", false, "comment the bead id back on each ingested issue")
+	setUsage(fs, stdout, "poll a project's labeled GitHub issues into no-dispatch planning beads",
+		"--project ID [--label triage] [--limit 20] [--dry-run] [--comment]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "intake: --project is required")

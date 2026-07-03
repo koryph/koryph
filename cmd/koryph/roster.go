@@ -13,7 +13,6 @@ import (
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
-	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/sched"
@@ -65,8 +64,10 @@ func cmdRoster(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project", "", "project id (required)")
 	runID := fs.String("run", "", "run id (default: latest)")
 	asJSON := fs.Bool("json", false, "emit roster as JSON")
+	setUsage(fs, stdout, "per-bead titled roster grouped by lifecycle (MERGED/RUNNING/QUEUED/DEFERRED)",
+		"--project ID [--run ID] [--json]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "roster: --project is required")

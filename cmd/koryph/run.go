@@ -34,8 +34,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	allowUnvalidated := fs.Bool("allow-unvalidated", false, "permit runs on non-validated projects")
 	manual := fs.Bool("manual", false, "single manual dispatch semantics (quota-exempt)")
 	noBillingGuard := fs.Bool("no-billing-guard", false, "disable quota throttling for this run (usage still measured; billing stays subscription)")
+	setUsage(fs, stdout, "execute one engine run over a project", "--project ID [flags]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *project == "" {
 		return usageErr(stderr, "run: --project is required")
@@ -86,8 +87,9 @@ type boardEntry struct {
 func cmdBoard(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("board", stderr)
 	asJSON := fs.Bool("json", false, "emit the board as JSON")
+	setUsage(fs, stdout, "one-line-per-project run overview", "[--json]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)
@@ -167,8 +169,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("status", stderr)
 	project := fs.String("project", "", "project id (required)")
 	asJSON := fs.Bool("json", false, "emit the run as JSON")
+	setUsage(fs, stdout, "latest-run per-slot detail", "--project ID [--json]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *project == "" {
 		return usageErr(stderr, "status: --project is required")

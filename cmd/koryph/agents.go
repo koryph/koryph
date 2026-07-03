@@ -8,14 +8,16 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/personas"
 )
 
 // cmdAgents dispatches the agents sub-verbs.
 func cmdAgents(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		return usageErr(stderr, "usage: koryph agents <install> ...")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		parentHelp(stdout, "agents", "manage the fallback koryph personas in a project", []subVerb{
+			{"install <root> [--force]", "install fallback personas into <root>/.claude/agents"},
+		})
+		return 0
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -32,9 +34,10 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 func cmdAgentsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("agents install", stderr)
 	force := fs.Bool("force", false, "overwrite existing personas whose content differs")
+	setUsage(fs, stdout, "install fallback personas into <root>/.claude/agents (idempotent)", "<root> [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "agents install: <root> is required")

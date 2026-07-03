@@ -21,8 +21,14 @@ import (
 
 // cmdProject dispatches the project sub-verbs.
 func cmdProject(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		return usageErr(stderr, "usage: koryph project <add|list|show|set-account> ...")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		parentHelp(stdout, "project", "onboard and manage registered projects", []subVerb{
+			{"add <root> --account P --identity EMAIL [flags]", "register a project (inspect + register + scaffold)"},
+			{"list", "list managed projects (id, account, status, root)"},
+			{"show <id>|--project ID", "print one project record as JSON"},
+			{"set-account <id> --profile P --identity EMAIL --reason R", "change a project's account (audited)"},
+		})
+		return 0
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -48,9 +54,11 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 	name := fs.String("name", "", "display name (default: project id)")
 	branch := fs.String("branch", "", "default branch (default: detected)")
 	force := fs.Bool("force", false, "override an .envrc account-disagreement refusal")
+	setUsage(fs, stdout, "register a project (inspect + register + scaffold adapter + install agents, commands & rules)",
+		"<root> --account <personal|work> --identity EMAIL [flags]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "project add: <root> is required")
@@ -107,8 +115,9 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 
 func cmdProjectList(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project list", stderr)
+	setUsage(fs, stdout, "list managed projects (id, account, status, root)", "")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)
@@ -135,9 +144,10 @@ func cmdProjectList(args []string, stdout, stderr io.Writer) int {
 func cmdProjectShow(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project show", stderr)
 	flagProject := fs.String("project", "", "project id (alternative to positional <id>)")
+	setUsage(fs, stdout, "print one project record as JSON", "<id>|--project ID")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	posVal := ""
 	if len(pos) > 0 {
@@ -169,9 +179,11 @@ func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 	identity := fs.String("identity", "", "new expected login email (required)")
 	configDir := fs.String("config-dir", "", "CLAUDE_CONFIG_DIR for the new account")
 	reason := fs.String("reason", "", "why the account is changing (required, audited)")
+	setUsage(fs, stdout, "change a project's account (audited; resets validation)",
+		"<id>|--project ID --profile P --identity EMAIL [--config-dir DIR] --reason R")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	posVal := ""
 	if len(pos) > 0 {
@@ -203,9 +215,10 @@ func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 func cmdOnboard(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("onboard", stderr)
 	asJSON := fs.Bool("json", false, "emit the inventory as JSON")
+	setUsage(fs, stdout, "read-only inventory of a project (mode-5 report)", "<root> [--json]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "onboard: <root> is required")
@@ -283,9 +296,11 @@ func orDash(s string) string {
 func cmdValidate(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("validate", stderr)
 	flagProject := fs.String("project", "", "project id (alternative to positional <project-id>)")
+	setUsage(fs, stdout, "run the pre-dispatch gate; promotes registered->migrated on green",
+		"<project-id>|--project ID")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	posVal := ""
 	if len(pos) > 0 {

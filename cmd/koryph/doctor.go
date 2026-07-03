@@ -9,7 +9,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/koryph/koryph/internal/doctor"
-	"github.com/koryph/koryph/internal/engine"
 )
 
 // cmdDoctor runs health checks and prints a human table (or JSON with --json).
@@ -21,8 +20,10 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "emit the report as JSON instead of a table")
 	fix := fs.Bool("fix", false, "remove zombie slot files and stale demand heartbeats")
 	projectID := fs.String("project", "", "run project-scoped checks for the named project")
+	setUsage(fs, stdout, "health check: layout, binaries, registry, governor, leases, quota, vaults",
+		"[--project ID] [--json] [--fix]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 
 	var report *doctor.Report

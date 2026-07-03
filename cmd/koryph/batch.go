@@ -26,8 +26,14 @@ type batchLine struct {
 
 // cmdBatch dispatches the batch verbs (currently only `run`).
 func cmdBatch(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "run" {
-		return usageErr(stderr, "usage: koryph batch run --key-env VAR --model TIER --input FILE.jsonl [flags]")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		parentHelp(stdout, "batch", "submit Anthropic Message Batches (explicit per-token spend)", []subVerb{
+			{"run --key-env VAR --model TIER --input FILE.jsonl [flags]", "submit a Message Batch and collect results"},
+		})
+		return 0
+	}
+	if args[0] != "run" {
+		return usageErr(stderr, fmt.Sprintf("unknown batch subcommand %q (want run)", args[0]))
 	}
 	return cmdBatchRun(args[1:], stdout, stderr)
 }
@@ -41,8 +47,10 @@ func cmdBatchRun(args []string, stdout, stderr io.Writer) int {
 	cachePrefix := fs.Bool("cache-prefix", false, "apply a 1h cache breakpoint to the shared system prefix")
 	out := fs.String("out", "", "results JSONL destination (default stdout)")
 	yes := fs.Bool("yes", false, "confirm the estimated spend and submit")
+	setUsage(fs, stdout, "submit a Message Batch (explicit per-token spend)",
+		"--key-env VAR --model TIER --input FILE.jsonl [flags]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *keyEnv == "" || *model == "" || *input == "" {
 		return usageErr(stderr, "batch run: --key-env, --model and --input are required")

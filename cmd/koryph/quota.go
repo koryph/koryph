@@ -10,7 +10,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/koryph/koryph/internal/account"
-	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/metrics"
 	"github.com/koryph/koryph/internal/quota"
 )
@@ -35,8 +34,9 @@ func cmdQuotaShow(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("quota", stderr)
 	acct := fs.String("account", "", "limit to one account (default: all across records)")
 	asJSON := fs.Bool("json", false, "emit JSON")
+	setUsage(fs, stdout, "per-account governor snapshot (subcommand: calibrate)", "[--account A] [--json]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 
 	ctx := context.Background()
@@ -110,8 +110,10 @@ func cmdQuotaCalibrate(args []string, stdout, stderr io.Writer) int {
 	observedUSD := fs.Float64("observed-usd", 0, "observed ccusage spend (USD)")
 	observedPct := fs.Float64("observed-pct", 0, "observed /usage percentage")
 	planTier := fs.String("plan-tier", "", "plan tier label (e.g. max20x)")
+	setUsage(fs, stdout, "calibrate a governor ceiling from an observed /usage reading",
+		"--account A --window <5h|weekly> --observed-usd X --observed-pct Y [--plan-tier T]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *acct == "" || *window == "" {
 		return usageErr(stderr, "quota calibrate: --account and --window are required")
@@ -141,8 +143,9 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("metrics", stderr)
 	projectID := fs.String("project", "", "limit to one project")
 	asJSON := fs.Bool("json", false, "emit JSON")
+	setUsage(fs, stdout, "burn + reliability rollup across projects", "[--project ID] [--json]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)

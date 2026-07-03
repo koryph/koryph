@@ -22,8 +22,14 @@ const atFilePrefix = "@"
 
 // cmdSigning dispatches the signing sub-verbs.
 func cmdSigning(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		return usageErr(stderr, "usage: koryph signing <setup|enable|status|verify> ...")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		parentHelp(stdout, "signing", "configure and operate vault-backed commit signing", []subVerb{
+			{"setup --project ID --provider P --identity EMAIL [flags]", "write the signing policy into the project adapter"},
+			{"enable --project ID", "load the key into the SSH agent + apply repo git config"},
+			{"status --project ID", "mode/provider/agent-ready/repo-config summary"},
+			{"verify --project ID --branch BR", "verify branch commit signatures (exit 1 on any bad)"},
+		})
+		return 0
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -42,8 +48,14 @@ func cmdSigning(args []string, stdout, stderr io.Writer) int {
 
 // cmdSign dispatches artifact-signing sub-verbs.
 func cmdSign(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "blob" {
-		return usageErr(stderr, "usage: koryph sign blob --project ID <path>")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		parentHelp(stdout, "sign", "sign artifacts with the project's vault key", []subVerb{
+			{"blob --project ID <path>", "cosign sign-blob an artifact (writes <path>.sig)"},
+		})
+		return 0
+	}
+	if args[0] != "blob" {
+		return usageErr(stderr, fmt.Sprintf("unknown sign subcommand %q (want blob)", args[0]))
 	}
 	return cmdSignBlob(args[1:], stdout, stderr)
 }
@@ -90,8 +102,10 @@ func cmdSigningSetup(args []string, stdout, stderr io.Writer) int {
 	mode := fs.String("mode", signing.ModeSSH, "signing mode: ssh|gitsign")
 	publicKey := fs.String("public-key", "", `SSH public key: literal ("ssh-ed25519 AAAA...") or "@<path>" to read from file`)
 	artifacts := fs.Bool("artifacts", false, "enable cosign blob signing (`koryph sign blob`)")
+	setUsage(fs, stdout, "write the vault-backed signing policy into the project adapter",
+		"--project ID --provider P --identity EMAIL [flags]")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "signing setup: --project is required")
@@ -233,8 +247,9 @@ func signingKeySource(sc *signing.Config) string {
 func cmdSigningEnable(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("signing enable", stderr)
 	projectID := fs.String("project", "", "project id (required)")
+	setUsage(fs, stdout, "load the key into the SSH agent + apply repo git config", "--project ID")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "signing enable: --project is required")
@@ -277,8 +292,9 @@ func cmdSigningEnable(args []string, stdout, stderr io.Writer) int {
 func cmdSigningStatus(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("signing status", stderr)
 	projectID := fs.String("project", "", "project id (required)")
+	setUsage(fs, stdout, "mode/provider/agent-ready/repo-config/allowed_signers summary", "--project ID")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "signing status: --project is required")
@@ -342,8 +358,10 @@ func cmdSigningVerify(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("signing verify", stderr)
 	projectID := fs.String("project", "", "project id (required)")
 	branch := fs.String("branch", "", "branch to verify against the default branch (required)")
+	setUsage(fs, stdout, "verify branch commit signatures against the default branch (exit 1 on any bad)",
+		"--project ID --branch BR")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" || *branch == "" {
 		return usageErr(stderr, "signing verify: --project and --branch are required")
@@ -422,9 +440,10 @@ func printVerifyHints(ctx context.Context, w io.Writer, projectID, repoRoot stri
 func cmdSignBlob(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("sign blob", stderr)
 	projectID := fs.String("project", "", "project id (required)")
+	setUsage(fs, stdout, "cosign sign-blob an artifact via the vault key (writes <path>.sig)", "--project ID <path>")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *projectID == "" {
 		return usageErr(stderr, "sign blob: --project is required")

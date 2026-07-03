@@ -497,6 +497,132 @@ func TestIntakeUsageInHelp(t *testing.T) {
 	}
 }
 
+// --- help discovery tests --------------------------------------------------
+
+// helpToken exercises the three ways a user asks a parent for help: -h, --help,
+// the word help, and a bare invocation.
+func TestParentHelpListsSubverbs(t *testing.T) {
+	cases := []struct {
+		parent string
+		want   string // a sub-verb that must appear in the listing
+	}{
+		{"project", "set-account"},
+		{"signing", "verify"},
+		{"agents", "install"},
+		{"commands", "install"},
+		{"rules", "install"},
+		{"sign", "blob"},
+		{"batch", "run"},
+	}
+	for _, c := range cases {
+		for _, tok := range []string{"-h", "--help", "help"} {
+			code, out, errb := runCmd(c.parent, tok)
+			if code != 0 {
+				t.Errorf("%s %s: code = %d, want 0 (stderr=%s)", c.parent, tok, code, errb)
+			}
+			if !strings.Contains(out, "SUBCOMMANDS") || !strings.Contains(out, c.want) {
+				t.Errorf("%s %s: listing missing SUBCOMMANDS/%q:\n%s", c.parent, tok, c.want, out)
+			}
+		}
+		// Bare parent invocation also prints the listing on stdout, exit 0.
+		code, out, _ := runCmd(c.parent)
+		if code != 0 || !strings.Contains(out, "SUBCOMMANDS") {
+			t.Errorf("%s (bare): code=%d, listing:\n%s", c.parent, code, out)
+		}
+	}
+}
+
+// Governor is a show-by-default parent: bare shows the snapshot, but -h/--help/
+// help still list its sub-verbs.
+func TestGovernorHelpListsSubverbs(t *testing.T) {
+	for _, tok := range []string{"-h", "--help", "help"} {
+		code, out, _ := runCmd("governor", tok)
+		if code != 0 {
+			t.Errorf("governor %s: code = %d, want 0", tok, code)
+		}
+		if !strings.Contains(out, "SUBCOMMANDS") || !strings.Contains(out, "set --max-global") {
+			t.Errorf("governor %s: listing unexpected:\n%s", tok, out)
+		}
+	}
+}
+
+// A leaf command's -h prints a one-line purpose + positional synopsis and exits
+// 0 — not a bare "Usage of X:" and not a usage error.
+func TestLeafDashHShowsPurposeAndSynopsis(t *testing.T) {
+	cases := []struct {
+		args              []string
+		purpose, synopsis string
+	}{
+		{[]string{"init", "-h"}, "create ~/.koryph", "koryph init"},
+		{[]string{"validate", "-h"}, "pre-dispatch gate", "koryph validate <project-id>"},
+		{[]string{"sign", "blob", "-h"}, "cosign sign-blob", "koryph sign blob --project ID <path>"},
+		{[]string{"run", "-h"}, "execute one engine run", "koryph run --project ID"},
+		{[]string{"doctor", "-h"}, "health check", "koryph doctor"},
+	}
+	for _, c := range cases {
+		code, out, errb := runCmd(c.args...)
+		if code != 0 {
+			t.Errorf("%v: code = %d, want 0 (stderr=%s)", c.args, code, errb)
+		}
+		if strings.Contains(out, "Usage of") {
+			t.Errorf("%v: still prints bare 'Usage of':\n%s", c.args, out)
+		}
+		if !strings.Contains(out, c.purpose) || !strings.Contains(out, c.synopsis) {
+			t.Errorf("%v: want purpose %q + synopsis %q:\n%s", c.args, c.purpose, c.synopsis, out)
+		}
+	}
+}
+
+// `koryph help <cmd> [sub]` routes to that command's own -h.
+func TestHelpCommandRoutesToDashH(t *testing.T) {
+	code, out, _ := runCmd("help", "run")
+	if code != 0 {
+		t.Fatalf("help run: code = %d, want 0", code)
+	}
+	if !strings.Contains(out, "koryph run —") {
+		t.Errorf("help run did not route to run -h:\n%s", out)
+	}
+	// A parent sub-verb routes to the leaf's usage.
+	code, out, _ = runCmd("help", "project", "add")
+	if code != 0 || !strings.Contains(out, "koryph project add —") {
+		t.Errorf("help project add: code=%d out=%s", code, out)
+	}
+	// help with no arg prints the global usage.
+	if _, out, _ := runCmd("help"); !strings.Contains(out, "USAGE") {
+		t.Errorf("bare help missing global usage:\n%s", out)
+	}
+}
+
+// sign/batch -h used to emit usage ERRORS; they must now print a clean listing.
+func TestSignBatchDashHNotUsageError(t *testing.T) {
+	for _, parent := range []string{"sign", "batch"} {
+		code, out, errb := runCmd(parent, "-h")
+		if code != 0 {
+			t.Errorf("%s -h: code = %d, want 0 (stderr=%s)", parent, code, errb)
+		}
+		if strings.Contains(errb, "usage:") {
+			t.Errorf("%s -h still emits a usage error on stderr:\n%s", parent, errb)
+		}
+		if !strings.Contains(out, "SUBCOMMANDS") {
+			t.Errorf("%s -h missing listing:\n%s", parent, out)
+		}
+	}
+}
+
+// The global usage grows an ENVIRONMENT section naming the load-bearing env
+// vars and pointing at doctor; the doctor line advertises --project.
+func TestGlobalUsageEnvironmentAndDoctorProject(t *testing.T) {
+	_, out, _ := runCmd("help")
+	for _, want := range []string{
+		"ENVIRONMENT", "KORYPH_HOME", "KORYPH_BD_BIN", "KORYPH_GH_BIN", "KORYPH_NO_NPX",
+		"koryph doctor", "doctor [--project ID]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("global usage missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestBatchRunRequiresYes(t *testing.T) {
 	isolate(t)
 	dir := t.TempDir()

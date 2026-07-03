@@ -8,7 +8,6 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/govern"
 )
 
@@ -22,6 +21,12 @@ func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 		return cmdGovernorShow(stdout, stderr)
 	case "set":
 		return cmdGovernorSet(args[1:], stdout, stderr)
+	case "-h", "--help", "help":
+		parentHelp(stdout, "governor", "inspect and set the machine-wide agent concurrency cap", []subVerb{
+			{"show", "show the cap, active leases, and demanding projects (default)"},
+			{"set --max-global N", "set the machine-wide cap on concurrently running agents"},
+		})
+		return 0
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown governor subcommand %q (want show|set)", args[0]))
 	}
@@ -72,8 +77,9 @@ func cmdGovernorShow(stdout, stderr io.Writer) int {
 func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("governor set", stderr)
 	maxGlobal := fs.Int("max-global", 0, "machine-wide cap on concurrently running agents (required, > 0)")
+	setUsage(fs, stdout, "set the machine-wide cap on concurrently running agents", "--max-global N")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 	if *maxGlobal <= 0 {
 		return usageErr(stderr, "governor set: --max-global must be a positive integer")

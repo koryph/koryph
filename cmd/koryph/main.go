@@ -8,12 +8,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/registry"
@@ -86,9 +88,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdGovernor(rest, stdout, stderr)
 	case "doctor":
 		return cmdDoctor(rest, stdout, stderr)
-	case "help", "-h", "--help":
+	case "-h", "--help":
 		usage(stdout)
 		return 0
+	case "help":
+		// `koryph help` prints the global usage; `koryph help <cmd> [sub]`
+		// routes to that command's own -h so a user never has to remember the
+		// flag form.
+		if len(rest) == 0 {
+			usage(stdout)
+			return 0
+		}
+		if rest[0] == "help" || isHelpArg(rest[0]) {
+			usage(stdout)
+			return 0
+		}
+		return run(append(rest, "-h"), stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "koryph: unknown command %q\n\n", cmd)
 		usage(stderr)
@@ -134,9 +149,10 @@ RUN
                         poll a project's labeled GitHub issues into no-dispatch planning beads
 
 OBSERVE / OPERATE
-  doctor [--json] [--fix]
-                        global health check: layout, binaries, registry, governor, zombie
+  doctor [--project ID] [--json] [--fix]
+                        health check: layout, binaries, registry, governor, zombie
                         leases, stale demand heartbeats, quota calibration, vault providers;
+                        --project scopes the check to one registered project;
                         --fix removes zombie slots + stale demand; exits 0/1/2 (ok/warn/err)
   board [--json]        one-line-per-project run overview
   roster --project ID [--run ID] [--json]
@@ -195,6 +211,17 @@ BILLING / METRICS
                         burn + reliability rollup across projects
 
   version               print the engine version
+
+ENVIRONMENT
+  KORYPH_HOME           central registry + governor root (default ~/.koryph)
+  KORYPH_BD_BIN         path to the bd (beads) binary (default: bd on PATH)
+  KORYPH_GH_BIN         path to the gh (GitHub CLI) binary (default: gh on PATH)
+  KORYPH_NO_NPX         set to any value to disable npx-based tool fallbacks (e.g. ccusage)
+                        Run 'koryph doctor' to check these and the rest of your installation.
+
+HELP
+  koryph help <command>       show a command's flags (same as 'koryph <command> -h')
+  koryph <command> -h         show one command's usage and flags
 `)
 }
 
@@ -215,16 +242,52 @@ func openStore(ctx context.Context) (*registry.Store, error) {
 	return s, nil
 }
 
-// newFlagSet builds a ContinueOnError flag set whose usage/errors go to stderr.
+// newFlagSet builds a ContinueOnError flag set whose parse errors go to stderr.
 func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	return fs
 }
 
+// errHelp is returned by parseFlags when the user asked for help (-h/--help).
+// Callers map it to a clean exit 0 via flagExit; the help text has already
+// been printed to stdout by the FlagSet's usage function.
+var errHelp = errors.New("help requested")
+
+// isHelpArg reports whether tok is one of the help tokens a parent command
+// treats as a request to list its sub-verbs (-h, --help, or the word help).
+func isHelpArg(tok string) bool {
+	return tok == "-h" || tok == "--help" || tok == "help"
+}
+
+// setUsage installs a FlagSet usage function that prints a one-line purpose, a
+// positional/flag synopsis, and (when the set defines flags) the flag
+// defaults. It replaces stdlib's bare "Usage of X:" so every leaf command's
+// -h is self-documenting. synopsis is the text after the command name (e.g.
+// "--project ID [flags]" or "<root> [--force]"); pass "" for a flagless,
+// positional-less command. Help output goes to stdout; genuine parse-error
+// messages still go to the FlagSet's stderr output.
+func setUsage(fs *flag.FlagSet, stdout io.Writer, purpose, synopsis string) {
+	fs.Usage = func() {
+		fmt.Fprintf(stdout, "koryph %s — %s\n\nUSAGE\n  koryph %s", fs.Name(), purpose, fs.Name())
+		if synopsis != "" {
+			fmt.Fprintf(stdout, " %s", synopsis)
+		}
+		fmt.Fprintln(stdout)
+		hasFlags := false
+		fs.VisitAll(func(*flag.Flag) { hasFlags = true })
+		if hasFlags {
+			fmt.Fprintln(stdout, "\nFLAGS")
+			fs.SetOutput(stdout)
+			fs.PrintDefaults()
+		}
+	}
+}
+
 // parseFlags parses args that may lead with positional arguments (stdlib flag
 // stops at the first non-flag token, so leading positionals are lifted out
-// first, then trailing fs.Args() are appended).
+// first, then trailing fs.Args() are appended). A -h/--help request prints the
+// usage (via fs.Usage) and returns errHelp so callers can exit 0.
 func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pre []string
 	i := 0
@@ -233,9 +296,42 @@ func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 		i++
 	}
 	if err := fs.Parse(args[i:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, errHelp
+		}
 		return nil, err
 	}
 	return append(pre, fs.Args()...), nil
+}
+
+// flagExit maps a parseFlags error to a process exit code: a help request is a
+// clean exit 0; any other parse error is a usage error. The usage/help text
+// has already been printed.
+func flagExit(err error) int {
+	if errors.Is(err, errHelp) {
+		return 0
+	}
+	return engine.ExitUsage
+}
+
+// subVerb is one row in a parent command's sub-verb listing: the invocation
+// synopsis and a one-line purpose.
+type subVerb struct {
+	syn     string
+	purpose string
+}
+
+// parentHelp prints a parent command's sub-verb listing to stdout and is used
+// when a parent is invoked bare or with -h/--help/help. purpose is the
+// parent's one-liner; verbs are its sub-verbs.
+func parentHelp(stdout io.Writer, parent, purpose string, verbs []subVerb) {
+	fmt.Fprintf(stdout, "koryph %s — %s\n\nUSAGE\n  koryph %s <subcommand> [flags]\n\nSUBCOMMANDS\n", parent, purpose, parent)
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	for _, v := range verbs {
+		fmt.Fprintf(tw, "  %s\t%s\n", v.syn, v.purpose)
+	}
+	tw.Flush()
+	fmt.Fprintf(stdout, "\nRun `koryph %s <subcommand> -h` for a subcommand's flags.\n", parent)
 }
 
 // flagPassed reports whether flag name was explicitly set on fs.

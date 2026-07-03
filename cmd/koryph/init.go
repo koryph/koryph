@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"text/tabwriter"
 
-	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/paths"
 )
 
@@ -18,8 +17,9 @@ import (
 // and prints next steps so a fresh collaborator can start immediately.
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("init", stderr)
+	setUsage(fs, stdout, "create ~/.koryph, verify tools on PATH, print next steps (idempotent)", "")
 	if _, err := parseFlags(fs, args); err != nil {
-		return engine.ExitUsage
+		return flagExit(err)
 	}
 
 	ctx := context.Background()
