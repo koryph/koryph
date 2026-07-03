@@ -14,8 +14,48 @@
     "Other"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:koryph.agentThreads",
+    "onStartupFinished"
+  ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "koryph",
+          "title": "Koryph",
+          "icon": "$(rocket)"
+        }
+      ]
+    },
+    "views": {
+      "koryph": [
+        {
+          "id": "koryph.agentThreads",
+          "name": "Agent Threads",
+          "contextualTitle": "Koryph"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Koryph",
+      "properties": {
+        "koryph.showAllProjects": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "markdownDescription": "Show all managed koryph projects in the Agent Threads tree, not just those matching an open workspace folder. When unset (null), defaults to **on** when no workspace folder matches a registered project and **off** otherwise (other projects live under a collapsible \"Other projects\" node)."
+        },
+        "koryph.quotaRefreshMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "markdownDescription": "How often (minutes) to refresh the quota status-bar items via `koryph quota show --json`. The refresh is async and never blocks the UI; between snapshots the item shows cached ceilings from `~/.koryph/quota/<account>.json`."
+        }
+      }
+    },
     "commands": [
       { "command": "koryph.slot.stop", "title": "Stop Agent (Graceful)", "category": "Koryph" },
       { "command": "koryph.slot.stopForce", "title": "Force-Stop Agent (SIGKILL)", "category": "Koryph" },

@@ -427,3 +427,37 @@ export interface BoardEntry {
   slots?: Record<string, number>;
   live_pids: number;
 }
+
+// ---------------------------------------------------------------------------
+// quota snapshot — cmd/koryph/quota.go quotaSnapshot (`koryph quota show --json`)
+// ---------------------------------------------------------------------------
+
+/**
+ * quotaSnapshot — one account's rendered governor snapshot as emitted by
+ * `koryph quota show --json` (an array, one entry per involved account). The
+ * status bar (§5) refreshes these slowly and async; `usage` may carry an
+ * `unavailable` source when ccusage could not be invoked, in which case
+ * `windowFraction` fails closed to 1.0.
+ */
+export interface QuotaSnapshot {
+  account: string;
+  level: QuotaLevel;
+  calibrated: boolean;
+  usage: Usage;
+}
+
+// ---------------------------------------------------------------------------
+// agent status heartbeat — phase-dir status.json (dispatch contract)
+// ---------------------------------------------------------------------------
+
+/**
+ * StatusReport — the agent-authored heartbeat a dispatched subagent writes to
+ * its phase dir `status.json` ({state, step, pct}). It is NOT engine-owned and
+ * carries no schema_version: the tree surfaces it in tooltips *labeled as
+ * agent-reported and possibly stale* (§2), never as authoritative state.
+ */
+export interface StatusReport {
+  state?: string; // planning|implementing|testing|committing|blocked|done
+  step?: string;
+  pct?: number;
+}

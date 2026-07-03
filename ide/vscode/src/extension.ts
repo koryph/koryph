@@ -1,54 +1,85 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 The Koryph Developers
 
-// Extension entry point. This bead (ext.3) ships the data layer only — no UI
-// yet. Activation instantiates the read-only watchers/readers so later beads
-// (tree view, transcript webviews, status bar, commands) can consume live
-// koryph state; there are no contributed views or commands to trigger
-// activation, so this activate() runs only when a later bead adds an
-// activation event.
+// Extension entry point. Activation wires the read-only data layer (ext.3) to
+// the UI: the "Koryph" activity-bar tree of agent threads (ext.4), the quota
+// status-bar items (ext.4/§5), and the slot commands (ext.6). Every mutation
+// still goes through the CLI — the extension never writes koryph state.
 
 import * as vscode from 'vscode';
-import { CliAdapter, GovernorReader, QuotaReader, RegistryWatcher } from './data';
+import {
+  BeadTitleCache,
+  CliAdapter,
+  GovernorReader,
+  QuotaReader,
+  RegistryWatcher,
+} from './data';
 import { registerSlotCommands } from './commands';
 import { makeSlotPicker } from './commands/slotPicker';
+import { AGENT_THREADS_VIEW, AgentThreadsProvider } from './tree/agentThreadsProvider';
+import { QuotaStatusBar } from './statusbar/quotaStatusBar';
 
 /**
- * The data-layer handles created at activation. Later beads attach UI to these.
+ * The data-layer + UI handles created at activation.
  */
-export interface KoryphDataLayer {
+export interface KoryphExtension {
   registry: RegistryWatcher;
   governor: GovernorReader;
   quota: QuotaReader;
+  tree: AgentThreadsProvider;
+  statusBar: QuotaStatusBar;
 }
 
-let dataLayer: KoryphDataLayer | undefined;
+let ext: KoryphExtension | undefined;
 
-export function activate(context: vscode.ExtensionContext): KoryphDataLayer {
+export function activate(context: vscode.ExtensionContext): KoryphExtension {
   const registry = new RegistryWatcher();
   const governor = new GovernorReader();
   const quota = new QuotaReader();
+  const cli = new CliAdapter();
+  const titles = new BeadTitleCache(cli);
+
+  // Tree view — agent threads (§2). The provider owns per-project ledger
+  // watchers and refreshes on any registry/ledger/governor change.
+  const tree = new AgentThreadsProvider(registry, governor, titles);
+  const view = vscode.window.createTreeView(AGENT_THREADS_VIEW, {
+    treeDataProvider: tree,
+    showCollapseAll: true,
+  });
+  tree.attach(view);
+
+  // Quota status bar (§5) — slow async refresh, reflecting the tree's visible
+  // projects. Repaint when the tree changes so involved accounts stay in sync.
+  const statusBar = new QuotaStatusBar(cli, quota, () => tree.visibleProjects());
+  const treeChangeSub = tree.onDidChangeTreeData(() => statusBar.refreshSoon());
+  statusBar.start();
+
+  // Slot commands (ext.6): every mutation shells the CLI. The palette picker
+  // enumerates live slots when a command is run without a tree-item argument.
+  registerSlotCommands(context, {
+    cli,
+    pickSlot: makeSlotPicker(registry),
+  });
 
   context.subscriptions.push(
+    view,
+    treeChangeSub,
+    { dispose: () => tree.dispose() },
+    { dispose: () => statusBar.dispose() },
     { dispose: () => registry.dispose() },
     { dispose: () => governor.dispose() },
     { dispose: () => quota.dispose() },
   );
 
-  // Slot commands (ext.6): every mutation shells the CLI. The palette picker
-  // enumerates live slots when a command is run without a tree-item argument.
-  registerSlotCommands(context, {
-    cli: new CliAdapter(),
-    pickSlot: makeSlotPicker(registry),
-  });
-
-  dataLayer = { registry, governor, quota };
-  return dataLayer;
+  ext = { registry, governor, quota, tree, statusBar };
+  return ext;
 }
 
 export function deactivate(): void {
-  dataLayer?.registry.dispose();
-  dataLayer?.governor.dispose();
-  dataLayer?.quota.dispose();
-  dataLayer = undefined;
+  ext?.tree.dispose();
+  ext?.statusBar.dispose();
+  ext?.registry.dispose();
+  ext?.governor.dispose();
+  ext?.quota.dispose();
+  ext = undefined;
 }

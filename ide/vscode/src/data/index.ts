@@ -22,3 +22,5 @@ export { StreamReader } from './streamReader';
 export type { StreamEvent } from './streamReader';
 export { CliAdapter } from './cli';
 export type { CliOptions, CliResult } from './cli';
+export { BeadTitleCache, parseBeadTitle } from './beadTitle';
+export { StatusReader, parseStatusReport, formatStatusReport } from './statusReader';
