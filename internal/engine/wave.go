@@ -366,7 +366,13 @@ type dispatchReq struct {
 	resumeSessionID string
 	reviewPath      string
 	reviewIters     int
-	note            string
+	// gateRequeues and mergeRequeues carry the requeue-budget counters
+	// forward across a requeue dispatch (koryph-2im.6): dispatchBead below
+	// builds a fresh ledger.Slot rather than mutating the old one, so these
+	// must be threaded through explicitly, the same way reviewIters is.
+	gateRequeues  int
+	mergeRequeues int
+	note          string
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -492,6 +498,8 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Attempts:         q.attempt,
 		ResumeSHA:        q.resumeSHA,
 		ReviewIters:      q.reviewIters,
+		GateRequeues:     q.gateRequeues,
+		MergeRequeues:    q.mergeRequeues,
 		DispatchedAt:     now,
 		Note:             q.note,
 	}

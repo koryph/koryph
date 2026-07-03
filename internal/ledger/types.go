@@ -102,6 +102,14 @@ type Slot struct {
 	ResumeSHA  string  `json:"resume_sha,omitempty"`
 	CostUSD    float64 `json:"cost_usd"`
 
+	// GateRequeues and MergeRequeues count requeues already spent on,
+	// respectively, a post-rebase gate failure and a merge error — each
+	// budgeted 2 (koryph-2im.6), still bounded by Attempts < MaxAttempts.
+	// Additive: a Slot decoded from an old ledger that predates these fields
+	// unmarshals them to zero, which behaves exactly like "none spent yet."
+	GateRequeues  int `json:"gate_requeues,omitempty"`
+	MergeRequeues int `json:"merge_requeues,omitempty"`
+
 	ReviewIters  int    `json:"review_iters,omitempty"`
 	DispatchedAt string `json:"dispatched_at,omitempty"`
 	MergedAt     string `json:"merged_at,omitempty"`

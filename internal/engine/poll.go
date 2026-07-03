@@ -28,25 +28,58 @@ import (
 	"github.com/koryph/koryph/internal/worktree"
 )
 
-// gateRequeueNote marks a slot that already burned its single gate-failure
-// requeue; a second gate failure blocks instead of looping.
+// gateRequeueNote and mergeErrorRequeueNote are passed to requeueSlot purely
+// for progress/observability (the slot's Note field, surfaced in status/
+// roster output) — they are NOT the dedup mechanism. That job now belongs to
+// the ledger.Slot.GateRequeues / MergeRequeues counters below (koryph-2im.6):
+// a single-shot Note marker could not tell "already requeued once" from
+// "requeued twice," so the budget was stuck at 1. Counters let the budget be
+// raised (2 each) without losing the ability to cap it.
 const gateRequeueNote = "gate-failed requeue"
-
-// mergeErrorRequeueNote marks a slot that already burned its single
-// merge-error requeue; a second merge failure blocks instead of looping.
 const mergeErrorRequeueNote = "merge-error requeue"
 
 // commitStyleRequeueNote marks a slot bounced once for non-conventional commit
-// subjects; a second commit-style failure blocks instead of looping.
+// subjects; a second commit-style failure blocks instead of looping. Unlike
+// gate/merge above, commit-style stays a single-shot Note-marker dedup — its
+// budget is unchanged at 1 (koryph-2im.6): a reword bounce either fixes the
+// subject or it won't, so a second bounce buys nothing.
 const commitStyleRequeueNote = "commit-style requeue"
 
+// gateRequeueBudget and mergeRequeueBudget are the per-slot requeue budgets
+// for a post-rebase gate failure and a merge error, respectively — each
+// raised from a single-shot Note-marker dedup to 2 (koryph-2im.6). A rare
+// real race (the base moved twice) now self-heals instead of stranding the
+// bead after just one retry. Both remain bounded by ledger.MaxAttempts.
+const (
+	gateRequeueBudget  = 2
+	mergeRequeueBudget = 2
+)
+
 // mergeErrorRetryable reports whether a slot whose merge just errored should be
-// requeued for one more attempt rather than blocked. A merge error is usually
+// requeued for another attempt rather than blocked. A merge error is usually
 // transient — the base moved, a push raced — and requeueSlot Force-rebases the
 // landed branch onto current main before resuming, so the retry re-attempts the
-// merge from a correct base. It is retried at most once (koryph-3fs).
+// merge from a correct base. It is retried at most mergeRequeueBudget times
+// (koryph-3fs, budget raised by koryph-2im.6).
 func mergeErrorRetryable(sl *ledger.Slot) bool {
-	return sl.Note != mergeErrorRequeueNote && sl.Attempts < ledger.MaxAttempts
+	return sl.MergeRequeues < mergeRequeueBudget && sl.Attempts < ledger.MaxAttempts
+}
+
+// gateRequeueRetryable reports whether a slot whose merge gate just failed
+// (after a rebase) should be requeued for another attempt rather than
+// blocked. Mirrors mergeErrorRetryable (koryph-2im.6).
+func gateRequeueRetryable(sl *ledger.Slot) bool {
+	return sl.GateRequeues < gateRequeueBudget && sl.Attempts < ledger.MaxAttempts
+}
+
+// commitStyleRetryable reports whether a slot bounced for a non-conventional
+// commit subject should be requeued for a reword rather than blocked. Budget
+// stays 1 (unchanged by koryph-2im.6): a reword either fixes the subject or
+// it won't, so this deliberately keeps the single-shot Note-marker dedup
+// rather than a counter — Note still doubles as the requeue reason surfaced
+// in status/roster output either way.
+func commitStyleRetryable(sl *ledger.Slot) bool {
+	return sl.Note != commitStyleRequeueNote && sl.Attempts < ledger.MaxAttempts
 }
 
 // pollUntilIdle ticks every pollInterval until every slot in the run is
@@ -322,11 +355,14 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 	})
 	if err != nil {
 		// A merge error is usually transient (base moved, push raced). Self-heal
-		// by requeueing ONCE — requeueSlot Force-rebases the landed branch onto
-		// current main and resumes — rather than stranding the bead. Only a
-		// second failure blocks. Mirrors the gate-failed path below (koryph-3fs).
+		// by requeueing — requeueSlot Force-rebases the landed branch onto
+		// current main and resumes — rather than stranding the bead. Only after
+		// mergeRequeueBudget requeues does a failure block. Mirrors the
+		// gate-failed path below (koryph-3fs, budget koryph-2im.6).
 		if mergeErrorRetryable(sl) {
-			r.progress("bead %s: merge error (%v) — requeueing once to retry the merge", sl.PhaseID, err)
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.MergeRequeues++ })
+			r.progress("bead %s: merge error (%v) — requeueing (%d/%d) to retry the merge",
+				sl.PhaseID, err, sl.MergeRequeues, mergeRequeueBudget)
 			r.requeueSlot(ctx, sl, "", mergeErrorRequeueNote)
 			return
 		}
@@ -377,8 +413,10 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res merge.Result) (requeued bool) {
 	switch res.Status {
 	case merge.StatusGateFailed:
-		if sl.Note != gateRequeueNote && sl.Attempts < ledger.MaxAttempts {
-			r.progress("bead %s: gate failed after rebase — requeueing once", sl.PhaseID)
+		if gateRequeueRetryable(sl) {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.GateRequeues++ })
+			r.progress("bead %s: gate failed after rebase — requeueing (%d/%d)",
+				sl.PhaseID, sl.GateRequeues, gateRequeueBudget)
 			r.requeueSlot(ctx, sl, "", gateRequeueNote)
 			return true
 		}
@@ -390,7 +428,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.progress("bead %s: blocked (gate failed after requeue)", sl.PhaseID)
 
 	case merge.StatusCommitStyle:
-		if sl.Note != commitStyleRequeueNote && sl.Attempts < ledger.MaxAttempts {
+		if commitStyleRetryable(sl) {
 			r.progress("bead %s: non-conventional commit subject(s) — bouncing to the implementer to reword",
 				sl.PhaseID)
 			r.requeueSlot(ctx, sl, "", commitStyleRequeueNote)
@@ -583,7 +621,12 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		resumeSessionID: resumeSession,
 		reviewPath:      reviewPath,
 		reviewIters:     sl.ReviewIters,
-		note:            why,
+		// Carry the requeue counters forward: dispatchBead builds a brand-new
+		// ledger.Slot rather than mutating this one, so without this the
+		// budget below would reset to zero every requeue (koryph-2im.6).
+		gateRequeues:  sl.GateRequeues,
+		mergeRequeues: sl.MergeRequeues,
+		note:          why,
 	})
 }
 
