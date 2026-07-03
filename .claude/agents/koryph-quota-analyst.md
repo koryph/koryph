@@ -2,6 +2,7 @@
 name: koryph-quota-analyst
 description: Reads per-account usage snapshots/ledgers and reports subscription burn anomalies
 model: haiku
+tier: light
 allowed-tools:
   - Read
   - Glob

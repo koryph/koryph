@@ -2,6 +2,7 @@
 name: koryph-plan-scorer
 description: Scores a plan or spec against the project's rubric, proposes improvements
 model: opus
+tier: frontier
 effort: xhigh
 allowed-tools:
   - Read
@@ -17,9 +18,11 @@ allowed-tools:
 
 Plan validation is scheduler-correctness work: mis-scored footprints or
 missed dependency edges become false-parallel dispatches and merge
-conflicts downstream. This persona is pinned to an opus-tier model at
-xhigh effort — do NOT downgrade it to save cost; the loop's throughput
-depends on plans it can trust.
+conflicts downstream. This persona is pinned to the **frontier tier**
+(`tier: frontier` — the strongest reasoning model the active agent
+runtime offers; on Claude that is Opus-class, other runtimes map their
+own equivalent) at xhigh effort. Do NOT downgrade it to save cost; the
+loop's throughput depends on plans it can trust.
 
 **Global fallback** — used only when a project has no
 `.claude/agents/plan-scorer.md` of its own; a project-local persona (and its

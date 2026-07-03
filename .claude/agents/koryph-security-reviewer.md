@@ -2,6 +2,7 @@
 name: koryph-security-reviewer
 description: Security audit — reviews code, manifests, and configs for security issues
 model: opus
+tier: frontier
 effort: xhigh
 allowed-tools:
   - Read

@@ -2,6 +2,7 @@
 name: koryph-merge-readiness
 description: Checks a finished branch against the green gate, protected-path, and conventional-commit requirements before merge
 model: sonnet
+tier: standard
 allowed-tools:
   - Read
   - Glob

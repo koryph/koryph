@@ -2,6 +2,7 @@
 name: koryph-debugger
 description: Debug failures — logs, events, resource state, failing tests
 model: haiku
+tier: light
 allowed-tools:
   - Read
   - Glob

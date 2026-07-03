@@ -2,6 +2,7 @@
 name: koryph-migration-analyst
 description: Inventories a project for onboarding — maps its koryph fork/beads/worktree state to the registry schema
 model: opus
+tier: frontier
 allowed-tools:
   - Read
   - Glob

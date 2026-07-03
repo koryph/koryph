@@ -2,6 +2,7 @@
 name: koryph-explorer
 description: Fast code and doc exploration — searches the repo and returns concise summaries
 model: haiku
+tier: light
 allowed-tools:
   - Read
   - Glob

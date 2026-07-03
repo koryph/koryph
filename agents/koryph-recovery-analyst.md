@@ -2,6 +2,7 @@
 name: koryph-recovery-analyst
 description: Reads a checkpoint manifest + worktree state and proposes a resume plan with a confidence rating
 model: opus
+tier: frontier
 allowed-tools:
   - Read
   - Glob

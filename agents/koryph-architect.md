@@ -2,6 +2,7 @@
 name: koryph-architect
 description: Architectural reasoning — reviews and authors design docs, weighs trade-offs
 model: opus
+tier: frontier
 effort: xhigh
 allowed-tools:
   - Read

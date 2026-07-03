@@ -2,6 +2,7 @@
 name: koryph-implementer
 description: Implementation agent — writes code against approved plans
 model: sonnet
+tier: standard
 effort: high
 allowed-tools:
   - Read
