@@ -151,9 +151,10 @@ OBSERVE / OPERATE
   land --project ID <bead> [--method ff|squash] [--reason R]
                         land an engine-opened PR (a pr-opened bead) fast-forward-only,
                         preserving signed SHAs; closes the bead on success
-  review-pr --project ID <pr> [--approve] [--body B]
-                        analyze another author's PR with koryph's reviewer (prints
-                        findings, never approves); --approve registers your approval
+  review-pr --project ID <pr> [--approve] [--body B] | review-pr --project ID --all
+                        analyze another author's PR (or every open PR with --all) using
+                        koryph's reviewer (prints findings, never approves);
+                        --approve registers your approval of one PR
 
 SIGNING
   signing setup --project ID --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]

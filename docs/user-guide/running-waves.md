@@ -184,6 +184,11 @@ koryph review-pr --project myproject 42 --approve --body "Looks good, thanks"
   your own work directly instead (`koryph land`, or `merge_policy: auto` / `--direct` with a
   branch-protection bypass).
 
+**Clearing the queue.** `koryph review-pr --project myproject --all` analyzes every open PR in
+turn, **skipping drafts and PRs you authored** (each skip is logged with its reason). It only
+analyzes — approve each PR individually afterwards. `Ctrl-C` stops the loop cleanly after the
+current PR.
+
 > More of the review workbench — reviewing the whole open-PR queue, inline line comments, an
 > IDE handoff loop, and detecting PRs closed by any means — is tracked under its epic and
 > lands incrementally.

@@ -503,11 +503,13 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cmdReviewPR analyzes another author's PR with koryph's reviewer, or — with
-// --approve — registers the operator's explicit approval.
+// cmdReviewPR analyzes another author's PR (or the whole open-PR queue with
+// --all) with koryph's reviewer, or — with --approve — registers the operator's
+// explicit approval of a single PR.
 func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("review-pr", stderr)
 	projectID := fs.String("project", "", "project id (required)")
+	all := fs.Bool("all", false, "analyze every open PR in the queue (skips drafts and PRs you authored)")
 	approve := fs.Bool("approve", false, "register an approving review (your explicit instruction — koryph never approves autonomously)")
 	body := fs.String("body", "", "optional review/approval body")
 	pos, err := parseFlags(fs, args)
@@ -517,12 +519,14 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	if *projectID == "" {
 		return usageErr(stderr, "review-pr: --project is required")
 	}
-	if len(pos) < 1 {
-		return usageErr(stderr, "review-pr: <pr> (number, branch, or url) is required")
+	if *all && *approve {
+		return usageErr(stderr, "review-pr: --approve cannot be combined with --all (approve one PR at a time)")
+	}
+	if !*all && len(pos) < 1 {
+		return usageErr(stderr, "review-pr: <pr> (number, branch, or url) is required (or pass --all)")
 	}
 
-	ctx := context.Background()
-	store, err := openStore(ctx)
+	store, err := openStore(context.Background())
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -535,7 +539,17 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
-	if _, rerr := engine.ReviewPR(ctx, rec, cfg, nil, nil, engine.ReviewPROpts{
+	if *all {
+		// Ctrl-C stops the loop cleanly after the current PR.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		if _, qerr := engine.ReviewQueue(ctx, rec, cfg, nil, nil, stdout); qerr != nil {
+			return fail(stderr, qerr)
+		}
+		return 0
+	}
+
+	if _, rerr := engine.ReviewPR(context.Background(), rec, cfg, nil, nil, engine.ReviewPROpts{
 		Selector: pos[0], Approve: *approve, Body: *body, Out: stdout,
 	}); rerr != nil {
 		return fail(stderr, rerr)

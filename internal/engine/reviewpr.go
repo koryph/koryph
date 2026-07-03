@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/koryph/koryph/internal/account"
@@ -27,6 +28,7 @@ type PRMeta struct {
 	URL    string
 	Title  string
 	State  string
+	Draft  bool
 }
 
 // PRHost abstracts the GitHub operations `koryph review-pr` needs so tests run
@@ -36,6 +38,8 @@ type PRHost interface {
 	Viewer(ctx context.Context, dir string) (login string, err error)
 	// Info returns metadata for the PR selector (number/branch/url).
 	Info(ctx context.Context, dir, selector string) (PRMeta, error)
+	// List returns the open pull requests (for the queue loop).
+	List(ctx context.Context, dir string) ([]PRMeta, error)
 	// Checkout materializes the PR head in an ephemeral worktree for review and
 	// returns its path, the head ref, and a cleanup func.
 	Checkout(ctx context.Context, dir, selector string) (worktree, ref string, cleanup func(), err error)
@@ -107,7 +111,86 @@ func ReviewPR(ctx context.Context, rec *registry.Record, cfg *project.Config, ho
 	}
 
 	// Analysis: check out the PR head and run the reviewer over its diff.
-	wt, ref, cleanup, err := host.Checkout(ctx, rec.Root, o.Selector)
+	return analyzePR(ctx, rec, cfg, host, reviewer, meta, o.Selector, o.Out)
+}
+
+// QueueResult reports a review-queue pass.
+type QueueResult struct {
+	Analyzed []ReviewPRResult
+	Skipped  []SkippedPR
+}
+
+// SkippedPR records a PR the queue did not analyze and why.
+type SkippedPR struct {
+	Number int
+	Reason string
+}
+
+// ReviewQueue analyzes every open PR in turn — skipping drafts and PRs the
+// operator authored (which they cannot self-approve) — until the queue is
+// cleared or the context is cancelled (a clean operator stop). Like the
+// single-PR path it only ANALYZES; approval stays an explicit per-PR
+// instruction. Skips are logged, never silent.
+func ReviewQueue(ctx context.Context, rec *registry.Record, cfg *project.Config, host PRHost, reviewer PRReviewer, out io.Writer) (QueueResult, error) {
+	if host == nil {
+		host = GhHost{}
+	}
+	if reviewer == nil {
+		reviewer = review.Review
+	}
+	viewer, _ := host.Viewer(ctx, rec.Root) // best-effort; blank just disables the self-authored skip
+	prs, err := host.List(ctx, rec.Root)
+	if err != nil {
+		return QueueResult{}, err
+	}
+
+	var q QueueResult
+	for _, pr := range prs {
+		if ctx.Err() != nil {
+			if out != nil {
+				fmt.Fprintln(out, "stopped: queue interrupted")
+			}
+			break
+		}
+		switch {
+		case pr.Draft:
+			q.Skipped = append(q.Skipped, SkippedPR{pr.Number, "draft"})
+			logSkip(out, pr.Number, "draft")
+			continue
+		case viewer != "" && strings.EqualFold(pr.Author, viewer):
+			q.Skipped = append(q.Skipped, SkippedPR{pr.Number, "authored by you"})
+			logSkip(out, pr.Number, "authored by you ("+viewer+")")
+			continue
+		}
+		if out != nil {
+			fmt.Fprintf(out, "\n=== PR #%d ===\n", pr.Number)
+		}
+		res, aerr := analyzePR(ctx, rec, cfg, host, reviewer, pr, strconv.Itoa(pr.Number), out)
+		if aerr != nil {
+			q.Skipped = append(q.Skipped, SkippedPR{pr.Number, "analysis error: " + aerr.Error()})
+			logSkip(out, pr.Number, "analysis error: "+aerr.Error())
+			continue
+		}
+		q.Analyzed = append(q.Analyzed, res)
+	}
+	if out != nil {
+		fmt.Fprintf(out, "\nqueue: analyzed %d, skipped %d\n", len(q.Analyzed), len(q.Skipped))
+	}
+	return q, nil
+}
+
+func logSkip(out io.Writer, number int, reason string) {
+	if out != nil {
+		fmt.Fprintf(out, "skip PR #%d: %s\n", number, reason)
+	}
+}
+
+// analyzePR checks out one PR head, runs the reviewer over its diff, prints the
+// analysis, and returns the structured result. Shared by the single-PR and
+// queue paths.
+func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, host PRHost, reviewer PRReviewer, meta PRMeta, selector string, out io.Writer) (ReviewPRResult, error) {
+	res := ReviewPRResult{Number: meta.Number, Author: meta.Author, URL: meta.URL}
+	wt, ref, cleanup, err := host.Checkout(ctx, rec.Root, selector)
 	if err != nil {
 		return res, err
 	}
@@ -132,8 +215,8 @@ func ReviewPR(ctx context.Context, rec *registry.Record, cfg *project.Config, ho
 	default:
 		res.Verdict = "clean"
 	}
-	if o.Out != nil {
-		printPRAnalysis(o.Out, meta, v)
+	if out != nil {
+		printPRAnalysis(out, meta, v)
 	}
 	return res, nil
 }
@@ -205,6 +288,41 @@ func (GhHost) Info(ctx context.Context, dir, selector string) (PRMeta, error) {
 		return PRMeta{}, fmt.Errorf("parse gh pr view: %w", err)
 	}
 	return PRMeta{Number: v.Number, URL: v.URL, Title: v.Title, State: v.State, Author: v.Author.Login}, nil
+}
+
+// List returns the open pull requests via `gh pr list --json`.
+func (GhHost) List(ctx context.Context, dir string) ([]PRMeta, error) {
+	res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: "gh", Args: []string{
+		"pr", "list", "--state", "open", "--limit", "200",
+		"--json", "number,url,title,state,author,isDraft",
+	}})
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("gh pr list: %s", strings.TrimSpace(tailOf(res.Stderr, 300)))
+	}
+	var raw []struct {
+		Number  int    `json:"number"`
+		URL     string `json:"url"`
+		Title   string `json:"title"`
+		State   string `json:"state"`
+		IsDraft bool   `json:"isDraft"`
+		Author  struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &raw); err != nil {
+		return nil, fmt.Errorf("parse gh pr list: %w", err)
+	}
+	prs := make([]PRMeta, 0, len(raw))
+	for _, r := range raw {
+		prs = append(prs, PRMeta{
+			Number: r.Number, URL: r.URL, Title: r.Title, State: r.State,
+			Draft: r.IsDraft, Author: r.Author.Login,
+		})
+	}
+	return prs, nil
 }
 
 // Checkout fetches the PR head and adds an ephemeral detached worktree at it.

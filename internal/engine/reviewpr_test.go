@@ -17,14 +17,18 @@ import (
 // fakePRHost implements PRHost without a live GitHub remote.
 type fakePRHost struct {
 	meta       PRMeta
+	list       []PRMeta
 	viewer     string
 	approved   bool
 	approveBod string
+	checkedOut []string
 }
 
 func (f *fakePRHost) Viewer(context.Context, string) (string, error)       { return f.viewer, nil }
 func (f *fakePRHost) Info(context.Context, string, string) (PRMeta, error) { return f.meta, nil }
-func (f *fakePRHost) Checkout(context.Context, string, string) (string, string, func(), error) {
+func (f *fakePRHost) List(context.Context, string) ([]PRMeta, error)       { return f.list, nil }
+func (f *fakePRHost) Checkout(_ context.Context, _, selector string) (string, string, func(), error) {
+	f.checkedOut = append(f.checkedOut, selector)
 	return "", "deadbeef", func() {}, nil
 }
 func (f *fakePRHost) Approve(_ context.Context, _, _, body string) error {
@@ -84,6 +88,63 @@ func TestReviewPRApproveRegistersApproval(t *testing.T) {
 	}
 	if !host.approved || host.approveBod != "LGTM" {
 		t.Errorf("host approved=%v body=%q, want true/LGTM", host.approved, host.approveBod)
+	}
+}
+
+// TestReviewQueueSkipsDraftsAndSelfAuthored: --all analyzes every eligible open
+// PR and skips drafts and PRs authored by the operator, with logged reasons.
+func TestReviewQueueSkipsDraftsAndSelfAuthored(t *testing.T) {
+	host := &fakePRHost{
+		viewer: "me",
+		list: []PRMeta{
+			{Number: 1, Author: "alice"},            // eligible
+			{Number: 2, Author: "me"},               // self-authored → skip
+			{Number: 3, Author: "bob", Draft: true}, // draft → skip
+			{Number: 4, Author: "carol"},            // eligible
+		},
+	}
+	rec := &registry.Record{Root: t.TempDir(), DefaultBranch: "main"}
+
+	var out bytes.Buffer
+	q, err := ReviewQueue(context.Background(), rec, &project.Config{}, host,
+		fakeReviewer(review.Verdict{}), &out)
+	if err != nil {
+		t.Fatalf("ReviewQueue: %v", err)
+	}
+	if len(q.Analyzed) != 2 || len(q.Skipped) != 2 {
+		t.Fatalf("analyzed=%d skipped=%d, want 2/2 (%+v)", len(q.Analyzed), len(q.Skipped), q)
+	}
+	// Only the eligible PRs were checked out (by number).
+	if strings.Join(host.checkedOut, ",") != "1,4" {
+		t.Errorf("checked out %v, want [1 4]", host.checkedOut)
+	}
+	s := out.String()
+	if !strings.Contains(s, "skip PR #2: authored by you") {
+		t.Errorf("missing self-authored skip reason:\n%s", s)
+	}
+	if !strings.Contains(s, "skip PR #3: draft") {
+		t.Errorf("missing draft skip reason:\n%s", s)
+	}
+}
+
+// TestReviewQueueStopsOnCancel: a cancelled context stops the loop cleanly
+// before processing further PRs.
+func TestReviewQueueStopsOnCancel(t *testing.T) {
+	host := &fakePRHost{list: []PRMeta{{Number: 1, Author: "a"}, {Number: 2, Author: "b"}}}
+	rec := &registry.Record{Root: t.TempDir(), DefaultBranch: "main"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before the loop starts
+
+	var out bytes.Buffer
+	q, err := ReviewQueue(ctx, rec, &project.Config{}, host, fakeReviewer(review.Verdict{}), &out)
+	if err != nil {
+		t.Fatalf("ReviewQueue: %v", err)
+	}
+	if len(q.Analyzed) != 0 {
+		t.Errorf("analyzed=%d, want 0 (cancelled before any PR)", len(q.Analyzed))
+	}
+	if !strings.Contains(out.String(), "interrupted") {
+		t.Errorf("expected an interrupted notice:\n%s", out.String())
 	}
 }
 
