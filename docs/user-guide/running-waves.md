@@ -189,6 +189,19 @@ turn, **skipping drafts and PRs you authored** (each skip is logged with its rea
 analyzes — approve each PR individually afterwards. `Ctrl-C` stops the loop cleanly after the
 current PR.
 
+**Inline comments.** `koryph review-pr --project myproject 42 --comment` posts koryph's
+line-anchored findings as inline review comments on the PR (findings without a line fold into
+the review body). Add your own with a repeatable `--comment-on path:line:message`:
+
+```sh
+koryph review-pr --project myproject 42 --comment \
+  --comment-on "internal/foo.go:88:this needs a nil check" \
+  --comment-on "cmd/bar.go:12:rename for clarity"
+```
+
+Comments post as a single **`COMMENT`** review anchored to the PR head commit — no approval.
+Approve separately with `--approve` once you're satisfied.
+
 > More of the review workbench — reviewing the whole open-PR queue, inline line comments, an
 > IDE handoff loop, and detecting PRs closed by any means — is tracked under its epic and
 > lands incrementally.

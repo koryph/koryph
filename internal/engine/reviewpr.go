@@ -23,12 +23,20 @@ import (
 
 // PRMeta is the pull-request metadata review-pr needs.
 type PRMeta struct {
-	Number int
-	Author string
-	URL    string
-	Title  string
-	State  string
-	Draft  bool
+	Number  int
+	Author  string
+	URL     string
+	Title   string
+	State   string
+	Draft   bool
+	HeadSHA string // PR head commit; anchors inline review comments
+}
+
+// LineComment is one inline PR review comment anchored to a file line.
+type LineComment struct {
+	Path string
+	Line int
+	Body string
 }
 
 // PRHost abstracts the GitHub operations `koryph review-pr` needs so tests run
@@ -45,6 +53,9 @@ type PRHost interface {
 	Checkout(ctx context.Context, dir, selector string) (worktree, ref string, cleanup func(), err error)
 	// Approve registers an approving review on the PR as the viewer identity.
 	Approve(ctx context.Context, dir, selector, body string) error
+	// ReviewComment posts a review with inline line comments (event COMMENT),
+	// anchored to headSHA, in a single call.
+	ReviewComment(ctx context.Context, dir string, number int, headSHA, body string, comments []LineComment) error
 }
 
 // PRReviewer runs the reviewer over a checked-out PR. It defaults to
@@ -53,10 +64,12 @@ type PRReviewer func(ctx context.Context, o review.Opts) review.Verdict
 
 // ReviewPROpts configures ReviewPR.
 type ReviewPROpts struct {
-	Selector string    // PR number, branch, or URL
-	Approve  bool      // register an approving review (the operator's explicit instruction)
-	Body     string    // optional review/approval body
-	Out      io.Writer // human-readable output; nil = silent
+	Selector string        // PR number, branch, or URL
+	Approve  bool          // register an approving review (the operator's explicit instruction)
+	Comment  bool          // post koryph's findings as inline PR comments
+	Lines    []LineComment // operator-specified inline comments to post
+	Body     string        // optional review/approval body
+	Out      io.Writer     // human-readable output; nil = silent
 }
 
 // ReviewPRResult reports the outcome.
@@ -110,8 +123,70 @@ func ReviewPR(ctx context.Context, rec *registry.Record, cfg *project.Config, ho
 		return res, nil
 	}
 
+	if o.Comment || len(o.Lines) > 0 {
+		return commentPR(ctx, rec, cfg, host, reviewer, meta, o)
+	}
+
 	// Analysis: check out the PR head and run the reviewer over its diff.
 	return analyzePR(ctx, rec, cfg, host, reviewer, meta, o.Selector, o.Out)
+}
+
+// commentPR posts inline PR review comments: koryph's line-anchored findings
+// (when o.Comment) plus any operator-specified lines, in a single COMMENT
+// review. Findings without a line fold into the review body. Approval stays a
+// separate step.
+func commentPR(ctx context.Context, rec *registry.Record, cfg *project.Config, host PRHost, reviewer PRReviewer, meta PRMeta, o ReviewPROpts) (ReviewPRResult, error) {
+	res := ReviewPRResult{Number: meta.Number, Author: meta.Author, URL: meta.URL, Verdict: "commented"}
+	comments := append([]LineComment(nil), o.Lines...)
+	bodyLines := []string{}
+	if strings.TrimSpace(o.Body) != "" {
+		bodyLines = append(bodyLines, o.Body)
+	}
+
+	if o.Comment {
+		ar, err := analyzePR(ctx, rec, cfg, host, reviewer, meta, o.Selector, o.Out)
+		if err != nil {
+			return res, err
+		}
+		res.Blocking, res.Degraded, res.Findings = ar.Blocking, ar.Degraded, ar.Findings
+		if ar.Degraded {
+			return res, fmt.Errorf("review degraded; not posting comments")
+		}
+		lc, general := findingComments(ar.Findings)
+		comments = append(comments, lc...)
+		bodyLines = append(bodyLines, general...)
+	}
+
+	if len(comments) == 0 && len(bodyLines) == 0 {
+		if o.Out != nil {
+			fmt.Fprintf(o.Out, "PR #%d: nothing to comment (no line-anchored findings or operator lines)\n", meta.Number)
+		}
+		return res, nil
+	}
+	if err := host.ReviewComment(ctx, rec.Root, meta.Number, meta.HeadSHA, strings.Join(bodyLines, "\n\n"), comments); err != nil {
+		return res, err
+	}
+	if o.Out != nil {
+		fmt.Fprintf(o.Out, "posted %d inline comment(s) on PR #%d (%s)\n", len(comments), meta.Number, meta.URL)
+	}
+	return res, nil
+}
+
+// findingComments splits reviewer findings into inline line comments (those
+// with a file and a 1-based line) and general body bullets (the rest).
+func findingComments(findings []review.Finding) (inline []LineComment, general []string) {
+	for _, f := range findings {
+		if f.File != "" && f.Line > 0 {
+			inline = append(inline, LineComment{Path: f.File, Line: f.Line, Body: fmt.Sprintf("[%s] %s", f.Severity, f.Summary)})
+			continue
+		}
+		loc := f.File
+		if loc == "" {
+			loc = "(general)"
+		}
+		general = append(general, fmt.Sprintf("- [%s] %s: %s", f.Severity, loc, f.Summary))
+	}
+	return inline, general
 }
 
 // QueueResult reports a review-queue pass.
@@ -267,7 +342,7 @@ func (GhHost) Viewer(ctx context.Context, dir string) (string, error) {
 // Info reads PR metadata via `gh pr view --json`.
 func (GhHost) Info(ctx context.Context, dir, selector string) (PRMeta, error) {
 	res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: "gh", Args: []string{
-		"pr", "view", selector, "--json", "number,url,title,state,author",
+		"pr", "view", selector, "--json", "number,url,title,state,author,headRefOid,isDraft",
 	}})
 	if err != nil {
 		return PRMeta{}, err
@@ -276,18 +351,54 @@ func (GhHost) Info(ctx context.Context, dir, selector string) (PRMeta, error) {
 		return PRMeta{}, fmt.Errorf("gh pr view %s: %s", selector, strings.TrimSpace(tailOf(res.Stderr, 300)))
 	}
 	var v struct {
-		Number int    `json:"number"`
-		URL    string `json:"url"`
-		Title  string `json:"title"`
-		State  string `json:"state"`
-		Author struct {
+		Number     int    `json:"number"`
+		URL        string `json:"url"`
+		Title      string `json:"title"`
+		State      string `json:"state"`
+		IsDraft    bool   `json:"isDraft"`
+		HeadRefOid string `json:"headRefOid"`
+		Author     struct {
 			Login string `json:"login"`
 		} `json:"author"`
 	}
 	if err := json.Unmarshal([]byte(res.Stdout), &v); err != nil {
 		return PRMeta{}, fmt.Errorf("parse gh pr view: %w", err)
 	}
-	return PRMeta{Number: v.Number, URL: v.URL, Title: v.Title, State: v.State, Author: v.Author.Login}, nil
+	return PRMeta{Number: v.Number, URL: v.URL, Title: v.Title, State: v.State, Draft: v.IsDraft, HeadSHA: v.HeadRefOid, Author: v.Author.Login}, nil
+}
+
+// ReviewComment posts a COMMENT-event review with inline line comments in one
+// call via the GitHub reviews API (gh api resolves {owner}/{repo}).
+func (GhHost) ReviewComment(ctx context.Context, dir string, number int, headSHA, body string, comments []LineComment) error {
+	type apiComment struct {
+		Path string `json:"path"`
+		Line int    `json:"line"`
+		Side string `json:"side"`
+		Body string `json:"body"`
+	}
+	payload := struct {
+		CommitID string       `json:"commit_id,omitempty"`
+		Event    string       `json:"event"`
+		Body     string       `json:"body,omitempty"`
+		Comments []apiComment `json:"comments,omitempty"`
+	}{CommitID: headSHA, Event: "COMMENT", Body: body}
+	for _, c := range comments {
+		payload.Comments = append(payload.Comments, apiComment{Path: c.Path, Line: c.Line, Side: "RIGHT", Body: c.Body})
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: "gh", Stdin: string(data), Args: []string{
+		"api", "--method", "POST", fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews", number), "--input", "-",
+	}})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("gh api create review: %s", strings.TrimSpace(tailOf(res.Stderr, 400)))
+	}
+	return nil
 }
 
 // List returns the open pull requests via `gh pr list --json`.

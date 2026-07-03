@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -511,6 +512,9 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project", "", "project id (required)")
 	all := fs.Bool("all", false, "analyze every open PR in the queue (skips drafts and PRs you authored)")
 	approve := fs.Bool("approve", false, "register an approving review (your explicit instruction — koryph never approves autonomously)")
+	comment := fs.Bool("comment", false, "post koryph's line-anchored findings as inline PR comments")
+	var lines multiFlag
+	fs.Var(&lines, "comment-on", "post an inline comment: 'path:line:message' (repeatable)")
 	body := fs.String("body", "", "optional review/approval body")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -519,8 +523,15 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	if *projectID == "" {
 		return usageErr(stderr, "review-pr: --project is required")
 	}
-	if *all && *approve {
-		return usageErr(stderr, "review-pr: --approve cannot be combined with --all (approve one PR at a time)")
+	if *all && (*approve || *comment || len(lines) > 0) {
+		return usageErr(stderr, "review-pr: --all cannot be combined with --approve/--comment/--comment-on (act on one PR at a time)")
+	}
+	if *approve && (*comment || len(lines) > 0) {
+		return usageErr(stderr, "review-pr: --approve cannot be combined with --comment/--comment-on")
+	}
+	lineComments, perr := parseLineComments(lines)
+	if perr != nil {
+		return usageErr(stderr, "review-pr: "+perr.Error())
 	}
 	if !*all && len(pos) < 1 {
 		return usageErr(stderr, "review-pr: <pr> (number, branch, or url) is required (or pass --all)")
@@ -550,9 +561,35 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if _, rerr := engine.ReviewPR(context.Background(), rec, cfg, nil, nil, engine.ReviewPROpts{
-		Selector: pos[0], Approve: *approve, Body: *body, Out: stdout,
+		Selector: pos[0], Approve: *approve, Comment: *comment, Lines: lineComments, Body: *body, Out: stdout,
 	}); rerr != nil {
 		return fail(stderr, rerr)
 	}
 	return 0
+}
+
+// multiFlag collects a repeatable string flag.
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+// parseLineComments parses 'path:line:message' specs into engine.LineComments.
+func parseLineComments(specs []string) ([]engine.LineComment, error) {
+	var out []engine.LineComment
+	for _, s := range specs {
+		parts := strings.SplitN(s, ":", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("--comment-on %q: want 'path:line:message'", s)
+		}
+		line, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || line < 1 {
+			return nil, fmt.Errorf("--comment-on %q: line must be a positive integer", s)
+		}
+		out = append(out, engine.LineComment{Path: strings.TrimSpace(parts[0]), Line: line, Body: parts[2]})
+	}
+	return out, nil
 }

@@ -218,11 +218,13 @@ func buildPrompt(branch, base, stat, names string) string {
 Read the changed files in this worktree as needed. Respond with STRICT JSON
 only — no prose, no markdown fences — in exactly this shape:
 
-{"blocking": <bool>, "findings": [{"severity": "blocking|major|minor", "file": "<path>", "summary": "<one line>"}]}
+{"blocking": <bool>, "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}
 
-Set "blocking" to true only when at least one finding must be fixed before
-this branch may merge. An empty findings list with "blocking": false means
-the diff is clean.
+Include "line" (a 1-based line number in "file") when a finding is about a
+specific line, so it can be posted as an inline PR comment; omit it for
+whole-file or general findings. Set "blocking" to true only when at least one
+finding must be fixed before this branch may merge. An empty findings list with
+"blocking": false means the diff is clean.
 `)
 	return b.String()
 }

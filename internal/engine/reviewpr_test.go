@@ -16,12 +16,15 @@ import (
 
 // fakePRHost implements PRHost without a live GitHub remote.
 type fakePRHost struct {
-	meta       PRMeta
-	list       []PRMeta
-	viewer     string
-	approved   bool
-	approveBod string
-	checkedOut []string
+	meta        PRMeta
+	list        []PRMeta
+	viewer      string
+	approved    bool
+	approveBod  string
+	checkedOut  []string
+	comments    []LineComment
+	commentBody string
+	commentHead string
 }
 
 func (f *fakePRHost) Viewer(context.Context, string) (string, error)       { return f.viewer, nil }
@@ -34,6 +37,13 @@ func (f *fakePRHost) Checkout(_ context.Context, _, selector string) (string, st
 func (f *fakePRHost) Approve(_ context.Context, _, _, body string) error {
 	f.approved = true
 	f.approveBod = body
+	return nil
+}
+
+func (f *fakePRHost) ReviewComment(_ context.Context, _ string, _ int, headSHA, body string, comments []LineComment) error {
+	f.commentBody = body
+	f.commentHead = headSHA
+	f.comments = append(f.comments, comments...)
 	return nil
 }
 
@@ -88,6 +98,55 @@ func TestReviewPRApproveRegistersApproval(t *testing.T) {
 	}
 	if !host.approved || host.approveBod != "LGTM" {
 		t.Errorf("host approved=%v body=%q, want true/LGTM", host.approved, host.approveBod)
+	}
+}
+
+// TestReviewPRCommentPostsAgentFindingsAsLineComments: --comment turns
+// line-anchored findings into inline comments and folds the rest into the body.
+func TestReviewPRCommentPostsAgentFindingsAsLineComments(t *testing.T) {
+	host := &fakePRHost{meta: PRMeta{Number: 5, Author: "alice", HeadSHA: "abc123"}}
+	v := review.Verdict{Findings: []review.Finding{
+		{Severity: "major", File: "a.go", Line: 42, Summary: "unchecked error"},
+		{Severity: "minor", File: "b.go", Summary: "general note (no line)"},
+	}}
+	rec := &registry.Record{Root: t.TempDir(), DefaultBranch: "main"}
+
+	var out bytes.Buffer
+	_, err := ReviewPR(context.Background(), rec, &project.Config{}, host, fakeReviewer(v),
+		ReviewPROpts{Selector: "5", Comment: true, Out: &out})
+	if err != nil {
+		t.Fatalf("ReviewPR: %v", err)
+	}
+	if len(host.comments) != 1 {
+		t.Fatalf("posted %d inline comments, want 1 (only the line-anchored finding)", len(host.comments))
+	}
+	c := host.comments[0]
+	if c.Path != "a.go" || c.Line != 42 || !strings.Contains(c.Body, "unchecked error") {
+		t.Errorf("inline comment = %+v, want a.go:42 with the finding", c)
+	}
+	if host.commentHead != "abc123" {
+		t.Errorf("comment anchored to %q, want the PR head abc123", host.commentHead)
+	}
+	if !strings.Contains(host.commentBody, "general note") {
+		t.Errorf("body should carry the line-less finding:\n%s", host.commentBody)
+	}
+}
+
+// TestReviewPRCommentOnPostsOperatorLines: operator-specified --comment-on
+// lines are posted without needing an analysis.
+func TestReviewPRCommentOnPostsOperatorLines(t *testing.T) {
+	host := &fakePRHost{meta: PRMeta{Number: 8, Author: "bob", HeadSHA: "def456"}}
+	rec := &registry.Record{Root: t.TempDir(), DefaultBranch: "main"}
+
+	_, err := ReviewPR(context.Background(), rec, &project.Config{}, host, nil, ReviewPROpts{
+		Selector: "8",
+		Lines:    []LineComment{{Path: "main.go", Line: 10, Body: "please rename"}},
+	})
+	if err != nil {
+		t.Fatalf("ReviewPR: %v", err)
+	}
+	if len(host.comments) != 1 || host.comments[0].Path != "main.go" || host.comments[0].Line != 10 {
+		t.Fatalf("comments = %+v, want main.go:10", host.comments)
 	}
 }
 

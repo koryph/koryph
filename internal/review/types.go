@@ -31,6 +31,7 @@ import "github.com/koryph/koryph/internal/account"
 type Finding struct {
 	Severity string `json:"severity"` // blocking|major|minor
 	File     string `json:"file,omitempty"`
+	Line     int    `json:"line,omitempty"` // 1-based line in File; 0 = whole-file/general
 	Summary  string `json:"summary"`
 }
 
