@@ -574,6 +574,31 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cmdPRSync reconciles pr-opened beads against live PR state.
+func cmdPRSync(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("pr-sync", stderr)
+	projectID := fs.String("project", "", "project id (required)")
+	if _, err := parseFlags(fs, args); err != nil {
+		return engine.ExitUsage
+	}
+	if *projectID == "" {
+		return usageErr(stderr, "pr-sync: --project is required")
+	}
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rec, err := store.Get(*projectID)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if _, serr := engine.SyncPROpened(ctx, rec, nil, stdout); serr != nil {
+		return fail(stderr, serr)
+	}
+	return 0
+}
+
 // multiFlag collects a repeatable string flag.
 type multiFlag []string
 

@@ -216,7 +216,14 @@ koryph review-pr --project myproject 42 --approve   # or --close --body "superse
 `--resume` replays the saved findings without re-running the (costly) reviewer, and warns if
 the PR head moved since the analysis. `--close [--body "..."]` closes the PR from koryph. A PR
 closed or merged **by any means** (koryph, the GitHub UI, or another tool) is reflected on the
-next `review-pr` because state is read live from GitHub.
+next `review-pr` because state is read live from GitHub — an action on a terminal PR is a
+no-op that reports the state and clears the stale saved analysis.
+
+**Reconciling engine-opened PRs.** For PRs koryph itself opened (`merge_policy: pr`, parked in
+the `pr-opened` slot), `koryph pr-sync --project myproject` checks each one's live state and
+reconciles the ledger: a PR that **merged** (landed by anyone) marks the slot merged and
+closes the bead; one **closed without merging** marks the slot blocked. Nothing is left
+stranded in `pr-opened` when a PR ends outside koryph.
 
 > More of the review workbench — reviewing the whole open-PR queue, inline line comments, an
 > IDE handoff loop, and detecting PRs closed by any means — is tracked under its epic and

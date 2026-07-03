@@ -62,6 +62,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdLand(rest, stdout, stderr)
 	case "review-pr":
 		return cmdReviewPR(rest, stdout, stderr)
+	case "pr-sync":
+		return cmdPRSync(rest, stdout, stderr)
 	case "signing":
 		return cmdSigning(rest, stdout, stderr)
 	case "sign":
@@ -158,6 +160,8 @@ OBSERVE / OPERATE
                         findings as inline comments; --comment-on adds your own line
                         comments; --resume replays a saved analysis after an IDE handoff;
                         --approve/--close register your approval or close the PR
+  pr-sync --project ID  reconcile pr-opened beads against live PR state: a PR merged or
+                        closed by any means marks its slot merged/blocked (nothing stranded)
 
 SIGNING
   signing setup --project ID --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]

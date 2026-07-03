@@ -114,6 +114,18 @@ func ReviewPR(ctx context.Context, rec *registry.Record, cfg *project.Config, ho
 	}
 	res := ReviewPRResult{Number: meta.Number, Author: meta.Author, URL: meta.URL}
 
+	// A PR that ended by any means (merged or closed in the UI, by another
+	// tool, or by koryph) is reconciled here: drop any stale saved analysis
+	// and report the terminal state instead of acting on a dead PR.
+	if meta.State == "MERGED" || meta.State == "CLOSED" {
+		clearPRState(rec, meta.Number)
+		res.Verdict = strings.ToLower(meta.State)
+		if o.Out != nil {
+			fmt.Fprintf(o.Out, "PR #%d is %s — nothing to review (local state reconciled)\n", meta.Number, strings.ToLower(meta.State))
+		}
+		return res, nil
+	}
+
 	if o.Close {
 		if err := host.Close(ctx, rec.Root, o.Selector, o.Body); err != nil {
 			return res, err
@@ -351,6 +363,10 @@ func loadPRState(rec *registry.Record, number int) (prReviewState, bool) {
 		return prReviewState{}, false
 	}
 	return st, true
+}
+
+func clearPRState(rec *registry.Record, number int) {
+	_ = os.Remove(prStatePath(rec, number))
 }
 
 // resumePR re-displays the persisted analysis for a PR after an IDE handoff,
