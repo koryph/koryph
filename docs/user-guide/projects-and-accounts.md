@@ -137,8 +137,12 @@ history is `git log ~/.koryph`.
 registered → inventoried → migrated → validated
 ```
 
-Only `validated` records are eligible for dispatch. `koryph validate` advances
-a record to `validated` once the canary dispatch is green.
+Only `validated` records are eligible for dispatch. `koryph validate
+<project-id>` promotes a record from `registered` → `migrated` on a green
+gate pass. To reach `validated`, run a canary wave first (`koryph run --project
+<project-id> --once --allow-unvalidated`), then re-run `koryph validate
+<project-id>` — the record is promoted only when the latest run has at least
+one merged slot and no failures.
 
 ---
 

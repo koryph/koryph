@@ -80,29 +80,50 @@ The shared artefacts (`.claude/agents/`, `hooks/`, `koryph.project.json`,
 ### 3 — Register the project
 
 ```sh
-koryph onboard
+koryph project add <repo-root> \
+  --account personal \
+  --identity you@example.com
 ```
 
-`koryph onboard` reads `koryph.project.json`, creates a registry record
-under `~/.koryph/registry.d/`, and prompts for:
+`koryph project add` inspects the repo, writes a registry record under
+`~/.koryph/registry.d/`, and installs the koryph scaffolding (fallback
+personas into `.claude/agents/`, the `koryph-*` slash commands into
+`.claude/commands/`, and the hook wiring into `.claude/settings.json`). It
+prints the record as JSON on success.
 
-- **Account profile** (`personal` or `work`): which Claude login to use.
-- **Expected identity**: the email address printed by `claude auth login`.
-- **Worktree root**: where worktrees are created (default: `../repo-worktrees`).
+Required flags:
+- **`--account`**: account profile to dispatch under (`personal` or `work`).
+- **`--identity`**: the email address printed by `claude auth login`. Koryph
+  fails closed — if the logged-in identity at dispatch time does not match
+  this field, no agents are launched.
 
-Each collaborator supplies their own email here. Koryph fails closed — if
-the logged-in identity at dispatch time does not match this field, no agents
-are launched.
+> **Note:** `koryph onboard <root>` is a separate, read-only inspection tool
+> that reports the koryph state of an existing project directory. It does
+> **not** register anything or prompt for credentials. Use `koryph project add`
+> to register.
 
 ### 4 — Validate
 
 ```sh
-koryph validate
+koryph validate <project-id>
 ```
 
-This checks the gate commands, confirms the Claude identity, and runs a canary
-dispatch to advance `migration_status` to `validated`. The project is not
-eligible for dispatch until this step is green.
+`koryph validate <project-id>` runs the pre-dispatch gate checks (hooks,
+adapter, beads initialisation, and identity match). On a first green pass it
+promotes the record from `registered` → `migrated` and prints `OK`. Fix any
+reported issues and re-run until you see `OK`.
+
+To reach `validated` (required for production dispatch without
+`--allow-unvalidated`), you must first run a canary wave, then re-validate:
+
+```sh
+koryph run --project <project-id> --once --allow-unvalidated
+koryph validate <project-id>
+```
+
+The operator runs the canary; `koryph validate` does not launch agents itself.
+The record is promoted to `validated` only when the latest run has at least
+one merged slot and no failures.
 
 ### 5 — Pull beads
 
