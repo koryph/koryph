@@ -156,6 +156,7 @@ func (r *runner) loop(ctx context.Context) (Outcome, error) {
 		if allowDispatch {
 			r.progress("wave %d: %d ready, dispatching %d%s",
 				r.run.Wave, w.ReadyCount, len(w.Items), r.windowNote(calibrated, usage, est))
+			r.reportWaveSkips(w)
 
 			if r.opts.DryRun {
 				for _, it := range w.Items {
@@ -518,6 +519,48 @@ func (r *runner) blockSlot(beadID string, q dispatchReq, why string) {
 
 // mergePolicy resolves the effective merge policy: an epic merge:* label wins
 // over the project config; Show errors fall back to the config.
+// reportWaveSkips surfaces the scheduler's skip/deferral reasons so an operator
+// can see WHY a ready bead did not dispatch (the reasons were previously
+// computed and discarded, koryph-6g2.1). Structural skips (non-task types, gt:*
+// gates) never dispatch as-is, so they are reported ONCE per run with a fix
+// hint; deferrals (footprint conflict, wave full, container, no-dispatch) are
+// transient and summarized per wave — or listed in full under --dry-run.
+func (r *runner) reportWaveSkips(w sched.Wave) {
+	if r.reportedSkips == nil {
+		r.reportedSkips = map[string]bool{}
+	}
+	for _, s := range w.Skipped {
+		if r.reportedSkips[s.ID] {
+			continue
+		}
+		r.reportedSkips[s.ID] = true
+		r.progress("skipped %s: %s — not dispatchable as-is (file as task/bug/chore; area:* label; drop gt:*)", s.ID, s.Reason)
+	}
+	if len(w.Deferred) == 0 {
+		return
+	}
+	if r.opts.DryRun {
+		for _, d := range w.Deferred {
+			r.progress("dry-run: deferred %s (%s): %s", d.ID, d.Title, d.Reason)
+		}
+		return
+	}
+	r.progress("wave %d: deferred %d bead(s): %s", r.run.Wave, len(w.Deferred), summarizeReasons(w.Deferred, 3))
+}
+
+// summarizeReasons renders up to n "id(reason)" pairs, with a trailing "+k more".
+func summarizeReasons(rs []sched.Reason, n int) string {
+	var parts []string
+	for i, d := range rs {
+		if i >= n {
+			parts = append(parts, fmt.Sprintf("+%d more", len(rs)-n))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s(%s)", d.ID, d.Reason))
+	}
+	return strings.Join(parts, ", ")
+}
+
 func (r *runner) mergePolicy(ctx context.Context, epicID string) project.Policy {
 	if epicID != "" {
 		if epic, err := r.adapter.Show(ctx, epicID); err == nil {

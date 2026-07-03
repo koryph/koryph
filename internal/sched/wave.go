@@ -38,9 +38,10 @@ func Eligible(issue beads.Issue, activeIDs map[string]bool) (bool, string) {
 	return true, ""
 }
 
-// silentSkip reports whether an ineligible issue should be dropped without a
-// Deferred record (structural non-work: epics/features/decisions/merge-requests
-// and gt:* gate beads) rather than reported.
+// silentSkip reports whether an ineligible issue is structural non-work
+// (epics/features/decisions/merge-requests and gt:* gate beads) — recorded in
+// the wave's Skipped list rather than Deferred, since it will never dispatch
+// as-is.
 func silentSkip(issue beads.Issue) bool {
 	switch issue.IssueType {
 	case "epic", "feature", "decision", "merge-request":
@@ -55,10 +56,10 @@ func silentSkip(issue beads.Issue) bool {
 }
 
 // BuildWave selects a conflict-free set of at most opts.Max issues from a ready
-// frontier. Ineligible structural issues (epics, gt:* gates) are dropped
-// silently; no-dispatch/refactor-core/already-active and open-children
-// containers are recorded in Deferred; footprint collisions and the width cap
-// spill the remainder into Deferred as well.
+// frontier. Ineligible structural issues (epics, gt:* gates) are recorded in
+// Skipped (they will never dispatch as-is); no-dispatch/refactor-core/
+// already-active and open-children containers are recorded in Deferred;
+// footprint collisions and the width cap spill the remainder into Deferred.
 //
 // hasOpenChildren, when non-nil, reports whether an issue still has open
 // children (a container bead that must not be worked directly).
@@ -87,7 +88,9 @@ func BuildWave(
 	var candidates []beads.Issue
 	for _, iss := range issues {
 		if ok, reason := Eligible(iss, opts.ActiveIDs); !ok {
-			if !silentSkip(iss) {
+			if silentSkip(iss) {
+				w.Skipped = append(w.Skipped, reasonFor(iss, reason))
+			} else {
 				w.Deferred = append(w.Deferred, reasonFor(iss, reason))
 			}
 			continue

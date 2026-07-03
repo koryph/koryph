@@ -46,6 +46,11 @@ type Wave struct {
 	Items      []Item   `json:"wave"`
 	Deferred   []Reason `json:"deferred"`
 	Blocked    []Reason `json:"blocked"`
+	// Skipped records structurally non-dispatchable ready issues (non-task
+	// issue_types, gt:* gate beads). Unlike Deferred these will NEVER dispatch
+	// as-is — surfacing them is what stops a mis-typed bead from sitting in
+	// `bd ready` forever with no runtime signal (koryph-6g2.1).
+	Skipped []Reason `json:"skipped"`
 }
 
 // Reason explains a non-dispatched issue.

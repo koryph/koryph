@@ -32,9 +32,15 @@ cost governor and the global concurrency governor.
 
 Every wave starts with `bd ready`, which returns all issues whose dependencies are
 closed. Container beads (epics, features, decisions, merge-requests) and beads with a
-`gt:*` gate label are silently dropped. Beads labeled `no-dispatch` or `refactor-core`
-are deferred with a logged reason. The remainder are sorted by priority (P0 first) and
-passed to the conflict filter.
+`gt:*` gate label are **structurally skipped** — they will never dispatch as-is, so the
+engine reports each one **once per run** with a fix hint (`skipped <id>: … — file as
+task/bug/chore; area:* label; drop gt:*`). Beads labeled `no-dispatch` or
+`refactor-core`, already-active beads, container beads with open children, footprint
+collisions, and the width cap are **deferred**: the engine prints a per-wave
+`deferred N bead(s): …` summary. Under `--dry-run` every deferral is listed in full
+alongside the would-dispatch set, so you can see exactly why a ready bead is not running
+before committing to a wave. The remainder are sorted by priority (P0 first) and passed
+to the conflict filter.
 
 Scope a run to a single epic:
 

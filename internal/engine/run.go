@@ -62,6 +62,10 @@ type runner struct {
 	govWarned  bool
 	issues     map[string]beads.Issue
 
+	// reportedSkips dedups structural-skip warnings so each non-dispatchable
+	// ready bead is surfaced once per run, not every wave (koryph-6g2.1).
+	reportedSkips map[string]bool
+
 	// Billing for the current wave (refreshed by the governor each wave).
 	billing account.BillingMode
 	apiKey  string

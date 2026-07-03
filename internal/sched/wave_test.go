@@ -183,13 +183,17 @@ func TestBuildWaveComprehensive(t *testing.T) {
 	assertReason(t, deferred, "t2", "footprint conflict with t1")
 	assertReason(t, deferred, "t4", "wave full")
 
-	// Silent skips: epic + gate never appear anywhere.
+	// Structural skips: epic + gate go to Skipped (surfaced once by the engine),
+	// never Deferred.
 	if _, ok := deferred["epic-1"]; ok {
-		t.Fatal("epic should be skipped silently, not deferred")
+		t.Fatal("epic should be in Skipped, not Deferred")
 	}
 	if _, ok := deferred["gt-1"]; ok {
-		t.Fatal("gate bead should be skipped silently, not deferred")
+		t.Fatal("gate bead should be in Skipped, not Deferred")
 	}
+	skipped := deferMap(w.Skipped)
+	assertReason(t, skipped, "epic-1", "non-dispatch issue_type epic")
+	assertReason(t, skipped, "gt-1", "gate label gt:slot")
 }
 
 func TestBuildWaveTwoUnknownsSerialize(t *testing.T) {
