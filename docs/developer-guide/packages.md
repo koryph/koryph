@@ -124,7 +124,7 @@ configured green gate.
 - **`Opts`** / **`Result`** — merge configuration and outcome
 - **`SlotLocker`** — interface abstracting per-slot locking (for tests)
 - **`Protected(diffPaths, extra)`** — returns protected paths hit by a diff
-- **`Merge(ctx, o)`** — main entry: run gate → squash-merge
+- **`Merge(ctx, o)`** — main entry: run gate → ff-merge (squash optional)
 - **`RunGate(ctx, dir, cmds)`** — execute green-gate commands; returns `ok`, output
 
 ## metrics
@@ -190,7 +190,7 @@ Per-account usage governor. Estimates wave cost, tracks rolling-window spend,
 and gates or scales dispatch.
 
 - **`Config`** — daily/monthly caps and thresholds per account
-- **`Usage`** / **`Window`** / **`Level`** — spend snapshot, rolling measurement, `"ok"` | `"warn"` | `"stop"`
+- **`Usage`** / **`Window`** / **`Level`** — spend snapshot, rolling measurement, `"ok"` | `"warn"` | `"drain"` | `"stop"`
 - **`State(u, cfg)`** — derive `Level`; **`ScaleSlots(u, max)`** — reduce wave width under pressure
 - **`Preflight(u, estimateUSD, cfg)`** — gate a wave before dispatch
 - **`EstimateItem`** / **`EstimateWave`** — pre-flight USD estimates

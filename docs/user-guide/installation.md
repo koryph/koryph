@@ -44,7 +44,7 @@ koryph version
 Expected output:
 
 ```
-koryph 0.2.0
+koryph <version>
 ```
 
 The exact version string reflects the engine version baked in at build time.
@@ -59,6 +59,9 @@ koryph keeps all central state in a single directory:
 ~/.koryph/
 ├── registry.d/      # one JSON record per managed project
 ├── quota/           # per-account governor snapshots
+├── slots/           # machine-global concurrency governor leases
+│   └── demand/      # per-project demand heartbeats
+├── governor.json    # machine-wide concurrency cap config
 ├── audit.jsonl      # append-only account/dispatch audit trail
 └── runs.jsonl       # cross-project run index
 ```

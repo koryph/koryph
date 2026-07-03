@@ -67,7 +67,7 @@ flowchart LR
 
 | Path | Role |
 |---|---|
-| `cmd/koryph` | CLI entry point (`run`, `project`, `quota`, `batch`, `ops`, `init`) |
+| `cmd/koryph` | CLI entry point — key verbs: `run`, `project`, `init`, `onboard`, `validate`, `quota`, `batch`, `stop`, `tail`, `nudge`, `merge`, `land`, `review-pr`, `pr-sync`, `signing`, `governor`, `doctor`, `metrics`, `agents`, `commands`, `rules` (non-exhaustive; `ops.go` is a source file, not a command) |
 | `internal/engine` | wave loop (scan → batch → preflight → dispatch → poll → stages → review → merge → record) |
 | `internal/registry` | multi-project registry + audit log (`~/.koryph`, git-backed) |
 | `internal/account` | Claude env construction + fail-closed identity verification |

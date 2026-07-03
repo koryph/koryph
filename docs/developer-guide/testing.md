@@ -84,7 +84,7 @@ prevents any Node fallback.
 |---|---|
 | `TestRunOnceMergesAndDrains` | Full happy-path: frontier → dispatch → auto-merge → ledger → drain |
 | `TestRunAccountMismatchFailsClosed` | Identity check fires before any state is touched |
-| `TestRunMergePendingWithoutAutoMerge` | `--no-auto-merge` leaves branch + worktree intact, posts bd comment |
+| `TestRunMergePendingWithoutAutoMerge` | without `--auto-merge` leaves branch + worktree intact, posts bd comment |
 | `TestRunRefusesUnvalidatedProject` | Engine rejects a project that hasn't been validated |
 | `TestRunRefusesMarkdownWorkSource` | Legacy `markdown` work-source is blocked until migrated |
 

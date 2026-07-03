@@ -231,10 +231,6 @@ reconciles the ledger: a PR that **merged** (landed by anyone) marks the slot me
 closes the bead; one **closed without merging** marks the slot blocked. Nothing is left
 stranded in `pr-opened` when a PR ends outside koryph.
 
-> More of the review workbench — reviewing the whole open-PR queue, inline line comments, an
-> IDE handoff loop, and detecting PRs closed by any means — is tracked under its epic and
-> lands incrementally.
-
 ## Post-implement stages
 
 If the project declares a [`pipeline`](projects-and-accounts.md#post-implement-pipeline-stages),
@@ -316,11 +312,26 @@ and exits cleanly; the engine detects the exit on the next poll tick and either 
 koryph stop --project myproject beads-042
 ```
 
+Add `--force` to send SIGKILL instead — the agent is killed immediately and any
+uncommitted in-progress work is lost:
+
+```sh
+koryph stop --project myproject beads-042 --force
+```
+
+To stop every live agent across all managed projects at once, use `--all` (combine
+with `--force` for SIGKILL):
+
+```sh
+koryph stop --all
+koryph stop --all --force
+```
+
 **tail** — inspect a running or recently finished agent's output without attaching:
 
 ```sh
 koryph tail --project myproject beads-042          # last 40 lines
-koryph tail --project myproject beads-042 --n 100  # last 100 lines
+koryph tail --project myproject beads-042 -n 100   # last 100 lines
 ```
 
 Output includes `session.log` (human-readable progress), `stderr.log`, and the path to

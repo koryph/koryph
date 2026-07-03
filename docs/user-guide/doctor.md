@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2026 The Koryph Developers -->
+
 # koryph doctor
 
 `koryph doctor` checks the health of the koryph installation.

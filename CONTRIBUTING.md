@@ -79,6 +79,16 @@ Example: `feat(gate): add retry logic for worktree bootstrap`
 
 ## Green Gate (Run Before Every PR)
 
+The canonical way to run the gate is:
+
+```bash
+make gate
+```
+
+This runs formatting, build, vet, tests, and (if available) the linter in one
+step — identical to what CI enforces. Alternatively you can run the steps
+individually:
+
 ```bash
 # Formatting — output must be empty
 test -z "$(gofmt -l .)"
@@ -111,8 +121,8 @@ behavioral change a user could observe.
 
 In the PR description, include one of:
 
-- A list of the `docs/` files you updated (e.g. `docs/getting-started.md`,
-  `docs/reference/gate.md`), or
+- A list of the `docs/` files you updated (e.g. `docs/user-guide/running-waves.md`,
+  `docs/developer-guide/testing.md`), or
 - The explicit statement: **"no user-visible surface"** — confirming the
   change is internal only and no docs update is needed.
 
