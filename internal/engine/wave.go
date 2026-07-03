@@ -478,7 +478,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Attempt:         q.attempt,
 		ExecutionState:  "running",
 		RecoveryTier:    recoveryTier(q.issue, r.cfg),
-		MergePolicy:     policy,
+		MergePolicy:     string(policy),
 		AutoMerge:       r.opts.AutoMerge,
 		BillingMode:     string(r.billing),
 		BootstrapCmds:   r.cfg.Bootstrap,
@@ -518,17 +518,17 @@ func (r *runner) blockSlot(beadID string, q dispatchReq, why string) {
 
 // mergePolicy resolves the effective merge policy: an epic merge:* label wins
 // over the project config; Show errors fall back to the config.
-func (r *runner) mergePolicy(ctx context.Context, epicID string) string {
+func (r *runner) mergePolicy(ctx context.Context, epicID string) project.Policy {
 	if epicID != "" {
 		if epic, err := r.adapter.Show(ctx, epicID); err == nil {
 			for _, l := range epic.Labels {
 				switch l {
 				case "merge:auto":
-					return "auto"
+					return project.PolicyAuto
 				case "merge:manual":
-					return "manual"
+					return project.PolicyManual
 				case "merge:pr":
-					return "pr"
+					return project.PolicyPR
 				}
 			}
 		}

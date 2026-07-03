@@ -20,6 +20,7 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/merge"
 	"github.com/koryph/koryph/internal/modelroute"
+	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/review"
@@ -162,7 +163,7 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	// koryph does not gate on org role. A blocking review can still downgrade
 	// this to manual below, so the safety path is not bypassed (koryph-ufy.5).
 	if r.opts.Direct {
-		policy = "auto"
+		policy = project.PolicyAuto
 	}
 
 	// Post-implement stages (docs, test, ...) run in the worktree before review
@@ -217,7 +218,7 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 				return
 			}
 			// Iterations exhausted: never auto-merge unresolved findings.
-			policy = "manual"
+			policy = project.PolicyManual
 			r.progress("bead %s: blocking findings persist after %d review iterations — forcing manual merge",
 				sl.PhaseID, sl.ReviewIters)
 		}
@@ -227,12 +228,12 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	// push the branch and open a PR for a later fast-forward landing step.
 	// This is the safe path for protected branches, so — unlike auto-merge —
 	// it is not gated on --auto-merge (koryph-ufy.1).
-	if policy == "pr" {
+	if policy == project.PolicyPR {
 		r.openPRSlot(ctx, sl)
 		return
 	}
 
-	if policy == "auto" && (r.opts.AutoMerge || r.opts.Direct) {
+	if policy == project.PolicyAuto && (r.opts.AutoMerge || r.opts.Direct) {
 		r.mergeSlot(ctx, sl)
 		return
 	}
@@ -280,7 +281,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 
-	if res.Status == "merged" {
+	if res.Status == merge.StatusMerged {
 		now := time.Now().UTC().Format(time.RFC3339)
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotMerged
@@ -316,7 +317,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 // WITHOUT releasing the global slot, because a requeue keeps it.
 func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res merge.Result) (requeued bool) {
 	switch res.Status {
-	case "gate-failed":
+	case merge.StatusGateFailed:
 		if sl.Note != gateRequeueNote && sl.Attempts < ledger.MaxAttempts {
 			r.progress("bead %s: gate failed after rebase — requeueing once", sl.PhaseID)
 			r.requeueSlot(ctx, sl, "", gateRequeueNote)
@@ -329,7 +330,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "gate-failed")
 		r.progress("bead %s: blocked (gate failed after requeue)", sl.PhaseID)
 
-	case "commit-style":
+	case merge.StatusCommitStyle:
 		if sl.Note != commitStyleRequeueNote && sl.Attempts < ledger.MaxAttempts {
 			r.progress("bead %s: non-conventional commit subject(s) — bouncing to the implementer to reword",
 				sl.PhaseID)
@@ -343,7 +344,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "commit-style")
 		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
 
-	case "conflict":
+	case merge.StatusConflict:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotConflict
 			s.Note = "rebase conflict: " + res.ConflictMD
@@ -351,7 +352,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "conflict")
 		r.progress("bead %s: rebase conflict (details: %s)", sl.PhaseID, res.ConflictMD)
 
-	case "protected":
+	case merge.StatusProtected:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
 			s.Note = "protected paths touched: " + strings.Join(res.Protected, ", ")
@@ -359,7 +360,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "protected")
 		r.progress("bead %s: blocked (protected paths: %s)", sl.PhaseID, strings.Join(res.Protected, ", "))
 
-	case "unsigned":
+	case merge.StatusUnsigned:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
 			s.Note = "merge refused: " + tailOf(res.GateOutput, 400)
@@ -371,10 +372,10 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 	default:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotFailed
-			s.Note = "merge status " + res.Status
+			s.Note = "merge status " + string(res.Status)
 		})
-		r.checkpointSlot(sl, "merge-"+res.Status)
-		r.progress("bead %s: merge failed (%s)", sl.PhaseID, res.Status)
+		r.checkpointSlot(sl, "merge-"+string(res.Status))
+		r.progress("bead %s: merge failed (%s)", sl.PhaseID, string(res.Status))
 	}
 	return false
 }
@@ -416,7 +417,7 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 	}
 
 	switch res.Status {
-	case "pr-opened":
+	case merge.StatusPROpened:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotPROpened
 			s.Note = fmt.Sprintf("PR #%d opened: %s", res.PRNumber, res.PRURL)
@@ -435,7 +436,7 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 		r.progress("bead %s: pr-opened (%s, branch %s) — land the PR to complete", sl.PhaseID, res.PRURL, sl.Branch)
 		r.releaseGlobalSlot(sl.PhaseID)
 
-	case "pr-no-remote":
+	case merge.StatusPRNoRemote:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
 			s.Note = "merge_policy pr requires a git remote; none configured"
@@ -444,7 +445,7 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 		r.releaseGlobalSlot(sl.PhaseID)
 		r.progress("bead %s: blocked (merge_policy pr needs a git remote; branch %s kept)", sl.PhaseID, sl.Branch)
 
-	case "pr-no-gh":
+	case merge.StatusPRNoGH:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
 			s.Note = "merge_policy pr requires an authenticated gh CLI; unavailable"

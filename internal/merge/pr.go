@@ -22,32 +22,32 @@ import (
 // than a crash.
 func openPR(ctx context.Context, o Opts, def string, hasRemote bool) (Result, error) {
 	if !hasRemote {
-		return Result{Status: "pr-no-remote"}, nil
+		return Result{Status: StatusPRNoRemote}, nil
 	}
 	host := o.PR
 	if host == nil {
 		host = GhCLI{}
 	}
 	if !host.Ready(ctx, o.RepoRoot) {
-		return Result{Status: "pr-no-gh"}, nil
+		return Result{Status: StatusPRNoGH}, nil
 	}
 
 	head, err := execx.MustSucceed(ctx, execx.Cmd{
 		Dir: o.RepoRoot, Name: "git", Args: []string{"rev-parse", o.Branch},
 	})
 	if err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
 	if err := pushBranch(ctx, o.RepoRoot, o.Branch); err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
 
 	url, num, err := host.Open(ctx, o.RepoRoot, o.Branch, def, o.PRTitle, o.PRBody)
 	if err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
 	return Result{
-		Status:    "pr-opened",
+		Status:    StatusPROpened,
 		MergedSHA: strings.TrimSpace(head.Stdout),
 		Pushed:    true,
 		PRURL:     url,

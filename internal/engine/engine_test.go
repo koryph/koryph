@@ -199,7 +199,7 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 		WorkSource:         o.workSource,
 		PlansDir:           map[bool]string{true: "docs/plans", false: ""}[o.workSource == "markdown"],
 		Gate:               []string{"true"},
-		MergePolicy:        o.mergePolicy,
+		MergePolicy:        project.Policy(o.mergePolicy),
 		CommitStyle:        o.commitStyle,
 		RiskTierDefault:    1,
 		MaxConcurrentSlots: 2,

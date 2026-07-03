@@ -68,7 +68,7 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 	// (1) merge slot — released on every exit path.
 	if o.Slot != nil {
 		if err := o.Slot.Acquire(ctx, o.SlotOwner); err != nil {
-			return Result{Status: "error"}, fmt.Errorf("acquire merge slot: %w", err)
+			return Result{Status: StatusError}, fmt.Errorf("acquire merge slot: %w", err)
 		}
 		defer func() { _ = o.Slot.Release(ctx) }()
 	}
@@ -76,7 +76,7 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 	// (2) locate the worktree that carries the branch.
 	list, err := worktree.List(ctx, o.RepoRoot)
 	if err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
 	var wt *worktree.Info
 	for i := range list {
@@ -86,50 +86,13 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		}
 	}
 	if wt == nil {
-		return Result{Status: "error"}, fmt.Errorf("no worktree found for branch %q under %s", o.Branch, o.RepoRoot)
+		return Result{Status: StatusError}, fmt.Errorf("no worktree found for branch %q under %s", o.Branch, o.RepoRoot)
 	}
 
-	// (3) protected-path check — read-only, no mutation on rejection.
-	diffPaths, err := diffNames(ctx, o.RepoRoot, def+"..."+o.Branch)
-	if err != nil {
-		return Result{Status: "error"}, err
-	}
-	if hits := Protected(diffPaths, o.Extra); len(hits) > 0 {
-		return Result{Status: "protected", Protected: hits}, nil
-	}
-
-	// (3b) commit-signature verification — read-only, and deliberately
-	// BEFORE the rebase: rebasing rewrites commits, and with commit.gpgsign
-	// configured the rewritten commits would be re-signed by the merge
-	// runner's own key, laundering unsigned agent work.
-	if o.RequireSigned {
-		bad, verr := signing.Verify(ctx, wt.Path, def, o.Branch)
-		if verr != nil {
-			return Result{Status: "error"}, verr
-		}
-		if len(bad) > 0 {
-			return Result{
-				Status:     "unsigned",
-				GateOutput: "unsigned or unverifiable commits on " + o.Branch + ":\n" + strings.Join(bad, "\n"),
-			}, nil
-		}
-	}
-
-	// (3c) commit-style validation — read-only, BEFORE any mutation like the
-	// checks above. Every candidate subject in <def>..<branch> must match the
-	// Conventional Commits grammar. Enforced by default (project commit_style),
-	// and shared by the ff-merge and PR-open paths.
-	if o.RequireConventional {
-		subjects, serr := logSubjects(ctx, o.RepoRoot, def, o.Branch)
-		if serr != nil {
-			return Result{Status: "error"}, serr
-		}
-		if bad := nonConventionalSubjects(subjects); len(bad) > 0 {
-			return Result{
-				Status:     "commit-style",
-				GateOutput: "non-conventional commit subject(s) on " + o.Branch + ":\n" + strings.Join(bad, "\n"),
-			}, nil
-		}
+	// (3) read-only preflight — protected paths, signatures, commit style. All
+	// reject BEFORE any tree mutation (rebase would re-sign rewritten commits).
+	if res, ok, err := preflight(ctx, o, wt, def); !ok {
+		return res, err
 	}
 
 	// (4) sync the LOCAL default branch so the rebase base and the ff-merge
@@ -141,28 +104,28 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 	// candidate onto local <def>. See koryph-3fs.
 	hasRemote, err := remoteExists(ctx, o.RepoRoot)
 	if err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
 	if _, err := execx.MustSucceed(ctx, execx.Cmd{
 		Dir: o.RepoRoot, Name: "git", Args: []string{"checkout", def},
 	}); err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
 	if hasRemote {
 		if _, err := execx.MustSucceed(ctx, execx.Cmd{
 			Dir: o.RepoRoot, Name: "git", Args: []string{"fetch", "origin", def},
 		}); err != nil {
-			return Result{Status: "error"}, err
+			return Result{Status: StatusError}, err
 		}
 		// Fast-forward local <def> up to origin/<def>. Local-ahead is a no-op
 		// ("Already up to date"); a genuine divergence is surfaced as an error,
 		// never force-reset.
 		sync, err := gitRun(ctx, o.RepoRoot, "merge", "--ff-only", "origin/"+def)
 		if err != nil {
-			return Result{Status: "error"}, err
+			return Result{Status: StatusError}, err
 		}
 		if sync.ExitCode != 0 {
-			return Result{Status: "error", GateOutput: tail(sync.Stdout+sync.Stderr, 2000)},
+			return Result{Status: StatusError, GateOutput: tail(sync.Stdout+sync.Stderr, 2000)},
 				fmt.Errorf("local %s cannot fast-forward to origin/%s (diverged); resolve before merging: %s",
 					def, def, strings.TrimSpace(tail(sync.Stderr, 400)))
 		}
@@ -172,13 +135,13 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 	// the exact ref the ff-merge below targets.
 	rb, err := gitRun(ctx, wt.Path, "rebase", def)
 	if err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
 	if rb.ExitCode != 0 {
 		_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
 		mdPath := filepath.Join(wt.Path, "CONFLICT.md")
 		_ = fsx.WriteAtomic(mdPath, []byte(conflictMarkdown(o.Branch, def, rb.Stdout+rb.Stderr)), 0o644)
-		return Result{Status: "conflict", ConflictMD: mdPath}, nil
+		return Result{Status: StatusConflict, ConflictMD: mdPath}, nil
 	}
 
 	// (6) green gate AFTER rebase.
@@ -187,7 +150,7 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		if !ok {
 			// pre-commit auto-fixers may leave the tree dirty; discard.
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
-			return Result{Status: "gate-failed", GateOutput: tail(out, 2000)}, nil
+			return Result{Status: StatusGateFailed, GateOutput: tail(out, 2000)}, nil
 		}
 	}
 
@@ -199,28 +162,26 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		return openPR(ctx, o, def, hasRemote)
 	}
 
-	// (7) RepoRoot is already on the synced <def>; the rebased branch is now a
-	// strict fast-forward of it.
-
-	// (8) merge.
+	// (8) merge. RepoRoot is already on the synced <def>; the rebased branch is
+	// now a strict fast-forward of it.
 	if o.Squash {
 		if _, err := execx.MustSucceed(ctx, execx.Cmd{
 			Dir: o.RepoRoot, Name: "git", Args: []string{"merge", "--squash", o.Branch},
 		}); err != nil {
-			return Result{Status: "error"}, err
+			return Result{Status: StatusError}, err
 		}
 		if _, err := execx.MustSucceed(ctx, execx.Cmd{
 			Dir: o.RepoRoot, Name: "git", Args: []string{"commit", "-m", fmt.Sprintf("feat(%s): squash merge", o.Branch)},
 		}); err != nil {
-			return Result{Status: "error"}, err
+			return Result{Status: StatusError}, err
 		}
 	} else {
 		ff, err := gitRun(ctx, o.RepoRoot, "merge", "--ff-only", o.Branch)
 		if err != nil {
-			return Result{Status: "error"}, err
+			return Result{Status: StatusError}, err
 		}
 		if ff.ExitCode != 0 {
-			return Result{Status: "error", GateOutput: tail(ff.Stdout+ff.Stderr, 2000)},
+			return Result{Status: StatusError, GateOutput: tail(ff.Stdout+ff.Stderr, 2000)},
 				fmt.Errorf("ff-only merge of %q failed; the branch is not a fast-forward of %s (rebase or use squash): %s",
 					o.Branch, def, strings.TrimSpace(tail(ff.Stderr, 400)))
 		}
@@ -230,9 +191,9 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		Dir: o.RepoRoot, Name: "git", Args: []string{"rev-parse", "HEAD"},
 	})
 	if err != nil {
-		return Result{Status: "error"}, err
+		return Result{Status: StatusError}, err
 	}
-	result := Result{Status: "merged", MergedSHA: strings.TrimSpace(shaRes.Stdout)}
+	result := Result{Status: StatusMerged, MergedSHA: strings.TrimSpace(shaRes.Stdout)}
 
 	// (9) push.
 	if o.Push && hasRemote {
@@ -253,6 +214,55 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		}
 	}
 	return result, nil
+}
+
+// preflight runs the read-only gates that must reject BEFORE any tree mutation:
+// protected paths, commit-signature verification, and commit-style validation.
+// These run before the rebase deliberately — rebasing rewrites commits, and
+// with commit.gpgsign set the rewritten commits would be re-signed by the merge
+// runner's own key, laundering unsigned agent work. ok=false means stop and
+// return res: a rejection Result (StatusProtected/Unsigned/CommitStyle) with a
+// nil error, or Result{StatusError} with the underlying error.
+func preflight(ctx context.Context, o Opts, wt *worktree.Info, def string) (res Result, ok bool, err error) {
+	// Protected-path check.
+	diffPaths, err := diffNames(ctx, o.RepoRoot, def+"..."+o.Branch)
+	if err != nil {
+		return Result{Status: StatusError}, false, err
+	}
+	if hits := Protected(diffPaths, o.Extra); len(hits) > 0 {
+		return Result{Status: StatusProtected, Protected: hits}, false, nil
+	}
+
+	// Commit-signature verification.
+	if o.RequireSigned {
+		bad, verr := signing.Verify(ctx, wt.Path, def, o.Branch)
+		if verr != nil {
+			return Result{Status: StatusError}, false, verr
+		}
+		if len(bad) > 0 {
+			return Result{
+				Status:     StatusUnsigned,
+				GateOutput: "unsigned or unverifiable commits on " + o.Branch + ":\n" + strings.Join(bad, "\n"),
+			}, false, nil
+		}
+	}
+
+	// Commit-style validation: every candidate subject in <def>..<branch> must
+	// match the Conventional Commits grammar (shared by ff-merge and PR paths).
+	if o.RequireConventional {
+		subjects, serr := logSubjects(ctx, o.RepoRoot, def, o.Branch)
+		if serr != nil {
+			return Result{Status: StatusError}, false, serr
+		}
+		if bad := nonConventionalSubjects(subjects); len(bad) > 0 {
+			return Result{
+				Status:     StatusCommitStyle,
+				GateOutput: "non-conventional commit subject(s) on " + o.Branch + ":\n" + strings.Join(bad, "\n"),
+			}, false, nil
+		}
+	}
+
+	return Result{}, true, nil
 }
 
 // remoteExists reports whether the repo at dir has any configured git remote.

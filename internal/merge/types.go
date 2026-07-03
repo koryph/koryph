@@ -113,8 +113,26 @@ type PROpener interface {
 }
 
 // Result reports a merge attempt.
+// Status is the outcome of a merge attempt. The constants below are the whole
+// vocabulary — producers and the engine's consumer switches use them so a typo
+// is a compile error instead of a silent fall-through to "merge failed".
+type Status string
+
+const (
+	StatusMerged      Status = "merged"       // landed on the default branch
+	StatusPROpened    Status = "pr-opened"    // PR opened (merge_policy pr)
+	StatusConflict    Status = "conflict"     // rebase conflict; CONFLICT.md written
+	StatusGateFailed  Status = "gate-failed"  // green gate failed after rebase
+	StatusProtected   Status = "protected"    // diff touched a protected path
+	StatusUnsigned    Status = "unsigned"     // required signature missing
+	StatusCommitStyle Status = "commit-style" // non-conventional commit subject
+	StatusPRNoRemote  Status = "pr-no-remote" // merge_policy pr but no git remote
+	StatusPRNoGH      Status = "pr-no-gh"     // merge_policy pr but gh unavailable
+	StatusError       Status = "error"        // infrastructure failure (see error)
+)
+
 type Result struct {
-	Status     string   `json:"status"` // merged|pr-opened|conflict|gate-failed|protected|unsigned|commit-style|pr-no-remote|pr-no-gh|error
+	Status     Status   `json:"status"`
 	MergedSHA  string   `json:"merged_sha,omitempty"`
 	GateOutput string   `json:"gate_output,omitempty"`
 	Protected  []string `json:"protected_paths,omitempty"`

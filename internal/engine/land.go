@@ -80,12 +80,12 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 		RequireConventional: cfg.EnforceConventional(),
 	})
 	if err != nil {
-		return LandResult{Status: res.Status, Branch: branch}, err
+		return LandResult{Status: string(res.Status), Branch: branch}, err
 	}
-	if res.Status != "merged" {
+	if res.Status != merge.StatusMerged {
 		// Base moved with a real conflict, a gate regression, etc. Never fall
 		// back to a rewrite merge — report so the caller can rebase and rerun.
-		return LandResult{Status: res.Status, Branch: branch}, nil
+		return LandResult{Status: string(res.Status), Branch: branch}, nil
 	}
 
 	// Landed: mark the parked slot merged (best-effort) and close the bead.
@@ -102,5 +102,5 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 	if cerr := adapter.Close(ctx, o.Bead, o.Reason); cerr != nil && o.Out != nil {
 		fmt.Fprintln(o.Out, "land: warning: close bead failed:", cerr)
 	}
-	return LandResult{Status: "merged", SHA: res.MergedSHA, Branch: branch}, nil
+	return LandResult{Status: string(merge.StatusMerged), SHA: res.MergedSHA, Branch: branch}, nil
 }

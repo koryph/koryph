@@ -19,6 +19,17 @@ import (
 // ConfigFileName is the adapter file at each managed repo's root.
 const ConfigFileName = "koryph.project.json"
 
+// Policy is how a bead's finished branch lands. It is the merge_policy default
+// (an epic's merge:<policy> label overrides it). The constants are the whole
+// vocabulary — the engine compares against them so a typo is a compile error.
+type Policy string
+
+const (
+	PolicyManual Policy = "manual" // leave the branch for a human to land
+	PolicyAuto   Policy = "auto"   // ff-merge onto the default branch when clean
+	PolicyPR     Policy = "pr"     // push + open a PR for later landing
+)
+
 // FootprintRule maps a path glob (doublestar-lite: '*' within a segment,
 // '**' across segments, evaluated by sched) to footprint tokens. Tokens
 // prefixed "HOT:" conflict with everything sharing that token.
@@ -152,9 +163,8 @@ type Config struct {
 	CommitStyle    string `json:"commit_style,omitempty"`
 	CommitTemplate string `json:"commit_template,omitempty"`
 
-	// MergePolicy default when the epic carries no merge:* label:
-	// "manual" | "auto" | "pr".
-	MergePolicy string `json:"merge_policy"`
+	// MergePolicy default when the epic carries no merge:* label.
+	MergePolicy Policy `json:"merge_policy"`
 
 	// MergeMethod is how an engine-opened PR lands on the default branch:
 	// "ff" (default, also when empty) preserves the exact gate-checked, signed
@@ -185,7 +195,7 @@ func Default(projectID string) *Config {
 		ProjectID:              projectID,
 		WorkSource:             "bd",
 		Gate:                   []string{"make lint", "make test"},
-		MergePolicy:            "manual",
+		MergePolicy:            PolicyManual,
 		RiskTierDefault:        2,
 		MaxConcurrentSlots:     3,
 		DispatchStaggerSeconds: 8,
@@ -227,7 +237,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("plans_dir required when work_source=markdown")
 	}
 	switch c.MergePolicy {
-	case "manual", "auto", "pr":
+	case PolicyManual, PolicyAuto, PolicyPR:
 	default:
 		return fmt.Errorf("merge_policy must be manual|auto|pr, got %q", c.MergePolicy)
 	}
