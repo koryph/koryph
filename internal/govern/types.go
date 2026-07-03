@@ -9,7 +9,7 @@
 // It coordinates through files under ~/.koryph (paths.SlotsDir) guarded by a
 // short flock — no daemon:
 //
-//   - governor.json          machine-wide cap {max_global_agents} (default 4)
+//   - governor.json          machine-wide cap {max_global_agents} (default 8)
 //   - slots/<lease>.json      one lease per running agent (keyed to the AGENT pid)
 //   - slots/demand/<proj>.json per-project demand heartbeat (fair-share input)
 //
@@ -20,10 +20,11 @@
 // share. See docs/developer-guide/global-governor.md.
 package govern
 
-// DefaultMaxGlobalAgents is the cap used when governor.json is absent. It is
-// deliberately conservative: a single project's typical wave width (3) is
-// unaffected, and the cap only binds once projects contend.
-const DefaultMaxGlobalAgents = 4
+// DefaultMaxGlobalAgents is the cap used when governor.json is absent. Raised
+// to 8 to let a single self-hosting project run a wider wave; being monitored
+// for Claude API rate limiting — drop to 6 if beads start getting throttled. A
+// governor.json still overrides this per machine.
+const DefaultMaxGlobalAgents = 8
 
 // Config is the machine-wide concurrency governor config (governor.json).
 type Config struct {

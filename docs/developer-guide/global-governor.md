@@ -47,7 +47,7 @@ burst of cheap agents still exceeds the limit.
 
 | Path | Contents |
 |---|---|
-| `~/.koryph/governor.json` | `{ "max_global_agents": N }` — the machine-wide cap. Absent ⇒ default **4**. Edited only by the machine owner (never per-run), so no single project can lift the ceiling. |
+| `~/.koryph/governor.json` | `{ "max_global_agents": N }` — the machine-wide cap. Absent ⇒ default **8**. Edited only by the machine owner (never per-run), so no single project can lift the ceiling. |
 | `~/.koryph/slots/<project>-<bead>-<pid>.json` | One **lease** per running agent: `{project, bead, pid, engine_pid, model, acquired_at}`. Keyed to the **agent** PID (detached), so a lease survives an engine restart/resume and frees only when the real agent dies. |
 | `~/.koryph/slots/demand/<project>.json` | One **demand heartbeat** per active engine with ready work: `{project, engine_pid, updated_at}`. Refreshed each wave; pruned when stale (TTL) or `engine_pid` dead. |
 
@@ -123,8 +123,10 @@ heartbeat is dropped when its frontier drains or the run ends.
   each project periodically gets a turn.
 - **Lock contention**: the flock is held for microseconds; acquisition races
   resolve on the next re-check.
-- **Absent `governor.json`**: default cap 4 — chosen so a single project's
-  typical width (3) is unaffected; the cap only bites when projects contend.
+- **Absent `governor.json`**: default cap 8 — raised to let a single
+  self-hosting project run a wider wave; under watch for Claude API rate
+  limiting (drop to 6 if beads get throttled). The cap only bites when total
+  demand across projects exceeds it.
 
 ## Testing
 

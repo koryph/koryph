@@ -69,6 +69,6 @@
     "vault_name": "Cody McCain",
     "item_title": "GitHub Signing Key (McCodeman)"
   },
-  "max_concurrent_slots": 4,
+  "max_concurrent_slots": 8,
   "dispatch_stagger_seconds": 2
 }

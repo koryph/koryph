@@ -4,8 +4,11 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/govern"
 )
 
 func TestGovernorShowDefaultAndSet(t *testing.T) {
@@ -16,8 +19,9 @@ func TestGovernorShowDefaultAndSet(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("governor: code %d", code)
 	}
-	if !strings.Contains(out, "cap: 4") || !strings.Contains(out, "no active leases") {
-		t.Errorf("default show unexpected:\n%s", out)
+	wantCap := fmt.Sprintf("cap: %d", govern.DefaultMaxGlobalAgents)
+	if !strings.Contains(out, wantCap) || !strings.Contains(out, "no active leases") {
+		t.Errorf("default show unexpected (want %q):\n%s", wantCap, out)
 	}
 
 	// Set a new cap and confirm it round-trips.

@@ -77,11 +77,12 @@ func TestFairShareRotationNoStarvation(t *testing.T) {
 
 func TestAcquireEnforcesGlobalCap(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.SetCap(4); err != nil {
+	capN := DefaultMaxGlobalAgents
+	if err := s.SetCap(capN); err != nil {
 		t.Fatal(err)
 	}
 	granted := 0
-	for i := 0; i < 8; i++ {
+	for i := 0; i < capN+4; i++ { // demand exceeds the cap
 		ok, err := s.Acquire(lease("solo", fmt.Sprintf("b%d", i), 1000+i))
 		if err != nil {
 			t.Fatal(err)
@@ -90,15 +91,15 @@ func TestAcquireEnforcesGlobalCap(t *testing.T) {
 			granted++
 		}
 	}
-	if granted != 4 {
-		t.Errorf("granted %d, want 4 (cap)", granted)
+	if granted != capN {
+		t.Errorf("granted %d, want %d (cap)", granted, capN)
 	}
 	_, leases, _, err := s.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(leases) != 4 {
-		t.Errorf("active leases = %d, want 4", len(leases))
+	if len(leases) != capN {
+		t.Errorf("active leases = %d, want %d", len(leases), capN)
 	}
 }
 
@@ -272,7 +273,8 @@ func TestCapDefaultAndSet(t *testing.T) {
 
 func TestConcurrentAcquireNeverExceedsCap(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.SetCap(4)
+	capN := DefaultMaxGlobalAgents
+	_ = s.SetCap(capN)
 
 	const workers = 32
 	var granted int64
@@ -289,14 +291,14 @@ func TestConcurrentAcquireNeverExceedsCap(t *testing.T) {
 	}
 	wg.Wait()
 
-	if granted != 4 {
-		t.Errorf("granted %d under contention, want exactly 4 (cap)", granted)
+	if int(granted) != capN {
+		t.Errorf("granted %d under contention, want exactly %d (cap)", granted, capN)
 	}
 	_, leases, _, err := s.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(leases) != 4 {
-		t.Errorf("leases on disk = %d, want 4", len(leases))
+	if len(leases) != capN {
+		t.Errorf("leases on disk = %d, want %d", len(leases), capN)
 	}
 }
