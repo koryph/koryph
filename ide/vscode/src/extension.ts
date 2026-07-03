@@ -20,6 +20,7 @@ import { makeSlotPicker } from './commands/slotPicker';
 import { ConfigEditorBanner, registerConfigEditor } from './config';
 import { AGENT_THREADS_VIEW, AgentThreadsProvider } from './tree/agentThreadsProvider';
 import { QuotaStatusBar } from './statusbar/quotaStatusBar';
+import { KoryphTranscriptPanel } from './webview/transcriptPanel';
 
 /**
  * The data-layer + UI handles created at activation.
@@ -59,9 +60,13 @@ export function activate(context: vscode.ExtensionContext): KoryphExtension {
 
   // Slot commands (ext.6): every mutation shells the CLI. The palette picker
   // enumerates live slots when a command is run without a tree-item argument.
+  // The transcript webview (ext.5) is the "Open Transcript" opener.
   registerSlotCommands(context, {
     cli,
     pickSlot: makeSlotPicker(registry),
+    openTranscript: (ref) => {
+      KoryphTranscriptPanel.show(ref);
+    },
   });
 
   // Config editing UX (ext.7): JSON Schema binding via jsonValidation

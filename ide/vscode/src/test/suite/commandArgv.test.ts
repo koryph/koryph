@@ -38,8 +38,10 @@ function ref(overrides: Partial<SlotRef> = {}): SlotRef {
     beadId: 'koryph-i2n',
     branch: 'feat/koryph-i2n',
     worktree: '/wt/koryph-i2n',
+    stream: '/repo/koryph/.plan-logs/koryph/run/koryph-i2n/stream.jsonl',
     baseCommit: 'abc1234',
     model: 'sonnet',
+    attempts: 1,
     status: 'running',
     note: '',
     ...overrides,
@@ -168,9 +170,10 @@ describe('slotRef + coercion', () => {
     account_profile: 'personal',
     billing_mode: 'subscription',
     status: 'running',
-    attempts: 1,
+    attempts: 2,
     commits: 0,
     cost_usd: 0,
+    stream: '/repo/.plan-logs/koryph/run/koryph-i2n/stream.jsonl',
     note: 'PR #7 opened: https://x/pull/7',
   };
 
@@ -179,6 +182,9 @@ describe('slotRef + coercion', () => {
     assert.strictEqual(r.beadId, 'koryph-i2n');
     assert.strictEqual(r.baseCommit, 'base99');
     assert.strictEqual(r.note, 'PR #7 opened: https://x/pull/7');
+    // ext.5 threads the transcript stream path + attempts through for the panel.
+    assert.strictEqual(r.stream, '/repo/.plan-logs/koryph/run/koryph-i2n/stream.jsonl');
+    assert.strictEqual(r.attempts, 2);
   });
 
   it('prefers an explicit bead_id', () => {

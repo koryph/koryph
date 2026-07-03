@@ -44,10 +44,14 @@ export interface SlotRef {
   branch: string;
   /** Worktree path (open worktree, git diff cwd). */
   worktree: string;
+  /** Transcript stream path (stream.jsonl); its dir holds stderr/session logs. */
+  stream: string;
   /** Base commit for the diff range (from the manifest; empty if unknown). */
   baseCommit: string;
   /** Current model tier (pre-selects the change-model quick-pick). */
   model: string;
+  /** Dispatch attempt count (shown in the transcript header strip). */
+  attempts: number;
   /** Slot status (gates PR / merge / land availability). */
   status: string;
   /** Slot note — carries the PR URL for pr-opened slots. */
@@ -71,8 +75,10 @@ export function slotRef(
     beadId: slot.bead_id && slot.bead_id.length > 0 ? slot.bead_id : slot.phase_id,
     branch: slot.branch ?? '',
     worktree: slot.worktree ?? '',
+    stream: slot.stream ?? '',
     baseCommit,
     model: slot.model ?? '',
+    attempts: slot.attempts ?? 0,
     status: slot.status ?? '',
     note: slot.note ?? '',
   };
