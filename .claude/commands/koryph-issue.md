@@ -14,6 +14,8 @@ Do this:
    - Use `feature`/`epic` **only** for an umbrella/planning bead you do not want built directly; the loop skips them and they will sit in `bd ready` unbuilt.
 3. Choose footprint labels so the bead can be batched in parallel with conflict-free work:
    - One `area:<key>` for **every** `area_map` key the work will touch (from step 1). Carry every area it touches — over-broad only costs parallelism, under-broad risks a false-parallel merge conflict.
+   - Prefer the **narrowest honest key**: per-package areas exist (`sched`, `quota`, `dispatch`, `ledger`, `govern`, `merge`, `review`, `worktree`, `beads`, `registry`); `engine` means the wave-loop package itself, not "anything in Go".
+   - If the bead only **reads** an area (docs about it, tests over fixtures, analysis), declare that with `fp:read:<token>` (e.g. `fp:read:go:engine`) — readers co-run with each other; only writers exclude.
    - If the footprint can't be expressed with the `area_map`, use explicit `fp:<token>` labels, or leave it unlabeled (it serializes safely) and note that.
 4. Run `bd create` with:
    - a clear `--title`,

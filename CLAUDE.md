@@ -35,7 +35,12 @@ Task→doc map; keep this file small and stable (prompt-cache warmth).
   `area_map` → else the catch-all `domain:unknown` token, which collides with
   every other unlabeled bead and serializes the wave. Label implementable
   beads with an `area:*` per area they touch (over-broad costs only
-  parallelism; under-broad risks a false-parallel merge conflict). Mechanics:
+  parallelism; under-broad risks a false-parallel merge conflict). Prefer the
+  **narrowest honest area** — per-package areas exist (`area:sched`,
+  `area:quota`, `area:dispatch`, `area:ledger`, `area:govern`, `area:merge`,
+  `area:review`, `area:worktree`, `area:beads`, `area:registry`;
+  `area:engine` means the wave-loop package itself). Read-only touches use
+  `fp:read:<token>` (readers co-run; writers exclude). Mechanics:
   `internal/sched/footprint.go`, `internal/sched/wave.go`.
 - `refactor-core`-labeled beads are NEVER loop-dispatched — the orchestrating
   session authors them on main (self-hosting safety rule).

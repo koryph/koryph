@@ -12,6 +12,36 @@
     "engine": [
       "go:engine"
     ],
+    "sched": [
+      "go:sched"
+    ],
+    "quota": [
+      "go:quota"
+    ],
+    "dispatch": [
+      "go:dispatch"
+    ],
+    "ledger": [
+      "go:ledger"
+    ],
+    "govern": [
+      "go:govern"
+    ],
+    "merge": [
+      "go:merge"
+    ],
+    "review": [
+      "go:review"
+    ],
+    "worktree": [
+      "go:worktree"
+    ],
+    "beads": [
+      "go:beads"
+    ],
+    "registry": [
+      "go:registry"
+    ],
     "intake": [
       "go:intake"
     ],
