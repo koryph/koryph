@@ -70,8 +70,48 @@ rolling 7-day window.
 
 ```sh
 koryph quota            # tabular: ACCOUNT  LEVEL  CALIBRATED  5H  WEEKLY
-koryph quota --json     # machine-readable snapshot
+koryph quota --json     # machine-readable snapshot (ccusage probe may take up to 40 s)
 ```
+
+`--json` emits an array of per-account snapshots.  Each element has this shape:
+
+```json
+[
+  {
+    "account": "personal",
+    "level": "ok",
+    "calibrated": true,
+    "usage": {
+      "account": "personal",
+      "at": "2026-07-03T21:26:00Z",
+      "window_5h": {
+        "hours": 5,
+        "spent_usd": 8.40,
+        "ceiling_usd": 20.00,
+        "source": "ccusage",
+        "approx": false
+      },
+      "weekly": {
+        "hours": 168,
+        "spent_usd": 42.00,
+        "ceiling_usd": 140.00,
+        "source": "ccusage",
+        "approx": false
+      }
+    }
+  }
+]
+```
+
+Field notes:
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `level` | `ok` / `warn` / `drain` / `stop` | Current governor verdict |
+| `calibrated` | bool | False until at least one `quota calibrate` run |
+| `usage.at` | RFC 3339 | Snapshot timestamp |
+| `*.source` | `ccusage` / `jsonl-scan` / `unavailable` | Where the number came from |
+| `*.approx` | bool | True for the local transcript scan (less precise) |
 
 After real dispatches the estimator self-calibrates via an EWMA
 (`0.7 × old + 0.3 × actual`) per model-tier × size bucket (S / M / L),

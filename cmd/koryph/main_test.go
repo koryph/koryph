@@ -216,6 +216,100 @@ func TestQuotaJSONShow(t *testing.T) {
 	}
 }
 
+// quotaJSONSnap is the full shape emitted by quota --json.
+type quotaJSONSnap struct {
+	Account    string `json:"account"`
+	Level      string `json:"level"`
+	Calibrated bool   `json:"calibrated"`
+	Usage      struct {
+		Account  string `json:"account"`
+		At       string `json:"at"`
+		Window5h struct {
+			Hours      int     `json:"hours"`
+			SpentUSD   float64 `json:"spent_usd"`
+			CeilingUSD float64 `json:"ceiling_usd"`
+			Source     string  `json:"source"`
+			Approx     bool    `json:"approx"`
+		} `json:"window_5h"`
+		Weekly struct {
+			Hours      int     `json:"hours"`
+			SpentUSD   float64 `json:"spent_usd"`
+			CeilingUSD float64 `json:"ceiling_usd"`
+			Source     string  `json:"source"`
+			Approx     bool    `json:"approx"`
+		} `json:"weekly"`
+	} `json:"usage"`
+}
+
+// installFakeCcusage puts a stub ccusage on PATH that returns canned data
+// (blocks costUSD 5.0; daily last-7 days summing to 21.0) and returns.
+func installFakeCcusage(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  blocks) echo '{\"blocks\":[{\"costUSD\":5.0}]}' ;;\n" +
+		"  daily)  echo '{\"daily\":[{\"totalCost\":1},{\"totalCost\":2},{\"totalCost\":3},{\"totalCost\":4},{\"totalCost\":5},{\"totalCost\":3},{\"totalCost\":3}]}' ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "ccusage"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestQuotaJSONShowFullShape verifies the complete JSON field contract using a
+// fake ccusage binary so that all usage window fields are present and populated.
+func TestQuotaJSONShowFullShape(t *testing.T) {
+	isolate(t)
+	installFakeCcusage(t)
+
+	code, out, errb := runCmd("quota", "--account", "work", "--json")
+	if code != 0 {
+		t.Fatalf("quota --json code = %d; stderr=%s", code, errb)
+	}
+
+	var snaps []quotaJSONSnap
+	if err := json.Unmarshal([]byte(out), &snaps); err != nil {
+		t.Fatalf("quota --json not JSON: %v\n%s", err, out)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("want 1 snap, got %d: %s", len(snaps), out)
+	}
+	s := snaps[0]
+
+	// top-level fields
+	if s.Account != "work" {
+		t.Errorf("account = %q, want work", s.Account)
+	}
+	if s.Level == "" {
+		t.Error("level is empty")
+	}
+
+	// usage.at must be a non-empty RFC3339 timestamp
+	if s.Usage.At == "" {
+		t.Error("usage.at is empty")
+	}
+
+	// 5h window — ccusage reports 5.0; uncalibrated so ceiling is zero
+	if s.Usage.Window5h.Source != "ccusage" {
+		t.Errorf("window_5h.source = %q, want ccusage", s.Usage.Window5h.Source)
+	}
+	if s.Usage.Window5h.SpentUSD != 5.0 {
+		t.Errorf("window_5h.spent_usd = %g, want 5.0", s.Usage.Window5h.SpentUSD)
+	}
+	if s.Usage.Window5h.Hours != 5 {
+		t.Errorf("window_5h.hours = %d, want 5", s.Usage.Window5h.Hours)
+	}
+
+	// weekly window — fake ccusage daily sums to 21
+	if s.Usage.Weekly.Source != "ccusage" {
+		t.Errorf("weekly.source = %q, want ccusage", s.Usage.Weekly.Source)
+	}
+	if s.Usage.Weekly.SpentUSD != 21.0 {
+		t.Errorf("weekly.spent_usd = %g, want 21.0", s.Usage.Weekly.SpentUSD)
+	}
+}
+
 func TestValidateMissingProject(t *testing.T) {
 	isolate(t)
 	// A validate against an unknown project id fails (not found).

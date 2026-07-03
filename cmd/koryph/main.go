@@ -179,7 +179,7 @@ SIGNING
 
 BILLING / METRICS
   quota [--account A] [--json]
-                        per-account governor snapshot
+                        per-account governor snapshot (ccusage probe may take up to 40 s)
   quota calibrate --account A --window <5h|weekly> --observed-usd X --observed-pct Y [--plan-tier T]
                         calibrate a governor ceiling from an observed /usage reading
   batch run --key-env VAR --model TIER --input FILE.jsonl [--max-tokens N] [--cache-prefix] [--out FILE] [--yes]
