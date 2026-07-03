@@ -1,0 +1,559 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 The Koryph Developers
+
+package engine
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/koryph/koryph/internal/dispatch"
+	"github.com/koryph/koryph/internal/execx"
+	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/merge"
+	"github.com/koryph/koryph/internal/modelroute"
+	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/review"
+	"github.com/koryph/koryph/internal/worktree"
+)
+
+// gateRequeueNote marks a slot that already burned its single gate-failure
+// requeue; a second gate failure blocks instead of looping.
+const gateRequeueNote = "gate-failed requeue"
+
+// mergeErrorRequeueNote marks a slot that already burned its single
+// merge-error requeue; a second merge failure blocks instead of looping.
+const mergeErrorRequeueNote = "merge-error requeue"
+
+// mergeErrorRetryable reports whether a slot whose merge just errored should be
+// requeued for one more attempt rather than blocked. A merge error is usually
+// transient — the base moved, a push raced — and requeueSlot Force-rebases the
+// landed branch onto current main before resuming, so the retry re-attempts the
+// merge from a correct base. It is retried at most once (koryph-3fs).
+func mergeErrorRetryable(sl *ledger.Slot) bool {
+	return sl.Note != mergeErrorRequeueNote && sl.Attempts < ledger.MaxAttempts
+}
+
+// pollUntilIdle ticks every pollInterval until every slot in the run is
+// terminal. A ctx cancellation propagates so the caller can checkpoint.
+func (r *runner) pollUntilIdle(ctx context.Context) error {
+	interval := r.pollInterval()
+	for {
+		if r.activeCount() == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+		for _, id := range r.activePhaseIDs() {
+			sl := r.run.Slots[id]
+			if sl == nil || ledger.Terminal(sl.Status) {
+				continue
+			}
+			r.pollSlot(ctx, sl)
+		}
+	}
+}
+
+// pollSlot refreshes one slot: liveness, commit progress, stuck detection,
+// and — on death — completion handling.
+func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot) {
+	alive := slotAlive(sl.PID)
+
+	if commits, head, err := r.branchProgress(ctx, sl.Worktree); err == nil {
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Commits = commits
+			s.LastCommit = head
+		})
+	}
+
+	if alive {
+		status := ledger.SlotRunning
+		if r.isStuck(ctx, sl) {
+			status = ledger.SlotStuck
+		}
+		if sl.Status != status {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = status })
+			if status == ledger.SlotStuck {
+				r.progress("bead %s: stuck (no heartbeat or commit for >%ds); still polling", sl.PhaseID, r.opts.StuckSec)
+			}
+		}
+		r.checkpointSlot(sl, "running")
+		return
+	}
+
+	r.completeSlot(ctx, sl)
+}
+
+// slotAlive reports whether the agent process is still running. The engine is
+// usually the direct parent of a dispatched (detached, released) agent, so a
+// plain kill(pid,0) probe would report a zombie as alive forever — nobody
+// waits on it. A non-blocking Wait4 reaps our own dead children first; for
+// processes we did not parent (resumed runs) it fails with ECHILD and we fall
+// back to the signal probe.
+func slotAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	var ws syscall.WaitStatus
+	wpid, err := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
+	if err == nil {
+		if wpid == pid {
+			return false // reaped: definitively dead
+		}
+		if wpid == 0 {
+			return true // our child, still running
+		}
+	}
+	return dispatch.Alive(pid)
+}
+
+// completeSlot handles a dead agent: record cost, then either finish the
+// candidate (review + merge policy), block, or requeue.
+func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
+	if cost, ok := dispatch.ParseResultCost(sl.Stream); ok {
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.CostUSD = cost })
+		quota.Record(r.quotaCfg, sl.Model, r.sizeClass(sl.PhaseID), cost)
+		_ = quota.SaveConfig(r.quotaCfg)
+	}
+
+	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")
+	if sl.Commits > 0 || fsx.Exists(summary) {
+		r.finishCandidate(ctx, sl)
+		return
+	}
+
+	if sl.Attempts >= ledger.MaxAttempts {
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = fmt.Sprintf("agent died with no commits; %d attempts exhausted", sl.Attempts)
+		})
+		r.checkpointSlot(sl, "blocked")
+		r.releaseGlobalSlot(sl.PhaseID) // terminal
+		r.progress("bead %s: blocked (died with no commits, %d attempts)", sl.PhaseID, sl.Attempts)
+		return
+	}
+	r.requeueSlot(ctx, sl, "", "agent died with no commits")
+}
+
+// finishCandidate runs the configured post-implement pipeline stages, the
+// optional review pass, and then applies the merge policy to a completed slot.
+func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
+	policy := r.mergePolicy(ctx, sl.EpicID)
+
+	// Post-implement stages (docs, test, ...) run in the worktree before review
+	// and merge (koryph-a14). A required stage failure blocks the slot —
+	// never auto-merge past incomplete pipeline work.
+	if ok, failed := r.runPipelineStages(ctx, sl); !ok {
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "pipeline stage failed: " + failed
+		})
+		r.checkpointSlot(sl, "stage-failed")
+		r.releaseGlobalSlot(sl.PhaseID) // terminal
+		r.progress("bead %s: blocked (pipeline stage %q failed)", sl.PhaseID, failed)
+		return
+	}
+
+	if r.opts.Review {
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = ledger.SlotReview })
+		outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
+		v := review.Review(ctx, review.Opts{
+			RepoRoot:  r.rec.Root,
+			Worktree:  sl.Worktree,
+			Branch:    sl.Branch,
+			Base:      r.rec.DefaultBranch,
+			Persona:   modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages),
+			Model:     modelroute.TierOpus,
+			Profile:   r.profile,
+			OutPath:   outPath,
+			ClaudeBin: os.Getenv(envClaudeBin),
+		})
+		if v.Degraded {
+			// Fail CLOSED: --review was explicitly requested, so a review we
+			// could not obtain (even after in-reviewer retries) must never wave
+			// the merge through. Block the slot and surface the reason rather
+			// than silently auto-merging unreviewed work (koryph-b2h).
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.Status = ledger.SlotBlocked
+				s.Note = fmt.Sprintf("review degraded after %d attempt(s), NOT merged: %s", v.Attempts, v.Reason)
+			})
+			r.checkpointSlot(sl, "review-degraded")
+			r.releaseGlobalSlot(sl.PhaseID) // terminal
+			r.progress("bead %s: BLOCKED — review could not complete after %d attempt(s) (%s); refusing to auto-merge unreviewed work",
+				sl.PhaseID, v.Attempts, v.Reason)
+			return
+		}
+		if v.Blocking {
+			if sl.ReviewIters < 2 {
+				_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ReviewIters++ })
+				r.progress("bead %s: blocking review findings (iteration %d) — bouncing back to the implementer",
+					sl.PhaseID, sl.ReviewIters)
+				r.requeueSlot(ctx, sl, outPath, "blocking review findings")
+				return
+			}
+			// Iterations exhausted: never auto-merge unresolved findings.
+			policy = "manual"
+			r.progress("bead %s: blocking findings persist after %d review iterations — forcing manual merge",
+				sl.PhaseID, sl.ReviewIters)
+		}
+	}
+
+	if policy == "auto" && r.opts.AutoMerge {
+		r.mergeSlot(ctx, sl)
+		return
+	}
+
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = ledger.SlotMergePending })
+	r.checkpointSlot(sl, "merge-pending")
+	r.releaseGlobalSlot(sl.PhaseID) // agent done; free the slot (operator merges)
+	_ = r.adapter.Comment(ctx, sl.PhaseID,
+		fmt.Sprintf("ready for merge: branch %s, run %s", sl.Branch, r.run.RunID))
+	r.progress("bead %s: merge-pending (policy %s, branch %s) — merge via the CLI", sl.PhaseID, policy, sl.Branch)
+}
+
+// mergeSlot lands a review-clean candidate on the default branch.
+func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
+	res, err := merge.Merge(ctx, merge.Opts{
+		RepoRoot:      r.rec.Root,
+		Branch:        sl.Branch,
+		DefaultBranch: r.rec.DefaultBranch,
+		Gate:          r.cfg.Gate,
+		Extra:         r.cfg.ProtectedPaths,
+		Push:          true, // merge itself skips push when no remote exists
+		SlotOwner:     r.owner,
+		SlotRetries:   3,
+		Slot:          r.slotLocker(ctx),
+		RequireSigned: r.requireSigned(),
+	})
+	if err != nil {
+		// A merge error is usually transient (base moved, push raced). Self-heal
+		// by requeueing ONCE — requeueSlot Force-rebases the landed branch onto
+		// current main and resumes — rather than stranding the bead. Only a
+		// second failure blocks. Mirrors the gate-failed path below (koryph-3fs).
+		if mergeErrorRetryable(sl) {
+			r.progress("bead %s: merge error (%v) — requeueing once to retry the merge", sl.PhaseID, err)
+			r.requeueSlot(ctx, sl, "", mergeErrorRequeueNote)
+			return
+		}
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "merge error after requeue: " + err.Error()
+		})
+		r.checkpointSlot(sl, "merge-error")
+		r.releaseGlobalSlot(sl.PhaseID) // terminal
+		r.progress("bead %s: blocked (merge error after requeue: %v)", sl.PhaseID, err)
+		return
+	}
+
+	switch res.Status {
+	case "merged":
+		now := time.Now().UTC().Format(time.RFC3339)
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotMerged
+			s.MergedAt = now
+		})
+		r.checkpointSlot(sl, "merged")
+		_ = r.adapter.Close(ctx, sl.PhaseID, "merged: "+res.MergedSHA)
+		_ = r.reg.Audit(registry.Event{
+			Kind:      "merge",
+			ProjectID: r.opts.ProjectID,
+			Actor:     r.owner,
+			Detail: map[string]string{
+				"bead": sl.PhaseID, "branch": sl.Branch, "sha": res.MergedSHA,
+			},
+		})
+		r.progress("bead %s: merged (%s)", sl.PhaseID, shortSHA(res.MergedSHA))
+
+	case "gate-failed":
+		if sl.Note != gateRequeueNote && sl.Attempts < ledger.MaxAttempts {
+			r.progress("bead %s: gate failed after rebase — requeueing once", sl.PhaseID)
+			r.requeueSlot(ctx, sl, "", gateRequeueNote)
+			return
+		}
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "gate failed after requeue: " + tailOf(res.GateOutput, 400)
+		})
+		r.checkpointSlot(sl, "gate-failed")
+		r.progress("bead %s: blocked (gate failed after requeue)", sl.PhaseID)
+
+	case "conflict":
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotConflict
+			s.Note = "rebase conflict: " + res.ConflictMD
+		})
+		r.checkpointSlot(sl, "conflict")
+		r.progress("bead %s: rebase conflict (details: %s)", sl.PhaseID, res.ConflictMD)
+
+	case "protected":
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "protected paths touched: " + strings.Join(res.Protected, ", ")
+		})
+		r.checkpointSlot(sl, "protected")
+		r.progress("bead %s: blocked (protected paths: %s)", sl.PhaseID, strings.Join(res.Protected, ", "))
+
+	case "unsigned":
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "merge refused: " + tailOf(res.GateOutput, 400)
+		})
+		r.checkpointSlot(sl, "unsigned")
+		r.progress("bead %s: blocked (unsigned commits on %s — signing is required; nothing merged)",
+			sl.PhaseID, sl.Branch)
+
+	default:
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotFailed
+			s.Note = "merge status " + res.Status
+		})
+		r.checkpointSlot(sl, "merge-"+res.Status)
+		r.progress("bead %s: merge failed (%s)", sl.PhaseID, res.Status)
+	}
+
+	// Every non-requeue outcome above is terminal (the gate-failed requeue
+	// path returned early and keeps its slot); free the global slot.
+	r.releaseGlobalSlot(sl.PhaseID)
+}
+
+// requeueSlot re-dispatches a slot: backoff, refresh the worktree onto current
+// main, then the same dispatch flow with the branch HEAD as ResumeSHA and (when
+// the manifest carries a session id and the worktree survives) a native session
+// resume.
+func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, why string) {
+	attempt := sl.Attempts + 1
+	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
+	r.backoffSleep(ctx, sl.Attempts)
+
+	// Never re-run an agent against a checkout that predates a main-side fix
+	// (koryph-137): rebuild a no-commit worktree from current main, or rebase
+	// one with landed work onto the advanced base, before re-dispatch.
+	r.refreshWorktreeForRequeue(ctx, sl)
+
+	resumeSession := ""
+	if m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID); err == nil &&
+		m.SessionID != "" && sl.Worktree != "" && fsx.Exists(sl.Worktree) {
+		resumeSession = m.SessionID
+	}
+
+	r.dispatchBead(ctx, dispatchReq{
+		issue:           r.issueFor(ctx, sl),
+		epicID:          sl.EpicID,
+		attempt:         attempt,
+		resumeSHA:       r.branchHead(ctx, sl.Branch),
+		resumeSessionID: resumeSession,
+		reviewPath:      reviewPath,
+		reviewIters:     sl.ReviewIters,
+		note:            why,
+	})
+}
+
+// refreshWorktreeForRequeue makes a requeued slot's worktree reflect current
+// main before re-dispatch, closing the stale-checkout gap (koryph-137): a
+// worktree created before a main-side fix must not carry the old checkout
+// across attempts, because dispatchBead's worktree.Ensure attaches to an
+// existing tree rather than rebuilding it.
+//
+//   - No commits to preserve → rebuild from the default branch: snapshot any
+//     WIP for forensics, remove the worktree, and drop the branch so Ensure
+//     recreates both from current main (a fresh checkout, re-bootstrapped).
+//   - Landed commits → rebase the branch onto the advanced base via Refresh
+//     (Force, so the requeue always re-bases regardless of drift threshold or
+//     footprint overlap) and resume on top of current main.
+//
+// Every failure is non-fatal: the slot still re-dispatches onto whatever
+// checkout survives, matching pre-137 behavior, with the reason logged.
+func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot) {
+	if sl.Worktree == "" || sl.Branch == "" {
+		return
+	}
+
+	commits := sl.Commits
+	if commits == 0 {
+		if n, err := r.commitCount(ctx, sl.Branch); err == nil {
+			commits = n
+		}
+	}
+
+	if commits > 0 {
+		res, err := worktree.Refresh(ctx, worktree.RefreshOpts{
+			RepoRoot: r.rec.Root,
+			Path:     sl.Worktree,
+			Branch:   sl.Branch,
+			Base:     r.rec.DefaultBranch,
+			Force:    true, // a requeue always re-bases onto current main
+		})
+		if err != nil {
+			r.progress("bead %s: requeue refresh error (resuming on existing checkout): %v", sl.PhaseID, err)
+			return
+		}
+		switch res.Action {
+		case "refreshed":
+			r.progress("bead %s: worktree rebased onto %s before requeue (was %d behind)",
+				sl.PhaseID, r.rec.DefaultBranch, res.Behind)
+		case "conflict":
+			r.progress("bead %s: requeue rebase conflict — resuming on the un-rebased branch (see CONFLICT.md)", sl.PhaseID)
+		case "deferred-dirty":
+			r.progress("bead %s: requeue refresh deferred (worktree dirty) — resuming on existing checkout", sl.PhaseID)
+		}
+		return
+	}
+
+	// No landed work: rebuild from current main so a stale checkout can never
+	// survive the requeue.
+	if fsx.Exists(sl.Worktree) {
+		if patch, err := worktree.PatchSnapshot(ctx, sl.Worktree, r.store.PhaseDir(r.run.RunID, sl.PhaseID)); err == nil && patch != "" {
+			r.progress("bead %s: captured WIP snapshot before worktree rebuild: %s", sl.PhaseID, patch)
+		}
+		if err := worktree.Remove(ctx, sl.Worktree, true); err != nil {
+			r.progress("bead %s: requeue worktree rebuild skipped, remove failed (dispatch will attach existing): %v",
+				sl.PhaseID, err)
+			return
+		}
+	}
+	// Drop the stale branch so Ensure recreates it from the default branch tip
+	// rather than re-checking-out the old one.
+	if err := worktree.DeleteBranch(ctx, r.rec.Root, sl.Branch); err != nil {
+		r.progress("bead %s: requeue branch reset skipped (%v) — dispatch may attach the old tip", sl.PhaseID, err)
+	}
+}
+
+// slotLocker returns a bd-backed merge mutex when the project has a
+// <project>-merge-slot bead, else nil (no cross-process locking).
+func (r *runner) slotLocker(ctx context.Context) merge.SlotLocker {
+	slotID := r.opts.ProjectID + "-merge-slot"
+	if _, err := r.adapter.Show(ctx, slotID); err != nil {
+		return nil
+	}
+	return &bdSlotLocker{runner: r, slotID: slotID}
+}
+
+// bdSlotLocker satisfies merge.SlotLocker over the beads adapter's
+// claim/release lease on the merge-slot bead.
+type bdSlotLocker struct {
+	runner *runner
+	slotID string
+}
+
+// Acquire claims the merge-slot bead (3 retries with backoff).
+func (l *bdSlotLocker) Acquire(ctx context.Context, owner string) error {
+	return l.runner.adapter.MergeSlotAcquire(ctx, l.slotID, owner, 3)
+}
+
+// Release reopens the merge-slot bead.
+func (l *bdSlotLocker) Release(ctx context.Context) error {
+	return l.runner.adapter.MergeSlotRelease(ctx, l.slotID)
+}
+
+// checkpointSlot refreshes the slot's manifest v2 (execution state + head
+// commit + attempt), rebuilding a minimal manifest when none exists yet.
+func (r *runner) checkpointSlot(sl *ledger.Slot, execState string) {
+	cur := r.run.Slots[sl.PhaseID]
+	if cur == nil {
+		cur = sl
+	}
+	m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID)
+	if err != nil {
+		m = &ledger.Manifest{
+			ProjectID:       r.opts.ProjectID,
+			BeadID:          cur.PhaseID,
+			EpicID:          cur.EpicID,
+			AccountProfile:  cur.AccountProfile,
+			ClaudeConfigDir: cur.ClaudeConfigDir,
+			SessionID:       cur.SessionID,
+			SessionName:     cur.SessionName,
+			Model:           cur.Model,
+			WorktreePath:    cur.Worktree,
+			Branch:          cur.Branch,
+			BillingMode:     cur.BillingMode,
+		}
+	}
+	m.ExecutionState = execState
+	m.HeadCommit = cur.LastCommit
+	m.Attempt = cur.Attempts
+	_ = r.store.SaveManifest(r.run.RunID, sl.PhaseID, m)
+}
+
+// isStuck reports whether an alive slot shows neither heartbeat nor commit
+// progress within StuckSec. Informational only — polling continues.
+func (r *runner) isStuck(ctx context.Context, sl *ledger.Slot) bool {
+	threshold := time.Duration(r.opts.StuckSec) * time.Second
+
+	if fi, err := os.Stat(sl.StatusPath); err == nil {
+		if time.Since(fi.ModTime()) <= threshold {
+			return false
+		}
+	} else if r.sinceDispatched(sl) <= threshold {
+		return false
+	}
+
+	res, err := execx.Run(ctx, execx.Cmd{
+		Dir: sl.Worktree, Name: "git", Args: []string{"log", "-1", "--format=%ct", "HEAD"},
+	})
+	if err == nil && res.ExitCode == 0 {
+		if sec, perr := strconv.ParseInt(strings.TrimSpace(res.Stdout), 10, 64); perr == nil {
+			return time.Since(time.Unix(sec, 0)) > threshold
+		}
+	}
+	return r.sinceDispatched(sl) > threshold
+}
+
+// sinceDispatched is the age of the slot's dispatch (zero when unparseable).
+func (r *runner) sinceDispatched(sl *ledger.Slot) time.Duration {
+	t, err := time.Parse(time.RFC3339, sl.DispatchedAt)
+	if err != nil {
+		return 0
+	}
+	return time.Since(t)
+}
+
+// branchProgress counts commits ahead of the default branch and resolves the
+// short HEAD inside a worktree.
+func (r *runner) branchProgress(ctx context.Context, wtPath string) (int, string, error) {
+	res, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: wtPath, Name: "git",
+		Args: []string{"rev-list", "--count", r.rec.DefaultBranch + "..HEAD"},
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(res.Stdout))
+	if err != nil {
+		return 0, "", err
+	}
+	head := ""
+	if hr, herr := execx.Run(ctx, execx.Cmd{
+		Dir: wtPath, Name: "git", Args: []string{"rev-parse", "--short", "HEAD"},
+	}); herr == nil && hr.ExitCode == 0 {
+		head = strings.TrimSpace(hr.Stdout)
+	}
+	return n, head, nil
+}
+
+// sizeClass buckets a bead for the cost estimator, defaulting to M when the
+// issue body is not in memory (e.g. an adopted slot).
+func (r *runner) sizeClass(beadID string) string {
+	if iss, ok := r.issues[beadID]; ok {
+		return quota.SizeOf(len(iss.Description))
+	}
+	return "M"
+}
+
+// tailOf returns the last n bytes of s.
+func tailOf(s string, n int) string {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
+}

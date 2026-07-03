@@ -1,0 +1,37 @@
+# koryph
+
+> Multi-project orchestrator for autonomous Claude Code agents: beads-native, account-safe, subscription-first. `koryph` runs autonomous implementation waves across many git projects — reading each project's beads ready-graph, batching conflict-free work by declared footprint, dispatching headless Claude Code agents into isolated git worktrees under the correct Claude account, checkpointing to disk, governing subscription burn, and merging finished work through a green gate.
+
+This file is a machine-readable index for AI agents and tools ingesting the project. Links point to the canonical Markdown sources on GitHub (fetchable as raw text). The same book is published at https://koryph.build/ once GitHub Pages is enabled. Install: `go install github.com/koryph/koryph/cmd/koryph@latest`.
+
+## Operating contract (read first)
+
+- [CLAUDE.md](https://github.com/koryph/koryph/blob/main/CLAUDE.md): the koryph protocol every agent follows — beads-only task tracking, Conventional Commits + DCO + SSH-signed commits, protected paths, the green gate, and the `refactor-core` self-hosting rule.
+- [README](https://github.com/koryph/koryph/blob/main/README.md): project invariants (account-safe, subscription-first, beads-as-truth), install, and the package layout table.
+- [AGENTS.md](https://github.com/koryph/koryph/blob/main/AGENTS.md): canonical cross-runtime agent instructions.
+
+## User guide
+
+- [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md): install `koryph`; per-user machine-local registry.
+- [Quickstart](https://github.com/koryph/koryph/blob/main/docs/user-guide/quickstart.md): register a project and run a first wave end-to-end.
+- [Projects & accounts](https://github.com/koryph/koryph/blob/main/docs/user-guide/projects-and-accounts.md): the `~/.koryph` registry, per-project account isolation, identity verification.
+- [Running waves](https://github.com/koryph/koryph/blob/main/docs/user-guide/running-waves.md): the wave loop (scan → batch → preflight → dispatch → poll → review → merge), `--once`/`--only`/`--budget`.
+- [Billing & quota](https://github.com/koryph/koryph/blob/main/docs/user-guide/billing-and-quota.md): subscription-first dispatch, the quota governor, throttling, calibration.
+- [Signing](https://github.com/koryph/koryph/blob/main/docs/user-guide/signing.md): SSH commit signing via vault providers (Proton Pass, KeePassXC, 1Password, …).
+- [Collaboration](https://github.com/koryph/koryph/blob/main/docs/user-guide/collaboration.md): the shared beads/Dolt task graph across collaborators.
+- [Intake](https://github.com/koryph/koryph/blob/main/docs/user-guide/intake.md): pluggable issue intake — GitHub, Linear, JIRA — into planning beads.
+- [Doctor](https://github.com/koryph/koryph/blob/main/docs/user-guide/doctor.md): `koryph doctor` — config validation, zombie-lease and orphan-worktree detection, `--fix`.
+- [IDE integration](https://github.com/koryph/koryph/blob/main/docs/ide-integration.md): editor/account isolation and IDE setup.
+
+## Developer guide
+
+- [Architecture](https://github.com/koryph/koryph/blob/main/docs/architecture.md): system overview and Mermaid diagrams of the wave loop and data flow.
+- [Packages](https://github.com/koryph/koryph/blob/main/docs/developer-guide/packages.md): the `internal/*` package map (engine, dispatch, merge, sched, quota, govern, …) and the dispatch-shape / footprint rules.
+- [Global governor](https://github.com/koryph/koryph/blob/main/docs/developer-guide/global-governor.md): the cross-process, daemonless concurrency governor (flock + fair-share leases under `~/.koryph`).
+- [Testing](https://github.com/koryph/koryph/blob/main/docs/developer-guide/testing.md): test layout, fixtures, and the green gate.
+- [Releasing & versioning](https://github.com/koryph/koryph/blob/main/docs/developer-guide/releasing.md): semver, engine-version pinning, keyless cosign.
+
+## Optional
+
+- [Contributing](https://github.com/koryph/koryph/blob/main/CONTRIBUTING.md): contributor rules.
+- [Security](https://github.com/koryph/koryph/blob/main/SECURITY.md): security policy and reporting.

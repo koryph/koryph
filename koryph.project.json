@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "project_id": "koryph",
+  "work_source": "bd",
+  "area_map": {
+    "cli": [
+      "go:cli"
+    ],
+    "docs": [
+      "docs"
+    ],
+    "engine": [
+      "go:engine"
+    ],
+    "onboard": [
+      "go:onboard"
+    ],
+    "ci": [
+      "ci:github"
+    ],
+    "build": [
+      "build:release"
+    ],
+    "meta": [
+      "meta:root"
+    ]
+  },
+  "gate": [
+    "test -z \"$(gofmt -l .)\"",
+    "go build ./...",
+    "go vet ./...",
+    "go test ./..."
+  ],
+  "protected_paths": [
+    "hooks/",
+    "agents/",
+    ".envrc",
+    "LICENSE",
+    ".github/",
+    ".pre-commit-config.yaml",
+    "Makefile"
+  ],
+  "engine_version": "0.2+",
+  "merge_policy": "auto",
+  "risk_tier_default": 1,
+  "signing": {
+    "required": true,
+    "mode": "ssh",
+    "provider": "protonpass",
+    "identity": "cody@mccain.family",
+    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDBcbS1t+oeSaGMvbnjFDPibANsC6Dlg8gINmR/4+1F+",
+    "vault_name": "Cody McCain",
+    "item_title": "GitHub Signing Key (McCodeman)"
+  },
+  "max_concurrent_slots": 4,
+  "dispatch_stagger_seconds": 2
+}

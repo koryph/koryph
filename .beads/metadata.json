@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "koryph",
+  "project_id": "3973122e-2c95-4575-bc0c-7668fd84def1"
+}

@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Koryph Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# REUSE annotations for files that cannot carry an inline SPDX header
+# (generated/lock files, JSON/TOML config, prompt markdown, vendored data).
+version = 1
+
+# Repo configuration, generated, and prompt/data files owned by this project.
+[[annotations]]
+path = [
+  "go.mod",
+  "go.sum",
+  "flake.lock",
+  "koryph.project.json",
+  "AGENTS.md",
+  "NOTICE",
+  "docs/llms.txt",
+  "docs/CNAME",
+  ".allowed_signers",
+  ".claude/settings.json",
+  ".claude/commands/**",
+  ".codex/**",
+  ".vscode/**",
+  "internal/commands/*.md",
+  "docs/user-guide/doctor.md",
+  ".beads/.gitignore",
+  ".beads/config.yaml",
+  ".beads/metadata.json",
+  ".beads/hooks/**",
+]
+SPDX-FileCopyrightText = "2026 The Koryph Developers"
+SPDX-License-Identifier = "Apache-2.0"
+
+# Vendored from the Beads project (installed into this repo by `bd`).
+[[annotations]]
+path = [".agents/**", ".beads/README.md"]
+SPDX-FileCopyrightText = "The Beads project (https://github.com/gastownhall/beads)"
+SPDX-License-Identifier = "Apache-2.0"

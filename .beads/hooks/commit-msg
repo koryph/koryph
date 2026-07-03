@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+# commit-msg: conventional-commits + DCO via the pre-commit framework.
+if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
+  pre-commit run --hook-stage commit-msg --commit-msg-filename "$1" || exit 1
+fi

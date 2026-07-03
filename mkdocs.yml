@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+site_name: koryph
+site_description: Multi-project orchestrator for autonomous Claude Code agents
+site_url: https://koryph.build/
+repo_url: https://github.com/koryph/koryph
+# Internal roadmap/design docs stay in-repo (referenced by CLAUDE.md and the
+# epics) but are excluded from the published book. llms.txt is a static asset
+# copied verbatim to the site root for AI-agent discovery.
+exclude_docs: |
+  designs/
+theme:
+  name: material
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+nav:
+  - Home: index.md
+  - User guide:
+      - Installation: user-guide/installation.md
+      - Quickstart: user-guide/quickstart.md
+      - Projects & accounts: user-guide/projects-and-accounts.md
+      - Running waves: user-guide/running-waves.md
+      - Billing & quota: user-guide/billing-and-quota.md
+      - Signing: user-guide/signing.md
+      - Collaboration: user-guide/collaboration.md
+      - Intake: user-guide/intake.md
+      - Doctor: user-guide/doctor.md
+      - IDE integration: ide-integration.md
+  - Developer guide:
+      - Architecture: architecture.md
+      - Packages: developer-guide/packages.md
+      - Global governor: developer-guide/global-governor.md
+      - Testing: developer-guide/testing.md
+      - Releasing & versioning: developer-guide/releasing.md

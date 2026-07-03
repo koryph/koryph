@@ -1,0 +1,517 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 The Koryph Developers
+
+// Package doctor runs system-health checks against the ~/.koryph state tree.
+// All I/O and OS interactions are injected so the checks are unit-testable
+// without touching the real filesystem or spawning real processes.
+package doctor
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/quota"
+)
+
+// Level classifies a finding's severity.
+type Level string
+
+const (
+	LevelOK    Level = "ok"
+	LevelWarn  Level = "warn"
+	LevelError Level = "error"
+)
+
+// Finding is one check result.
+type Finding struct {
+	Check   string `json:"check"`
+	Level   Level  `json:"level"`
+	Message string `json:"message"`
+	Fixed   bool   `json:"fixed,omitempty"`
+}
+
+// Report is the full doctor output.
+type Report struct {
+	At         string    `json:"at"`
+	Home       string    `json:"home"`
+	Project    string    `json:"project,omitempty"` // set in project mode (--project)
+	Findings   []Finding `json:"findings"`
+	FixedCount int       `json:"fixed_count,omitempty"`
+}
+
+// ExitCode maps the worst finding level onto a process exit code:
+//
+//	ok    → 0
+//	warn  → 1
+//	error → 2
+func (r *Report) ExitCode() int {
+	for _, f := range r.Findings {
+		if f.Level == LevelError {
+			return 2
+		}
+	}
+	for _, f := range r.Findings {
+		if f.Level == LevelWarn {
+			return 1
+		}
+	}
+	return 0
+}
+
+// Options configures a doctor run. Zero values use production defaults.
+type Options struct {
+	// Home overrides paths.KoryphHome() (useful in tests).
+	Home string
+	// Fix removes zombie lease files and stale demand heartbeats when true.
+	Fix bool
+	// Now supplies the current time (injectable for tests).
+	Now func() time.Time
+	// Alive reports whether a pid is a live process (injectable for tests).
+	Alive func(pid int) bool
+	// LookPath locates a binary on PATH (injectable for tests).
+	LookPath func(name string) (string, error)
+}
+
+func (o *Options) home() string {
+	if o.Home != "" {
+		return o.Home
+	}
+	return paths.KoryphHome()
+}
+
+func (o *Options) now() time.Time {
+	if o.Now != nil {
+		return o.Now()
+	}
+	return time.Now()
+}
+
+func (o *Options) alive(pid int) bool {
+	if o.Alive != nil {
+		return o.Alive(pid)
+	}
+	return defaultAlive(pid)
+}
+
+func (o *Options) lookPath(name string) (string, error) {
+	if o.LookPath != nil {
+		return o.LookPath(name)
+	}
+	return exec.LookPath(name)
+}
+
+// Run executes all global checks and returns the report.
+func Run(opts Options) (*Report, error) {
+	r := &Report{
+		At:   opts.now().UTC().Format(time.RFC3339),
+		Home: opts.home(),
+	}
+
+	r.add(checkLayout(opts))
+	r.addAll(checkBinaries(opts))
+	r.add(checkRegistry(opts))
+	r.add(checkGovernorConfig(opts))
+	r.addAll(checkZombieLeases(opts))
+	r.addAll(checkStaleDemand(opts))
+	r.addAll(checkQuotaCalibration(opts))
+	r.addAll(checkVaultProviders(opts))
+
+	for _, f := range r.Findings {
+		if f.Fixed {
+			r.FixedCount++
+		}
+	}
+	return r, nil
+}
+
+func (r *Report) add(f Finding) {
+	r.Findings = append(r.Findings, f)
+}
+
+func (r *Report) addAll(fs []Finding) {
+	r.Findings = append(r.Findings, fs...)
+}
+
+// --- check functions -------------------------------------------------------
+
+const checkNameLayout = "layout"
+const checkNameBinaries = "binaries"
+const checkNameRegistry = "registry"
+const checkNameGovernor = "governor"
+const checkNameZombies = "zombie-leases"
+const checkNameDemand = "stale-demand"
+const checkNameQuota = "quota-calibration"
+const checkNameVault = "vault-providers"
+
+// checkLayout verifies the required subdirectory skeleton under Home.
+func checkLayout(opts Options) Finding {
+	h := opts.home()
+	subdirs := []string{"registry.d", "quota", "slots"}
+	var missing []string
+	for _, sub := range subdirs {
+		if _, err := os.Stat(filepath.Join(h, sub)); errors.Is(err, os.ErrNotExist) {
+			missing = append(missing, sub)
+		}
+	}
+	if _, err := os.Stat(h); errors.Is(err, os.ErrNotExist) {
+		return Finding{Check: checkNameLayout, Level: LevelError,
+			Message: "~/.koryph does not exist (run `koryph init`)"}
+	}
+	if len(missing) == 0 {
+		return Finding{Check: checkNameLayout, Level: LevelOK, Message: "layout ok"}
+	}
+	return Finding{
+		Check:   checkNameLayout,
+		Level:   LevelError,
+		Message: fmt.Sprintf("missing dirs: %s (run `koryph init`)", strings.Join(missing, ", ")),
+	}
+}
+
+// checkBinaries verifies required tools are on PATH.
+func checkBinaries(opts Options) []Finding {
+	tools := []string{"git", "claude", "bd"}
+	var findings []Finding
+	for _, t := range tools {
+		if _, err := opts.lookPath(t); err != nil {
+			findings = append(findings, Finding{
+				Check:   checkNameBinaries,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("%s: not found on PATH", t),
+			})
+		} else {
+			findings = append(findings, Finding{
+				Check:   checkNameBinaries,
+				Level:   LevelOK,
+				Message: fmt.Sprintf("%s: ok", t),
+			})
+		}
+	}
+	return findings
+}
+
+// checkRegistry parses every *.json in registry.d to detect corruption.
+func checkRegistry(opts Options) Finding {
+	dir := filepath.Join(opts.home(), "registry.d")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Finding{Check: checkNameRegistry, Level: LevelWarn, Message: "registry.d not found"}
+		}
+		return Finding{Check: checkNameRegistry, Level: LevelError,
+			Message: fmt.Sprintf("read registry.d: %v", err)}
+	}
+	total, bad := 0, 0
+	var badNames []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		total++
+		data, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil || !json.Valid(data) {
+			bad++
+			badNames = append(badNames, e.Name())
+		}
+	}
+	if bad == 0 {
+		return Finding{Check: checkNameRegistry, Level: LevelOK,
+			Message: fmt.Sprintf("%d record(s) parse ok", total)}
+	}
+	return Finding{
+		Check:   checkNameRegistry,
+		Level:   LevelError,
+		Message: fmt.Sprintf("corrupt record(s): %s", strings.Join(badNames, ", ")),
+	}
+}
+
+// checkGovernorConfig validates governor.json when present.
+func checkGovernorConfig(opts Options) Finding {
+	path := filepath.Join(opts.home(), "governor.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Finding{Check: checkNameGovernor, Level: LevelOK,
+			Message: fmt.Sprintf("governor.json absent (default cap %d in use)", govern.DefaultMaxGlobalAgents)}
+	}
+	if err != nil {
+		return Finding{Check: checkNameGovernor, Level: LevelError,
+			Message: fmt.Sprintf("read governor.json: %v", err)}
+	}
+	var cfg govern.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Finding{Check: checkNameGovernor, Level: LevelError,
+			Message: fmt.Sprintf("parse governor.json: %v", err)}
+	}
+	if cfg.MaxGlobalAgents <= 0 {
+		return Finding{Check: checkNameGovernor, Level: LevelWarn,
+			Message: fmt.Sprintf("governor.json: max_global_agents=0 (default %d in use)", govern.DefaultMaxGlobalAgents)}
+	}
+	return Finding{Check: checkNameGovernor, Level: LevelOK,
+		Message: fmt.Sprintf("governor.json: cap=%d", cfg.MaxGlobalAgents)}
+}
+
+// checkZombieLeases scans governor slot files for leases whose PID is dead.
+func checkZombieLeases(opts Options) []Finding {
+	slotsDir := filepath.Join(opts.home(), "slots")
+	entries, err := os.ReadDir(slotsDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Finding{{Check: checkNameZombies, Level: LevelOK, Message: "no slots dir (no leases)"}}
+		}
+		return []Finding{{Check: checkNameZombies, Level: LevelError,
+			Message: fmt.Sprintf("read slots dir: %v", err)}}
+	}
+
+	var zombies []Finding
+	clean := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(slotsDir, e.Name())
+		var l govern.Lease
+		data, rerr := os.ReadFile(path)
+		if rerr != nil || json.Unmarshal(data, &l) != nil || l.Project == "" {
+			continue
+		}
+
+		// Mirror the govern.Store.prune() logic: before Bind the agent PID is 0,
+		// so fall back to the engine PID to avoid pruning un-launched reservations.
+		probePID := l.PID
+		if probePID <= 0 {
+			probePID = l.EnginePID
+		}
+		if probePID > 0 && opts.alive(probePID) {
+			clean++
+			continue
+		}
+
+		pidStr := "-"
+		if probePID > 0 {
+			pidStr = fmt.Sprintf("%d", probePID)
+		}
+		f := Finding{
+			Check:   checkNameZombies,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("zombie lease: %s/%s pid=%s (dead)", l.Project, l.Bead, pidStr),
+		}
+		if opts.Fix {
+			if rerr := os.Remove(path); rerr == nil {
+				f.Level = LevelOK
+				f.Message = fmt.Sprintf("zombie removed: %s/%s pid=%s", l.Project, l.Bead, pidStr)
+				f.Fixed = true
+			}
+		}
+		zombies = append(zombies, f)
+	}
+
+	if len(zombies) == 0 {
+		return []Finding{{Check: checkNameZombies, Level: LevelOK,
+			Message: fmt.Sprintf("%d active lease(s), none zombie", clean)}}
+	}
+	return zombies
+}
+
+// checkStaleDemand scans demand heartbeats for dead engines or expired TTLs.
+func checkStaleDemand(opts Options) []Finding {
+	const demandTTL = 10 * time.Minute
+
+	demandDir := filepath.Join(opts.home(), "slots", "demand")
+	entries, err := os.ReadDir(demandDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Finding{{Check: checkNameDemand, Level: LevelOK, Message: "no demand heartbeats"}}
+		}
+		return []Finding{{Check: checkNameDemand, Level: LevelError,
+			Message: fmt.Sprintf("read demand dir: %v", err)}}
+	}
+
+	var stale []Finding
+	fresh := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(demandDir, e.Name())
+		var d govern.Demand
+		data, rerr := os.ReadFile(path)
+		if rerr != nil || json.Unmarshal(data, &d) != nil || d.Project == "" {
+			continue
+		}
+
+		engineDead := d.EnginePID > 0 && !opts.alive(d.EnginePID)
+		heartbeatStale := false
+		if t, perr := time.Parse(time.RFC3339, d.UpdatedAt); perr == nil {
+			heartbeatStale = opts.now().Sub(t) > demandTTL
+		}
+
+		if !engineDead && !heartbeatStale {
+			fresh++
+			continue
+		}
+
+		reason := "engine dead"
+		if heartbeatStale && !engineDead {
+			reason = fmt.Sprintf("heartbeat stale >%v", demandTTL)
+		}
+		f := Finding{
+			Check:   checkNameDemand,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("stale demand: %s engine_pid=%d (%s)", d.Project, d.EnginePID, reason),
+		}
+		if opts.Fix {
+			if rerr := os.Remove(path); rerr == nil {
+				f.Level = LevelOK
+				f.Message = fmt.Sprintf("stale demand removed: %s (%s)", d.Project, reason)
+				f.Fixed = true
+			}
+		}
+		stale = append(stale, f)
+	}
+
+	if len(stale) == 0 {
+		return []Finding{{Check: checkNameDemand, Level: LevelOK,
+			Message: fmt.Sprintf("%d demand heartbeat(s), none stale", fresh)}}
+	}
+	return stale
+}
+
+// checkQuotaCalibration checks whether each per-account quota config has been
+// calibrated (both ceiling fields > 0).
+func checkQuotaCalibration(opts Options) []Finding {
+	quotaDir := filepath.Join(opts.home(), "quota")
+	entries, err := os.ReadDir(quotaDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Finding{{Check: checkNameQuota, Level: LevelOK, Message: "no quota configs"}}
+		}
+		return []Finding{{Check: checkNameQuota, Level: LevelError,
+			Message: fmt.Sprintf("read quota dir: %v", err)}}
+	}
+
+	var findings []Finding
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		account := strings.TrimSuffix(e.Name(), ".json")
+		data, rerr := os.ReadFile(filepath.Join(quotaDir, e.Name()))
+		if rerr != nil {
+			findings = append(findings, Finding{
+				Check:   checkNameQuota,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("account %s: cannot read quota config", account),
+			})
+			continue
+		}
+		var cfg quota.Config
+		if jerr := json.Unmarshal(data, &cfg); jerr != nil {
+			findings = append(findings, Finding{
+				Check:   checkNameQuota,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("account %s: cannot parse quota config: %v", account, jerr),
+			})
+			continue
+		}
+		if cfg.WindowCeilingUSD <= 0 && cfg.WeeklyCeilingUSD <= 0 {
+			findings = append(findings, Finding{
+				Check:   checkNameQuota,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("account %s: uncalibrated (run `koryph quota calibrate --account %s ...`)", account, account),
+			})
+		} else {
+			findings = append(findings, Finding{
+				Check:   checkNameQuota,
+				Level:   LevelOK,
+				Message: fmt.Sprintf("account %s: 5h=$%.2f wk=$%.2f", account, cfg.WindowCeilingUSD, cfg.WeeklyCeilingUSD),
+			})
+		}
+	}
+	if len(findings) == 0 {
+		return []Finding{{Check: checkNameQuota, Level: LevelOK, Message: "no quota configs"}}
+	}
+	return findings
+}
+
+// vaultCfg is a minimal vault.json representation — enough to extract the
+// binary name for each configured provider without importing the signing
+// package (which would add circular-ish import complexity).
+type vaultCfg struct {
+	Providers map[string]struct {
+		Fetch []string `json:"fetch,omitempty"`
+	} `json:"providers"`
+}
+
+// checkVaultProviders verifies that the binary named as the first token of each
+// provider's Fetch template exists on PATH. This only runs when vault.json is
+// present under Home (i.e. the user has explicitly configured vault providers).
+func checkVaultProviders(opts Options) []Finding {
+	vaultPath := filepath.Join(opts.home(), "vault.json")
+	data, err := os.ReadFile(vaultPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return []Finding{{Check: checkNameVault, Level: LevelOK, Message: "vault.json absent (no provider check)"}}
+	}
+	if err != nil {
+		return []Finding{{Check: checkNameVault, Level: LevelWarn,
+			Message: fmt.Sprintf("read vault.json: %v", err)}}
+	}
+	var v vaultCfg
+	if jerr := json.Unmarshal(data, &v); jerr != nil {
+		return []Finding{{Check: checkNameVault, Level: LevelError,
+			Message: fmt.Sprintf("parse vault.json: %v", jerr)}}
+	}
+
+	if len(v.Providers) == 0 {
+		return []Finding{{Check: checkNameVault, Level: LevelOK, Message: "vault.json: no providers"}}
+	}
+
+	seen := map[string]bool{}
+	var findings []Finding
+	for name, pt := range v.Providers {
+		if len(pt.Fetch) == 0 {
+			continue
+		}
+		bin := pt.Fetch[0]
+		if seen[bin] {
+			continue
+		}
+		seen[bin] = true
+		if _, lerr := opts.lookPath(bin); lerr != nil {
+			findings = append(findings, Finding{
+				Check:   checkNameVault,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("provider %s: binary %q not on PATH", name, bin),
+			})
+		} else {
+			findings = append(findings, Finding{
+				Check:   checkNameVault,
+				Level:   LevelOK,
+				Message: fmt.Sprintf("provider %s: %s ok", name, bin),
+			})
+		}
+	}
+	if len(findings) == 0 {
+		return []Finding{{Check: checkNameVault, Level: LevelOK, Message: "vault.json: no Fetch templates to check"}}
+	}
+	return findings
+}
+
+// defaultAlive is the production process-liveness probe (signal-0).
+func defaultAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true
+	}
+	return errors.Is(err, syscall.EPERM)
+}

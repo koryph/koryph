@@ -1,0 +1,461 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 The Koryph Developers
+
+package doctor
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/registry"
+)
+
+// worktreeEntry is a minimal git worktree descriptor used by the orphan check.
+type worktreeEntry struct {
+	Path   string
+	Branch string
+}
+
+// ProjectOptions configures a project-mode doctor run.
+type ProjectOptions struct {
+	// RepoRoot is the project repository root. When set, registry look-up is
+	// skipped. Either RepoRoot or ProjectID (with Home) must be set.
+	RepoRoot string
+	// ProjectID looks up the project root from the registry under Home.
+	// Ignored when RepoRoot is set.
+	ProjectID string
+	// WorktreeRoot overrides the default worktree root directory
+	// (<parent>/<repo>-worktrees) used by the orphan check.
+	WorktreeRoot string
+	// Home overrides paths.KoryphHome() (tests use t.TempDir()).
+	Home string
+	// Fix is reserved for future safe project-level cleanup; currently a no-op
+	// in project mode (no project check has a safe auto-fix).
+	Fix bool
+	// Now supplies the current time (injectable for tests).
+	Now func() time.Time
+	// Alive reports whether a pid is a live process (injectable for tests).
+	Alive func(pid int) bool
+	// LookPath locates a binary on PATH (injectable for tests).
+	LookPath func(name string) (string, error)
+	// StallThreshold is how long a running slot may be silent before it is
+	// flagged as stalled (default 30 min).
+	StallThreshold time.Duration
+	// ListWorktrees lists git worktrees by path and branch for the given repo
+	// root (injectable for tests; default runs `git worktree list --porcelain`).
+	ListWorktrees func(root string) ([]worktreeEntry, error)
+}
+
+func (o *ProjectOptions) home() string {
+	if o.Home != "" {
+		return o.Home
+	}
+	return paths.KoryphHome()
+}
+
+func (o *ProjectOptions) now() time.Time {
+	if o.Now != nil {
+		return o.Now()
+	}
+	return time.Now()
+}
+
+func (o *ProjectOptions) stallThreshold() time.Duration {
+	if o.StallThreshold > 0 {
+		return o.StallThreshold
+	}
+	return 30 * time.Minute
+}
+
+func (o *ProjectOptions) listWorktrees(root string) ([]worktreeEntry, error) {
+	if o.ListWorktrees != nil {
+		return o.ListWorktrees(root)
+	}
+	return defaultListWorktrees(root)
+}
+
+// resolveRoot returns the project's repository root, either from RepoRoot or
+// by looking up ProjectID in the registry at Home.
+func (o *ProjectOptions) resolveRoot() (string, string, error) {
+	if o.RepoRoot != "" {
+		id := o.ProjectID
+		if id == "" {
+			// Try to derive from config.
+			if cfg, err := project.Load(o.RepoRoot); err == nil {
+				id = cfg.ProjectID
+			}
+		}
+		return o.RepoRoot, id, nil
+	}
+	if o.ProjectID == "" {
+		return "", "", fmt.Errorf("doctor: either RepoRoot or ProjectID must be set")
+	}
+	store := registry.NewStoreAt(o.home())
+	rec, err := store.Get(o.ProjectID)
+	if err != nil {
+		return "", "", fmt.Errorf("doctor: load project %q from registry: %w", o.ProjectID, err)
+	}
+	return rec.Root, rec.ProjectID, nil
+}
+
+// --- check name constants for project mode ----------------------------------
+
+const (
+	checkNameProjectConfig   = "project-config"
+	checkNameGitRepo         = "git-repo"
+	checkNameHooksWiring     = "hooks-wiring"
+	checkNameSigning         = "signing"
+	checkNameProtectedPaths  = "protected-paths"
+	checkNameStalledRuns     = "stalled-runs"
+	checkNameOrphanWorktrees = "orphan-worktrees"
+)
+
+// RunProject executes project-scoped health checks and returns the report.
+// It reuses onboard.Validate structural checks (config, git repo, hooks) and
+// adds stalled-run, orphan-worktree, signing, and protected-path checks.
+func RunProject(opts ProjectOptions) (*Report, error) {
+	repoRoot, projectID, err := opts.resolveRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	r := &Report{
+		At:      opts.now().UTC().Format(time.RFC3339),
+		Home:    repoRoot,
+		Project: projectID,
+	}
+
+	// Load config once; subsequent checks reference it.
+	cfg, cfgFinding := checkProjectConfig(repoRoot)
+	r.add(cfgFinding)
+	r.add(checkGitRepo(repoRoot))
+	r.addAll(checkHooksWiring(repoRoot))
+	if cfg != nil {
+		r.addAll(checkSigning(cfg))
+		r.add(checkProtectedPaths(cfg))
+	}
+	r.addAll(checkStalledRuns(opts, repoRoot))
+	r.addAll(checkOrphanWorktrees(opts, repoRoot, cfg))
+
+	for _, f := range r.Findings {
+		if f.Fixed {
+			r.FixedCount++
+		}
+	}
+	return r, nil
+}
+
+// --- check functions --------------------------------------------------------
+
+// checkProjectConfig loads and validates koryph.project.json.
+func checkProjectConfig(repoRoot string) (*project.Config, Finding) {
+	cfg, err := project.Load(repoRoot)
+	if err != nil {
+		return nil, Finding{
+			Check:   checkNameProjectConfig,
+			Level:   LevelError,
+			Message: err.Error(),
+		}
+	}
+	return cfg, Finding{
+		Check:   checkNameProjectConfig,
+		Level:   LevelOK,
+		Message: "project_id=" + cfg.ProjectID + " work_source=" + cfg.WorkSource,
+	}
+}
+
+// checkGitRepo verifies that .git exists at the repo root.
+func checkGitRepo(repoRoot string) Finding {
+	if _, err := os.Stat(filepath.Join(repoRoot, ".git")); err == nil {
+		return Finding{Check: checkNameGitRepo, Level: LevelOK, Message: ".git present at " + repoRoot}
+	}
+	return Finding{
+		Check:   checkNameGitRepo,
+		Level:   LevelError,
+		Message: "no .git at " + repoRoot + " (not a git repository)",
+	}
+}
+
+// checkHooksWiring checks that each koryph hook marker is present in
+// .claude/settings.json. Missing markers are warnings (run `koryph rules install`).
+func checkHooksWiring(repoRoot string) []Finding {
+	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Finding{{
+				Check:   checkNameHooksWiring,
+				Level:   LevelWarn,
+				Message: ".claude/settings.json absent (run `koryph rules install`)",
+			}}
+		}
+		return []Finding{{
+			Check:   checkNameHooksWiring,
+			Level:   LevelError,
+			Message: fmt.Sprintf("read .claude/settings.json: %v", err),
+		}}
+	}
+	content := string(data)
+	markers := []struct{ label, marker string }{
+		{"bd-prime", "bd prime"},
+		{"boundary-guard", "agent-boundary-guard.sh"},
+		{"worktree-guard", "worktree-guard.sh"},
+	}
+	var findings []Finding
+	for _, m := range markers {
+		if strings.Contains(content, m.marker) {
+			findings = append(findings, Finding{
+				Check:   checkNameHooksWiring,
+				Level:   LevelOK,
+				Message: m.label + ": present",
+			})
+		} else {
+			findings = append(findings, Finding{
+				Check:   checkNameHooksWiring,
+				Level:   LevelWarn,
+				Message: m.label + ": missing from .claude/settings.json (run `koryph rules install`)",
+			})
+		}
+	}
+	return findings
+}
+
+// checkSigning validates the project's signing configuration sanity.
+// Note: project.Load already runs signing.Config.Validate(), so by the time
+// this runs the config shape is guaranteed valid. This check focuses on
+// incomplete-setup states that are valid per Validate() but will fail at
+// dispatch time (e.g. provider configured but public_key not yet captured).
+func checkSigning(cfg *project.Config) []Finding {
+	sc := cfg.Signing
+	if sc == nil {
+		return []Finding{{Check: checkNameSigning, Level: LevelOK, Message: "signing not configured"}}
+	}
+	// SSH mode with a provider configured but no public key means `koryph
+	// signing setup` has not been completed — commits won't be signed/verified.
+	if sc.Provider != "" && sc.PublicKey == "" && sc.EffectiveMode() == "ssh" {
+		return []Finding{{
+			Check:   checkNameSigning,
+			Level:   LevelWarn,
+			Message: "signing configured but public_key not captured (run `koryph signing setup`)",
+		}}
+	}
+	prefix := ""
+	if sc.Required {
+		prefix = "required; "
+	}
+	return []Finding{{
+		Check: checkNameSigning,
+		Level: LevelOK,
+		Message: fmt.Sprintf("%smode=%s provider=%s identity=%s",
+			prefix, sc.EffectiveMode(), sc.Provider, sc.Identity),
+	}}
+}
+
+// checkProtectedPaths validates the project's protected_paths list for sanity.
+func checkProtectedPaths(cfg *project.Config) Finding {
+	if len(cfg.ProtectedPaths) == 0 {
+		return Finding{
+			Check:   checkNameProtectedPaths,
+			Level:   LevelOK,
+			Message: "no extra protected_paths configured (engine defaults apply)",
+		}
+	}
+	var emptyIdx []int
+	seen := map[string]bool{}
+	var dupes []string
+	for i, p := range cfg.ProtectedPaths {
+		if strings.TrimSpace(p) == "" {
+			emptyIdx = append(emptyIdx, i)
+			continue
+		}
+		if seen[p] {
+			dupes = append(dupes, p)
+		}
+		seen[p] = true
+	}
+	if len(emptyIdx) > 0 {
+		return Finding{
+			Check:   checkNameProtectedPaths,
+			Level:   LevelError,
+			Message: fmt.Sprintf("empty path at index(es) %v in protected_paths", emptyIdx),
+		}
+	}
+	if len(dupes) > 0 {
+		return Finding{
+			Check:   checkNameProtectedPaths,
+			Level:   LevelWarn,
+			Message: "duplicate entries: " + strings.Join(dupes, ", "),
+		}
+	}
+	return Finding{
+		Check:   checkNameProtectedPaths,
+		Level:   LevelOK,
+		Message: fmt.Sprintf("%d extra protected path(s)", len(cfg.ProtectedPaths)),
+	}
+}
+
+// checkStalledRuns scans all ledger runs for non-terminal slots whose UpdatedAt
+// timestamp is older than the stall threshold.
+func checkStalledRuns(opts ProjectOptions, repoRoot string) []Finding {
+	threshold := opts.stallThreshold()
+	store := ledger.NewStore(repoRoot)
+	runIDs, err := store.ListRuns()
+	if err != nil || len(runIDs) == 0 {
+		return []Finding{{Check: checkNameStalledRuns, Level: LevelOK, Message: "no ledger runs"}}
+	}
+
+	var stalled []Finding
+	for _, runID := range runIDs {
+		run, rerr := store.LoadRun(runID)
+		if rerr != nil {
+			continue
+		}
+		if run.Status != ledger.RunRunning {
+			continue // only active runs can have stalled slots
+		}
+		for phaseID, slot := range run.Slots {
+			if slot == nil || ledger.Terminal(slot.Status) {
+				continue
+			}
+			if slot.UpdatedAt == "" {
+				continue
+			}
+			t, perr := time.Parse(time.RFC3339, slot.UpdatedAt)
+			if perr != nil {
+				continue
+			}
+			age := opts.now().Sub(t)
+			if age > threshold {
+				stalled = append(stalled, Finding{
+					Check: checkNameStalledRuns,
+					Level: LevelWarn,
+					Message: fmt.Sprintf("stalled slot: run=%s phase=%s status=%s age=%s",
+						runID, phaseID, slot.Status, age.Truncate(time.Second)),
+				})
+			}
+		}
+	}
+
+	if len(stalled) == 0 {
+		return []Finding{{Check: checkNameStalledRuns, Level: LevelOK, Message: "no stalled slots"}}
+	}
+	return stalled
+}
+
+// checkOrphanWorktrees finds git worktrees under the project's worktree root
+// that have a koryph agent branch but no corresponding active slot in any
+// currently-running ledger run.
+func checkOrphanWorktrees(opts ProjectOptions, repoRoot string, cfg *project.Config) []Finding {
+	wtRoot := opts.WorktreeRoot
+	if wtRoot == "" {
+		wtRoot = filepath.Join(filepath.Dir(repoRoot), filepath.Base(repoRoot)+"-worktrees")
+	}
+
+	// Collect worktree paths claimed by active (non-terminal) slots across all
+	// currently-running ledger runs.
+	store := ledger.NewStore(repoRoot)
+	activeWorktrees := map[string]bool{}
+	if runIDs, err := store.ListRuns(); err == nil {
+		for _, runID := range runIDs {
+			run, rerr := store.LoadRun(runID)
+			if rerr != nil || run.Status != ledger.RunRunning {
+				continue
+			}
+			for _, slot := range run.Slots {
+				if slot == nil || ledger.Terminal(slot.Status) || slot.Worktree == "" {
+					continue
+				}
+				activeWorktrees[filepath.Clean(slot.Worktree)] = true
+			}
+		}
+	}
+
+	wts, err := opts.listWorktrees(repoRoot)
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameOrphanWorktrees,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("cannot list git worktrees: %v", err),
+		}}
+	}
+
+	cleanWTRoot := filepath.Clean(wtRoot)
+	var orphans []Finding
+	for _, wt := range wts {
+		// Only consider worktrees under the project's worktree root.
+		if !strings.HasPrefix(filepath.Clean(wt.Path), cleanWTRoot+string(filepath.Separator)) {
+			continue
+		}
+		// Only koryph-managed branches use the agent/ prefix.
+		if !strings.HasPrefix(wt.Branch, "agent/") {
+			continue
+		}
+		if activeWorktrees[filepath.Clean(wt.Path)] {
+			continue // has a live active slot
+		}
+		orphans = append(orphans, Finding{
+			Check: checkNameOrphanWorktrees,
+			Level: LevelWarn,
+			Message: fmt.Sprintf("orphan worktree: %s (branch %s, no active slot — review and remove manually if no longer needed)",
+				wt.Path, wt.Branch),
+		})
+	}
+
+	if len(orphans) == 0 {
+		return []Finding{{
+			Check:   checkNameOrphanWorktrees,
+			Level:   LevelOK,
+			Message: "no orphan worktrees under " + wtRoot,
+		}}
+	}
+	return orphans
+}
+
+// --- git worktree listing ---------------------------------------------------
+
+// defaultListWorktrees runs `git worktree list --porcelain` to enumerate
+// worktrees registered against repoRoot.
+func defaultListWorktrees(root string) ([]worktreeEntry, error) {
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git worktree list: %w", err)
+	}
+	return parseWorktreePorcelain(string(out)), nil
+}
+
+// parseWorktreePorcelain parses the output of `git worktree list --porcelain`
+// into a slice of worktreeEntry values.
+func parseWorktreePorcelain(output string) []worktreeEntry {
+	var entries []worktreeEntry
+	var cur *worktreeEntry
+	flush := func() {
+		if cur != nil {
+			entries = append(entries, *cur)
+			cur = nil
+		}
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case line == "":
+			flush()
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			cur = &worktreeEntry{Path: strings.TrimPrefix(line, "worktree ")}
+		case cur != nil && strings.HasPrefix(line, "branch "):
+			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
+		}
+	}
+	flush()
+	return entries
+}

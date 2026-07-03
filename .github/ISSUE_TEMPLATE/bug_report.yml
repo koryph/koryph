@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+name: Bug report
+description: Something koryph does is wrong
+labels: [bug, triage]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: koryph version
+      description: Output of `koryph version`
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Exact commands + minimal project config to reproduce
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Run output, ledger/manifest snippets, agent stderr — REDACT identities/keys.

@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 The Koryph Developers
+
+// Package quota is the per-account usage governor. Loop-mode policy:
+// warn at 80%, graceful drain at 90% (finish current beads, dispatch nothing
+// new), hard stop at 95% (block dispatch, wait for the current turn — never
+// interrupt mid-turn). Manual dispatch is exempt from stops (still logged).
+//
+// Usage sources (usage.go), in order:
+//  1. ccusage CLI run with the account's CLAUDE_CONFIG_DIR in env
+//     (`ccusage blocks --json --active` for the 5h window; `ccusage daily
+//     --json` summed 7 days for the weekly window; npx fallback honoring
+//     KORYPH_NO_NPX).
+//  2. Local transcript scan: <configDir||~/.claude>/projects/*/*.jsonl,
+//     fixed UTC 5h grid, approximate per-model pricing (Go port of
+//     usage-window.py). Marked approximate in the snapshot.
+//
+// Any source failure → treat the window as AT ceiling (fail closed) and say
+// so in the snapshot.
+//
+// Governor state persists at ~/.koryph/quota/<account>.json (calibration:
+// ceilings are ccusage-USD proxies calibrated from /usage percentages — the
+// user reads /usage; ceiling = observed$/observed%).
+//
+// Implementation contract (governor.go, usage.go, estimate.go):
+//   - Snapshot(ctx, profile) (Usage, error)
+//   - State(u, cfg) Level (ok|warn|drain|stop) using the max of window and
+//     weekly fractions.
+//   - ScaleSlots(u, cfg, max) int — linear scale-down between warn and stop,
+//     min 1 below drain, 0 at/above drain.
+//   - Preflight(u, waveEstimateUSD, cfg) (ok bool, reason string) — a loop
+//     wave that would cross drain (90%) does not dispatch.
+//   - EstimateWave / EstimateItem — per-tier base cost x size multiplier x
+//     safety margin, EWMA-calibrated per tier from observed slot costs
+//     (Record(tier, size, actualUSD)).
+package quota
+
+// Level is the governor verdict.
+type Level string
+
+const (
+	LevelOK    Level = "ok"
+	LevelWarn  Level = "warn"  // >= 0.80
+	LevelDrain Level = "drain" // >= 0.90
+	LevelStop  Level = "stop"  // >= 0.95
+)
+
+// Thresholds (fractions of the calibrated ceiling).
+const (
+	WarnFraction  = 0.80
+	DrainFraction = 0.90
+	StopFraction  = 0.95
+)
+
+// Window is one measured usage window.
+type Window struct {
+	Hours      int     `json:"hours"`
+	SpentUSD   float64 `json:"spent_usd"`
+	CeilingUSD float64 `json:"ceiling_usd"`
+	Source     string  `json:"source"` // ccusage|jsonl-scan|unavailable
+	Approx     bool    `json:"approx"`
+}
+
+// Fraction returns spent/ceiling (1.0 when unmeasurable — fail closed).
+func (w Window) Fraction() float64 {
+	if w.CeilingUSD <= 0 || w.Source == "unavailable" {
+		return 1.0
+	}
+	return w.SpentUSD / w.CeilingUSD
+}
+
+// Usage is a per-account snapshot.
+type Usage struct {
+	Account  string `json:"account"`
+	At       string `json:"at"`
+	Window5h Window `json:"window_5h"`
+	Weekly   Window `json:"weekly"`
+}
+
+// Config is per-account governor configuration + calibration state,
+// persisted at ~/.koryph/quota/<account>.json.
+type Config struct {
+	Account          string             `json:"account"`
+	WindowCeilingUSD float64            `json:"window_ceiling_usd"`
+	WeeklyCeilingUSD float64            `json:"weekly_ceiling_usd"`
+	PlanTier         string             `json:"plan_tier,omitempty"` // e.g. max20x, teams
+	PerAgentMaxUSD   float64            `json:"per_agent_max_usd"`   // --max-budget-usd kill switch
+	PerTierUSD       map[string]float64 `json:"per_tier_usd"`        // estimator base
+	SizeMultiplier   map[string]float64 `json:"size_multiplier"`     // S/M/L
+	SafetyMargin     float64            `json:"safety_margin"`
+	Calibration      map[string]float64 `json:"calibration,omitempty"` // "<tier>:<size>" → EWMA USD
+}
+
+// DefaultConfig returns uncalibrated defaults for a new account profile.
+func DefaultConfig(account string) *Config {
+	return &Config{
+		Account:        account,
+		PerAgentMaxUSD: 25,
+		PerTierUSD:     map[string]float64{"haiku": 0.4, "sonnet": 3.0, "opus": 9.0, "fable": 15.0},
+		SizeMultiplier: map[string]float64{"S": 0.5, "M": 1.0, "L": 2.0},
+		SafetyMargin:   1.5,
+	}
+}

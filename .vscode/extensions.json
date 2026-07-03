@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "golang.go",
+    "EditorConfig.EditorConfig",
+    "bierner.markdown-mermaid",
+    "redhat.vscode-yaml"
+  ]
+}

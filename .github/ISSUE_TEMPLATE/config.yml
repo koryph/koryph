@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/koryph/koryph/security/advisories/new
+    about: Report vulnerabilities privately — never in a public issue (see SECURITY.md).

@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+#
+# Signed releases: on every v* tag, build multi-platform binaries and sign
+# the checksum manifest KEYLESSLY with sigstore cosign — the workflow's own
+# GitHub OIDC identity is the certificate subject (Fulcio), logged in the
+# Rekor transparency ledger. No signing key exists anywhere.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  id-token: write # sigstore keyless OIDC
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: "1.26"
+      - name: Verify engine version matches the tag
+        run: make version-check TAG="$GITHUB_REF_NAME"
+      - name: Green gate
+        run: make gate
+      - name: Build multi-platform binaries
+        run: |
+          set -eu
+          mkdir -p dist
+          for os in darwin linux; do
+            for arch in amd64 arm64; do
+              out="koryph_${GITHUB_REF_NAME}_${os}_${arch}"
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                go build -trimpath -ldflags "-s -w" -o "dist/$out/koryph" ./cmd/koryph
+              tar -C "dist/$out" -czf "dist/$out.tar.gz" koryph
+              rm -r "dist/$out"
+            done
+          done
+          (cd dist && sha256sum ./*.tar.gz > checksums.txt)
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - name: Keyless-sign the checksum manifest
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob \
+            --output-signature dist/checksums.txt.sig \
+            --output-certificate dist/checksums.txt.pem \
+            dist/checksums.txt
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "koryph $GITHUB_REF_NAME" --generate-notes

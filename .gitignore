@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+
+bin/
+dist/
+site/
+.env
+.env.local
+*.log
+.plan-logs/
+.DS_Store
+
+# nix / direnv
+result
+result-*
+.direnv/
+
+# beads runtime (source of truth syncs via refs/dolt/data)
+.beads/issues.jsonl
+.beads/events.jsonl
+.beads/interactions.jsonl
+.beads/embeddeddolt/
+.beads/backup/
+.beads/export-state.json
+.beads/last-touched
+.beads/.local_version
+.beads/*.lock
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

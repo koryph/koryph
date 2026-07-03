@@ -1,0 +1,190 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 The Koryph Developers
+
+package engine
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/execx"
+	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/worktree"
+)
+
+// resume classifies the latest run and re-adopts it: alive agents are
+// reattached (polling continues), dead-with-work and dead-without-work slots
+// are re-dispatched per ledger.Classify, and exhausted slots are blocked.
+// It reports false (fresh run) when there is no latest run or everything in
+// it is terminal.
+func (r *runner) resume(ctx context.Context) (bool, error) {
+	latest, err := r.store.LoadLatest()
+	if err != nil {
+		return false, nil // no latest run → fresh
+	}
+
+	decisions := ledger.Classify(latest, ledger.Probe{
+		Alive: slotAlive,
+		CommitCount: func(branch string) (int, error) {
+			return r.commitCount(ctx, branch)
+		},
+	})
+
+	r.run = latest
+	adopted := false
+	for _, d := range decisions {
+		sl := latest.Slots[d.PhaseID]
+		if sl == nil {
+			continue
+		}
+		switch d.Action {
+		case ledger.ActionSkip:
+			// terminal — leave as recorded
+
+		case ledger.ActionReattach:
+			// Adopt as active in this run: keep the slot running and let the
+			// poll loop pick it up.
+			r.progress("resume: reattaching to %s (%s)", d.PhaseID, d.Reason)
+			_ = r.store.UpdateSlot(latest, d.PhaseID, func(s *ledger.Slot) {
+				s.Status = ledger.SlotRunning
+			})
+			adopted = true
+
+		case ledger.ActionRequeueResume, ledger.ActionRequeueFresh:
+			r.progress("resume: %s for %s (%s)", d.Action, d.PhaseID, d.Reason)
+			r.requeueSlot(ctx, sl, "", "resume: "+d.Reason)
+			adopted = true
+
+		case ledger.ActionBlocked:
+			_ = r.store.UpdateSlot(latest, d.PhaseID, func(s *ledger.Slot) {
+				s.Status = ledger.SlotBlocked
+				s.Note = d.Reason
+			})
+			r.progress("resume: %s blocked (%s)", d.PhaseID, d.Reason)
+		}
+	}
+
+	if !adopted {
+		// Nothing to carry forward. Close out the old run if it was left
+		// "running" with only terminal slots (the stale-running fix), then
+		// let the caller start fresh.
+		_ = r.store.FinalizeRun(latest)
+		r.run = nil
+		return false, nil
+	}
+
+	latest.Status = ledger.RunRunning
+	_ = r.store.SaveRun(latest)
+	return true, nil
+}
+
+// reconcileOrphans is the fresh-start safety net (koryph-47n). A plain
+// `koryph run` (no --resume) adopts nothing from a prior run, so a bead left
+// in_progress by a killed or interrupted run would otherwise stay leased and be
+// excluded from `bd ready` forever. Before the first wave, reopen each orphan —
+// a non-terminal slot in the latest run whose agent pid is dead — so this run
+// re-dispatches it: drop the stale global lease, clean up a CLEAN worktree, and
+// reset the bead to open. A dirty worktree or a branch with landed commits is
+// preserved (its work belongs to --resume) and the bead is left untouched.
+func (r *runner) reconcileOrphans(ctx context.Context) {
+	latest, err := r.store.LoadLatest()
+	if err != nil || latest == nil {
+		return
+	}
+	reopened := 0
+	for id, sl := range latest.Slots {
+		if sl == nil || ledger.Terminal(sl.Status) || slotAlive(sl.PID) {
+			continue
+		}
+		// Orphan: a non-terminal slot whose agent is gone. Drop any stale
+		// global lease (also pruned lazily by the governor, but be explicit).
+		r.releaseGlobalSlot(id)
+
+		if kept, why := r.orphanWorktreeKept(ctx, sl); kept {
+			r.progress("reconcile: %s left in place (%s) — recover its work with --resume", id, why)
+			continue
+		}
+		if serr := r.adapter.SetStatus(ctx, id, "open"); serr != nil {
+			r.progress("reconcile: could not reopen orphan %s: %v", id, serr)
+			continue
+		}
+		_ = r.store.UpdateSlot(latest, id, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "reconciled: reopened as orphan of a dead run (koryph-47n)"
+		})
+		reopened++
+		r.progress("reconcile: reopened orphaned in_progress bead %s (dead run %s)", id, latest.RunID)
+	}
+	if reopened > 0 {
+		_ = r.store.SaveRun(latest)
+	}
+}
+
+// orphanWorktreeKept decides whether a reconciled orphan's worktree must be
+// preserved. It returns (true, reason) — leave it, do not reopen the bead —
+// when the tree is dirty (never auto-remove uncommitted work) or the branch
+// carries landed commits (that work belongs to --resume). Otherwise it removes
+// the clean, commitless worktree and its branch and returns (false, "") so the
+// caller reopens the bead for a fresh re-dispatch.
+func (r *runner) orphanWorktreeKept(ctx context.Context, sl *ledger.Slot) (bool, string) {
+	wt := sl.Worktree
+	if wt == "" || !fsx.Exists(wt) {
+		return false, "" // no worktree — safe to reopen
+	}
+	if dirty, derr := worktree.IsDirty(ctx, wt); derr == nil && dirty {
+		return true, "dirty worktree"
+	}
+	branch := sl.Branch
+	if branch == "" {
+		branch = worktree.BranchFor(sl.PhaseID)
+	}
+	if n, cerr := r.commitCount(ctx, branch); cerr == nil && n > 0 {
+		return true, fmt.Sprintf("%d unmerged commit(s) on %s", n, branch)
+	}
+	// Clean and commitless — discard so the bead re-dispatches from a fresh tree.
+	_ = worktree.Remove(ctx, wt, false)
+	_ = worktree.DeleteBranch(ctx, r.rec.Root, branch)
+	return false, ""
+}
+
+// issueFor recovers the bead behind a slot: the in-memory wave item first,
+// then bd show, then a minimal synthetic issue (id-only) so a requeue can
+// still compile a prompt.
+func (r *runner) issueFor(ctx context.Context, sl *ledger.Slot) beads.Issue {
+	if iss, ok := r.issues[sl.PhaseID]; ok {
+		return iss
+	}
+	if iss, err := r.adapter.Show(ctx, sl.PhaseID); err == nil && iss.ID != "" {
+		r.issues[sl.PhaseID] = iss
+		return iss
+	}
+	return beads.Issue{ID: sl.PhaseID, Title: sl.PhaseID, Labels: []string{}}
+}
+
+// commitCount counts commits on branch beyond the default branch, from the
+// primary checkout.
+func (r *runner) commitCount(ctx context.Context, branch string) (int, error) {
+	res, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: r.rec.Root, Name: "git",
+		Args: []string{"rev-list", "--count", r.rec.DefaultBranch + ".." + branch},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(res.Stdout))
+}
+
+// branchHead resolves a branch tip in the primary checkout ("" on error).
+func (r *runner) branchHead(ctx context.Context, branch string) string {
+	res, err := execx.Run(ctx, execx.Cmd{
+		Dir: r.rec.Root, Name: "git", Args: []string{"rev-parse", branch},
+	})
+	if err != nil || res.ExitCode != 0 {
+		return ""
+	}
+	return strings.TrimSpace(res.Stdout)
+}

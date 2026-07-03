@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+#
+# Run locally: pre-commit run --all-files
+# CI enforces this on every PR (.github/workflows/ci.yml).
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: ^mkdocs\.yml$
+      - id: check-json
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: [-x]
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [feat, fix, docs, chore, refactor, test, ci, build, perf, style]
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -l -w
+        language: system
+        types: [go]
+      - id: go-vet
+        name: go vet
+        entry: sh -c 'go vet ./...'
+        language: system
+        pass_filenames: false
+        types: [go]
+      - id: dco-signoff
+        name: DCO sign-off (Signed-off-by)
+        entry: scripts/hooks/dco-signoff.sh
+        language: script
+        stages: [commit-msg]
+      - id: spdx-header
+        name: Apache-2.0 SPDX header
+        entry: scripts/hooks/spdx-header.sh
+        language: script
+        types_or: [go, shell, yaml, makefile]
+        exclude: ^(\.beads/|\.agents/|go\.(mod|sum))

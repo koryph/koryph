@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+#
+# GoReleaser config (v2). Snapshot-first: `make release-snapshot` builds and
+# archives locally with NO publishing. Real releases are cut deliberately by a
+# human via the release workflow (release-please chain lands in q35.2); this
+# file never publishes on --snapshot.
+version: 2
+
+project_name: koryph
+
+before:
+  hooks:
+    - go mod download
+    # Fail fast if the engine version const drifts from the release tag.
+    - sh -c 'test -z "$GORELEASER_CURRENT_TAG" || test "$GORELEASER_CURRENT_TAG" = "v$(go run ./cmd/koryph version | awk "{print \$NF}")" || { echo "internal/version.Engine != tag $GORELEASER_CURRENT_TAG"; exit 1; }'
+
+builds:
+  - id: koryph
+    main: ./cmd/koryph
+    binary: koryph
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: koryph
+    formats: [tar.gz]
+    name_template: "koryph_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+release:
+  github:
+    owner: koryph
+    name: koryph
+  prerelease: auto
