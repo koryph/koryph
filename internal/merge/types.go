@@ -26,18 +26,25 @@ package merge
 import "context"
 
 // DefaultProtected are path prefixes that may never be merged from a
-// worktree in any managed project (they control what agents may do).
+// worktree in any managed project (they control what agents may do). These are
+// hardcoded rather than left to per-project opt-in: a project that forgot to
+// list .github/ or Makefile would otherwise let an agent land a CI workflow or
+// gate Makefile that runs on the next CI/build.
 var DefaultProtected = []string{
 	"CLAUDE.md",
 	"MEMORY.md",
+	"AGENTS.md",
 	"CLAUDE-ACCOUNTS.md",
 	"koryph.project.json",
 	".claude/",
 	".beads/",
+	"hooks/",
+	"agents/",
+	".github/",
+	"Makefile",
 	"scripts/lib/",
 	".pre-commit-config.yaml",
 	".gitignore",
-	".github/CODEOWNERS",
 	".envrc",
 }
 

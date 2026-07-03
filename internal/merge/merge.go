@@ -42,13 +42,18 @@ func Protected(diffPaths, extra []string) []string {
 }
 
 // matchProtected reports whether path falls under prefix. A prefix ending in
-// "/" matches any path beneath it; otherwise it matches the exact file or a
-// path beneath a directory of that name.
+// "/" matches any path beneath it (or the bare directory itself); otherwise it
+// matches the exact file or a path beneath a directory of that name. Matching
+// is case-insensitive — so a case-insensitive filesystem like APFS cannot dodge
+// `.github/` with `.Github/` — and the path is cleaned first, so `./.github/x`
+// and `.github//x` still hit.
 func matchProtected(path, prefix string) bool {
-	if strings.HasSuffix(prefix, "/") {
-		return strings.HasPrefix(path, prefix)
+	p := strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
+	pre := strings.ToLower(prefix)
+	if strings.HasSuffix(pre, "/") {
+		return strings.HasPrefix(p, pre) || p == strings.TrimSuffix(pre, "/")
 	}
-	return path == prefix || strings.HasPrefix(path, prefix+"/")
+	return p == pre || strings.HasPrefix(p, pre+"/")
 }
 
 // Merge lands o.Branch on the default branch. Expected non-success outcomes

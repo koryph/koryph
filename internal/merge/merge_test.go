@@ -422,4 +422,32 @@ func TestProtected(t *testing.T) {
 	if got := Protected([]string{"CLAUDE.md.bak"}, nil); len(got) != 0 {
 		t.Errorf("CLAUDE.md.bak should not match CLAUDE.md, got %v", got)
 	}
+	// Newly hardcoded defaults: CI, gate Makefile, guard scripts, agents.
+	for _, p := range []string{".github/workflows/ci.yml", "Makefile", "hooks/x.sh", "agents/impl.md", "AGENTS.md"} {
+		if got := Protected([]string{p}, nil); len(got) != 1 {
+			t.Errorf("%q should be protected by default, got %v", p, got)
+		}
+	}
+	// Case-insensitive: a case-insensitive FS must not dodge .github/ via .Github/.
+	if got := Protected([]string{".Github/workflows/evil.yml"}, nil); len(got) != 1 {
+		t.Errorf(".Github/ should match .github/ case-insensitively, got %v", got)
+	}
+	if got := Protected([]string{"MAKEFILE"}, nil); len(got) != 1 {
+		t.Errorf("MAKEFILE should match Makefile case-insensitively, got %v", got)
+	}
+	// Cleaned path forms still hit.
+	if got := Protected([]string{"./.github/x.yml"}, nil); len(got) != 1 {
+		t.Errorf("./.github/x.yml should hit after cleaning, got %v", got)
+	}
+	// Boundary safety: a sibling that only shares a directory-name prefix must NOT match.
+	if got := Protected([]string{".githubfoo/x"}, nil); len(got) != 0 {
+		t.Errorf(".githubfoo/ must not match .github/, got %v", got)
+	}
+	if got := Protected([]string{"Makefile.in"}, nil); len(got) != 0 {
+		t.Errorf("Makefile.in must not match the exact Makefile rule, got %v", got)
+	}
+	// The bare protected directory itself (as a path) is caught.
+	if got := Protected([]string{".github"}, nil); len(got) != 1 {
+		t.Errorf(".github (bare dir) should be protected, got %v", got)
+	}
 }
