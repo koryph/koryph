@@ -4,10 +4,10 @@
 package doctor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +16,7 @@ import (
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/worktree"
 )
 
 // worktreeEntry is a minimal git worktree descriptor used by the orphan check.
@@ -50,7 +51,7 @@ type ProjectOptions struct {
 	// flagged as stalled (default 30 min).
 	StallThreshold time.Duration
 	// ListWorktrees lists git worktrees by path and branch for the given repo
-	// root (injectable for tests; default runs `git worktree list --porcelain`).
+	// root (injectable for tests; default delegates to worktree.List).
 	ListWorktrees func(root string) ([]worktreeEntry, error)
 }
 
@@ -421,41 +422,17 @@ func checkOrphanWorktrees(opts ProjectOptions, repoRoot string, cfg *project.Con
 
 // --- git worktree listing ---------------------------------------------------
 
-// defaultListWorktrees runs `git worktree list --porcelain` to enumerate
-// worktrees registered against repoRoot.
+// defaultListWorktrees enumerates worktrees registered against repoRoot by
+// delegating to worktree.List (which uses execx) and mapping the result to the
+// local worktreeEntry descriptor used by the orphan check.
 func defaultListWorktrees(root string) ([]worktreeEntry, error) {
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	cmd.Dir = root
-	out, err := cmd.Output()
+	infos, err := worktree.List(context.Background(), root)
 	if err != nil {
-		return nil, fmt.Errorf("git worktree list: %w", err)
+		return nil, err
 	}
-	return parseWorktreePorcelain(string(out)), nil
-}
-
-// parseWorktreePorcelain parses the output of `git worktree list --porcelain`
-// into a slice of worktreeEntry values.
-func parseWorktreePorcelain(output string) []worktreeEntry {
-	var entries []worktreeEntry
-	var cur *worktreeEntry
-	flush := func() {
-		if cur != nil {
-			entries = append(entries, *cur)
-			cur = nil
-		}
+	entries := make([]worktreeEntry, len(infos))
+	for i, info := range infos {
+		entries[i] = worktreeEntry{Path: info.Path, Branch: info.Branch}
 	}
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimRight(line, "\r")
-		switch {
-		case line == "":
-			flush()
-		case strings.HasPrefix(line, "worktree "):
-			flush()
-			cur = &worktreeEntry{Path: strings.TrimPrefix(line, "worktree ")}
-		case cur != nil && strings.HasPrefix(line, "branch "):
-			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
-		}
-	}
-	flush()
-	return entries
+	return entries, nil
 }

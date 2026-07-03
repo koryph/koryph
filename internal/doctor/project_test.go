@@ -556,19 +556,3 @@ func TestOrphanWorktreeOutsideRootIgnored(t *testing.T) {
 		t.Errorf("orphan-worktrees level=%s, want ok for path outside wtRoot", f.Level)
 	}
 }
-
-// --- parseWorktreePorcelain ---
-
-func TestParseWorktreePorcelain(t *testing.T) {
-	input := "worktree /a/b/main\nHEAD abc123\nbranch refs/heads/main\n\nworktree /a/b/w1\nHEAD def456\nbranch refs/heads/agent/proj-x\n\n"
-	got := parseWorktreePorcelain(input)
-	if len(got) != 2 {
-		t.Fatalf("got %d entries, want 2", len(got))
-	}
-	if got[0].Path != "/a/b/main" || got[0].Branch != "main" {
-		t.Errorf("entry 0: path=%s branch=%s", got[0].Path, got[0].Branch)
-	}
-	if got[1].Path != "/a/b/w1" || got[1].Branch != "agent/proj-x" {
-		t.Errorf("entry 1: path=%s branch=%s", got[1].Path, got[1].Branch)
-	}
-}
