@@ -117,14 +117,15 @@ func cmdQuotaCalibrate(args []string, stdout, stderr io.Writer) int {
 		return usageErr(stderr, "quota calibrate: --account and --window are required")
 	}
 
-	cfg, err := quota.LoadConfig(*acct)
+	// Lock-guarded read-modify-write: re-reads fresh under the flock so a
+	// concurrent run's EWMA Record calls are not clobbered (koryph-8iu.1).
+	cfg, err := quota.UpdateConfig(*acct, func(c *quota.Config) error {
+		if *planTier != "" {
+			c.PlanTier = *planTier
+		}
+		return quota.Calibrate(c, *observedUSD, *observedPct, *window)
+	})
 	if err != nil {
-		return fail(stderr, err)
-	}
-	if *planTier != "" {
-		cfg.PlanTier = *planTier
-	}
-	if err := quota.Calibrate(cfg, *observedUSD, *observedPct, *window); err != nil {
 		return fail(stderr, err)
 	}
 	ceiling := cfg.WindowCeilingUSD

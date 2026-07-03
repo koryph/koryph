@@ -82,8 +82,13 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		})
 
 		if sr.CostUSD > 0 {
-			quota.Record(r.quotaCfg, res.Model, r.sizeClass(sl.PhaseID), sr.CostUSD)
-			_ = quota.SaveConfig(r.quotaCfg)
+			model, size, cost := res.Model, r.sizeClass(sl.PhaseID), sr.CostUSD
+			if cfg, err := quota.UpdateConfig(r.quotaName(), func(c *quota.Config) error {
+				quota.Record(c, model, size, cost)
+				return nil
+			}); err == nil {
+				r.quotaCfg = cfg
+			}
 		}
 		_ = r.reg.Audit(registry.Event{
 			Kind:      "stage",

@@ -6,7 +6,9 @@ package quota
 import (
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
@@ -15,6 +17,52 @@ import (
 // configPath returns the on-disk location for an account's governor state.
 func configPath(account string) string {
 	return filepath.Join(paths.QuotaDir(), account+".json")
+}
+
+// UpdateConfig applies mutate to the account's quota config under an exclusive
+// per-account flock: it re-reads the config FRESH from disk inside the lock,
+// applies mutate, and writes it back. This is the only safe way to update the
+// EWMA calibration — the config is shared across every project on the account,
+// so two concurrent runs (or a run vs. `koryph quota calibrate`) that each
+// Load→mutate→Save their own in-memory copy would clobber each other's writes.
+// Returns the updated config so a caller can refresh its in-memory copy. A
+// mutate that returns an error aborts the write (nothing is saved).
+func UpdateConfig(account string, mutate func(*Config) error) (*Config, error) {
+	var out *Config
+	err := withConfigLock(account, func() error {
+		cfg, err := LoadConfig(account)
+		if err != nil {
+			return err
+		}
+		if err := mutate(cfg); err != nil {
+			return err
+		}
+		if err := SaveConfig(cfg); err != nil {
+			return err
+		}
+		out = cfg
+		return nil
+	})
+	return out, err
+}
+
+// withConfigLock runs fn while holding an exclusive flock on the account's quota
+// lock file. The OS releases the flock if the process dies, so a crash cannot
+// wedge quota accounting.
+func withConfigLock(account string, fn func() error) error {
+	if err := os.MkdirAll(paths.QuotaDir(), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(paths.QuotaDir(), account+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	return fn()
 }
 
 // LoadConfig reads the persisted governor config for account. A missing file
@@ -45,6 +93,9 @@ func LoadConfig(account string) (*Config, error) {
 	}
 	if cfg.PerAgentMaxUSD == 0 {
 		cfg.PerAgentMaxUSD = def.PerAgentMaxUSD
+	}
+	if cfg.SchemaVersion == 0 {
+		cfg.SchemaVersion = ConfigSchemaVersion
 	}
 	return &cfg, nil
 }

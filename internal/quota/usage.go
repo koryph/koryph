@@ -316,6 +316,9 @@ func JSONLScan(configDir string, hours int) (float64, error) {
 // Calibrate sets a window ceiling from an observed ccusage spend and the /usage
 // percentage the user read (ceiling = observed$ / (observed% / 100)) and
 // persists the config. window is "5h" or "weekly".
+// Calibrate is a pure mutation: it sets the window ceiling on cfg from the
+// observed spend/percentage. It does NOT persist — callers wrap it in
+// UpdateConfig so the write is lock-guarded against concurrent runs.
 func Calibrate(cfg *Config, observedUSD, observedPct float64, window string) error {
 	if observedPct <= 0 {
 		return fmt.Errorf("observedPct must be > 0, got %g", observedPct)
@@ -329,5 +332,5 @@ func Calibrate(cfg *Config, observedUSD, observedPct float64, window string) err
 	default:
 		return fmt.Errorf("unknown window %q (want 5h|weekly)", window)
 	}
-	return SaveConfig(cfg)
+	return nil
 }

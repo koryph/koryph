@@ -129,8 +129,15 @@ func slotAlive(pid int) bool {
 func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	if cost, ok := dispatch.ParseResultCost(sl.Stream); ok {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.CostUSD = cost })
-		quota.Record(r.quotaCfg, sl.Model, r.sizeClass(sl.PhaseID), cost)
-		_ = quota.SaveConfig(r.quotaCfg)
+		model, size := sl.Model, r.sizeClass(sl.PhaseID)
+		// Lock-guarded read-modify-write so concurrent runs on the same account
+		// don't clobber each other's EWMA calibration (koryph-8iu.1).
+		if cfg, err := quota.UpdateConfig(r.quotaName(), func(c *quota.Config) error {
+			quota.Record(c, model, size, cost)
+			return nil
+		}); err == nil {
+			r.quotaCfg = cfg
+		}
 	}
 
 	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")

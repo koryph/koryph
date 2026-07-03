@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -186,11 +187,7 @@ func TestSnapshotUnavailableFailsClosed(t *testing.T) {
 }
 
 func TestCalibrate(t *testing.T) {
-	t.Setenv("KORYPH_HOME", t.TempDir())
-	cfg, err := LoadConfig("acct")
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
+	cfg := DefaultConfig("acct")
 	// ceiling = observed$ / (observed% / 100) = 50 / 0.40 = 125
 	if err := Calibrate(cfg, 50, 40, "5h"); err != nil {
 		t.Fatalf("Calibrate: %v", err)
@@ -198,15 +195,76 @@ func TestCalibrate(t *testing.T) {
 	if math.Abs(cfg.WindowCeilingUSD-125) > 1e-9 {
 		t.Fatalf("window ceiling = %g, want 125", cfg.WindowCeilingUSD)
 	}
-	// Persisted.
+	// Calibrate is a pure mutation now — it does NOT persist on its own.
+	if err := Calibrate(cfg, 10, 0, "5h"); err == nil {
+		t.Fatal("Calibrate with 0%% should error")
+	}
+}
+
+func TestUpdateConfigPersistsAndBackfillsSchema(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	cfg, err := UpdateConfig("acct", func(c *Config) error {
+		return Calibrate(c, 50, 40, "5h")
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	if math.Abs(cfg.WindowCeilingUSD-125) > 1e-9 {
+		t.Errorf("returned ceiling = %g, want 125", cfg.WindowCeilingUSD)
+	}
 	reloaded, err := LoadConfig("acct")
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	if math.Abs(reloaded.WindowCeilingUSD-125) > 1e-9 {
-		t.Fatalf("persisted ceiling = %g, want 125", reloaded.WindowCeilingUSD)
+		t.Errorf("persisted ceiling = %g, want 125", reloaded.WindowCeilingUSD)
 	}
-	if err := Calibrate(cfg, 10, 0, "5h"); err == nil {
-		t.Fatal("Calibrate with 0%% should error")
+	if reloaded.SchemaVersion != ConfigSchemaVersion {
+		t.Errorf("schema_version = %d, want %d", reloaded.SchemaVersion, ConfigSchemaVersion)
+	}
+	// A mutate that errors must not persist.
+	if _, err := UpdateConfig("acct", func(c *Config) error {
+		c.WeeklyCeilingUSD = 999
+		return Calibrate(c, 10, 0, "weekly") // errors on 0%
+	}); err == nil {
+		t.Fatal("UpdateConfig should surface the mutate error")
+	}
+	after, _ := LoadConfig("acct")
+	if after.WeeklyCeilingUSD == 999 {
+		t.Error("errored mutate persisted its partial change; write must be aborted")
+	}
+}
+
+// TestUpdateConfigNoLostUpdates runs many concurrent EWMA records against one
+// account and asserts every one is reflected — the flock read-modify-write must
+// not lose writes the way the old Load→mutate→Save-in-memory pattern did.
+func TestUpdateConfigNoLostUpdates(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	const n = 40
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("tier%d:M", i)
+			_, _ = UpdateConfig("acct", func(c *Config) error {
+				if c.Calibration == nil {
+					c.Calibration = map[string]float64{}
+				}
+				c.Calibration[key] = float64(i)
+				return nil
+			})
+		}(i)
+	}
+	wg.Wait()
+	cfg, err := LoadConfig("acct")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("tier%d:M", i)
+		if got, ok := cfg.Calibration[key]; !ok || got != float64(i) {
+			t.Errorf("calibration[%s] = %v (present=%v), want %d — a concurrent write was lost", key, got, ok, i)
+		}
 	}
 }

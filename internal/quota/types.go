@@ -77,9 +77,14 @@ type Usage struct {
 	Weekly   Window `json:"weekly"`
 }
 
+// ConfigSchemaVersion is the current on-disk schema for the per-account quota
+// config. Files without it (pre-versioning) still load and are backfilled.
+const ConfigSchemaVersion = 1
+
 // Config is per-account governor configuration + calibration state,
 // persisted at ~/.koryph/quota/<account>.json.
 type Config struct {
+	SchemaVersion    int                `json:"schema_version,omitempty"`
 	Account          string             `json:"account"`
 	WindowCeilingUSD float64            `json:"window_ceiling_usd"`
 	WeeklyCeilingUSD float64            `json:"weekly_ceiling_usd"`
@@ -94,6 +99,7 @@ type Config struct {
 // DefaultConfig returns uncalibrated defaults for a new account profile.
 func DefaultConfig(account string) *Config {
 	return &Config{
+		SchemaVersion:  ConfigSchemaVersion,
 		Account:        account,
 		PerAgentMaxUSD: 25,
 		PerTierUSD:     map[string]float64{"haiku": 0.4, "sonnet": 3.0, "opus": 9.0, "fable": 15.0},
