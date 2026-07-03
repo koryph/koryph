@@ -333,62 +333,13 @@ func RunJIRA(ctx context.Context, opts JIRAOptions) (*Result, error) {
 		return nil, fmt.Errorf("intake/jira: list issues %s/%s: %w", host, opts.ProjectKey, err)
 	}
 
-	res := &Result{Owner: host, Repo: opts.ProjectKey}
-	for _, iss := range issues {
-		provKey := client.Provenance(host, opts.ProjectKey, iss.Number)
-
-		// Idempotency: primary lookup via external-ref, then label fallback.
-		existing, derr := bd.ListByExternalRef(ctx, provKey)
-		if derr != nil {
-			return nil, fmt.Errorf("intake/jira: dedupe check for #%d: %w", iss.Number, derr)
-		}
-		if len(existing) == 0 {
-			existing, derr = bd.ListByLabel(ctx, provKey)
-			if derr != nil {
-				return nil, fmt.Errorf("intake/jira: dedupe label fallback for #%d: %w", iss.Number, derr)
-			}
-		}
-		if len(existing) > 0 {
-			res.Skipped = append(res.Skipped, Item{
-				Number: iss.Number,
-				Title:  iss.Title,
-				BeadID: existing[0].ID,
-				Reason: "already ingested",
-			})
-			continue
-		}
-
-		item := Item{Number: iss.Number, Title: iss.Title}
-		if opts.DryRun {
-			item.Reason = "would ingest (dry-run)"
-			res.Ingested = append(res.Ingested, item)
-			continue
-		}
-
-		id, cerr := bd.Create(ctx, beads.CreateInput{
-			Title:       iss.Title,
-			Description: buildJIRADescription(host, opts.ProjectKey, iss),
-			Labels:      []string{provKey, labelIntake, labelNoDispatch},
-			Priority:    priorityFor(iss),
-			IssueType:   issueTypeFor(iss),
-			ExternalRef: provKey,
-		})
-		if cerr != nil {
-			return nil, fmt.Errorf("intake/jira: create bead for #%d: %w", iss.Number, cerr)
-		}
-		item.BeadID = id
-
-		if opts.CommentBack {
-			body := fmt.Sprintf("Tracked as bead %s for planning.", id)
-			if gerr := client.Comment(ctx, host, opts.ProjectKey, iss.Number, body); gerr != nil {
-				item.Reason = "comment-back failed: " + gerr.Error()
-			} else {
-				item.Reason = "commented"
-			}
-		}
-		res.Ingested = append(res.Ingested, item)
-	}
-	return res, nil
+	return ingest(ctx, bd, client, host, opts.ProjectKey, issues, ingestOptions{
+		errPrefix:   "intake/jira",
+		DryRun:      opts.DryRun,
+		CommentBack: opts.CommentBack,
+	}, func(iss SourceIssue) string {
+		return buildJIRADescription(host, opts.ProjectKey, iss)
+	})
 }
 
 // --- helpers ---------------------------------------------------------------

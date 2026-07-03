@@ -109,84 +109,22 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("intake: list issues %s/%s: %w", owner, repo, err)
 	}
 
-	// legacyProvenancer is an optional interface implemented by Sources that
-	// can also produce the pre-v1 unqualified key (e.g. "gh-42") for
-	// backward-compatible deduplication of beads created before repo
-	// qualification was introduced.
-	type legacyProvenancer interface {
-		legacyProvenance(number int) string
+	iopts := ingestOptions{
+		errPrefix:   "intake",
+		DryRun:      opts.DryRun,
+		CommentBack: opts.CommentBack,
+	}
+	// Legacy-key dedup is GitHub-only: the pre-v1 unqualified key ("gh-<n>")
+	// was only ever emitted by the GitHub path. Enabling it explicitly here
+	// (rather than sniffing the type inside the shared loop) keeps the
+	// divergence intentional and confined to the GitHub wrapper.
+	if lp, ok := src.(legacyProvenancer); ok {
+		iopts.legacyKey = lp.legacyProvenance
 	}
 
-	res := &Result{Owner: owner, Repo: repo}
-	for _, iss := range issues {
-		provKey := src.Provenance(owner, repo, iss.Number)
-
-		// Idempotency: look up by external-ref (the canonical dedup key). Fall
-		// back to the provenance label for beads created before external-ref was
-		// introduced, so a first run after an upgrade does not re-ingest them.
-		existing, derr := bd.ListByExternalRef(ctx, provKey)
-		if derr != nil {
-			return nil, fmt.Errorf("intake: dedupe check for #%d: %w", iss.Number, derr)
-		}
-		if len(existing) == 0 {
-			existing, derr = bd.ListByLabel(ctx, provKey)
-			if derr != nil {
-				return nil, fmt.Errorf("intake: dedupe label fallback for #%d: %w", iss.Number, derr)
-			}
-		}
-		// Backward-compat: also check the pre-v1 unqualified key (gh-<number>)
-		// so beads created by older koryph intake runs are not re-ingested.
-		if len(existing) == 0 {
-			if lp, ok := src.(legacyProvenancer); ok {
-				oldKey := lp.legacyProvenance(iss.Number)
-				existing, _ = bd.ListByExternalRef(ctx, oldKey)
-				if len(existing) == 0 {
-					existing, _ = bd.ListByLabel(ctx, oldKey)
-				}
-			}
-		}
-		if len(existing) > 0 {
-			res.Skipped = append(res.Skipped, Item{
-				Number: iss.Number,
-				Title:  iss.Title,
-				BeadID: existing[0].ID,
-				Reason: "already ingested",
-			})
-			continue
-		}
-
-		item := Item{Number: iss.Number, Title: iss.Title}
-		if opts.DryRun {
-			item.Reason = "would ingest (dry-run)"
-			res.Ingested = append(res.Ingested, item)
-			continue
-		}
-
-		id, cerr := bd.Create(ctx, beads.CreateInput{
-			Title:       iss.Title,
-			Description: buildDescription(owner, repo, iss),
-			Labels:      []string{provKey, labelIntake, labelNoDispatch},
-			Priority:    priorityFor(iss),
-			IssueType:   issueTypeFor(iss),
-			ExternalRef: provKey,
-		})
-		if cerr != nil {
-			return nil, fmt.Errorf("intake: create bead for #%d: %w", iss.Number, cerr)
-		}
-		item.BeadID = id
-
-		if opts.CommentBack {
-			body := fmt.Sprintf("Tracked as bead %s for planning.", id)
-			if gerr := src.Comment(ctx, owner, repo, iss.Number, body); gerr != nil {
-				// Non-fatal: the bead already exists; record the miss.
-				item.Reason = "comment-back failed: " + gerr.Error()
-			} else {
-				item.Reason = "commented"
-			}
-		}
-		res.Ingested = append(res.Ingested, item)
-	}
-	return res, nil
+	return ingest(ctx, bd, src, owner, repo, issues, iopts, func(iss SourceIssue) string {
+		return buildDescription(owner, repo, iss)
+	})
 }
 
 // priorityFor maps a p0/p1/p2/p3 issue label to that bd priority (0..3),
