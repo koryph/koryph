@@ -143,9 +143,12 @@ type Config struct {
 	EngineVersion string `json:"engine_version,omitempty"`
 
 	// CommitStyle governs agent commit messages: "conventional" (default,
-	// also when empty) or "custom" (CommitTemplate required). Projects can
-	// additionally map Stages["commit"] to a persona whose guidance agents
-	// consult for commit authoring.
+	// also when empty) is mechanically enforced at merge/PR time (every
+	// commit subject in def..branch must match type(scope): subject);
+	// "custom" (CommitTemplate required) governs via the template and is not
+	// conventional-validated; "none" opts out of enforcement entirely.
+	// Projects can additionally map Stages["commit"] to a persona whose
+	// guidance agents consult for commit authoring.
 	CommitStyle    string `json:"commit_style,omitempty"`
 	CommitTemplate string `json:"commit_template,omitempty"`
 
@@ -227,13 +230,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("gate must have at least one command")
 	}
 	switch c.CommitStyle {
-	case "", "conventional":
+	case "", "conventional", "none":
 	case "custom":
 		if c.CommitTemplate == "" {
 			return fmt.Errorf("commit_style custom requires commit_template")
 		}
 	default:
-		return fmt.Errorf("commit_style must be conventional|custom, got %q", c.CommitStyle)
+		return fmt.Errorf("commit_style must be conventional|custom|none, got %q", c.CommitStyle)
 	}
 	if c.Signing != nil {
 		if err := c.Signing.Validate(); err != nil {
@@ -247,6 +250,14 @@ func (c *Config) Validate() error {
 		return err
 	}
 	return nil
+}
+
+// EnforceConventional reports whether the merge/PR paths must validate commit
+// subjects against the Conventional Commits grammar. It is ON by default
+// (empty or "conventional") and disabled only by an explicit "none" opt-out;
+// "custom" defers to CommitTemplate and is not conventional-validated.
+func (c *Config) EnforceConventional() bool {
+	return c.CommitStyle == "" || c.CommitStyle == "conventional"
 }
 
 // validateIntake enforces the intake source list contract: every source has a

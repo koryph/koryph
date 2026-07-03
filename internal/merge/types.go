@@ -64,6 +64,15 @@ type Opts struct {
 	// untouched and the merge slot is released.
 	RequireSigned bool
 
+	// RequireConventional rejects the merge when any commit subject in
+	// <default>..<branch> fails the Conventional Commits grammar
+	// (type(scope): subject). Read-only and BEFORE any mutation, like the
+	// protected-path and signature checks. Failures return
+	// Result{Status: "commit-style"} listing the offending subjects; the
+	// engine bounces the bead back to the implementer. Enforcement is a
+	// project-config default (commit_style), disabled only by opt-out.
+	RequireConventional bool
+
 	// Slot serializes concurrent merges (bd mutex in production). When nil,
 	// no cross-process locking is performed. Acquired at the start of Merge
 	// and released on every exit path.
@@ -98,7 +107,7 @@ type PROpener interface {
 
 // Result reports a merge attempt.
 type Result struct {
-	Status     string   `json:"status"` // merged|pr-opened|conflict|gate-failed|protected|unsigned|pr-no-remote|pr-no-gh|error
+	Status     string   `json:"status"` // merged|pr-opened|conflict|gate-failed|protected|unsigned|commit-style|pr-no-remote|pr-no-gh|error
 	MergedSHA  string   `json:"merged_sha,omitempty"`
 	GateOutput string   `json:"gate_output,omitempty"`
 	Protected  []string `json:"protected_paths,omitempty"`

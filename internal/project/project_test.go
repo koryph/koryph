@@ -134,6 +134,51 @@ func TestConfig_PipelineValidation(t *testing.T) {
 	}
 }
 
+func TestConfig_CommitStyleValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		style    string
+		template string
+		wantErr  string
+	}{
+		{"empty is fine", "", "", ""},
+		{"conventional", "conventional", "", ""},
+		{"none opts out", "none", "", ""},
+		{"custom needs template", "custom", "", "requires commit_template"},
+		{"custom with template", "custom", "JIRA-123: subject", ""},
+		{"unknown value", "bogus", "", "commit_style must be conventional|custom|none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default("proj")
+			c.CommitStyle = tc.style
+			c.CommitTemplate = tc.template
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfig_EnforceConventional(t *testing.T) {
+	cases := map[string]bool{
+		"":             true,
+		"conventional": true,
+		"none":         false,
+		"custom":       false,
+	}
+	for style, want := range cases {
+		c := &Config{CommitStyle: style}
+		if got := c.EnforceConventional(); got != want {
+			t.Errorf("EnforceConventional(commit_style=%q) = %v, want %v", style, got, want)
+		}
+	}
+}
+
 // assertNoZeroFields recursively asserts that v (and every field it transitively
 // contains) is non-zero: nil pointers, empty strings/slices/maps, zero numbers
 // and false bools all fail. It descends into structs, pointer-to-struct, and

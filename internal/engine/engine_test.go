@@ -34,6 +34,7 @@ type fixOpts struct {
 	migrationStatus  string // default validated
 	workSource       string // default bd
 	mergePolicy      string // default auto
+	commitStyle      string // default "" (conventional enforcement on)
 	// pipeline, when set, is written to the project config AND swaps in a
 	// persona-aware fake claude that commits a file named after its --agent
 	// (so implementer vs stage commits are distinguishable).
@@ -199,6 +200,7 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 		PlansDir:           map[bool]string{true: "docs/plans", false: ""}[o.workSource == "markdown"],
 		Gate:               []string{"true"},
 		MergePolicy:        o.mergePolicy,
+		CommitStyle:        o.commitStyle,
 		RiskTierDefault:    1,
 		MaxConcurrentSlots: 2,
 		Pipeline:           o.pipeline,

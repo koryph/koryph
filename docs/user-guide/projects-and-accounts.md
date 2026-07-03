@@ -30,12 +30,22 @@ Created by `koryph onboard`, validated by `koryph validate`.
 | `protected_paths` | array | — | Paths that, if touched by a worktree diff, block merge. Extends the engine default list. |
 | `validation` | array | — | Extra commands run by `koryph validate` beyond engine checks. |
 | `engine_version` | string | any | Minimum engine required: `"0.2+"`, `">=0.2.0"`, or a bare version. |
-| `commit_style` | string | `"conventional"` | `"conventional"` or `"custom"`. |
+| `commit_style` | string | `"conventional"` | `"conventional"`, `"custom"`, or `"none"`. `conventional` (also when empty) is **mechanically enforced** at merge/PR time; `custom` defers to `commit_template`; `none` opts out of enforcement. |
 | `commit_template` | string | — | Required when `commit_style` is `"custom"`. |
 | `merge_policy` | string | — | Default merge behaviour: `"manual"`, `"auto"`, or `"pr"`. Required. |
 | `risk_tier_default` | int | 2 | Recovery tier (0–3) for beads without an `rt:*` label. |
 | `max_concurrent_slots` | int | 3 | Wave width cap for this project. |
 | `dispatch_stagger_seconds` | int | 8 | Seconds between agent launches within a wave. |
+
+**Conventional commits are enforced by default.** With `commit_style` unset or
+`"conventional"`, the merge and PR paths validate every commit subject in
+`<default>..<branch>` against the Conventional Commits grammar
+(`type(scope): subject`; types `feat|fix|docs|chore|refactor|test|ci|build|perf|style`)
+before any merge or PR. A non-conforming subject bounces the bead back to the
+implementer once — like a gate failure — and blocks it if the violation persists;
+nothing non-conventional lands. Set `commit_style` to `"none"` to opt out, or
+`"custom"` (with `commit_template`) to govern messages by a project template
+instead.
 
 ### Minimal example
 

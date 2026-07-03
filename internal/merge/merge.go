@@ -110,6 +110,23 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		}
 	}
 
+	// (3c) commit-style validation — read-only, BEFORE any mutation like the
+	// checks above. Every candidate subject in <def>..<branch> must match the
+	// Conventional Commits grammar. Enforced by default (project commit_style),
+	// and shared by the ff-merge and PR-open paths.
+	if o.RequireConventional {
+		subjects, serr := logSubjects(ctx, o.RepoRoot, def, o.Branch)
+		if serr != nil {
+			return Result{Status: "error"}, serr
+		}
+		if bad := nonConventionalSubjects(subjects); len(bad) > 0 {
+			return Result{
+				Status:     "commit-style",
+				GateOutput: "non-conventional commit subject(s) on " + o.Branch + ":\n" + strings.Join(bad, "\n"),
+			}, nil
+		}
+	}
+
 	// (4) sync the LOCAL default branch so the rebase base and the ff-merge
 	// target are the SAME ref. The engine previously rebased onto origin/<def>
 	// but ff-merged into local <def>; when the two diverged (e.g. a config

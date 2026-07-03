@@ -34,6 +34,10 @@ const gateRequeueNote = "gate-failed requeue"
 // merge-error requeue; a second merge failure blocks instead of looping.
 const mergeErrorRequeueNote = "merge-error requeue"
 
+// commitStyleRequeueNote marks a slot bounced once for non-conventional commit
+// subjects; a second commit-style failure blocks instead of looping.
+const commitStyleRequeueNote = "commit-style requeue"
+
 // mergeErrorRetryable reports whether a slot whose merge just errored should be
 // requeued for one more attempt rather than blocked. A merge error is usually
 // transient — the base moved, a push raced — and requeueSlot Force-rebases the
@@ -235,16 +239,17 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 // mergeSlot lands a review-clean candidate on the default branch.
 func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 	res, err := merge.Merge(ctx, merge.Opts{
-		RepoRoot:      r.rec.Root,
-		Branch:        sl.Branch,
-		DefaultBranch: r.rec.DefaultBranch,
-		Gate:          r.cfg.Gate,
-		Extra:         r.cfg.ProtectedPaths,
-		Push:          true, // merge itself skips push when no remote exists
-		SlotOwner:     r.owner,
-		SlotRetries:   3,
-		Slot:          r.slotLocker(ctx),
-		RequireSigned: r.requireSigned(),
+		RepoRoot:            r.rec.Root,
+		Branch:              sl.Branch,
+		DefaultBranch:       r.rec.DefaultBranch,
+		Gate:                r.cfg.Gate,
+		Extra:               r.cfg.ProtectedPaths,
+		Push:                true, // merge itself skips push when no remote exists
+		SlotOwner:           r.owner,
+		SlotRetries:         3,
+		Slot:                r.slotLocker(ctx),
+		RequireSigned:       r.requireSigned(),
+		RequireConventional: r.cfg.EnforceConventional(),
 	})
 	if err != nil {
 		// A merge error is usually transient (base moved, push raced). Self-heal
@@ -315,6 +320,20 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "gate-failed")
 		r.progress("bead %s: blocked (gate failed after requeue)", sl.PhaseID)
 
+	case "commit-style":
+		if sl.Note != commitStyleRequeueNote && sl.Attempts < ledger.MaxAttempts {
+			r.progress("bead %s: non-conventional commit subject(s) — bouncing to the implementer to reword",
+				sl.PhaseID)
+			r.requeueSlot(ctx, sl, "", commitStyleRequeueNote)
+			return true
+		}
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = "commit-style failed after requeue: " + tailOf(res.GateOutput, 400)
+		})
+		r.checkpointSlot(sl, "commit-style")
+		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
+
 	case "conflict":
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotConflict
@@ -358,19 +377,20 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 	iss := r.issueFor(ctx, sl)
 	res, err := merge.Merge(ctx, merge.Opts{
-		RepoRoot:      r.rec.Root,
-		Branch:        sl.Branch,
-		DefaultBranch: r.rec.DefaultBranch,
-		Gate:          r.cfg.Gate,
-		Extra:         r.cfg.ProtectedPaths,
-		SlotOwner:     r.owner,
-		SlotRetries:   3,
-		Slot:          r.slotLocker(ctx),
-		RequireSigned: r.requireSigned(),
-		OpenPR:        true,
-		KeepWorktree:  true, // the branch parks for a later landing step
-		PRTitle:       prTitle(iss),
-		PRBody:        prBody(iss, r.run.RunID),
+		RepoRoot:            r.rec.Root,
+		Branch:              sl.Branch,
+		DefaultBranch:       r.rec.DefaultBranch,
+		Gate:                r.cfg.Gate,
+		Extra:               r.cfg.ProtectedPaths,
+		SlotOwner:           r.owner,
+		SlotRetries:         3,
+		Slot:                r.slotLocker(ctx),
+		RequireSigned:       r.requireSigned(),
+		RequireConventional: r.cfg.EnforceConventional(),
+		OpenPR:              true,
+		KeepWorktree:        true, // the branch parks for a later landing step
+		PRTitle:             prTitle(iss),
+		PRBody:              prBody(iss, r.run.RunID),
 	})
 	if err != nil {
 		// A push or gh error is usually config/auth (not a transient rebase

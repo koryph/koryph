@@ -405,16 +405,17 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	}
 
 	res, merr := merge.Merge(ctx, merge.Opts{
-		RepoRoot:      rec.Root,
-		Branch:        branch,
-		DefaultBranch: rec.DefaultBranch,
-		Gate:          cfg.Gate,
-		Extra:         cfg.ProtectedPaths,
-		Squash:        *squash,
-		KeepWorktree:  *keepWorktree,
-		Push:          *push,
-		Slot:          nil,
-		RequireSigned: cfg.Signing != nil && cfg.Signing.Required,
+		RepoRoot:            rec.Root,
+		Branch:              branch,
+		DefaultBranch:       rec.DefaultBranch,
+		Gate:                cfg.Gate,
+		Extra:               cfg.ProtectedPaths,
+		Squash:              *squash,
+		KeepWorktree:        *keepWorktree,
+		Push:                *push,
+		Slot:                nil,
+		RequireSigned:       cfg.Signing != nil && cfg.Signing.Required,
+		RequireConventional: cfg.EnforceConventional(),
 	})
 	if perr := printJSON(stdout, res); perr != nil {
 		return fail(stderr, perr)
