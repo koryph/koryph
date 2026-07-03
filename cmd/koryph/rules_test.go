@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/paths"
 )
 
 func TestRulesInstallCreatesWiring(t *testing.T) {
@@ -20,12 +22,27 @@ func TestRulesInstallCreatesWiring(t *testing.T) {
 	if !strings.Contains(out, "agent-boundary-guard") || !strings.Contains(out, "settings.json: created") {
 		t.Errorf("unexpected output:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(root, "hooks", "worktree-guard.sh")); err != nil {
-		t.Errorf("hook script not installed: %v", err)
+	// Guard scripts install CENTRALLY (agent-unwritable), not into the worktree.
+	if _, err := os.Stat(filepath.Join(paths.HooksDir(), "worktree-guard.sh")); err != nil {
+		t.Errorf("hook script not installed to central HooksDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "hooks", "worktree-guard.sh")); err == nil {
+		t.Error("hook script installed into the worktree; must live outside the agent's write scope")
 	}
 	data, err := os.ReadFile(filepath.Join(root, ".claude", "settings.json"))
-	if err != nil || !strings.Contains(string(data), "bd prime") {
-		t.Errorf("settings.json missing bd prime hook (err %v):\n%s", err, data)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "bd prime") {
+		t.Errorf("settings.json missing bd prime hook:\n%s", s)
+	}
+	// Hooks are wired via KORYPH_HOME, never the agent-writable project dir.
+	if !strings.Contains(s, "${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh") {
+		t.Errorf("settings.json does not reference the central KORYPH_HOME hook path:\n%s", s)
+	}
+	if strings.Contains(s, "CLAUDE_PROJECT_DIR") {
+		t.Errorf("settings.json still references CLAUDE_PROJECT_DIR (worktree-writable):\n%s", s)
 	}
 }
 

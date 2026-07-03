@@ -10,8 +10,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/scaffold"
 )
+
+// centralHooks points KORYPH_HOME (and thus paths.HooksDir) at a temp dir so
+// hook installation is hermetic — the guard scripts install centrally now, not
+// into the project worktree.
+func centralHooks(t *testing.T) {
+	t.Helper()
+	t.Setenv("KORYPH_HOME", t.TempDir())
+}
 
 func readSettings(t *testing.T, root string) map[string]any {
 	t.Helper()
@@ -37,6 +46,7 @@ func settingsBlob(t *testing.T, root string) string {
 }
 
 func TestInstallCreatesHooksAndSettings(t *testing.T) {
+	centralHooks(t)
 	root := t.TempDir()
 	hookResults, settings, err := Install(root, false)
 	if err != nil {
@@ -56,20 +66,67 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 		if !found {
 			t.Errorf("hook %q not installed: %+v", want, hookResults)
 		}
-		fi, err := os.Stat(filepath.Join(root, "hooks", want+".sh"))
+		fi, err := os.Stat(filepath.Join(paths.HooksDir(), want+".sh"))
 		if err != nil {
-			t.Fatalf("hook script %q missing: %v", want, err)
+			t.Fatalf("hook script %q missing from central HooksDir: %v", want, err)
 		}
 		if fi.Mode().Perm()&0o111 == 0 {
 			t.Errorf("hook %q not executable (mode %v)", want, fi.Mode())
 		}
+		if _, err := os.Stat(filepath.Join(root, "hooks", want+".sh")); err == nil {
+			t.Errorf("hook %q installed into the worktree; must live outside agent write scope", want)
+		}
 	}
-	// Settings carry the koryph wiring.
+	// Settings carry the koryph wiring, referenced via KORYPH_HOME (not the
+	// agent-writable project dir).
 	blob := settingsBlob(t, root)
-	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "bd prime", "Bash(git push --force*)"} {
+	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "bd prime", "Bash(git push --force*)", "${KORYPH_HOME:-$HOME/.koryph}/hooks/"} {
 		if !strings.Contains(blob, want) {
 			t.Errorf("settings.json missing %q:\n%s", want, blob)
 		}
+	}
+	if strings.Contains(blob, "CLAUDE_PROJECT_DIR") {
+		t.Errorf("settings.json references the agent-writable CLAUDE_PROJECT_DIR:\n%s", blob)
+	}
+}
+
+// TestMergeMigratesLegacyHookPath proves an old worktree-relative guard
+// registration (${CLAUDE_PROJECT_DIR}/hooks/...) is rewritten in place to the
+// central KORYPH_HOME path, not left dangling or duplicated.
+func TestMergeMigratesLegacyHookPath(t *testing.T) {
+	centralHooks(t)
+	root := t.TempDir()
+	writeJSON(t, root, `{
+	  "hooks": {
+	    "PreToolUse": [
+	      {"matcher":"Bash","hooks":[{"type":"command","command":"\"${CLAUDE_PROJECT_DIR}/hooks/agent-boundary-guard.sh\""}]},
+	      {"matcher":"Bash|Edit|Write","hooks":[{"type":"command","command":"\"${CLAUDE_PROJECT_DIR}/hooks/worktree-guard.sh\""}]}
+	    ]
+	  },
+	  "permissions": {"allow": [], "deny": []}
+	}`)
+
+	action, err := MergeSettings(root, false)
+	if err != nil {
+		t.Fatalf("MergeSettings: %v", err)
+	}
+	if action != SettingsMerged {
+		t.Errorf("action = %q, want merged (legacy path rewritten)", action)
+	}
+	blob := settingsBlob(t, root)
+	if strings.Contains(blob, "CLAUDE_PROJECT_DIR") {
+		t.Errorf("legacy CLAUDE_PROJECT_DIR path not migrated:\n%s", blob)
+	}
+	if !strings.Contains(blob, "${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh") {
+		t.Errorf("migrated command missing:\n%s", blob)
+	}
+	// No duplication: exactly one entry per guard.
+	if n := strings.Count(blob, "agent-boundary-guard.sh"); n != 1 {
+		t.Errorf("agent-boundary-guard.sh appears %d times, want 1 (migrated in place)", n)
+	}
+	// A second merge is now a no-op.
+	if action, _ := MergeSettings(root, false); action != SettingsUnchanged {
+		t.Errorf("second merge = %q, want unchanged", action)
 	}
 }
 
@@ -109,6 +166,7 @@ func TestMergePreservesUserSettings(t *testing.T) {
 }
 
 func TestMergeIdempotent(t *testing.T) {
+	centralHooks(t)
 	root := t.TempDir()
 	if _, _, err := Install(root, false); err != nil {
 		t.Fatal(err)

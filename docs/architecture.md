@@ -210,15 +210,21 @@ missing file, unparseable JSON, empty email, or mismatch **fails closed**: the
 run exits fatal rather than dispatching under a guessed account.
 
 The environment is built explicitly by `account.Env`, never inherited from
-ambient shell state. It scrubs `CLAUDE_CONFIG_DIR` and `ANTHROPIC_API_KEY` from
-the parent env, then injects `CLAUDE_CONFIG_DIR` only for a work/custom profile
-(a personal profile leaves it unset and never points at `~/.claude`), and
-injects `ANTHROPIC_API_KEY` only when billing is `BillingAPIKey`. The dispatch
-backend re-verifies identity per dispatch as belt-and-braces, recording the
-`VerifiedIdentity` on the ledger slot. Headless agents run
-`--permission-mode dontAsk`, and the shipped `hooks/` (agent-boundary + worktree
-guards) deterministically block an agent from `git checkout main`, `git merge`,
-`git push`, `bd close`, or touching another worktree.
+ambient shell state. The child environment is built from a credential-free
+**allowlist** (`account.ChildEnv`): only known-safe operational variables pass
+through, so tokens (`GH_TOKEN`, `VAULT_TOKEN`, `AWS_*`) and the operator's
+ambient `SSH_AUTH_SOCK` are dropped by omission. It then injects only
+`CLAUDE_CONFIG_DIR` for a work/custom profile (a personal profile leaves it
+unset and never points at `~/.claude`), `ANTHROPIC_API_KEY` when billing is
+`BillingAPIKey`, and the **scoped signing socket** (a koryph-managed ssh-agent
+holding only the commit-signing key). The dispatch backend re-verifies identity
+per dispatch as belt-and-braces, recording the `VerifiedIdentity` on the ledger
+slot. Headless agents run `--permission-mode dontAsk`, and the guard hooks
+(agent-boundary + worktree) — installed under `KORYPH_HOME`, **outside** any
+agent's writable worktree, so an agent cannot neuter its own guards —
+deterministically block an agent from `git checkout main`, `git merge`,
+`git push`, `bd close`, touching another worktree, or writing koryph's own
+enforcement surface (`hooks/`, `.claude/`, `agents/`).
 
 ## Billing & quota governance
 

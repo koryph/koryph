@@ -20,6 +20,7 @@ import (
 
 	"github.com/koryph/koryph/hooks"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
@@ -39,9 +40,16 @@ type hookSpec struct {
 	marker  string // substring identifying an equivalent existing hook
 }
 
+// Guard hooks are referenced from KORYPH_HOME, NOT ${CLAUDE_PROJECT_DIR}: for a
+// dispatched agent CLAUDE_PROJECT_DIR is its own worktree, so a worktree-local
+// guard could be overwritten by the very agent it constrains. The scripts live
+// centrally (paths.HooksDir), outside any agent's write scope. Claude Code runs
+// hook commands via `sh -c`, so ${KORYPH_HOME:-$HOME/.koryph} expands whether or
+// not KORYPH_HOME is exported (dispatched agents get it exported; interactive
+// sessions fall back to the default home).
 var koryphHooks = []hookSpec{
-	{event: "PreToolUse", matcher: "Bash", command: `"${CLAUDE_PROJECT_DIR}/hooks/agent-boundary-guard.sh"`, marker: "agent-boundary-guard.sh"},
-	{event: "PreToolUse", matcher: "Bash|Edit|Write", command: `"${CLAUDE_PROJECT_DIR}/hooks/worktree-guard.sh"`, marker: "worktree-guard.sh"},
+	{event: "PreToolUse", matcher: "Bash", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh"`, marker: "agent-boundary-guard.sh"},
+	{event: "PreToolUse", matcher: "Bash|Edit|Write", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/worktree-guard.sh"`, marker: "worktree-guard.sh"},
 	{event: "SessionStart", command: "bd prime --hook-json", marker: "bd prime"},
 }
 
@@ -54,10 +62,11 @@ var koryphDeny = []string{
 	"Read(**/*.pem)", "Read(**/*.key)",
 }
 
-// Install installs the hook scripts and merges the settings wiring. It returns
-// the per-hook copy results and the settings-merge outcome.
+// Install installs the hook scripts into the central, agent-unwritable
+// paths.HooksDir (NOT the project worktree) and merges the settings wiring. It
+// returns the per-hook copy results and the settings-merge outcome.
 func Install(root string, force bool) ([]scaffold.Result, string, error) {
-	hookResults, err := scaffold.CopyEmbed(hooks.FS, filepath.Join(root, "hooks"), force, 0o755)
+	hookResults, err := scaffold.CopyEmbed(hooks.FS, paths.HooksDir(), force, 0o755)
 	if err != nil {
 		return nil, "", err
 	}
@@ -120,10 +129,11 @@ func mergeInto(cur map[string]any) (changed, ok bool) {
 		if !ok {
 			return false, false
 		}
-		if !hookPresent(arr, h.marker) {
-			hks[h.event] = append(arr, hookEntry(h))
+		newArr, ch := ensureHook(arr, h)
+		if ch {
 			changed = true
 		}
+		hks[h.event] = newArr
 	}
 	cur["hooks"] = hks
 
@@ -170,24 +180,36 @@ func getSlice(m map[string]any, key string) ([]any, bool) {
 	return s, ok
 }
 
-// hookPresent reports whether any entry in arr already carries a command hook
-// whose command contains marker.
-func hookPresent(arr []any, marker string) bool {
+// ensureHook makes arr carry exactly one up-to-date koryph hook for h. If an
+// entry already matches h.marker but its command differs (e.g. a legacy
+// ${CLAUDE_PROJECT_DIR}/hooks/... registration), the command is rewritten in
+// place — this migrates old worktree-relative guards to the central path. If no
+// entry matches the marker, a fresh entry is appended. Non-koryph hooks are
+// untouched. changed reports whether arr was modified.
+func ensureHook(arr []any, h hookSpec) (out []any, changed bool) {
 	for _, e := range arr {
 		em, ok := e.(map[string]any)
 		if !ok {
 			continue
 		}
 		inner, _ := em["hooks"].([]any)
-		for _, h := range inner {
-			if hm, ok := h.(map[string]any); ok {
-				if cmd, ok := hm["command"].(string); ok && strings.Contains(cmd, marker) {
-					return true
-				}
+		for _, hk := range inner {
+			hm, ok := hk.(map[string]any)
+			if !ok {
+				continue
 			}
+			cmd, ok := hm["command"].(string)
+			if !ok || !strings.Contains(cmd, h.marker) {
+				continue
+			}
+			if cmd != h.command {
+				hm["command"] = h.command // migrate legacy registration in place
+				changed = true
+			}
+			return arr, changed // marker found → done (updated or already current)
 		}
 	}
-	return false
+	return append(arr, hookEntry(h)), true // absent → add
 }
 
 // hookEntry builds a settings.json hook entry for a koryph hook.

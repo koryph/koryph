@@ -53,11 +53,28 @@ inside_project() {
   esac
 }
 
+# Self-protection: a dispatched agent must never write koryph's own enforcement
+# surface. These are protected paths (agents never legitimately edit them —
+# refactor-core work is orchestrator-authored), and blocking writes here is
+# defense-in-depth even though the ACTIVE guards now live in ${KORYPH_HOME}
+# outside the worktree.
+selfprotected() {
+  local p
+  p="$(abspath "$1")"
+  case "${p}" in
+    "${project_dir}"/hooks | "${project_dir}"/hooks/* | \
+    "${project_dir}"/.claude | "${project_dir}"/.claude/* | \
+    "${project_dir}"/agents | "${project_dir}"/agents/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # --- Edit/Write: keep file writes inside the project / worktrees / temp --------
 if [[ "${tool_name}" == "Edit" || "${tool_name}" == "Write" ]]; then
   if [[ -n "${file_path}" ]]; then
     [[ "${file_path}" == *".."* ]] && deny "file_path contains '..' traversal: ${file_path}"
     inside_project "${file_path}" || deny "file_path outside project tree: ${file_path}"
+    selfprotected "${file_path}" && deny "koryph enforcement path is read-only for agents: ${file_path}"
   fi
   exit 0
 fi
@@ -88,6 +105,14 @@ fi
 # --- Bash: block redirection that writes to system paths ---------------------
 if [[ "${command}" =~ \>[[:space:]]*(/etc/|/usr/|/bin/|/sbin/|/System/|/Library/|/var/) ]]; then
   deny "redirection writes to a system path: ${command}"
+fi
+
+# --- Bash: block redirection into koryph's enforcement surface ----------------
+# Catches `> hooks/x`, `>> .claude/y`, `> ./agents/z`, and absolute/nested forms
+# `> /path/hooks/x`, so an agent cannot rewrite a guard via shell redirect.
+if [[ "${command}" =~ \>\>?[[:space:]]*(\./)?(hooks|\.claude|agents)/ ]] ||
+  [[ "${command}" =~ \>\>?[[:space:]]*[^[:space:]]*/(hooks|\.claude|agents)/ ]]; then
+  deny "redirection writes to a koryph enforcement path (hooks/.claude/agents): ${command}"
 fi
 
 exit 0

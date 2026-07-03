@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "\"${CLAUDE_PROJECT_DIR}/hooks/agent-boundary-guard.sh\"",
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh\"",
             "type": "command"
           }
         ],
@@ -13,7 +13,7 @@
       {
         "hooks": [
           {
-            "command": "\"${CLAUDE_PROJECT_DIR}/hooks/worktree-guard.sh\"",
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/worktree-guard.sh\"",
             "type": "command"
           }
         ],
