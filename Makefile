@@ -83,9 +83,8 @@ cover: ## Run tests with coverage summary
 
 .PHONY: lint
 lint: ## Run golangci-lint (skipped with a notice if not installed; CI enforces it)
-	@command -v golangci-lint >/dev/null 2>&1 \
-		&& golangci-lint run ./... \
-		|| echo "golangci-lint not installed; skipping (CI enforces it) — see .golangci.yml"
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; \
+	else echo "golangci-lint not installed; skipping (CI enforces it) — see .golangci.yml"; fi
 
 .PHONY: lint-ci
 lint-ci: ## Enforced lint for CI (pins golangci-lint via go run, like make vuln)

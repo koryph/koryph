@@ -43,6 +43,7 @@ path = [
   "ide/vscode/package.json",
   "ide/vscode/package-lock.json",
   "ide/vscode/tsconfig.json",
+  "ide/vscode/media/**",
   "ide/vscode/src/test/fixtures/**",
 ]
 SPDX-FileCopyrightText = "2026 The Koryph Developers"

@@ -75,8 +75,8 @@
     "go build ./...",
     "go vet ./...",
     "go test ./...",
-    "command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo 'golangci-lint not installed; skipping (CI enforces it)'",
-    "command -v reuse >/dev/null 2>&1 && reuse lint || { command -v uvx >/dev/null 2>&1 && uvx reuse lint || echo 'reuse not installed; skipping (CI enforces it)'; }"
+    "make lint",
+    "make reuse"
   ],
   "protected_paths": [
     "hooks/",
