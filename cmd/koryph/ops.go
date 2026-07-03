@@ -502,3 +502,43 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "landed %s on %s (%s)\n", bead, rec.DefaultBranch, sha)
 	return 0
 }
+
+// cmdReviewPR analyzes another author's PR with koryph's reviewer, or — with
+// --approve — registers the operator's explicit approval.
+func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("review-pr", stderr)
+	projectID := fs.String("project", "", "project id (required)")
+	approve := fs.Bool("approve", false, "register an approving review (your explicit instruction — koryph never approves autonomously)")
+	body := fs.String("body", "", "optional review/approval body")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return engine.ExitUsage
+	}
+	if *projectID == "" {
+		return usageErr(stderr, "review-pr: --project is required")
+	}
+	if len(pos) < 1 {
+		return usageErr(stderr, "review-pr: <pr> (number, branch, or url) is required")
+	}
+
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rec, err := store.Get(*projectID)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg, err := project.Load(rec.Root)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	if _, rerr := engine.ReviewPR(ctx, rec, cfg, nil, nil, engine.ReviewPROpts{
+		Selector: pos[0], Approve: *approve, Body: *body, Out: stdout,
+	}); rerr != nil {
+		return fail(stderr, rerr)
+	}
+	return 0
+}

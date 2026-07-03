@@ -158,6 +158,36 @@ by the engine's signing identity — the only method that keeps the signed SHAs 
   The engine runs the same green gate locally before it pushes, so required status checks stay
   satisfied; GitHub marks the PR merged automatically once its commits land on the base.
 
+## Reviewing other people's PRs
+
+`koryph review-pr` is a **human-in-the-loop** tool for reviewing pull requests authored by
+someone else (including contributors who used koryph). koryph *analyzes* — it never approves
+on its own:
+
+```sh
+# 1. Analyze: koryph runs its reviewer over the PR head and prints its findings.
+koryph review-pr --project myproject 42
+
+# 2. You read the analysis, examine the flagged code, and decide (you may override koryph).
+
+# 3. Instruct approval — this registers YOUR approving review on the PR.
+koryph review-pr --project myproject 42 --approve --body "Looks good, thanks"
+```
+
+- **Analysis** checks out the PR head into an ephemeral worktree, runs the reviewer over its
+  diff, and prints a verdict plus findings (severity · file · summary). It records **no**
+  approval — the decision is yours.
+- **Approval** is a separate, explicit instruction. The approving review is registered under
+  *your* identity, so it works for others' PRs regardless of who authored them. You can
+  approve even when the analysis flagged issues (you own the call).
+- Approving your **own** PR is refused with a clear error — GitHub rejects self-approval; land
+  your own work directly instead (`koryph land`, or `merge_policy: auto` / `--direct` with a
+  branch-protection bypass).
+
+> More of the review workbench — reviewing the whole open-PR queue, inline line comments, an
+> IDE handoff loop, and detecting PRs closed by any means — is tracked under its epic and
+> lands incrementally.
+
 ## Post-implement stages
 
 If the project declares a [`pipeline`](projects-and-accounts.md#post-implement-pipeline-stages),

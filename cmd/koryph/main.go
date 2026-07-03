@@ -60,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdMerge(rest, stdout, stderr)
 	case "land":
 		return cmdLand(rest, stdout, stderr)
+	case "review-pr":
+		return cmdReviewPR(rest, stdout, stderr)
 	case "signing":
 		return cmdSigning(rest, stdout, stderr)
 	case "sign":
@@ -149,6 +151,9 @@ OBSERVE / OPERATE
   land --project ID <bead> [--method ff|squash] [--reason R]
                         land an engine-opened PR (a pr-opened bead) fast-forward-only,
                         preserving signed SHAs; closes the bead on success
+  review-pr --project ID <pr> [--approve] [--body B]
+                        analyze another author's PR with koryph's reviewer (prints
+                        findings, never approves); --approve registers your approval
 
 SIGNING
   signing setup --project ID --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]
