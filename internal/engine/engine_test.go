@@ -111,7 +111,7 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-if [ -n "$FAKE_FAIL_PERSONA" ] && [ "$persona" = "$FAKE_FAIL_PERSONA" ]; then
+if [ -n "$KORYPH_TEST_FAIL_PERSONA" ] && [ "$persona" = "$KORYPH_TEST_FAIL_PERSONA" ]; then
   printf '{"type":"result","total_cost_usd":0.05}\n'
   exit 7
 fi
@@ -407,7 +407,7 @@ func TestRunPipelineStageCommitsAndMerges(t *testing.T) {
 // slot (no auto-merge past incomplete pipeline work).
 func TestRunRequiredStageFailureBlocks(t *testing.T) {
 	f := newFixture(t, fixOpts{pipeline: []project.PipelineStage{{Name: "docs"}}})
-	t.Setenv("FAKE_FAIL_PERSONA", "koryph-feature-docs-author")
+	t.Setenv("KORYPH_TEST_FAIL_PERSONA", "koryph-feature-docs-author")
 	var out bytes.Buffer
 	ctx := context.Background()
 

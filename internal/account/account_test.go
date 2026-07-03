@@ -25,8 +25,9 @@ func envLookup(env []string, key string) (string, int) {
 	return value, count
 }
 
-func TestEnvMatrix(t *testing.T) {
-	// Pollute the parent env: Env must scrub BOTH vars before re-injecting.
+func TestChildEnvMatrix(t *testing.T) {
+	// Pollute the parent env: ChildEnv must never source these from the ambient
+	// environment — CLAUDE_CONFIG_DIR/ANTHROPIC_API_KEY are injected explicitly.
 	t.Setenv("CLAUDE_CONFIG_DIR", "/polluted/parent/claude")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-polluted-parent-key")
 
@@ -48,7 +49,7 @@ func TestEnvMatrix(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := Env(tc.profile, tc.billing, tc.apiKey)
+			env := ChildEnv(ChildEnvSpec{Profile: tc.profile, Billing: tc.billing, APIKey: tc.apiKey})
 
 			got, count := envLookup(env, "CLAUDE_CONFIG_DIR")
 			if tc.wantConfigDir == "" {
@@ -74,7 +75,7 @@ func TestEnvMatrix(t *testing.T) {
 					t.Errorf("polluted parent value leaked into child env: %q", kv)
 				}
 			}
-			// PATH passthrough sanity.
+			// PATH passthrough sanity (allowlisted).
 			if _, count := envLookup(env, "PATH"); count != 1 {
 				t.Errorf("PATH not passed through exactly once (count %d)", count)
 			}
@@ -82,16 +83,50 @@ func TestEnvMatrix(t *testing.T) {
 	}
 }
 
-// TestEnvPreservesSSHAuthSock guards the signing contract: dispatched agents
-// sign commits via the operator's SSH agent, so SSH_AUTH_SOCK must pass
-// through Env untouched (BaseEnv scrubs only CLAUDE_CONFIG_DIR and
-// ANTHROPIC_API_KEY).
-func TestEnvPreservesSSHAuthSock(t *testing.T) {
-	t.Setenv("SSH_AUTH_SOCK", "/tmp/koryph-test-agent.sock")
-	env := Env(Profile{Name: "personal"}, BillingSubscription, "")
-	got, count := envLookup(env, "SSH_AUTH_SOCK")
-	if count != 1 || got != "/tmp/koryph-test-agent.sock" {
-		t.Errorf("SSH_AUTH_SOCK = %q x%d, want the parent value exactly once (commit signing needs the agent)", got, count)
+// TestChildEnvDropsSecrets is the P1 containment guard: a dispatched agent runs
+// --permission-mode dontAsk on untrusted bead text, so the operator's ambient
+// credentials must NOT reach it. ChildEnv is an allowlist, so tokens/cloud
+// creds and the operator's ambient SSH_AUTH_SOCK are dropped by omission.
+func TestChildEnvDropsSecrets(t *testing.T) {
+	secrets := map[string]string{
+		"GH_TOKEN":                 "ghp_should_not_leak",
+		"GITHUB_TOKEN":             "ghs_should_not_leak",
+		"VAULT_TOKEN":              "hvs.should_not_leak",
+		"AWS_ACCESS_KEY_ID":        "AKIASHOULDNOTLEAK",
+		"AWS_SECRET_ACCESS_KEY":    "aws_secret_should_not_leak",
+		"AZURE_CLIENT_SECRET":      "azure_should_not_leak",
+		"OP_SERVICE_ACCOUNT_TOKEN": "op_should_not_leak",
+		"SSH_AUTH_SOCK":            "/tmp/operator-ambient-agent.sock",
+		"NPM_TOKEN":                "npm_should_not_leak",
+	}
+	for k, v := range secrets {
+		t.Setenv(k, v)
+	}
+	env := ChildEnv(ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription})
+	for k := range secrets {
+		if _, count := envLookup(env, k); count != 0 {
+			t.Errorf("%s leaked into dispatched-agent env; allowlist must drop it", k)
+		}
+	}
+	// A signing socket, when provided, IS injected — but only the koryph scoped
+	// one, never the ambient operator socket set above.
+	env = ChildEnv(ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription, SSHAuthSock: "/koryph/signing/agent.sock"})
+	if got, count := envLookup(env, "SSH_AUTH_SOCK"); count != 1 || got != "/koryph/signing/agent.sock" {
+		t.Errorf("SSH_AUTH_SOCK = %q x%d, want the scoped socket exactly once", got, count)
+	}
+}
+
+// TestChildEnvPassthrough proves the registry escape hatch forwards a named
+// operator var while still dropping everything else.
+func TestChildEnvPassthrough(t *testing.T) {
+	t.Setenv("MY_PROJECT_VAR", "wanted")
+	t.Setenv("GH_TOKEN", "unwanted")
+	env := ChildEnv(ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription, Passthrough: []string{"MY_PROJECT_VAR"}})
+	if got, count := envLookup(env, "MY_PROJECT_VAR"); count != 1 || got != "wanted" {
+		t.Errorf("MY_PROJECT_VAR = %q x%d, want passthrough exactly once", got, count)
+	}
+	if _, count := envLookup(env, "GH_TOKEN"); count != 0 {
+		t.Error("GH_TOKEN leaked despite not being in the passthrough list")
 	}
 }
 

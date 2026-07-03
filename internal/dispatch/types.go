@@ -73,6 +73,15 @@ type Spec struct {
 	ResumeSessionID string // non-empty → native --resume --fork-session
 	BeadsDir        string
 	Attempt         int
+
+	// SSHAuthSock is the koryph-managed signing-agent socket (holds ONLY the
+	// signing key). Injected as SSH_AUTH_SOCK so agent commits sign without the
+	// operator's ambient socket (and its other keys) ever reaching the agent.
+	// Empty when signing is not required.
+	SSHAuthSock string
+	// EnvPassthrough forwards extra operator env vars into the agent (the
+	// registry-declared escape hatch for projects that genuinely need one).
+	EnvPassthrough []string
 }
 
 // Handle describes a launched agent.

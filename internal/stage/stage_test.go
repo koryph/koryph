@@ -65,14 +65,14 @@ func idProfile(t *testing.T, email string) account.Profile {
 	return account.Profile{Name: "work", ConfigDir: dir}
 }
 
-// fakeStageClaude captures stdin to $STAGE_STDIN (when set), commits a stage
+// fakeStageClaude captures stdin to $KORYPH_TEST_STAGE_STDIN (when set), commits a stage
 // file to prove write capability, prints a result envelope, and exits with
 // exitCode.
 func fakeStageClaude(t *testing.T, exitCode int) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-claude")
 	script := "#!/bin/sh\n" +
-		"if [ -n \"$STAGE_STDIN\" ]; then cat > \"$STAGE_STDIN\"; else cat > /dev/null; fi\n" +
+		"if [ -n \"$KORYPH_TEST_STAGE_STDIN\" ]; then cat > \"$KORYPH_TEST_STAGE_STDIN\"; else cat > /dev/null; fi\n" +
 		"echo staged > STAGEFILE.txt\n" +
 		"git add STAGEFILE.txt\n" +
 		"git commit -q --no-verify -m 'docs(x1): stage work'\n" +
@@ -109,7 +109,7 @@ func baseStageOpts(t *testing.T, repo, bin string) Opts {
 func TestRunStageCommitsAndReportsCost(t *testing.T) {
 	repo := stageRepo(t)
 	capture := filepath.Join(t.TempDir(), "stdin.txt")
-	t.Setenv("STAGE_STDIN", capture)
+	t.Setenv("KORYPH_TEST_STAGE_STDIN", capture)
 
 	o := baseStageOpts(t, repo, fakeStageClaude(t, 0))
 	r := Run(context.Background(), o)

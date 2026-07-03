@@ -47,13 +47,13 @@ func reviewRepo(t *testing.T) string {
 	return repo
 }
 
-// fakeClaude writes a script that captures stdin to $REVIEW_STDIN_CAPTURE (when
+// fakeClaude writes a script that captures stdin to $KORYPH_TEST_REVIEW_STDIN (when
 // set) and prints body as its whole stdout.
 func fakeClaude(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-claude")
 	script := "#!/bin/sh\n" +
-		"if [ -n \"$REVIEW_STDIN_CAPTURE\" ]; then cat > \"$REVIEW_STDIN_CAPTURE\"; else cat > /dev/null; fi\n" +
+		"if [ -n \"$KORYPH_TEST_REVIEW_STDIN\" ]; then cat > \"$KORYPH_TEST_REVIEW_STDIN\"; else cat > /dev/null; fi\n" +
 		"cat <<'FAKE_EOF'\n" + body + "\nFAKE_EOF\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestReviewBlocking(t *testing.T) {
 	repo := reviewRepo(t)
 	envelope := `{"type":"result","is_error":false,"result":"{\"blocking\":true,\"findings\":[{\"severity\":\"blocking\",\"file\":\"feature.go\",\"summary\":\"hardcoded secret\"}]}"}`
 	capture := filepath.Join(t.TempDir(), "stdin.txt")
-	t.Setenv("REVIEW_STDIN_CAPTURE", capture)
+	t.Setenv("KORYPH_TEST_REVIEW_STDIN", capture)
 
 	o := baseOpts(t, repo, fakeClaude(t, envelope))
 	v := Review(context.Background(), o)

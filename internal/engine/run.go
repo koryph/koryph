@@ -17,6 +17,7 @@ import (
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
@@ -64,6 +65,11 @@ type runner struct {
 	// Billing for the current wave (refreshed by the governor each wave).
 	billing account.BillingMode
 	apiKey  string
+
+	// sshAuthSock is the koryph scoped signing socket handed to dispatched
+	// agents (empty when signing is not required). It holds ONLY the signing
+	// key, so agents can sign without the operator's ambient agent.
+	sshAuthSock string
 }
 
 // Run executes one engine run over one project per the package contract in
@@ -150,6 +156,11 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	if r.quotaCfg, err = quota.LoadConfig(r.quotaName()); err != nil {
 		return Outcome{Code: ExitFatal}, err
 	}
+	// Dispatched agents sign via the koryph scoped signing socket, not the
+	// operator's ambient agent (koryph-3vp.2).
+	if r.requireSigned() && cfg.Signing.EffectiveMode() == signing.ModeSSH {
+		r.sshAuthSock = paths.SigningAgentSock()
+	}
 
 	resumed := false
 	if opts.Resume {
@@ -187,9 +198,9 @@ func signingPreflight(ctx context.Context, projectID, repoRoot string, sc *signi
 	if err := signing.ConfigureRepo(ctx, repoRoot, sc); err != nil {
 		return fmt.Errorf("engine: signing: %w", err)
 	}
-	if sc.EffectiveMode() == signing.ModeSSH && !signing.AgentReady(ctx, sc.PublicKey) {
+	if sc.EffectiveMode() == signing.ModeSSH && !signing.ScopedAgentReady(ctx, sc.PublicKey) {
 		return fmt.Errorf(
-			"engine: signing is required but the SSH agent does not hold the signing key — run `koryph signing enable --project %s`",
+			"engine: signing is required but the koryph signing agent does not hold the signing key — run `koryph signing enable --project %s`",
 			projectID)
 	}
 	return nil

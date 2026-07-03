@@ -15,11 +15,11 @@ import (
 	"github.com/koryph/koryph/internal/signing/signingtest"
 )
 
-// withSigning adds a required ssh signing policy to the fixture project and
-// returns the key pair.
-func withSigning(t *testing.T, f *fix) (priv, pub string) {
+// signingConfig adds a required ssh signing policy to the fixture project
+// (provider=file so the key loads from disk, no vault) and returns it.
+func signingConfig(t *testing.T, f *fix) *signing.Config {
 	t.Helper()
-	priv, pub = signingtest.GenKey(t)
+	priv, pub := signingtest.GenKey(t)
 	cfg, err := project.Load(f.repo)
 	if err != nil {
 		t.Fatal(err)
@@ -31,14 +31,14 @@ func withSigning(t *testing.T, f *fix) (priv, pub string) {
 	if err := cfg.Save(f.repo); err != nil {
 		t.Fatal(err)
 	}
-	return priv, pub
+	return cfg.Signing
 }
 
 func TestRunSigningAgentNotReadyFailsClosed(t *testing.T) {
 	signingtest.RequireTools(t, "ssh-keygen", "git")
 	f := newFixture(t, fixOpts{})
-	withSigning(t, f)
-	t.Setenv("SSH_AUTH_SOCK", "") // no agent → AgentReady false
+	signingConfig(t, f)
+	t.Setenv("SSH_AUTH_SOCK", "") // no scoped agent populated → preflight fails closed
 
 	var out bytes.Buffer
 	got, err := Run(context.Background(), baseOptions(&out))
@@ -64,9 +64,19 @@ func TestRunSigningEndToEndSignedMerge(t *testing.T) {
 	signingtest.RequireTools(t, "ssh-agent", "ssh-add", "ssh-keygen", "git")
 	signingtest.IsolateGit(t)
 	f := newFixture(t, fixOpts{})
-	priv, _ := withSigning(t, f)
-	signingtest.SpawnAgent(t)
-	signingtest.AddKey(t, priv)
+	cfg := signingConfig(t, f)
+
+	// Simulate `koryph signing enable`: load the key into the koryph SCOPED
+	// signing agent — the socket the dispatched (fake) agent will use to sign,
+	// isolated from any operator ambient agent.
+	vault, err := signing.LoadVault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.EnsureScopedAgent(context.Background(), vault, cfg); err != nil {
+		t.Fatalf("EnsureScopedAgent: %v", err)
+	}
+	t.Cleanup(func() { _ = signing.StopScopedAgent() })
 
 	var out bytes.Buffer
 	got, err := Run(context.Background(), baseOptions(&out))

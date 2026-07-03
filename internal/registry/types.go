@@ -87,6 +87,12 @@ type Record struct {
 	QuotaProfile   string `json:"quota_profile,omitempty"` // defaults to AccountProfile
 	VisibilitySync string `json:"visibility_sync"`         // "off" (GitHub/Linear later phase)
 
+	// EnvPassthrough names extra operator environment variables to forward into
+	// dispatched agents beyond the credential-free allowlist (account.ChildEnv).
+	// The escape hatch for projects that genuinely need a specific var; empty by
+	// default so no secret leaks without an explicit opt-in.
+	EnvPassthrough []string `json:"env_passthrough,omitempty"`
+
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }

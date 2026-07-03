@@ -19,23 +19,63 @@ func (m BillingMode) Valid() bool {
 	return m == BillingSubscription || m == BillingAPIKey
 }
 
-// Env builds the complete child environment for a dispatched agent.
+// baseAllow is the credential-free set of environment variables a dispatched
+// (untrusted, --permission-mode dontAsk) agent inherits from the operator. It
+// is an ALLOWLIST: anything not named here or matched by baseAllowPrefixes is
+// dropped, so a secret the operator has in their shell (GH_TOKEN, VAULT_TOKEN,
+// AWS_*, the ambient SSH_AUTH_SOCK, ...) cannot reach the agent by omission.
+// Identity, billing, and the scoped signing socket are injected explicitly by
+// ChildEnv — never sourced from the ambient environment.
+var baseAllow = []string{
+	"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM",
+	"TMPDIR", "TZ", "LANG",
+	// Go toolchain (non-secret build caches/config; HOME-relative defaults work
+	// when absent, but forwarding them keeps agent builds warm).
+	"GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOTOOLCHAIN", "GOPROXY",
+	// Homebrew prefix — macOS PATH/lib resolution for tools agents invoke.
+	"HOMEBREW_PREFIX", "HOMEBREW_CELLAR", "HOMEBREW_REPOSITORY",
+}
+
+// baseAllowPrefixes forwards whole non-secret namespaces: locale (LC_*), koryph
+// contract vars (KORYPH_*, e.g. KORYPH_HOME for the guard-hook path), and XDG
+// base-directory hints (XDG_*). None of these carry credentials.
+var baseAllowPrefixes = []string{"LC_", "KORYPH_", "XDG_"}
+
+// ChildEnvSpec parameterizes the dispatched-agent environment.
+type ChildEnvSpec struct {
+	Profile     Profile
+	Billing     BillingMode
+	APIKey      string   // injected as ANTHROPIC_API_KEY iff Billing==api-key
+	SSHAuthSock string   // scoped signing socket; injected as SSH_AUTH_SOCK iff non-empty
+	Passthrough []string // extra operator vars to forward (registry-declared escape hatch)
+}
+
+// ChildEnv builds the complete child environment for a dispatched agent from an
+// ALLOWLIST (baseAllow + baseAllowPrefixes + spec.Passthrough), then injects the
+// account-scoped values explicitly:
 //
-// It starts from the parent environment with CLAUDE_CONFIG_DIR and
-// ANTHROPIC_API_KEY scrubbed, then re-injects per the account rules:
-//
-//   - p.ConfigDir != ""  → CLAUDE_CONFIG_DIR=<dir> (work / custom profile).
+//   - Profile.ConfigDir != "" → CLAUDE_CONFIG_DIR=<dir> (work / custom profile).
 //     Personal (ConfigDir == "") stays UNSET — never point it at ~/.claude.
-//   - billing == BillingAPIKey → ANTHROPIC_API_KEY=<apiKey>. Callers must
-//     validate the key is non-empty (Dispatch does); Env keeps the documented
-//     signature and injects whatever it is given.
-func Env(p Profile, billing BillingMode, apiKey string) []string {
-	env := execx.BaseEnv("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY")
-	if p.ConfigDir != "" {
-		env = append(env, "CLAUDE_CONFIG_DIR="+p.ConfigDir)
+//   - Billing == BillingAPIKey → ANTHROPIC_API_KEY=<apiKey> (caller validates
+//     non-empty; Dispatch does).
+//   - SSHAuthSock != "" → SSH_AUTH_SOCK=<sock>. This is the koryph-managed
+//     signing socket (paths.SigningAgentSock), which holds ONLY the signing key.
+//     The operator's ambient SSH_AUTH_SOCK is never forwarded — it typically
+//     carries their personal/prod keys, which an untrusted agent must not reach.
+func ChildEnv(spec ChildEnvSpec) []string {
+	allow := baseAllow
+	if len(spec.Passthrough) > 0 {
+		allow = append(append([]string{}, baseAllow...), spec.Passthrough...)
 	}
-	if billing == BillingAPIKey {
-		env = append(env, "ANTHROPIC_API_KEY="+apiKey)
+	env := execx.AllowEnv(allow, baseAllowPrefixes)
+	if spec.Profile.ConfigDir != "" {
+		env = append(env, "CLAUDE_CONFIG_DIR="+spec.Profile.ConfigDir)
+	}
+	if spec.Billing == BillingAPIKey {
+		env = append(env, "ANTHROPIC_API_KEY="+spec.APIKey)
+	}
+	if spec.SSHAuthSock != "" {
+		env = append(env, "SSH_AUTH_SOCK="+spec.SSHAuthSock)
 	}
 	return env
 }

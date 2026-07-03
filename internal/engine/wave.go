@@ -419,6 +419,8 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		ResumeSessionID:  q.resumeSessionID,
 		BeadsDir:         r.adapter.BeadsDir,
 		Attempt:          q.attempt,
+		SSHAuthSock:      r.sshAuthSock,
+		EnvPassthrough:   r.rec.EnvPassthrough,
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "dispatch refused: "+err.Error())

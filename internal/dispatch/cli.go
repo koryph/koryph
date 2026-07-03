@@ -20,6 +20,7 @@ import (
 
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/paths"
 )
 
 // CLIBackend dispatches agents by shelling out to the claude CLI via a
@@ -140,12 +141,18 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		"--verbose",
 	)
 
+	// KORYPH_HOME is exported (resolved absolute) so the guard hooks registered
+	// in .claude/settings.json as ${KORYPH_HOME:-$HOME/.koryph}/hooks/*.sh
+	// resolve to the central, agent-unwritable copy — never the worktree.
+	koryphHome := paths.KoryphHome()
+
 	var sb strings.Builder
 	sb.WriteString("#!/bin/sh\n")
 	sb.WriteString("export" +
 		" KORYPH_RUN_ID=" + sq(s.RunID) +
 		" KORYPH_PHASE_ID=" + sq(s.PhaseID) +
 		" KORYPH_DIR=" + sq(s.PhaseDir) +
+		" KORYPH_HOME=" + sq(koryphHome) +
 		" KORYPH_LOG_PATH=" + sq(logPath) +
 		" KORYPH_STATUS_PATH=" + sq(statusPath) +
 		" KORYPH_SUMMARY_PATH=" + sq(summaryPath) +
@@ -173,7 +180,13 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 
 	cmd := exec.Command("/bin/sh", launchPath)
 	cmd.Dir = s.Worktree
-	cmd.Env = account.Env(s.Profile, s.Billing, s.APIKey)
+	cmd.Env = account.ChildEnv(account.ChildEnvSpec{
+		Profile:     s.Profile,
+		Billing:     s.Billing,
+		APIKey:      s.APIKey,
+		SSHAuthSock: s.SSHAuthSock,
+		Passthrough: s.EnvPassthrough,
+	})
 	cmd.Stdin = nil
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

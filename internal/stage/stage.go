@@ -73,7 +73,7 @@ func Run(ctx context.Context, o Opts) Result {
 
 	res, err := execx.Run(ctx, execx.Cmd{
 		Dir:     o.Worktree,
-		Env:     account.Env(o.Profile, o.Billing, o.APIKey),
+		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: o.Billing, APIKey: o.APIKey, SSHAuthSock: o.SSHAuthSock}),
 		Name:    bin,
 		Args:    args,
 		Stdin:   prompt,

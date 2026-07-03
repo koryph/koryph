@@ -98,15 +98,23 @@ The rule of thumb:
 | `koryph board/status/tail/nudge/metrics/onboard` | none (no Claude invoked) | plain file/git/bd reads |
 | `koryph batch run` | Anthropic API key (per-token) | explicit purpose-named key env var + `--yes`; never ambient |
 
-The load-bearing detail: **the ambient `CLAUDE_CONFIG_DIR` of whatever
+The load-bearing detail: **the ambient environment of whatever
 terminal/window you run `koryph` from never reaches a dispatched agent.**
-The dispatcher builds each agent's environment from scratch — it strips
-`CLAUDE_CONFIG_DIR` and `ANTHROPIC_API_KEY` from the inherited environment,
-re-injects the project's registry-declared config dir (or leaves it unset
-for personal), and then **verifies the logged-in identity**
+The dispatcher builds each agent's environment from a **credential-free
+allowlist** (not a denylist) — only known-safe operational variables pass
+through (`PATH`, `HOME`, locale, Go/toolchain caches, `KORYPH_*`); everything
+else, including `GH_TOKEN`, `VAULT_TOKEN`, `AWS_*`/`AZURE_*`/`GOOGLE_*`, and the
+operator's ambient `SSH_AUTH_SOCK`, is dropped by omission so a secret you never
+named cannot leak. It then re-injects only what the agent legitimately needs:
+the project's registry-declared `CLAUDE_CONFIG_DIR` (or unset for personal), the
+API key when in api-key billing, and the **scoped signing socket** (holds only
+the commit-signing key — see [Signing](user-guide/signing.md#two-agents-operator-vs-dispatched)).
+A project that genuinely needs an extra variable opts in via the registry
+record's `env_passthrough` list. Before anything launches, the dispatcher
+**verifies the logged-in identity**
 (`<config-dir>/.claude.json → oauthAccount.emailAddress`) against the
-registry's `expected_identity` before anything launches. Mismatch or
-unreadable identity = the dispatch is refused, loudly.
+registry's `expected_identity`. Mismatch or unreadable identity = the dispatch
+is refused, loudly.
 
 Concretely: running `koryph run --project project-a --once` from a
 **work-account** VS Code window still dispatches every agent on the

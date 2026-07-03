@@ -98,6 +98,10 @@ func LookPath(name string) bool {
 // BaseEnv returns a copy of the parent environment with the listed variables
 // removed. Used to scrub e.g. ANTHROPIC_API_KEY or CLAUDE_CONFIG_DIR before
 // explicit re-injection.
+//
+// BaseEnv is a DENYLIST: everything not named is forwarded. For untrusted
+// children (dispatched agents) prefer AllowEnv, which forwards nothing except an
+// explicit allowlist so credentials cannot leak by omission.
 func BaseEnv(remove ...string) []string {
 	drop := map[string]bool{}
 	for _, k := range remove {
@@ -114,4 +118,37 @@ func BaseEnv(remove ...string) []string {
 		}
 	}
 	return env
+}
+
+// AllowEnv returns the parent environment filtered to an ALLOWLIST: a variable
+// is forwarded only when its name is in allow OR begins with one of prefixes.
+// It is the inverse of BaseEnv and the safe default for constructing an
+// untrusted child's environment — a credential the caller forgot to name is
+// dropped rather than leaked. Order follows os.Environ().
+func AllowEnv(allow []string, prefixes []string) []string {
+	keep := map[string]bool{}
+	for _, k := range allow {
+		keep[k] = true
+	}
+	var env []string
+	for _, kv := range os.Environ() {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if keep[key] || hasAnyPrefix(key, prefixes) {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// hasAnyPrefix reports whether s starts with any of prefixes.
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }

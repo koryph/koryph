@@ -42,6 +42,7 @@ type Opts struct {
 	ExpectedIdentity string
 	Billing          account.BillingMode
 	APIKey           string
+	SSHAuthSock      string // koryph scoped signing socket (post-implement stages may commit)
 	MaxBudgetUSD     float64
 	PhaseDir         string // where stage-<name>.json is written
 	ClaudeBin        string // default "claude"

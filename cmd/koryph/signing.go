@@ -252,7 +252,14 @@ func cmdSigningEnable(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	// Load the key into the operator's ambient agent (for the operator's own
+	// signed commits) AND into the koryph scoped agent (which holds ONLY the
+	// signing key; dispatched agents are pointed there so they never reach the
+	// operator's other keys — see internal/signing/scoped.go).
 	if err := signing.EnsureAgent(ctx, vault, cfg.Signing); err != nil {
+		return fail(stderr, err)
+	}
+	if err := signing.EnsureScopedAgent(ctx, vault, cfg.Signing); err != nil {
 		return fail(stderr, err)
 	}
 	if err := signing.ConfigureRepo(ctx, rec.Root, cfg.Signing); err != nil {

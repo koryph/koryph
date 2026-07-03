@@ -75,6 +75,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			ExpectedIdentity: r.rec.ExpectedIdentity,
 			Billing:          r.billing,
 			APIKey:           r.apiKey,
+			SSHAuthSock:      r.sshAuthSock,
 			MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,
 			PhaseDir:         phaseDir,
 			ClaudeBin:        os.Getenv(envClaudeBin),

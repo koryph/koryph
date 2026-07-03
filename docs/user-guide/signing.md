@@ -9,8 +9,34 @@ agent** — it is held in memory only, never written to disk, never logged.
 
 Signing is opt-in per project. When `signing.required` is `true` the engine
 enforces it at three points: repo git config is applied before dispatch, the
-SSH agent must hold the key before any wave runs, and every commit on a branch
+signing key must be loaded before any wave runs, and every commit on a branch
 is signature-verified before merge.
+
+## Two agents: operator vs. dispatched
+
+`koryph signing enable` loads the signing key into **two** SSH agents:
+
+1. **Your ambient agent** (`SSH_AUTH_SOCK`) — so your own `git commit -s` signs
+   as usual.
+2. **The koryph scoped signing agent** — a dedicated `ssh-agent` koryph starts
+   (socket under a private per-user temp dir) that holds **only** the signing
+   key.
+
+Dispatched agents run headless with `--permission-mode dontAsk` on untrusted
+issue text, so koryph never hands them your ambient agent — that typically
+carries your personal and production SSH keys, which an injected agent could
+use to push or authenticate anywhere. Instead, each dispatched agent's
+`SSH_AUTH_SOCK` points at the **scoped** agent, and its whole environment is
+built from a credential-free allowlist (see
+[IDE integration](../ide-integration.md#3-how-plugin-issued-commands-interoperate-with-koryph-accounts)):
+tokens like `GH_TOKEN`, `VAULT_TOKEN`, `AWS_*` and the ambient socket are
+dropped. The agent can sign its commits with the signing key and nothing else.
+
+The engine only **verifies** the scoped agent holds the key at run start (it
+never touches the vault itself); if it does not, the run fails closed with a
+`koryph signing enable` hint. If your vault provider ignores `SSH_AUTH_SOCK`
+when loading (so the scoped agent stays empty), `koryph signing enable` reports
+it immediately — use the `ssh-add` fallback (`agent_load: []`) in that case.
 
 ---
 

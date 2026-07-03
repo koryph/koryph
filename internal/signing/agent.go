@@ -39,11 +39,19 @@ func EnsureAgent(ctx context.Context, v *VaultConfig, cfg *Config) error {
 		return fmt.Errorf("signing: no SSH agent (SSH_AUTH_SOCK is unset) — start one with `eval \"$(ssh-agent -s)\"` " +
 			"or run Proton Pass as your agent via `pass-cli ssh-agent start --socket-path ...`")
 	}
+	return loadKey(ctx, v, cfg, nil)
+}
 
+// loadKey moves the signing key into an SSH agent. env is the environment for
+// the load commands: nil inherits the parent (the ambient SSH_AUTH_SOCK);
+// non-nil targets a specific socket (the koryph scoped agent). The private key
+// never touches disk — the agent_load template moves it vault→agent directly,
+// and the fetch fallback pipes it to `ssh-add -` over stdin only.
+func loadKey(ctx context.Context, v *VaultConfig, cfg *Config, env []string) error {
 	pt := v.Providers[cfg.Provider]
 	if len(pt.AgentLoad) > 0 {
 		argv := ExpandArgv(pt.AgentLoad, cfg.KeyRef)
-		res, err := execx.Run(ctx, execx.Cmd{Name: argv[0], Args: argv[1:], Timeout: agentTimeout})
+		res, err := execx.Run(ctx, execx.Cmd{Name: argv[0], Args: argv[1:], Env: env, Timeout: agentTimeout})
 		if err != nil {
 			return fmt.Errorf("signing: agent load via %s: %w", argv[0], err)
 		}
@@ -67,7 +75,7 @@ func EnsureAgent(ctx context.Context, v *VaultConfig, cfg *Config) error {
 	material := strings.TrimRight(string(key), "\n") + "\n"
 	res, err := execx.Run(ctx, execx.Cmd{
 		Name: "ssh-add", Args: []string{"-t", agentKeyLifetimeSec, "-"},
-		Stdin: material, Timeout: agentTimeout,
+		Env: env, Stdin: material, Timeout: agentTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("signing: ssh-add: %w", err)
