@@ -164,8 +164,8 @@ func (r *runner) loop(ctx context.Context) (Outcome, error) {
 					if model == "" {
 						model = "(stage default)"
 					}
-					r.progress("dry-run: would dispatch %s (%s) model %s footprint %v",
-						it.Issue.ID, it.Issue.Title, model, it.Footprint.Tokens)
+					r.progress("dry-run: would dispatch %s (%s) model %s footprint %s",
+						it.Issue.ID, it.Issue.Title, model, it.Footprint)
 				}
 				_ = r.store.FinalizeRun(r.run)
 				return r.outcome(ExitOK, "dry-run", false), nil

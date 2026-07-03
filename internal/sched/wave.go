@@ -113,13 +113,30 @@ func BuildWave(
 		return candidates[i].Priority < candidates[j].Priority
 	})
 
-	// Greedy graph coloring against already-selected footprints.
+	// Sorted once up front so the in-flight check below always reports the
+	// same blocker id for a given Active set, regardless of Go's randomized
+	// map iteration order (koryph-2im.1).
+	activeIDs := make([]string, 0, len(opts.Active))
+	for id := range opts.Active {
+		activeIDs = append(activeIDs, id)
+	}
+	sort.Strings(activeIDs)
+
+	// Greedy graph coloring: in-flight footprints (opts.Active) are checked
+	// first — a candidate conflicting with running work is deferred before
+	// intra-batch coloring even considers it (design L2, prerequisite for
+	// rolling/mid-wave dispatch: I1 must hold against the live in-flight set,
+	// not just within this batch) — then already-selected items in this wave.
 	for _, iss := range candidates {
 		if opts.Max > 0 && len(w.Items) >= opts.Max {
 			w.Deferred = append(w.Deferred, reasonFor(iss, "wave full"))
 			continue
 		}
 		fp := FootprintFor(iss, cfg)
+		if id, clash := firstActiveConflict(fp, opts.Active, activeIDs); clash {
+			w.Deferred = append(w.Deferred, reasonFor(iss, "footprint conflict with "+id+" (in-flight)"))
+			continue
+		}
 		if id, clash := firstConflict(fp, w.Items); clash {
 			w.Deferred = append(w.Deferred, reasonFor(iss, "footprint conflict with "+id))
 			continue
@@ -128,6 +145,17 @@ func BuildWave(
 	}
 
 	return w, nil
+}
+
+// firstActiveConflict returns the id of the first in-flight footprint (in
+// sortedIDs order, for deterministic reporting) that conflicts with fp.
+func firstActiveConflict(fp Footprint, active map[string]Footprint, sortedIDs []string) (string, bool) {
+	for _, id := range sortedIDs {
+		if Conflicts(fp, active[id]) {
+			return id, true
+		}
+	}
+	return "", false
 }
 
 // firstConflict returns the ID of the first already-selected item whose

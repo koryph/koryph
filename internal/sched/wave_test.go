@@ -30,23 +30,35 @@ func testCfg() *project.Config {
 func TestFootprintFor(t *testing.T) {
 	cfg := testCfg()
 	cases := []struct {
-		name   string
-		labels []string
-		want   []string
+		name       string
+		labels     []string
+		wantReads  []string
+		wantWrites []string
 	}{
-		{"fp labels used as-is, sorted", []string{"fp:go:api", "fp:app:web"}, []string{"app:web", "go:api"}},
-		{"fp wins over area", []string{"fp:go:api", "area:web"}, []string{"go:api"}},
-		{"area map fallback", []string{"area:api"}, []string{"db:schema", "go:api"}},
-		{"multiple areas merge+sort", []string{"area:api", "area:web"}, []string{"app:web", "db:schema", "go:api"}},
-		{"unmapped area -> unknown", []string{"area:mystery"}, []string{TokenUnknown}},
-		{"no labels -> unknown", nil, []string{TokenUnknown}},
-		{"dedupe", []string{"fp:x", "fp:x", "fp:y"}, []string{"x", "y"}},
+		{"fp labels used as-is, sorted (writes)", []string{"fp:go:api", "fp:app:web"}, nil, []string{"app:web", "go:api"}},
+		{"fp wins over area", []string{"fp:go:api", "area:web"}, nil, []string{"go:api"}},
+		{"area map fallback", []string{"area:api"}, nil, []string{"db:schema", "go:api"}},
+		{"multiple areas merge+sort", []string{"area:api", "area:web"}, nil, []string{"app:web", "db:schema", "go:api"}},
+		{"unmapped area -> unknown", []string{"area:mystery"}, nil, []string{TokenUnknown}},
+		{"no labels -> unknown", nil, nil, []string{TokenUnknown}},
+		{"dedupe", []string{"fp:x", "fp:x", "fp:y"}, nil, []string{"x", "y"}},
+		{"fp:read: labels are reads, not writes", []string{"fp:read:go:engine"}, []string{"go:engine"}, nil},
+		{"mixed read+write labels", []string{"fp:read:go:engine", "fp:docs"}, []string{"go:engine"}, []string{"docs"}},
+		{"read+write of the same token collapses to write-only", []string{"fp:read:x", "fp:x"}, nil, []string{"x"}},
+		{"fp:read: wins over area same as plain fp:", []string{"fp:read:go:engine", "area:web"}, []string{"go:engine"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := FootprintFor(issue("i", 1, tc.labels...), cfg)
-			if !reflect.DeepEqual(got.Tokens, tc.want) {
-				t.Fatalf("tokens = %v, want %v", got.Tokens, tc.want)
+			if !reflect.DeepEqual(got.Reads, tc.wantReads) {
+				t.Fatalf("reads = %v, want %v", got.Reads, tc.wantReads)
+			}
+			wantWrites := tc.wantWrites
+			if wantWrites == nil {
+				wantWrites = []string{}
+			}
+			if !reflect.DeepEqual(got.Writes, wantWrites) {
+				t.Fatalf("writes = %v, want %v", got.Writes, wantWrites)
 			}
 		})
 	}
@@ -54,25 +66,42 @@ func TestFootprintFor(t *testing.T) {
 
 func TestFootprintForNilConfig(t *testing.T) {
 	got := FootprintFor(issue("i", 1, "area:api"), nil)
-	if !reflect.DeepEqual(got.Tokens, []string{TokenUnknown}) {
-		t.Fatalf("nil cfg area -> %v, want unknown", got.Tokens)
+	if !reflect.DeepEqual(got.Writes, []string{TokenUnknown}) {
+		t.Fatalf("nil cfg area -> %v, want unknown", got.Writes)
+	}
+	if len(got.Reads) != 0 {
+		t.Fatalf("nil cfg area reads = %v, want none", got.Reads)
+	}
+}
+
+func TestFootprintString(t *testing.T) {
+	fp := Footprint{Reads: []string{"docs"}, Writes: []string{"go:engine"}}
+	if got, want := fp.String(), "[r:docs w:go:engine]"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
 	}
 }
 
 func TestConflicts(t *testing.T) {
-	a := Footprint{Tokens: []string{"go:api", "db"}}
-	b := Footprint{Tokens: []string{"app:web"}}
-	c := Footprint{Tokens: []string{"db"}}
-	if Conflicts(a, b) {
-		t.Fatal("disjoint footprints must not conflict")
+	cases := []struct {
+		name string
+		a, b Footprint
+		want bool
+	}{
+		{"disjoint writes never conflict", Footprint{Writes: []string{"go:api", "db"}}, Footprint{Writes: []string{"app:web"}}, false},
+		{"shared write conflicts", Footprint{Writes: []string{"go:api", "db"}}, Footprint{Writes: []string{"db"}}, true},
+		{"two unknowns always conflict", Footprint{Writes: []string{TokenUnknown}}, Footprint{Writes: []string{TokenUnknown}}, true},
+		{"read/read co-runs, no conflict", Footprint{Reads: []string{"docs"}}, Footprint{Reads: []string{"docs"}}, false},
+		{"read/write on same token conflicts", Footprint{Reads: []string{"go:engine"}}, Footprint{Writes: []string{"go:engine"}}, true},
+		{"write/read on same token conflicts (symmetric)", Footprint{Writes: []string{"go:engine"}}, Footprint{Reads: []string{"go:engine"}}, true},
+		{"write/write on same token conflicts", Footprint{Writes: []string{"go:engine"}}, Footprint{Writes: []string{"go:engine"}}, true},
+		{"disjoint read and write never conflict", Footprint{Reads: []string{"docs"}}, Footprint{Writes: []string{"go:engine"}}, false},
 	}
-	if !Conflicts(a, c) {
-		t.Fatal("shared token must conflict")
-	}
-	// Two unknowns always conflict.
-	u := Footprint{Tokens: []string{TokenUnknown}}
-	if !Conflicts(u, u) {
-		t.Fatal("two unknowns must conflict")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Conflicts(tc.a, tc.b); got != tc.want {
+				t.Fatalf("Conflicts(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -207,6 +236,80 @@ func TestBuildWaveTwoUnknownsSerialize(t *testing.T) {
 		t.Fatalf("only one unknown may dispatch, got %v", ids)
 	}
 	assertReason(t, deferMap(w.Deferred), "u2", "footprint conflict with u1")
+}
+
+// TestBuildWaveNilActiveUnchanged pins down that an unset (nil) Opts.Active
+// reproduces exactly the pre-koryph-2im.1 behavior: no in-flight gating, only
+// intra-batch coloring. Every other BuildWave test in this file already
+// exercises this (none set Active), but this test makes the guarantee
+// explicit and named so a regression here is unambiguous.
+func TestBuildWaveNilActiveUnchanged(t *testing.T) {
+	t1 := issue("t1", 0, "fp:go:api")
+	t2 := issue("t2", 1, "fp:app:web")
+	w, err := BuildWave(context.Background(), []beads.Issue{t1, t2}, testCfg(), Opts{Max: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"t1", "t2"}) {
+		t.Fatalf("nil Active: items = %v, want both dispatched", got)
+	}
+}
+
+// TestBuildWaveInFlightConflict covers koryph-2im.1's L2 gating: a candidate
+// whose footprint conflicts with an in-flight (opts.Active) footprint is
+// deferred with the exact "(in-flight)" reason, checked BEFORE intra-batch
+// coloring — and never makes it into w.Items at all.
+func TestBuildWaveInFlightConflict(t *testing.T) {
+	t1 := issue("t1", 0, "fp:go:engine")
+	active := map[string]Footprint{
+		"running-1": {Writes: []string{"go:engine"}},
+	}
+	w, err := BuildWave(context.Background(), []beads.Issue{t1}, testCfg(), Opts{Max: 5, Active: active}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Items) != 0 {
+		t.Fatalf("expected no items dispatched, got %v", itemIDs(w.Items))
+	}
+	assertReason(t, deferMap(w.Deferred), "t1", "footprint conflict with running-1 (in-flight)")
+}
+
+// TestBuildWaveInFlightConflictStableBlocker pins the "iterate Active in
+// sorted-key order" requirement: with multiple conflicting in-flight
+// footprints, the reported blocker id must be deterministic across runs
+// (map iteration order is randomized by Go, so this would flake without the
+// sort).
+func TestBuildWaveInFlightConflictStableBlocker(t *testing.T) {
+	t1 := issue("t1", 0, "fp:go:engine")
+	active := map[string]Footprint{
+		"zzz-late":  {Writes: []string{"go:engine"}},
+		"aaa-early": {Writes: []string{"go:engine"}},
+	}
+	for i := 0; i < 20; i++ {
+		w, err := BuildWave(context.Background(), []beads.Issue{t1}, testCfg(), Opts{Max: 5, Active: active}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertReason(t, deferMap(w.Deferred), "t1", "footprint conflict with aaa-early (in-flight)")
+	}
+}
+
+// TestBuildWaveInFlightReadReadCoRuns covers the RW relaxation (L4): a
+// read-only candidate against a read-only in-flight footprint on the SAME
+// token must co-run, not defer — this is the whole point of splitting
+// footprints into read/write sets.
+func TestBuildWaveInFlightReadReadCoRuns(t *testing.T) {
+	docsReader := issue("docs-1", 0, "fp:read:go:engine")
+	active := map[string]Footprint{
+		"running-1": {Reads: []string{"go:engine"}},
+	}
+	w, err := BuildWave(context.Background(), []beads.Issue{docsReader}, testCfg(), Opts{Max: 5, Active: active}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"docs-1"}) {
+		t.Fatalf("read/read in-flight should co-run, got items=%v deferred=%v", got, w.Deferred)
+	}
 }
 
 func TestBuildWavePriorityOrder(t *testing.T) {
