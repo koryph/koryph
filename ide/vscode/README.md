@@ -6,9 +6,9 @@
 Makes running koryph waves *visible and steerable* from the editor. See the
 design at [`docs/designs/2026-07-vscode-extension.md`](../../docs/designs/2026-07-vscode-extension.md).
 
-**Status: data layer only** (bead ext.3). This bead ships the read-only
-file-watching + CLI-shelling data layer that later beads (tree view, transcript
-webviews, status bar, slot commands) build on. There is no UI yet.
+**Status: data layer + slot commands** (beads ext.3, ext.6). The read-only
+file-watching + CLI-shelling data layer is in place; the slot commands below are
+wired. The tree view (ext.4) and transcript webviews (ext.5) are still pending.
 
 ## Architecture (this bead)
 
@@ -33,6 +33,31 @@ them, shells out to `koryph` / `bd`.
 | `cli.ts` | `koryph board --json` | child_process adapter (respects `KORYPH_HOME`) |
 
 Unknown/newer `schema_version` values **degrade to raw JSON**, never crash.
+
+## Slot commands (`src/commands/`, bead ext.6)
+
+Palette + context-menu actions that steer a running wave. **Every mutation is a
+`koryph` / `bd` CLI shell-out** — the extension never signals a PID and never
+writes koryph state (Decision 3). `argv.ts` is the pure, unit-tested core
+(argument vectors + model-allowlist gating); `index.ts` is the VS Code glue.
+
+| Command | Mechanism |
+|---|---|
+| Stop (graceful / force) | `koryph stop --project <id> [--force] <phase>` (modal confirm; force is destructive-styled) |
+| Stop whole run | `koryph stop --project <id>` |
+| Nudge… | input box → `koryph nudge --project <id> <phase> "text"` |
+| Change model… | quick-pick haiku/sonnet/opus (+ fable iff allowlisted) → `bd label add … model:<tier>`, then *Stop + requeue now* vs *Apply next dispatch* (honest about dispatch-time resolution, Decision 5) |
+| Open transcript | ext.5 webview when present; otherwise offers Tail |
+| Tail in terminal | `koryph tail --project <id> <phase> --follow` |
+| Open worktree… | quick-pick: new window / add to workspace / reveal |
+| Show diff vs base | Git-extension multi-file diff of `base_commit…HEAD`; terminal `git diff` fallback |
+| Open PR | `pr-opened` slots: opens the PR URL parsed from the slot note |
+| Merge / Land | `koryph merge <branch>` / `koryph land <bead>` in an integrated terminal |
+| Show bead | output channel with `bd -C <root> show <bead>` |
+
+Context-menu `when` clauses key off the tree item's `contextValue` (`koryphRun`,
+`koryphSlot`, and status-suffixed variants like `koryphSlot.pr-opened`), a
+contract the tree view (ext.4) must honor.
 
 ## Build & test
 

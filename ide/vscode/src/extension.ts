@@ -9,7 +9,9 @@
 // activation event.
 
 import * as vscode from 'vscode';
-import { GovernorReader, QuotaReader, RegistryWatcher } from './data';
+import { CliAdapter, GovernorReader, QuotaReader, RegistryWatcher } from './data';
+import { registerSlotCommands } from './commands';
+import { makeSlotPicker } from './commands/slotPicker';
 
 /**
  * The data-layer handles created at activation. Later beads attach UI to these.
@@ -32,6 +34,13 @@ export function activate(context: vscode.ExtensionContext): KoryphDataLayer {
     { dispose: () => governor.dispose() },
     { dispose: () => quota.dispose() },
   );
+
+  // Slot commands (ext.6): every mutation shells the CLI. The palette picker
+  // enumerates live slots when a command is run without a tree-item argument.
+  registerSlotCommands(context, {
+    cli: new CliAdapter(),
+    pickSlot: makeSlotPicker(registry),
+  });
 
   dataLayer = { registry, governor, quota };
   return dataLayer;

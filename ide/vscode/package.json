@@ -15,7 +15,55 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [],
-  "contributes": {},
+  "contributes": {
+    "commands": [
+      { "command": "koryph.slot.stop", "title": "Stop Agent (Graceful)", "category": "Koryph" },
+      { "command": "koryph.slot.stopForce", "title": "Force-Stop Agent (SIGKILL)", "category": "Koryph" },
+      { "command": "koryph.slot.stopRun", "title": "Stop Whole Run", "category": "Koryph" },
+      { "command": "koryph.slot.nudge", "title": "Nudge Agent…", "category": "Koryph" },
+      { "command": "koryph.slot.changeModel", "title": "Change Model…", "category": "Koryph" },
+      { "command": "koryph.slot.openTranscript", "title": "Open Transcript", "category": "Koryph" },
+      { "command": "koryph.slot.tail", "title": "Tail in Terminal", "category": "Koryph" },
+      { "command": "koryph.slot.openWorktree", "title": "Open Worktree…", "category": "Koryph" },
+      { "command": "koryph.slot.showDiff", "title": "Show Diff vs Base", "category": "Koryph" },
+      { "command": "koryph.slot.openPr", "title": "Open PR", "category": "Koryph" },
+      { "command": "koryph.slot.merge", "title": "Merge Branch", "category": "Koryph" },
+      { "command": "koryph.slot.land", "title": "Land PR", "category": "Koryph" },
+      { "command": "koryph.slot.showBead", "title": "Show Bead", "category": "Koryph" }
+    ],
+    "menus": {
+      "view/item/context": [
+        { "command": "koryph.slot.stop", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "1_lifecycle@1" },
+        { "command": "koryph.slot.stopForce", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "1_lifecycle@2" },
+        { "command": "koryph.slot.stopRun", "when": "view == koryph.agentThreads && viewItem == koryphRun", "group": "1_lifecycle@1" },
+        { "command": "koryph.slot.nudge", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "2_steer@1" },
+        { "command": "koryph.slot.changeModel", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "2_steer@2" },
+        { "command": "koryph.slot.openTranscript", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "3_inspect@1" },
+        { "command": "koryph.slot.tail", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "3_inspect@2" },
+        { "command": "koryph.slot.showBead", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "3_inspect@3" },
+        { "command": "koryph.slot.openWorktree", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "4_worktree@1" },
+        { "command": "koryph.slot.showDiff", "when": "view == koryph.agentThreads && viewItem =~ /^koryphSlot/", "group": "4_worktree@2" },
+        { "command": "koryph.slot.openPr", "when": "view == koryph.agentThreads && viewItem =~ /pr-opened/", "group": "5_integrate@1" },
+        { "command": "koryph.slot.merge", "when": "view == koryph.agentThreads && viewItem =~ /review|merge-pending/", "group": "5_integrate@2" },
+        { "command": "koryph.slot.land", "when": "view == koryph.agentThreads && viewItem =~ /pr-opened/", "group": "5_integrate@3" }
+      ],
+      "commandPalette": [
+        { "command": "koryph.slot.stop" },
+        { "command": "koryph.slot.stopForce" },
+        { "command": "koryph.slot.stopRun" },
+        { "command": "koryph.slot.nudge" },
+        { "command": "koryph.slot.changeModel" },
+        { "command": "koryph.slot.openTranscript" },
+        { "command": "koryph.slot.tail" },
+        { "command": "koryph.slot.openWorktree" },
+        { "command": "koryph.slot.showDiff" },
+        { "command": "koryph.slot.openPr" },
+        { "command": "koryph.slot.merge" },
+        { "command": "koryph.slot.land" },
+        { "command": "koryph.slot.showBead" }
+      ]
+    }
+  },
   "scripts": {
     "vscode:prepublish": "npm run bundle",
     "bundle": "node esbuild.js --production",
