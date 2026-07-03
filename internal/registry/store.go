@@ -64,9 +64,16 @@ func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 // koryph identity), seeds a README, and lands the initial commit. It is
 // idempotent: re-running introduces no churn and no extra commits.
 func (s *Store) Init(ctx context.Context) error {
+	// KORYPH_HOME holds account identities, the audit trail, and quota state:
+	// private to the operator. 0700 on the tree keeps other local users out;
+	// this also protects state files created 0644 by shared helpers, since the
+	// parent dir blocks traversal. Chmod migrates a pre-existing 0755 home.
 	for _, d := range []string{s.Home, s.registryDir(), s.quotaDir()} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("registry: mkdir %s: %w", d, err)
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			return fmt.Errorf("registry: chmod %s: %w", d, err)
 		}
 	}
 
@@ -256,13 +263,13 @@ func (s *Store) Audit(ev Event) error {
 	if err != nil {
 		return err
 	}
-	return fsx.AppendLine(s.auditLog(), data)
+	return fsx.AppendLinePerm(s.auditLog(), data, 0o600)
 }
 
 // --- internals ---
 
 func (s *Store) put(rec *Record) error {
-	return fsx.WriteJSONAtomic(s.recordPath(rec.ProjectID), rec)
+	return fsx.WriteJSONAtomicPerm(s.recordPath(rec.ProjectID), rec, 0o600)
 }
 
 func (s *Store) git(args ...string) execx.Cmd {

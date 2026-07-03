@@ -100,9 +100,10 @@ func LoadConfig(account string) (*Config, error) {
 	return &cfg, nil
 }
 
-// SaveConfig writes cfg atomically to ~/.koryph/quota/<account>.json.
+// SaveConfig writes cfg atomically to ~/.koryph/quota/<account>.json (0600 —
+// private account state).
 func SaveConfig(cfg *Config) error {
-	return fsx.WriteJSONAtomic(configPath(cfg.Account), cfg)
+	return fsx.WriteJSONAtomicPerm(configPath(cfg.Account), cfg, 0o600)
 }
 
 // isCalibrated reports whether at least one ceiling has been calibrated (from

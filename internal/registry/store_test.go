@@ -99,6 +99,40 @@ func TestInitIdempotent(t *testing.T) {
 	}
 }
 
+// TestInitTightensPerms asserts KORYPH_HOME and its state dirs are 0700 (so
+// other local users can't read account identities / audit / quota), including
+// migration of a pre-existing 0755 home.
+func TestInitTightensPerms(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o755); err != nil { // simulate a legacy loose home
+		t.Fatal(err)
+	}
+	s := NewStoreAt(home)
+	if err := s.Init(context.Background()); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	for _, d := range []string{"", "registry.d", "quota"} {
+		fi, err := os.Stat(filepath.Join(home, d))
+		if err != nil {
+			t.Fatalf("stat %q: %v", d, err)
+		}
+		if perm := fi.Mode().Perm(); perm != 0o700 {
+			t.Errorf("%q perm = %o, want 700", d, perm)
+		}
+	}
+	// A written record is private (0600).
+	if err := s.put(sampleRecord("proj", t.TempDir())); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(home, "registry.d", "proj.json"))
+	if err != nil {
+		t.Fatalf("stat record: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("record perm = %o, want 600", perm)
+	}
+}
+
 func TestAddGetRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	root := gitProject(t)

@@ -42,13 +42,19 @@ func WriteAtomic(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmpName, path)
 }
 
-// WriteJSONAtomic marshals v with indentation and writes it atomically.
+// WriteJSONAtomic marshals v with indentation and writes it atomically (0644).
 func WriteJSONAtomic(path string, v any) error {
+	return WriteJSONAtomicPerm(path, v, 0o644)
+}
+
+// WriteJSONAtomicPerm is WriteJSONAtomic with an explicit file mode — use 0600
+// for private state under KORYPH_HOME.
+func WriteJSONAtomicPerm(path string, v any, perm os.FileMode) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	return WriteAtomic(path, append(data, '\n'), 0o644)
+	return WriteAtomic(path, append(data, '\n'), perm)
 }
 
 // ReadJSON unmarshals the JSON file at path into v.
@@ -64,12 +70,18 @@ func ReadJSON(path string, v any) error {
 }
 
 // AppendLine appends one line (adding a trailing newline) to path, creating
-// it if absent. Used for append-only JSONL logs.
+// it if absent (0644). Used for append-only JSONL logs.
 func AppendLine(path string, line []byte) error {
+	return AppendLinePerm(path, line, 0o644)
+}
+
+// AppendLinePerm is AppendLine with an explicit file mode for a newly-created
+// file — use 0600 for private logs under KORYPH_HOME.
+func AppendLinePerm(path string, line []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, perm)
 	if err != nil {
 		return err
 	}
