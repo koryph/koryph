@@ -106,7 +106,15 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		if err := s.prune(); err != nil {
 			return err
 		}
-		cap := s.Cap()
+		// EffectiveCap (koryph-2im.4): the static operator cap when the AIMD
+		// overlay is off (byte-for-byte the prior s.Cap() admission), or the
+		// probed/backed-off dynamic cap when adaptive is enabled. Used for both
+		// the global-full check and the fair-share denominator below, so the
+		// two stay consistent with each other.
+		cap, err := s.effectiveCapLocked()
+		if err != nil {
+			return err
+		}
 		leases, err := s.leases()
 		if err != nil {
 			return err
@@ -187,7 +195,11 @@ func (s *Store) FairShareFor(project string) (int, error) {
 		if err := s.prune(); err != nil {
 			return err
 		}
-		share = fairShare(s.Cap(), s.demanders(project), project, s.epoch())
+		cap, err := s.effectiveCapLocked()
+		if err != nil {
+			return err
+		}
+		share = fairShare(cap, s.demanders(project), project, s.epoch())
 		return nil
 	})
 	return share, err

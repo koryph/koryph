@@ -27,8 +27,40 @@ package govern
 const DefaultMaxGlobalAgents = 8
 
 // Config is the machine-wide concurrency governor config (governor.json).
+//
+// The AIMD overlay fields (koryph-2im.4,
+// docs/designs/2026-07-scheduler-throughput.md L5) are additive: a
+// governor.json written before they existed unmarshals them all to their zero
+// values, i.e. Adaptive=false, which reproduces today's static-cap behavior
+// byte-for-byte — see Config.EffectiveCap.
 type Config struct {
 	MaxGlobalAgents int `json:"max_global_agents"`
+
+	// Adaptive enables the AIMD overlay: the effective cap floats between 1
+	// and HardMax (probing up on quiet, halving on rate-limit) instead of
+	// pinning to MaxGlobalAgents.
+	Adaptive bool `json:"adaptive,omitempty"`
+	// HardMax bounds upward probing while Adaptive is on; ignored otherwise.
+	HardMax int `json:"hard_max,omitempty"`
+	// DynamicCap is the current floating cap. Seeded to MaxGlobalAgents when
+	// adaptive is enabled; then adjusted by ReportRateLimit (halve) and the
+	// lazy additive probe (see Store.EffectiveCap).
+	DynamicCap int `json:"dynamic_cap,omitempty"`
+	// LastDecreaseAt is the RFC3339 timestamp of the most recent multiplicative
+	// decrease. It also anchors the additive probe's elapsed-time clock: a
+	// decrease always resets the probe, by construction.
+	LastDecreaseAt string `json:"last_decrease_at,omitempty"`
+	// LastRateLimitAt is the RFC3339 timestamp of the most recent rate-limit
+	// report, decreased or merely counted inside the cooldown window.
+	LastRateLimitAt string `json:"last_rate_limit_at,omitempty"`
+	// LastProbeAt is internal bookkeeping for the additive-increase probe: the
+	// RFC3339 timestamp the probe last advanced from. Persisted (not just
+	// in-memory) so probing survives an engine restart.
+	LastProbeAt string `json:"last_probe_at,omitempty"`
+	// RateLimitEvents counts every ReportRateLimit call — decreased or
+	// suppressed by cooldown — for operator observability (`governor show`,
+	// `koryph doctor`).
+	RateLimitEvents int `json:"rate_limit_events,omitempty"`
 }
 
 // Lease records one running agent holding a global slot. It is keyed to the
