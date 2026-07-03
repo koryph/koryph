@@ -60,6 +60,32 @@ instead.
 }
 ```
 
+### Editor validation (JSON Schema)
+
+A JSON Schema for this file is published at
+[`docs/schema/koryph.project.schema.json`](../schema/koryph.project.schema.json).
+It is **generated from the Go `project.Config` struct** — field descriptions
+come from the struct doc comments and the enums/ranges (`merge_policy`,
+`merge_method`, `commit_style`, `work_source`, `risk_tier_default`, …) mirror
+the loader's validation — so it cannot drift: a `go test` regenerates and
+diffs it, and running `go generate ./internal/project` refreshes it after any
+`Config` change.
+
+Point your editor at it for inline completion, hover docs, and validation:
+
+```json
+{
+  "$schema": "https://koryph.dev/schemas/config",
+  "schema_version": 1,
+  "project_id": "myproject"
+}
+```
+
+or reference the committed file directly (`"$schema": "./docs/schema/koryph.project.schema.json"`).
+The VS Code extension contributes it via `jsonValidation` automatically.
+
+> Config is read **once at run start** — edits apply on the next `koryph run`.
+
 ### Conflict domains
 
 `footprint` contains `{pattern, tokens}` rules. Patterns use doublestar-lite

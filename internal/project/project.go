@@ -73,7 +73,7 @@ type PipelineStage struct {
 type IntakeSource struct {
 	// Provider is the issue-tracker type. Supported values: "github" (default),
 	// "jira", "linear". The field defaults to "github" when omitted.
-	Provider string `json:"provider,omitempty"`
+	Provider string `json:"provider,omitempty" jsonschema:"enum=github,enum=jira,enum=linear"`
 
 	// Source identifies the target within the provider.
 	//   GitHub: "owner/repo" (e.g. "acme/widgets").
@@ -91,7 +91,7 @@ type IntakeSource struct {
 	Trigger string `json:"trigger,omitempty"`
 
 	// Limit caps the number of open issues fetched per run. Default: 20.
-	Limit int `json:"limit,omitempty"`
+	Limit int `json:"limit,omitempty" jsonschema:"minimum=0"`
 
 	// CommentBack posts the new bead ID back on each ingested issue.
 	// Opt-in; mirrors the --comment flag. Default: false.
@@ -109,7 +109,7 @@ type Config struct {
 
 	// WorkSource is "bd" (beads ready-graph, preferred) or "markdown"
 	// (legacy docs/plans phase docs; supported for un-migrated projects).
-	WorkSource string `json:"work_source"`
+	WorkSource string `json:"work_source" jsonschema:"enum=bd,enum=markdown"`
 	PlansDir   string `json:"plans_dir,omitempty"`
 
 	// Footprint declares conflict domains. AreaMap maps an `area:<x>` bead
@@ -160,11 +160,11 @@ type Config struct {
 	// conventional-validated; "none" opts out of enforcement entirely.
 	// Projects can additionally map Stages["commit"] to a persona whose
 	// guidance agents consult for commit authoring.
-	CommitStyle    string `json:"commit_style,omitempty"`
+	CommitStyle    string `json:"commit_style,omitempty" jsonschema:"enum=conventional,enum=custom,enum=none"`
 	CommitTemplate string `json:"commit_template,omitempty"`
 
 	// MergePolicy default when the epic carries no merge:* label.
-	MergePolicy Policy `json:"merge_policy"`
+	MergePolicy Policy `json:"merge_policy" jsonschema:"enum=manual,enum=auto,enum=pr"`
 
 	// MergeMethod is how an engine-opened PR lands on the default branch:
 	// "ff" (default, also when empty) preserves the exact gate-checked, signed
@@ -172,10 +172,10 @@ type Config struct {
 	// one new commit. A non-ff method is refused while signing is required
 	// (only ff preserves signatures). GitHub-native merge methods are never
 	// used — they rewrite SHAs or add an unsigned merge commit.
-	MergeMethod string `json:"merge_method,omitempty"`
+	MergeMethod string `json:"merge_method,omitempty" jsonschema:"enum=ff,enum=squash"`
 
 	// RiskTierDefault is the recovery tier (0-3) for beads without rt:*.
-	RiskTierDefault int `json:"risk_tier_default"`
+	RiskTierDefault int `json:"risk_tier_default" jsonschema:"minimum=0,maximum=3"`
 
 	// Signing is the vault-backed commit/artifact signing policy
 	// (nil = signing not configured; managed by `koryph signing setup`).

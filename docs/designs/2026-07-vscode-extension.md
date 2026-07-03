@@ -152,6 +152,10 @@ Activity-bar container "Koryph" with one tree:
   the extension's `jsonValidation` contribution and usable by any editor via
   `$schema`). Single source of truth: the structs; CI check that the emitted
   schema is current (gate-adjacent, same pattern as gofmt check).
+  **Delivered (ext.2):** [`docs/schema/koryph.project.schema.json`](../schema/koryph.project.schema.json),
+  emitted by `go generate ./internal/project` (`internal/project/gen`) and
+  drift-guarded by `TestSchemaNoDrift` in the standard `go test ./...` gate — no
+  Makefile/CI change, so protected paths stay untouched.
 - "Koryph: Edit Project Config" opens `koryph.project.json` with schema
   validation, hover docs per field, and a persistent editor banner: *"Applies
   on next `koryph run` — the running engine loaded config at run start."*
@@ -211,7 +215,7 @@ shows its project's koryph execution" behavior.
 | ext.4 | Tree view (grouping, pinning, badges, show/hide other projects) + status bar quota item | ide / opus |
 | ext.5 | Transcript webview: stream.jsonl incremental renderer, multi-panel, follow mode, stderr/session tabs | ide / opus |
 | ext.6 | Slot commands: stop/nudge/change-model/worktree/diff/merge/land/PR + confirmations | ide / opus |
-| ext.7 | Config editing UX: jsonValidation wiring, edit command, run-start caveat banner | ide / sonnet |
+| ext.7 | Config editing UX: jsonValidation wiring, edit command, run-start caveat banner. Consumes the schema delivered by ext.2 at [`docs/schema/koryph.project.schema.json`](../schema/koryph.project.schema.json) (generated from `project.Config`, drift-checked by `go test`; see [projects-and-accounts.md → Editor validation](../user-guide/projects-and-accounts.md)). | ide / sonnet |
 | ext.8 | Makefile `ext-*` targets + docs: new user-guide chapter "VS Code extension"; update ide-integration.md | ide+docs / sonnet |
 
 Dependencies: ext.3 → ext.4/5/6/7 (parallel after scaffold); ext.1, ext.2

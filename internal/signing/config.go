@@ -49,10 +49,10 @@ type Config struct {
 	Required bool `json:"required"`
 
 	// Mode is "ssh" (default when empty) or "gitsign".
-	Mode string `json:"mode,omitempty"`
+	Mode string `json:"mode,omitempty" jsonschema:"enum=ssh,enum=gitsign"`
 
 	// Provider names the vault backend: protonpass|onepassword|file|command.
-	Provider string `json:"provider,omitempty"`
+	Provider string `json:"provider,omitempty" jsonschema:"enum=protonpass,enum=onepassword,enum=file,enum=command"`
 
 	// KeyRef is the provider-specific reference for the signing key: a
 	// pass:// URI (protonpass), an op:// reference (onepassword), a file
