@@ -231,6 +231,43 @@ koryph governor set --max-global N [--adaptive] [--hard-max M]
 - `koryph governor show` displays operator cap, dynamic cap, last decrease,
   and event counts. `koryph doctor` flags a dynamic cap pinned low.
 
+#### L5b — Settle windows, circuit breaker, dispatch smoothing
+
+AIMD alone can thrash: agents dispatched under the *old* cap keep triggering
+rate-limit events for minutes after a decrease, an instantaneous burst can
+need more than one halving, and several projects' refill loops reacting to
+the same cap raise can dispatch simultaneously (thundering herd). Three
+mechanisms, all in the flocked govern store so every engine on the machine
+coordinates:
+
+- **Settle window.** After *any* dynamicCap change (either direction), the
+  cap is frozen for `settle` seconds (default 120, subsumes the 60 s
+  decrease cooldown). Events arriving during settle are counted for
+  observability and burst detection but apply no further change — decisions
+  are only made against a population that reflects the current cap. The
+  additive-increase clock starts at settle expiry.
+- **Burst-scaled decrease.** ≥3 distinct-slot rate-limit events within 30 s
+  is a burst: the decrease applies factor 4 instead of 2 (floor 1) — one
+  settle-window's worth of "additional lowering" up front instead of two
+  full cycles of halve-and-wait.
+- **Circuit breaker** (closed → open → half-open). Opens when a rate-limit
+  event arrives with dynamicCap already at 1, or on 3 decreases within
+  10 min. Open: admission is 0 machine-wide (running agents always finish —
+  I5) for `break` seconds (default 300, doubling per consecutive re-open,
+  cap 3600). Half-open: exactly one probe dispatch is admitted; if it
+  completes without a rate-limit classification the breaker closes and AIMD
+  resumes from dynamicCap=1; if it rate-limits, re-open with doubled break.
+- **Dispatch smoothing.** A machine-wide minimum inter-dispatch spacing
+  (default 3 s, jittered ±50 %) enforced at admission: a refill denied for
+  spacing defers the rest of its batch to the next tick exactly like a cap
+  denial (rolling mode retries next tick; no spin, no queue). This bounds
+  the start-burst after a cap raise or breaker close regardless of how many
+  projects refill at once.
+
+`governor show` and `doctor` surface breaker state, settle deadline, and
+smoothing config. Worst case (breaker misconfigured/flapping) degrades to
+serialized dispatch, never to a stampede.
+
 ### L6 — Requeue budgets
 
 Replace the single-shot Note-marker dedup (`gateRequeueNote`,
