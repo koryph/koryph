@@ -107,6 +107,7 @@ func (r *runner) loop(ctx context.Context) (Outcome, error) {
 			DefaultModel: r.opts.DefaultModel,
 			Parent:       r.opts.Parent,
 			ActiveIDs:    active,
+			Active:       r.activeFootprints(ctx, active),
 		}, r.childLister(ctx))
 		if err != nil {
 			return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
@@ -303,6 +304,40 @@ func (r *runner) windowNote(calibrated bool, u quota.Usage, est float64) string 
 		return " (governor uncalibrated)"
 	}
 	return fmt.Sprintf(" (est $%.2f / window %.0f%%)", est, u.Window5h.Fraction()*100)
+}
+
+// activeFootprints derives sched.BuildWave's in-flight footprint set from the
+// currently non-terminal slots (koryph-2im.1, design L2). Each slot's
+// footprint is recomputed from the bead's current labels rather than trusted
+// from dispatch time: slot-persisted footprints are a later bead (design L2
+// footprint persistence), so today this always recomputes.
+//
+// r.issueFor already implements the fallback chain the design calls for
+// (in-memory wave item → adapter.Show → a synthetic id-only issue with no
+// labels) for exactly this "recover the bead behind a slot" purpose
+// (internal/engine/recover.go). A synthetic no-label issue resolves to a
+// write-only TokenUnknown footprint by construction (see FootprintFor), so
+// reusing it here already yields the maximally-conservative fallback the
+// spec asks for on any Show failure — no separate error path needed.
+//
+// This closes a latent gap (called out in the design doc): on --resume,
+// adopted slots were previously excluded from a new wave only by id, so a
+// freshly built wave could conflict with an adopted slot's real footprint.
+// With Active wired in, the resume path is footprint-correct by construction.
+func (r *runner) activeFootprints(ctx context.Context, activeIDs map[string]bool) map[string]sched.Footprint {
+	if len(activeIDs) == 0 {
+		return nil
+	}
+	out := make(map[string]sched.Footprint, len(activeIDs))
+	for id := range activeIDs {
+		sl := r.run.Slots[id]
+		if sl == nil {
+			continue
+		}
+		iss := r.issueFor(ctx, sl)
+		out[id] = sched.FootprintFor(iss, r.cfg)
+	}
+	return out
 }
 
 // childLister adapts beads.ListChildren for sched.BuildWave. Adapter errors

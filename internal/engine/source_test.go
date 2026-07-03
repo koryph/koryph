@@ -15,11 +15,12 @@ import (
 // fakeSource is an in-memory WorkSource so loop logic can be unit-tested with no
 // `bd` binary — the seam koryph-8iu.2 opened. Unused methods return zero values.
 type fakeSource struct {
-	setStatus [][2]string // (id, status) calls, in order
+	setStatus   [][2]string   // (id, status) calls, in order
+	readyIssues []beads.Issue // Ready() frontier; nil (default) reproduces the old "no frontier" fake
 }
 
 func (f *fakeSource) Ready(context.Context, beads.ReadyOpts) ([]beads.Issue, error) {
-	return nil, nil
+	return f.readyIssues, nil
 }
 func (f *fakeSource) Show(_ context.Context, id string) (beads.Issue, error) {
 	return beads.Issue{ID: id}, nil
