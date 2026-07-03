@@ -12,7 +12,7 @@ Do this:
 2. Choose a `--type` and a `--priority` (`P0`–`P4`, default `P2`) from the request:
    - Use `task`, `bug`, or `chore` for anything implementable — these are the **only** types the wave loop dispatches.
    - Use `feature`/`epic` **only** for an umbrella/planning bead you do not want built directly; the loop skips them and they will sit in `bd ready` unbuilt.
-3. Choose footprint labels so the bead can be batched in parallel with conflict-free work:
+3. Choose footprint labels so the bead can be batched in parallel with conflict-free work. Footprint and dependency assignment is scheduler-correctness work — if your current model is below opus tier and the footprint is not obvious, delegate this step to the `koryph-architect` agent (opus) rather than guessing:
    - One `area:<key>` for **every** `area_map` key the work will touch (from step 1). Carry every area it touches — over-broad only costs parallelism, under-broad risks a false-parallel merge conflict.
    - Prefer the **narrowest honest key** the `area_map` offers — broad catch-all areas serialize everything that shares them.
    - If the bead only **reads** an area (docs about it, tests over fixtures, analysis), declare that with `fp:read:<token>` — readers co-run with each other; only writers exclude.
