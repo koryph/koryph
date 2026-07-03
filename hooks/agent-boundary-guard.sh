@@ -17,9 +17,13 @@
 # Denied operations (Bash tool only), matched per &&/;/|-separated segment,
 # tolerant of leading whitespace and leading VAR=val env assignments:
 #   git push · git merge · git checkout main · git checkout master ·
-#   git switch main · git switch master · bd close · gh pr merge
+#   git switch main · git switch master · bd close · gh pr merge ·
+#   git config WRITES to persistence vectors (core.hooksPath, core.fsmonitor,
+#   core.sshCommand, credential.helper, include.path, filter.*) and the inline
+#   `git -c <vector>=… <cmd>` form.
 # Explicitly ALLOWED and never matched: git rebase (including onto main —
-# agents rebase their branch onto origin/main routinely), git commit.
+# agents rebase their branch onto origin/main routinely), git commit,
+# git config reads (--get/--list/...).
 #
 # Decision output:
 #   - jq available: emit the PreToolUse JSON deny body on stdout, exit 0.
@@ -148,6 +152,24 @@ check_segment() {
   fi
   if [[ "${seg}" =~ ^gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$) ]]; then
     deny "gh pr merge"
+  fi
+
+  # git config persistence vectors. A linked worktree writes the SHARED repo
+  # config, so an agent could register a hook/filter/credential-helper that
+  # executes during koryph's OWN later git ops (rebase/checkout) or the
+  # operator's future git commands. Block WRITES to these keys — both the
+  # `git config <key> <val>` form and the inline `git -c <key>=<val> <cmd>`
+  # form. Reads (--get/--list/...) stay allowed. Matched case-insensitively.
+  local low_seg
+  low_seg="$(printf '%s' "${seg}" | tr '[:upper:]' '[:lower:]')"
+  local vectors='core\.hookspath|core\.fsmonitor|core\.sshcommand|credential\.helper|include\.path|filter\.'
+  if [[ "${low_seg}" =~ ^git([[:space:]]+-[^[:space:]]+)*[[:space:]]+config([[:space:]]|$) ]] &&
+    [[ "${low_seg}" =~ (${vectors}) ]] &&
+    ! [[ "${low_seg}" =~ (--get|--list|--get-all|--get-regexp|--get-urlmatch) ]]; then
+    deny "git config write to a persistence vector (hooksPath/fsmonitor/sshCommand/credential.helper/include.path/filter)"
+  fi
+  if [[ "${low_seg}" =~ -c[[:space:]]+(${vectors})[a-z0-9._-]*= ]]; then
+    deny "git -c inline config of a persistence vector"
   fi
 }
 
