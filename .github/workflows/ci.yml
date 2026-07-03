@@ -27,10 +27,13 @@ jobs:
           extra_args: --all-files --hook-stage pre-commit
       - name: Enforce conventional commits + DCO on PR commits
         if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
-          base='${{ github.event.pull_request.base.sha }}'
-          head='${{ github.event.pull_request.head.sha }}'
+          base="$BASE_SHA"
+          head="$HEAD_SHA"
           bad=0
           for c in $(git rev-list "$base..$head"); do
             # Bot commits (dependabot) are trusted and cannot DCO sign-off.
