@@ -134,19 +134,25 @@ func cmdProjectList(args []string, stdout, stderr io.Writer) int {
 
 func cmdProjectShow(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project show", stderr)
+	flagProject := fs.String("project", "", "project id (alternative to positional <id>)")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return engine.ExitUsage
 	}
-	if len(pos) < 1 {
-		return usageErr(stderr, "project show: <id> is required")
+	posVal := ""
+	if len(pos) > 0 {
+		posVal = pos[0]
+	}
+	id, code := resolveProjectID(stderr, "project show", posVal, *flagProject)
+	if code != 0 {
+		return code
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(pos[0])
+	rec, err := store.Get(id)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -158,6 +164,7 @@ func cmdProjectShow(args []string, stdout, stderr io.Writer) int {
 
 func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project set-account", stderr)
+	flagProject := fs.String("project", "", "project id (alternative to positional <id>)")
 	profile := fs.String("profile", "", "new account profile: personal|work (required)")
 	identity := fs.String("identity", "", "new expected login email (required)")
 	configDir := fs.String("config-dir", "", "CLAUDE_CONFIG_DIR for the new account")
@@ -166,18 +173,23 @@ func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return engine.ExitUsage
 	}
-	if len(pos) < 1 {
-		return usageErr(stderr, "project set-account: <id> is required")
+	posVal := ""
+	if len(pos) > 0 {
+		posVal = pos[0]
+	}
+	id, code := resolveProjectID(stderr, "project set-account", posVal, *flagProject)
+	if code != 0 {
+		return code
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	if err := store.SetAccount(ctx, pos[0], *profile, *configDir, *identity, *reason); err != nil {
+	if err := store.SetAccount(ctx, id, *profile, *configDir, *identity, *reason); err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(pos[0])
+	rec, err := store.Get(id)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -270,19 +282,25 @@ func orDash(s string) string {
 // green.
 func cmdValidate(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("validate", stderr)
+	flagProject := fs.String("project", "", "project id (alternative to positional <project-id>)")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return engine.ExitUsage
 	}
-	if len(pos) < 1 {
-		return usageErr(stderr, "validate: <project-id> is required")
+	posVal := ""
+	if len(pos) > 0 {
+		posVal = pos[0]
+	}
+	projectID, code := resolveProjectID(stderr, "validate", posVal, *flagProject)
+	if code != 0 {
+		return code
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	v, err := onboard.Validate(ctx, store, pos[0], stdout)
+	v, err := onboard.Validate(ctx, store, projectID, stdout)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -290,7 +308,7 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "FAILED")
 		return engine.ExitFatal
 	}
-	if rec, gerr := store.Get(pos[0]); gerr == nil {
+	if rec, gerr := store.Get(projectID); gerr == nil {
 		switch rec.MigrationStatus {
 		case registry.StatusRegistered:
 			rec.MigrationStatus = registry.StatusMigrated
@@ -323,7 +341,7 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 					fmt.Fprintf(stdout, "not promoted to validated: latest run %s has %d merged / %d failed-blocked-conflict slots (need >=1 merged, 0 bad)\n", run.RunID, merged, bad)
 				}
 			} else {
-				fmt.Fprintln(stdout, "not promoted to validated: no canary run found (run `koryph run --project "+pos[0]+" --once --allow-unvalidated` and re-validate)")
+				fmt.Fprintln(stdout, "not promoted to validated: no canary run found (run `koryph run --project "+projectID+" --once --allow-unvalidated` and re-validate)")
 			}
 		}
 	}

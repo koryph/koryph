@@ -146,7 +146,7 @@ func (s *Store) Get(id string) (*Record, error) {
 	var rec Record
 	if err := fsx.ReadJSON(s.recordPath(id), &rec); err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("registry: %s not found", id)
+			return nil, fmt.Errorf("registry: %s not found (run 'koryph project list' to see registered projects)", id)
 		}
 		return nil, err
 	}

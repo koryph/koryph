@@ -108,12 +108,14 @@ ONBOARDING
   project add <root> --account <personal|work> --identity <email> [--config-dir DIR] [--id slug] [--name N] [--branch B] [--force]
                         register a project (inspect + register + scaffold adapter + install agents, commands & rules)
   project list          list managed projects (id, account, status, root)
-  project show <id>     print one project record as JSON
-  project set-account <id> --profile P --identity EMAIL [--config-dir DIR] --reason "..."
+  project show <id>|--project ID
+                        print one project record as JSON
+  project set-account <id>|--project ID --profile P --identity EMAIL [--config-dir DIR] --reason "..."
                         change a project's account (audited; resets validation)
   onboard <root> [--json]
                         read-only inventory of a project (mode-5 report)
-  validate <project-id> run the pre-dispatch gate; promotes registered->migrated on green
+  validate <project-id>|--project ID
+                        run the pre-dispatch gate; promotes registered->migrated on green
   agents install <root> [--force]
                         install fallback personas into <root>/.claude/agents (idempotent; --force overwrites differing files)
   commands install <root> [--force]
@@ -267,6 +269,28 @@ func fail(stderr io.Writer, err error) int {
 func usageErr(stderr io.Writer, msg string) int {
 	fmt.Fprintln(stderr, "koryph:", msg)
 	return engine.ExitUsage
+}
+
+// resolveProjectID merges a positional project id with a --project flag value.
+// Rules:
+//   - --project wins when both sources agree on the same value (both accepted).
+//   - A conflict (both non-empty but different) is a usage error.
+//   - If neither is provided, a usage error is returned.
+//
+// The returned int is 0 on success, or engine.ExitUsage on error (the error
+// has already been printed to stderr).
+func resolveProjectID(stderr io.Writer, cmd, posVal, flagVal string) (string, int) {
+	if posVal != "" && flagVal != "" && posVal != flagVal {
+		return "", usageErr(stderr,
+			cmd+": positional <id> "+posVal+" and --project "+flagVal+" conflict; pass only one")
+	}
+	if flagVal != "" {
+		return flagVal, 0
+	}
+	if posVal != "" {
+		return posVal, 0
+	}
+	return "", usageErr(stderr, cmd+": <id> is required (positional or --project flag)")
 }
 
 // sortStrings sorts s in place (ascending) for stable table/summary output.
