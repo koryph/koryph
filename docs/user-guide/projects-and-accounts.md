@@ -82,9 +82,23 @@ Point your editor at it for inline completion, hover docs, and validation:
 ```
 
 or reference the committed file directly (`"$schema": "./docs/schema/koryph.project.schema.json"`).
-The VS Code extension contributes it via `jsonValidation` automatically.
+The VS Code extension contributes it via `jsonValidation` automatically — you
+get inline completion, hover docs, and error highlighting for any `koryph.project.json`
+file without extra setup.
 
-> Config is read **once at run start** — edits apply on the next `koryph run`.
+To open the config with a single command, run **Koryph: Edit Project Config**
+from the VS Code command palette (`⇧⌘P` / `Ctrl+Shift+P`). The extension
+locates the `koryph.project.json` in your workspace, opens it with schema
+validation active, and surfaces the run-start caveat as a notification.
+
+> **Run-start caveat:** config is read **once at run start** — edits apply on
+> the **next `koryph run`**, not to the currently active engine.
+
+> **Registry-record fields** (account identity, allowed models, billing guard)
+> are stored in `~/.koryph/registry.d/<project-id>.json` and are managed
+> exclusively by `koryph project` CLI commands.  Do **not** edit those files by
+> hand — they are git-committed by the store and hand edits will be overwritten
+> on the next `koryph project set` or `koryph project set-account` call.
 
 ### Conflict domains
 

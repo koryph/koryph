@@ -16,9 +16,16 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onView:koryph.agentThreads",
+    "onLanguage:json",
     "onStartupFinished"
   ],
   "contributes": {
+    "jsonValidation": [
+      {
+        "fileMatch": "koryph.project.json",
+        "url": "./media/koryph.project.schema.json"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -57,6 +64,7 @@
       }
     },
     "commands": [
+      { "command": "koryph.editProjectConfig", "title": "Edit Project Config", "category": "Koryph" },
       { "command": "koryph.slot.stop", "title": "Stop Agent (Graceful)", "category": "Koryph" },
       { "command": "koryph.slot.stopForce", "title": "Force-Stop Agent (SIGKILL)", "category": "Koryph" },
       { "command": "koryph.slot.stopRun", "title": "Stop Whole Run", "category": "Koryph" },
@@ -88,6 +96,7 @@
         { "command": "koryph.slot.land", "when": "view == koryph.agentThreads && viewItem =~ /pr-opened/", "group": "5_integrate@3" }
       ],
       "commandPalette": [
+        { "command": "koryph.editProjectConfig" },
         { "command": "koryph.slot.stop" },
         { "command": "koryph.slot.stopForce" },
         { "command": "koryph.slot.stopRun" },

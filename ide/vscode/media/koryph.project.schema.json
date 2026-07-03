@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://koryph.dev/schemas/config",
+  "$defs": {
+    "FootprintRule": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "tokens": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "tokens"
+      ],
+      "description": "FootprintRule maps a path glob (doublestar-lite: '*' within a segment, '**' across segments, evaluated by sched) to footprint tokens."
+    },
+    "IntakeSource": {
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": [
+            "github",
+            "jira",
+            "linear"
+          ],
+          "description": "Provider is the issue-tracker type. Supported values: \"github\" (default),\n\"jira\", \"linear\". The field defaults to \"github\" when omitted."
+        },
+        "source": {
+          "type": "string",
+          "description": "Source identifies the target within the provider.\n  GitHub: \"owner/repo\" (e.g. \"acme/widgets\").\n  JIRA:   \"\u003chost\u003e/\u003cproject-key\u003e\" (e.g. \"acme.atlassian.net/ENG\").\n  Linear: \"\u003cteam-key\u003e\" (e.g. \"ENG\")."
+        },
+        "trigger": {
+          "type": "string",
+          "description": "Trigger is the label (GitHub) or JQL predicate (JIRA) or label/state\nfilter (Linear) that determines which open issues are candidates for\nintake. Default: \"triage\".\n  GitHub: label name, e.g. \"triage\".\n  JIRA:   JQL clause AND-combined with \"project = \u003ckey\u003e\", e.g. `status = \"To Do\"`.\n  Linear: \"label:\u003cname\u003e\" or \"state:\u003cname\u003e\" or bare label name. When empty\n          all open issues in the team are polled."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Limit caps the number of open issues fetched per run. Default: 20."
+        },
+        "comment_back": {
+          "type": "boolean",
+          "description": "CommentBack posts the new bead ID back on each ingested issue.\nOpt-in; mirrors the --comment flag. Default: false."
+        },
+        "mapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Mapping is reserved for future provider-specific field remapping.\nIgnored in v1."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "description": "IntakeSource configures one issue-tracker source in the koryph.project.json intake list."
+    },
+    "PipelineStage": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name identifies the stage (e.g. \"docs\", \"test\"). When it matches a known\nengine stage it inherits that stage's default persona and model tier via\nmodelroute; it is also the stage key for model:\u003cstage\u003e:\u003ctier\u003e labels."
+        },
+        "persona": {
+          "type": "string",
+          "description": "Persona overrides the agent (.claude/agents/\u003cpersona\u003e); default is\nmodelroute.PersonaFor(Name, Stages)."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model overrides the tier for this stage (must be in AllowedModels);\ndefault is the engine stage default resolved by modelroute."
+        },
+        "effort": {
+          "type": "string",
+          "description": "Effort overrides the reasoning-effort hint passed to the agent."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Prompt is extra, stage-specific instruction text appended to the built\nstage prompt."
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "Optional stages log-and-continue on failure; a non-optional stage (the\ndefault) that fails blocks the slot and stops the pipeline (fail closed)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "description": "PipelineStage is one post-implement stage in the project pipeline."
+    },
+    "SigningConfig": {
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "description": "Required makes the engine fail closed: repo signing config is applied\nat run setup, the SSH agent must hold the key before dispatch, and\nevery merge verifies commit signatures."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ssh",
+            "gitsign"
+          ],
+          "description": "Mode is \"ssh\" (default when empty) or \"gitsign\"."
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "protonpass",
+            "onepassword",
+            "file",
+            "command"
+          ],
+          "description": "Provider names the vault backend: protonpass|onepassword|file|command."
+        },
+        "key_ref": {
+          "type": "string",
+          "description": "KeyRef is the provider-specific reference for the signing key: a\npass:// URI (protonpass), an op:// reference (onepassword), a file\npath (file), or whatever the command template consumes ({ref})."
+        },
+        "identity": {
+          "type": "string",
+          "description": "Identity is the signer email; it becomes the allowed-signers principal."
+        },
+        "public_key": {
+          "type": "string",
+          "description": "PublicKey is the SSH public key literal (\"ssh-ed25519 AAAA...\"),\ncaptured at setup. It configures user.signingkey and .allowed_signers."
+        },
+        "vault_name": {
+          "type": "string",
+          "description": "VaultName and ItemTitle record the vault selector used to resolve\nPublicKey when --vault-name/--item-title was used at setup. They are\nprovenance only — koryph signing status displays them as the key source.\nEach project pins its own vault item independently; no assumption is made\nabout a single global key."
+        },
+        "item_title": {
+          "type": "string"
+        },
+        "artifacts": {
+          "type": "boolean",
+          "description": "Artifacts enables cosign blob signing (`koryph sign blob`)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "required"
+      ],
+      "description": "Config is the per-project signing policy, stored as the \"signing\" block of koryph.project.json."
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "work_source": {
+      "type": "string",
+      "enum": [
+        "bd",
+        "markdown"
+      ],
+      "description": "WorkSource is \"bd\" (beads ready-graph, preferred) or \"markdown\"\n(legacy docs/plans phase docs; supported for un-migrated projects)."
+    },
+    "plans_dir": {
+      "type": "string"
+    },
+    "footprint": {
+      "items": {
+        "$ref": "#/$defs/FootprintRule"
+      },
+      "type": "array",
+      "description": "Footprint declares conflict domains. AreaMap maps an `area:\u003cx\u003e` bead\nlabel to footprint tokens when no fp:* label is present."
+    },
+    "area_map": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "type": "object"
+    },
+    "gate": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "Gate is the ordered green-gate command list run in the worktree after\nrebase and before merge (each entry runs via `sh -c` under direnv when\navailable)."
+    },
+    "stages": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object",
+      "description": "Stages maps pipeline stage -\u003e persona name in .claude/agents.\nTiers maps model tier -\u003e persona for tier-driven dispatch."
+    },
+    "tiers": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "pipeline": {
+      "items": {
+        "$ref": "#/$defs/PipelineStage"
+      },
+      "type": "array",
+      "description": "Pipeline lists post-implement stages executed sequentially in the\nworktree after the implementer and before review/merge. Empty keeps the\nclassic implement -\u003e (review) -\u003e merge flow. See PipelineStage."
+    },
+    "bootstrap": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "Bootstrap commands run in a freshly created or re-attached worktree\nbefore the agent starts (e.g. \"pnpm install --frozen-lockfile\")."
+    },
+    "intake": {
+      "items": {
+        "$ref": "#/$defs/IntakeSource"
+      },
+      "type": "array",
+      "description": "Intake lists the issue-tracker sources polled by `koryph intake`.\nEach entry drives one poll per run. When empty, intake falls back to\nthe project's registry remote with CLI flags."
+    },
+    "protected_paths": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "ProtectedPaths extend the engine's default protected list; diffs\ntouching them are never mergeable from a worktree."
+    },
+    "validation": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "Validation commands for `koryph validate` (beyond the engine checks)."
+    },
+    "engine_version": {
+      "type": "string",
+      "description": "EngineVersion is the minimum koryph engine this project requires,\nminimum-style: \"0.2+\", \"1+\", \"\u003e=0.2.0\", or a bare version (also a\nminimum). Empty = any engine."
+    },
+    "commit_style": {
+      "type": "string",
+      "enum": [
+        "conventional",
+        "custom",
+        "none"
+      ],
+      "description": "CommitStyle governs agent commit messages: \"conventional\" (default,\nalso when empty) is mechanically enforced at merge/PR time (every\ncommit subject in def..branch must match type(scope): subject);\n\"custom\" (CommitTemplate required) governs via the template and is not\nconventional-validated; \"none\" opts out of enforcement entirely.\nProjects can additionally map Stages[\"commit\"] to a persona whose\nguidance agents consult for commit authoring."
+    },
+    "commit_template": {
+      "type": "string"
+    },
+    "merge_policy": {
+      "type": "string",
+      "enum": [
+        "manual",
+        "auto",
+        "pr"
+      ],
+      "description": "MergePolicy default when the epic carries no merge:* label."
+    },
+    "merge_method": {
+      "type": "string",
+      "enum": [
+        "ff",
+        "squash"
+      ],
+      "description": "MergeMethod is how an engine-opened PR lands on the default branch:\n\"ff\" (default, also when empty) preserves the exact gate-checked, signed\ncommit SHAs via a local fast-forward + push; \"squash\" collapses them into\none new commit. A non-ff method is refused while signing is required\n(only ff preserves signatures). GitHub-native merge methods are never\nused — they rewrite SHAs or add an unsigned merge commit."
+    },
+    "risk_tier_default": {
+      "type": "integer",
+      "maximum": 3,
+      "minimum": 0,
+      "description": "RiskTierDefault is the recovery tier (0-3) for beads without rt:*."
+    },
+    "signing": {
+      "$ref": "#/$defs/SigningConfig",
+      "description": "Signing is the vault-backed commit/artifact signing policy\n(nil = signing not configured; managed by `koryph signing setup`)."
+    },
+    "max_concurrent_slots": {
+      "type": "integer",
+      "description": "MaxConcurrentSlots caps wave width for this project (default 3)."
+    },
+    "dispatch_stagger_seconds": {
+      "type": "integer",
+      "description": "DispatchStaggerSeconds between agent launches (default 8)."
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_id",
+    "work_source",
+    "gate",
+    "merge_policy",
+    "risk_tier_default"
+  ],
+  "title": "koryph.project.json",
+  "description": "Per-project koryph adapter configuration (koryph.project.json). Generated from the Go project.Config struct — do not edit by hand; run `go generate ./internal/project`."
+}

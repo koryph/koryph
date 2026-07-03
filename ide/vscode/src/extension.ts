@@ -3,8 +3,9 @@
 
 // Extension entry point. Activation wires the read-only data layer (ext.3) to
 // the UI: the "Koryph" activity-bar tree of agent threads (ext.4), the quota
-// status-bar items (ext.4/§5), and the slot commands (ext.6). Every mutation
-// still goes through the CLI — the extension never writes koryph state.
+// status-bar items (ext.4/§5), the slot commands (ext.6), and the project
+// config editor UX (ext.7). Every mutation still goes through the CLI — the
+// extension never writes koryph state.
 
 import * as vscode from 'vscode';
 import {
@@ -16,6 +17,7 @@ import {
 } from './data';
 import { registerSlotCommands } from './commands';
 import { makeSlotPicker } from './commands/slotPicker';
+import { ConfigEditorBanner, registerConfigEditor } from './config';
 import { AGENT_THREADS_VIEW, AgentThreadsProvider } from './tree/agentThreadsProvider';
 import { QuotaStatusBar } from './statusbar/quotaStatusBar';
 
@@ -28,6 +30,7 @@ export interface KoryphExtension {
   quota: QuotaReader;
   tree: AgentThreadsProvider;
   statusBar: QuotaStatusBar;
+  banner: ConfigEditorBanner;
 }
 
 let ext: KoryphExtension | undefined;
@@ -61,6 +64,14 @@ export function activate(context: vscode.ExtensionContext): KoryphExtension {
     pickSlot: makeSlotPicker(registry),
   });
 
+  // Config editing UX (ext.7): JSON Schema binding via jsonValidation
+  // contribution (package.json), "Koryph: Edit Project Config" command, and
+  // the persistent run-start caveat banner.
+  const banner = new ConfigEditorBanner((msg) =>
+    void vscode.window.showInformationMessage(msg),
+  );
+  registerConfigEditor(context, banner);
+
   context.subscriptions.push(
     view,
     treeChangeSub,
@@ -71,7 +82,7 @@ export function activate(context: vscode.ExtensionContext): KoryphExtension {
     { dispose: () => quota.dispose() },
   );
 
-  ext = { registry, governor, quota, tree, statusBar };
+  ext = { registry, governor, quota, tree, statusBar, banner };
   return ext;
 }
 
