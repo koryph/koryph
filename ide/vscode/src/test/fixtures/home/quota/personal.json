@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "account": "personal",
+  "window_ceiling_usd": 20.0,
+  "weekly_ceiling_usd": 140.0,
+  "plan_tier": "max20x",
+  "per_agent_max_usd": 25.0,
+  "per_tier_usd": {"haiku": 0.4, "sonnet": 3.0, "opus": 9.0, "fable": 15.0},
+  "size_multiplier": {"S": 0.5, "M": 1.0, "L": 2.0},
+  "safety_margin": 1.5,
+  "calibration": {"opus:M": 8.7, "sonnet:S": 1.4}
+}

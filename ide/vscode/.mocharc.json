@@ -1,0 +1,5 @@
+{
+  "spec": "out/test/suite/**/*.test.js",
+  "timeout": 10000,
+  "ui": "bdd"
+}

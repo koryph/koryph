@@ -1,0 +1,17 @@
+[
+  {
+    "project_id": "koryph",
+    "migration_status": "validated",
+    "account": "personal",
+    "run_id": "20260703-091422",
+    "run_status": "running",
+    "slots": {"running": 1, "review": 1, "merged": 1, "queued": 1},
+    "live_pids": 2
+  },
+  {
+    "project_id": "ncp_roadmap",
+    "migration_status": "validated",
+    "account": "work",
+    "live_pids": 0
+  }
+]

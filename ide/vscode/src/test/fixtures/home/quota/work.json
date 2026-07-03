@@ -1,0 +1,9 @@
+{
+  "account": "work",
+  "window_ceiling_usd": 50.0,
+  "weekly_ceiling_usd": 350.0,
+  "per_agent_max_usd": 25.0,
+  "per_tier_usd": {"haiku": 0.4, "sonnet": 3.0, "opus": 9.0},
+  "size_multiplier": {"S": 0.5, "M": 1.0, "L": 2.0},
+  "safety_margin": 1.5
+}

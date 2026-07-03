@@ -1,0 +1,9 @@
+{"type":"system","subtype":"init","session_id":"sess-i2n-01","model":"claude-opus-4","tools":["Read","Edit","Bash"],"cwd":"/home/dev/src/koryph-worktrees/agent-koryph-i2n"}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Reading the completions surface now."}}}
+{"type":"assistant","message":{"id":"msg_01","role":"assistant","model":"claude-opus-4","content":[{"type":"text","text":"I'll wire up the completions handler."}],"usage":{"input_tokens":1200,"output_tokens":48}}}
+{"type":"assistant","message":{"id":"msg_02","role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{"file_path":"internal/completions/handler.go"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"package completions\n\nfunc Handle() {}"}]}}
+{"type":"assistant","message":{"id":"msg_03","role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"Bash","input":{"command":"go test ./internal/completions/..."}}],"usage":{"input_tokens":2400,"output_tokens":96}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"ok  koryph/internal/completions  0.312s","is_error":false}]}}
+{"type":"koryph_checkpoint","phase":"koryph-i2n","commit":"a1b2c3d","note":"forward-compatible envelope: unknown type renders raw"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":48210,"num_turns":4,"total_cost_usd":0.42,"usage":{"input_tokens":3600,"output_tokens":144}}

@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+*.vsix
+.vscode-test/
+
+# The repo-root .gitignore ignores `.plan-logs/`, but the data-layer tests ship
+# a fixture project tree that deliberately mimics `<repo>/.plan-logs/koryph/...`
+# (ledger.json + stream.jsonl reached via the `latest` symlink). Re-include it.
+!src/test/fixtures/repo/.plan-logs/
+!src/test/fixtures/repo/.plan-logs/**

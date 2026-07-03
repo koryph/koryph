@@ -1,0 +1,39 @@
+{
+  "name": "koryph-vscode",
+  "displayName": "Koryph",
+  "description": "Watch and steer koryph agent waves from VS Code.",
+  "version": "0.0.1",
+  "publisher": "koryph",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {},
+  "scripts": {
+    "vscode:prepublish": "npm run bundle",
+    "bundle": "node esbuild.js --production",
+    "esbuild": "node esbuild.js",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "tsc -p ./ --noEmit",
+    "pretest": "npm run compile",
+    "test": "mocha",
+    "test:electron": "node ./out/test/runElectron.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.9",
+    "esbuild": "^0.20.0",
+    "mocha": "^10.3.0",
+    "typescript": "^5.3.0"
+  }
+}
