@@ -64,6 +64,7 @@ func fullConfig() *Config {
 		},
 		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 6,
+		PollSeconds:            5,
 	}
 }
 

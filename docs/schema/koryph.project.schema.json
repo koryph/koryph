@@ -294,6 +294,11 @@
     "dispatch_stagger_seconds": {
       "type": "integer",
       "description": "DispatchStaggerSeconds between agent launches (default 8)."
+    },
+    "poll_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "PollSeconds overrides the engine's slot poll tick for this project\n(default 10 when zero/omitted). KORYPH_POLL_SEC and an explicit\nprogrammatic Options.PollSec caller override still take precedence over\nthis value (see engine.runner.pollInterval; koryph-2im.2)."
     }
   },
   "additionalProperties": false,

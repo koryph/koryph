@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -49,24 +50,58 @@ func mergeErrorRetryable(sl *ledger.Slot) bool {
 }
 
 // pollUntilIdle ticks every pollInterval until every slot in the run is
-// terminal. A ctx cancellation propagates so the caller can checkpoint.
+// terminal, waking early on SIGCHLD (koryph-2im.2). A ctx cancellation
+// propagates so the caller can checkpoint.
+//
+// Dispatched agents are direct children of this process (that is why
+// slotAlive's Wait4(WNOHANG) below works), so a child's exit raises SIGCHLD
+// here immediately — completion latency drops from up-to-pollInterval to
+// near-instant. It is a wake HINT only: short-lived git/bd children raise the
+// same signal, so a wake does not mean "a slot finished," it means "go find
+// out" — the poll pass below makes that call, same as a timer tick would.
+// The channel is 1-buffered and non-blocking to send on, so a burst of
+// exits (fanned-out git subprocesses, several agents landing at once)
+// coalesces into one extra pass rather than one per signal. The timer
+// remains the backstop: a missed or coalesced signal just falls back to the
+// next tick, never to incorrectness.
 func (r *runner) pollUntilIdle(ctx context.Context) error {
 	interval := r.pollInterval()
+
+	wake := r.wakeCh
+	if wake == nil {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGCHLD)
+		defer signal.Stop(ch)
+		wake = ch
+	}
+
+	tick := 0
 	for {
 		if r.activeCount() == 0 {
 			return nil
 		}
+		probeProgress := false
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(interval):
+			tick++
+			// Split probe cost (L3): the git rev-list progress probe is the
+			// pricier subprocess, so it runs on the first timer tick and every
+			// 3rd one thereafter — same freshness as a 30s poll, a fraction of
+			// the churn at a 10s tick. Liveness/stuck detection below is
+			// unaffected; it runs on every pass regardless.
+			probeProgress = progressProbeDue(tick)
+		case <-wake:
+			// Signal wake: liveness is the point, so skip the progress probe —
+			// the timer's own cadence keeps commit counts fresh regardless.
 		}
 		for _, id := range r.activePhaseIDs() {
 			sl := r.run.Slots[id]
 			if sl == nil || ledger.Terminal(sl.Status) {
 				continue
 			}
-			r.pollSlot(ctx, sl)
+			r.pollSlot(ctx, sl, probeProgress)
 		}
 		// Flush this tick's batched live-slot progress in one write. Terminal
 		// transitions (completeSlot) already persisted immediately; this only
@@ -76,17 +111,28 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 	}
 }
 
-// pollSlot refreshes one slot: liveness, commit progress, stuck detection,
-// and — on death — completion handling.
-func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot) {
+// progressProbeDue reports whether a timer-driven poll pass should run the
+// git progress probe: tick 1, and every 3rd tick thereafter (1, 4, 7, ...).
+// tick counts timer ticks only — signal-triggered passes never advance it and
+// never call this (koryph-2im.2).
+func progressProbeDue(tick int) bool {
+	return tick%3 == 1
+}
+
+// pollSlot refreshes one slot: liveness (always), commit progress (only when
+// probeProgress — see progressProbeDue), stuck detection, and — on death —
+// completion handling.
+func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bool) {
 	alive := slotAlive(sl.PID)
 
 	// Batch per-tick progress in memory; pollUntilIdle flushes once per tick.
-	if commits, head, err := r.branchProgress(ctx, sl.Worktree); err == nil {
-		r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Commits = commits
-			s.LastCommit = head
-		})
+	if probeProgress {
+		if commits, head, err := r.branchProgress(ctx, sl.Worktree); err == nil {
+			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.Commits = commits
+				s.LastCommit = head
+			})
+		}
 	}
 
 	if alive {

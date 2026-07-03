@@ -84,7 +84,7 @@ type Options struct {
 	// automatically advisory while the account is uncalibrated (baseline
 	// establishment is never blocked).
 	NoBillingGuard bool
-	PollSec        int       // default 45
+	PollSec        int       // default 10; project config poll_seconds and KORYPH_POLL_SEC env can also set it (koryph-2im.2)
 	StuckSec       int       // default 900
 	Out            io.Writer // human-readable progress; nil = silent
 }

@@ -186,6 +186,12 @@ type Config struct {
 
 	// DispatchStaggerSeconds between agent launches (default 8).
 	DispatchStaggerSeconds int `json:"dispatch_stagger_seconds,omitempty"`
+
+	// PollSeconds overrides the engine's slot poll tick for this project
+	// (default 10 when zero/omitted). KORYPH_POLL_SEC and an explicit
+	// programmatic Options.PollSec caller override still take precedence over
+	// this value (see engine.runner.pollInterval; koryph-2im.2).
+	PollSeconds int `json:"poll_seconds,omitempty" jsonschema:"minimum=0"`
 }
 
 // Default returns a conservative baseline config.

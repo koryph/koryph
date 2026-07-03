@@ -36,7 +36,7 @@ const (
 
 // Engine defaults.
 const (
-	defaultPollSec    = 45
+	defaultPollSec    = 10 // was 45; L3 fast-completion-detection (koryph-2im.2)
 	defaultStuckSec   = 900
 	defaultWaveWidth  = 3
 	defaultBackoffSec = 15
@@ -75,15 +75,22 @@ type runner struct {
 	// agents (empty when signing is not required). It holds ONLY the signing
 	// key, so agents can sign without the operator's ambient agent.
 	sshAuthSock string
+
+	// wakeCh is a test seam overriding pollUntilIdle's SIGCHLD wake source
+	// (koryph-2im.2); nil (the production default) means "register a real
+	// signal.Notify(SIGCHLD) channel for the poll loop's duration".
+	wakeCh chan os.Signal
 }
 
 // Run executes one engine run over one project per the package contract in
 // types.go: setup → (resume) → wave loop (scan → batch → preflight →
 // dispatch → poll → review → merge → record).
 func Run(ctx context.Context, opts Options) (Outcome, error) {
-	if opts.PollSec <= 0 {
-		opts.PollSec = defaultPollSec
-	}
+	// PollSec is intentionally NOT pre-defaulted here (unlike StuckSec below):
+	// pollInterval() resolves it lazily against KORYPH_POLL_SEC env, then the
+	// project config's poll_seconds (loaded further down), then the engine
+	// default — so config participates. Pre-defaulting here would shadow the
+	// config value with defaultPollSec before Load ever runs (koryph-2im.2).
 	if opts.StuckSec <= 0 {
 		opts.StuckSec = defaultStuckSec
 	}
@@ -338,12 +345,26 @@ func envInt(name string) (int, bool) {
 	return n, true
 }
 
-// pollInterval is the poll tick: env override, else opts.PollSec.
+// pollInterval is the poll tick, resolved lazily (not pre-defaulted in Run())
+// so the project config can participate. Precedence, highest first
+// (koryph-2im.2):
+//  1. KORYPH_POLL_SEC env — operator/test override, always wins.
+//  2. Options.PollSec, when the caller set it (>0) — an explicit programmatic
+//     override (e.g. a test fixture) survives even though Run() no longer
+//     force-defaults it.
+//  3. The project config's poll_seconds (>0).
+//  4. defaultPollSec.
 func (r *runner) pollInterval() time.Duration {
 	if v, ok := envInt(envPollSec); ok && v > 0 {
 		return time.Duration(v) * time.Second
 	}
-	return time.Duration(r.opts.PollSec) * time.Second
+	if r.opts.PollSec > 0 {
+		return time.Duration(r.opts.PollSec) * time.Second
+	}
+	if r.cfg != nil && r.cfg.PollSeconds > 0 {
+		return time.Duration(r.cfg.PollSeconds) * time.Second
+	}
+	return time.Duration(defaultPollSec) * time.Second
 }
 
 // staggerDelay is the pause between dispatches: env override, else project
