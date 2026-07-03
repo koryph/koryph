@@ -91,8 +91,15 @@ lint: ## Run golangci-lint (skipped with a notice if not installed; CI enforces 
 lint-ci: ## Enforced lint for CI (pins golangci-lint via go run, like make vuln)
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
 
+.PHONY: reuse
+reuse: ## REUSE/SPDX compliance (skipped with a notice if no runner; CI enforces it)
+	@if command -v reuse >/dev/null 2>&1; then reuse lint; \
+	elif command -v uvx >/dev/null 2>&1; then uvx reuse lint; \
+	elif command -v pipx >/dev/null 2>&1; then pipx run reuse lint; \
+	else echo "reuse not installed (try 'uvx reuse lint'); skipping — CI enforces it"; fi
+
 .PHONY: gate
-gate: fmt-check build vet test lint ## The green gate (mirrors koryph.project.json)
+gate: fmt-check build vet test lint reuse ## The green gate (mirrors koryph.project.json)
 
 ##@ Documentation
 

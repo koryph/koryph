@@ -31,6 +31,23 @@ path = [
 SPDX-FileCopyrightText = "2026 The Koryph Developers"
 SPDX-License-Identifier = "Apache-2.0"
 
+# VS Code extension and JSON schema: config, lockfiles, dotfiles, and test
+# fixtures that cannot carry an inline SPDX header. Source (.ts/.js/.md) files
+# under ide/vscode carry their own headers and are intentionally not listed here.
+[[annotations]]
+path = [
+  "docs/schema/**",
+  "ide/vscode/.gitignore",
+  "ide/vscode/.vscodeignore",
+  "ide/vscode/.mocharc.json",
+  "ide/vscode/package.json",
+  "ide/vscode/package-lock.json",
+  "ide/vscode/tsconfig.json",
+  "ide/vscode/src/test/fixtures/**",
+]
+SPDX-FileCopyrightText = "2026 The Koryph Developers"
+SPDX-License-Identifier = "Apache-2.0"
+
 # Vendored from the Beads project (installed into this repo by `bd`).
 [[annotations]]
 path = [".agents/**", ".beads/README.md"]

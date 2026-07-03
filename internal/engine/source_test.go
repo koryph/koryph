@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 
 	"github.com/koryph/koryph/internal/beads"
@@ -34,6 +35,21 @@ func (f *fakeSource) SetStatus(_ context.Context, id, status string) error {
 func (f *fakeSource) MergeSlotAcquire(context.Context, string, string, int) error { return nil }
 func (f *fakeSource) MergeSlotRelease(context.Context, string) error              { return nil }
 
+// deadPID returns the PID of a process that has already exited and been reaped,
+// so slotAlive reports it dead on every platform. A hardcoded constant cannot:
+// low PIDs like 2 are live system processes on Linux (kthreadd) and probe as
+// alive (EPERM), which silently defeats orphan reconciliation there.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start dead-pid helper: %v", err)
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Wait() // reap: pid is now definitively dead
+	return pid
+}
+
 // TestReconcileOrphansWithFakeSource drives a loop path (orphan reconciliation)
 // against a fake WorkSource — impossible before the interface, which required a
 // real bd binary on PATH.
@@ -43,13 +59,16 @@ func TestReconcileOrphansWithFakeSource(t *testing.T) {
 	fake := &fakeSource{}
 	r.adapter = fake
 
-	// Seed an orphan: a non-terminal slot whose agent PID is long dead and which
-	// has no worktree (so it reopens rather than being kept for --resume).
+	// Seed an orphan: a non-terminal slot whose agent PID is dead and which has
+	// no worktree (so it reopens rather than being kept for --resume). Use a
+	// reaped process's PID — a hardcoded low PID is not portable: PID 2 is
+	// kthreadd on Linux and slotAlive reports it alive (EPERM), so the orphan
+	// would never reconcile there (green on macOS, red in CI).
 	orphan := &ledger.Slot{
 		PhaseID: "tb1",
 		BeadID:  "tb1",
 		Status:  ledger.SlotRunning,
-		PID:     2, // never a live agent
+		PID:     deadPID(t),
 	}
 	if err := r.store.SetSlot(r.run, orphan); err != nil {
 		t.Fatalf("SetSlot: %v", err)
