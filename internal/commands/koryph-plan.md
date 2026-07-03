@@ -14,15 +14,18 @@ Steps 2–6 below (decompose, footprint discovery, dependency wiring,
 conflict validation, routing) are scheduler-correctness work: a mislabeled
 footprint or a missed dependency edge causes a false-parallel dispatch and a
 merge conflict downstream, discovered by a broken build rather than by
-re-reading the plan. These steps require an **opus-tier model or better**.
+re-reading the plan. These steps require the **frontier reasoning tier of
+your agent runtime** — Claude Opus-class, or the equivalent top tier of
+whatever runtime you are (codex, cursor, grok build, ...).
 
 1. Check what model you are running as (your own system context states it,
    or run `/model`).
-2. Opus-tier or better: continue through steps 2–6 yourself.
-3. Below opus-tier: do **not** attempt steps 2–6 yourself. Either:
-   - tell the operator to re-run `/koryph-plan` on a stronger model, or
+2. Frontier tier or better: continue through steps 2–6 yourself.
+3. Below your runtime's frontier tier: do **not** attempt steps 2–6
+   yourself. Either:
+   - tell the operator to re-run `/koryph-plan` on a frontier-tier model, or
    - delegate steps 2–6 wholesale to the `koryph-architect` agent (pinned
-     `model: opus`, `effort: xhigh` in its own frontmatter), then do only
+     `tier: frontier`, `effort: xhigh` in its own frontmatter), then do only
      the mechanical `bd create`/`bd dep add` calls from its output yourself.
 4. Step 1 (ingest) and the mechanical parts of step 7 (running an
    already-decided `bd create`/`bd dep add` command, invoking the scorer,
@@ -54,8 +57,9 @@ re-reading the plan. These steps require an **opus-tier model or better**.
      every area the bead actually touches (over-broad only costs
      parallelism; under-broad risks a false-parallel merge conflict);
    - `fp:read:<token>` for a **read-only** touch (docs about a package,
-     tests over its fixtures, analysis) — readers co-run with each other
-     and with writers of the same token, only writer-writer excludes;
+     tests over its fixtures, analysis) — readers of a token co-run with
+     each other; a writer of that token excludes readers AND other writers
+     (a shared token conflicts whenever at least one side writes it);
    - explicit `fp:<token>` (a write token) where the `area_map` can't
      express the footprint;
    - unlabeled only when genuinely unavoidable — say so explicitly, and
@@ -77,9 +81,12 @@ re-reading the plan. These steps require an **opus-tier model or better**.
    backwards under review).
 
 5. **Validate conflict-freedom.** Any two beads *not* ordered by the
-   dependency graph must be pairwise write-disjoint: their write-token sets
-   (`area:*` + `fp:*`, excluding `fp:read:*`) must not intersect — reads may
-   overlap freely. Where two unordered beads collide, fix it by (a) adding
+   dependency graph must not share any token that **either** of them
+   writes: writes(A) must be disjoint from writes(B) *and* from reads(B),
+   and vice versa (write tokens are `area:*` + `fp:*` excluding
+   `fp:read:*`). Only read-read overlap is free — a reader still cannot
+   co-run with a writer of the same token, because the writer invalidates
+   what the reader is reading. Where two unordered beads collide, fix it by (a) adding
    a dependency edge, (b) merging the beads, or (c) narrowing a footprint
    to what it honestly touches. Report the plan's achievable parallel
    width: the size of the largest antichain in the dependency graph whose
@@ -100,9 +107,9 @@ re-reading the plan. These steps require an **opus-tier model or better**.
    mechanical — running already-decided commands is fine at any model
    tier. Then have the `koryph-plan-scorer` persona (installed in
    `.claude/agents`) score the plan and apply one iteration of its
-   findings. `koryph-plan-scorer` is pinned `model: sonnet` in its own
-   frontmatter for the *default* rubric pass — do not spawn it with a
-   downgrade below what its frontmatter specifies, and if the project has
+   findings. `koryph-plan-scorer` is pinned `tier: frontier` at `effort:
+   xhigh` in its own frontmatter — plan validation is scheduler-correctness
+   work, so NEVER spawn it with a model downgrade; if the project has
    swapped in its own scorer persona, respect whatever tier that persona
    pins.
 
