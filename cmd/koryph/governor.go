@@ -24,7 +24,7 @@ func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 	case "-h", "--help", "help":
 		parentHelp(stdout, "governor", "inspect and set the machine-wide agent concurrency cap", []subVerb{
 			{"show", "show the cap, active leases, and demanding projects (default)"},
-			{"set --max-global N", "set the machine-wide cap on concurrently running agents"},
+			{"set --max-global N [--adaptive] [--hard-max M]", "set the machine-wide cap; --adaptive enables the AIMD overlay"},
 		})
 		return 0
 	default:
@@ -41,7 +41,26 @@ func cmdGovernorShow(stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "global concurrency cap: %d\n", cap)
-	fmt.Fprintf(stdout, "in use: %d    free: %d\n", len(leases), max0(cap-len(leases)))
+
+	// AIMD overlay (koryph-2im.4): show adaptive status and, when on, the
+	// dynamic cap that Acquire actually admits against.
+	aimd, err := gs.AIMDStatus()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	eff := aimd.EffectiveCap()
+	if aimd.Adaptive {
+		lastDecrease := aimd.LastDecreaseAt
+		if lastDecrease == "" {
+			lastDecrease = "never"
+		}
+		fmt.Fprintf(stdout, "adaptive: on (dynamic cap %d, hard max %d, last decrease %s, rate-limit events %d)\n",
+			aimd.DynamicCap, aimd.HardMax, lastDecrease, aimd.RateLimitEvents)
+	} else {
+		fmt.Fprintln(stdout, "adaptive: off")
+	}
+
+	fmt.Fprintf(stdout, "in use: %d    free: %d\n", len(leases), max0(eff-len(leases)))
 
 	if len(demand) > 0 {
 		projects := make([]string, 0, len(demand))
@@ -73,11 +92,18 @@ func cmdGovernorShow(stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cmdGovernorSet writes a new machine-wide cap to governor.json.
+// cmdGovernorSet writes a new machine-wide cap to governor.json. Without
+// --adaptive it is exactly today's static cap (and clears/disables any
+// previously-enabled AIMD overlay, since it overwrites governor.json wholesale
+// — koryph-2im.4). With --adaptive, it seeds the AIMD overlay: --max-global is
+// the starting/floor cap and --hard-max bounds upward probing (default
+// 2x --max-global).
 func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("governor set", stderr)
 	maxGlobal := fs.Int("max-global", 0, "machine-wide cap on concurrently running agents (required, > 0)")
-	setUsage(fs, stdout, "set the machine-wide cap on concurrently running agents", "--max-global N")
+	adaptive := fs.Bool("adaptive", false, "enable the AIMD overlay: probe the cap up on quiet, halve it on rate-limit")
+	hardMax := fs.Int("hard-max", 0, "absolute ceiling for upward probing under --adaptive (default 2x --max-global)")
+	setUsage(fs, stdout, "set the machine-wide cap on concurrently running agents", "--max-global N [--adaptive] [--hard-max M]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -85,6 +111,18 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 		return usageErr(stderr, "governor set: --max-global must be a positive integer")
 	}
 	gs := govern.NewStore()
+	if *adaptive {
+		if err := gs.SetAdaptiveCap(*maxGlobal, *hardMax); err != nil {
+			return fail(stderr, err)
+		}
+		hm := *hardMax
+		if hm <= 0 {
+			hm = *maxGlobal * 2
+		}
+		fmt.Fprintf(stdout, "global concurrency cap set to %d (adaptive: dynamic cap %d, hard max %d)\n",
+			*maxGlobal, *maxGlobal, hm)
+		return 0
+	}
 	if err := gs.SetCap(*maxGlobal); err != nil {
 		return fail(stderr, err)
 	}

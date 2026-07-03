@@ -5,6 +5,7 @@ package engine
 
 import (
 	"os"
+	"time"
 
 	"github.com/koryph/koryph/internal/govern"
 )
@@ -90,4 +91,16 @@ func (r *runner) releaseGlobalSlot(beadID string) {
 		return
 	}
 	_ = r.gov.Release(r.opts.ProjectID, beadID)
+}
+
+// reportRateLimit informs the machine-wide governor of a rate-limit/overload
+// signal from a dead agent's stream (koryph-2im.4): every engine on the host
+// shares the same AIMD backoff state, so a rate limit observed by any one of
+// them halves the cap for all of them. Fails open like every other governor
+// helper — a stuck governor must never wedge completion handling.
+func (r *runner) reportRateLimit() {
+	if r.gov == nil {
+		return
+	}
+	_ = r.gov.ReportRateLimit(time.Now())
 }

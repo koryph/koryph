@@ -366,13 +366,16 @@ type dispatchReq struct {
 	resumeSessionID string
 	reviewPath      string
 	reviewIters     int
-	// gateRequeues and mergeRequeues carry the requeue-budget counters
-	// forward across a requeue dispatch (koryph-2im.6): dispatchBead below
-	// builds a fresh ledger.Slot rather than mutating the old one, so these
-	// must be threaded through explicitly, the same way reviewIters is.
-	gateRequeues  int
-	mergeRequeues int
-	note          string
+	// gateRequeues, mergeRequeues, and rateLimitRequeues carry the
+	// requeue-budget counters forward across a requeue dispatch
+	// (koryph-2im.6, koryph-2im.4): dispatchBead below builds a fresh
+	// ledger.Slot rather than mutating the old one, so — the same way
+	// reviewIters is threaded through — these must be passed explicitly or
+	// each budget would reset to zero every requeue.
+	gateRequeues      int
+	mergeRequeues     int
+	rateLimitRequeues int
+	note              string
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -474,34 +477,35 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	sl := &ledger.Slot{
-		PhaseID:          beadID,
-		BeadID:           beadID,
-		EpicID:           q.epicID,
-		Branch:           branch,
-		Worktree:         wt.Path,
-		SessionID:        sessionID,
-		SessionName:      sessionName,
-		Agent:            res.Persona,
-		Model:            res.Model,
-		ModelWhy:         res.Rationale,
-		Effort:           effort,
-		AccountProfile:   r.rec.AccountProfile,
-		ClaudeConfigDir:  r.rec.ClaudeConfigDir,
-		VerifiedIdentity: handle.VerifiedIdentity,
-		VerifiedAt:       now,
-		BillingMode:      string(r.billing),
-		PID:              handle.PID,
-		Stream:           handle.StreamPath,
-		StatusPath:       handle.StatusPath,
-		LogPath:          filepath.Join(phaseDir, "session.log"),
-		Status:           ledger.SlotRunning,
-		Attempts:         q.attempt,
-		ResumeSHA:        q.resumeSHA,
-		ReviewIters:      q.reviewIters,
-		GateRequeues:     q.gateRequeues,
-		MergeRequeues:    q.mergeRequeues,
-		DispatchedAt:     now,
-		Note:             q.note,
+		PhaseID:           beadID,
+		BeadID:            beadID,
+		EpicID:            q.epicID,
+		Branch:            branch,
+		Worktree:          wt.Path,
+		SessionID:         sessionID,
+		SessionName:       sessionName,
+		Agent:             res.Persona,
+		Model:             res.Model,
+		ModelWhy:          res.Rationale,
+		Effort:            effort,
+		AccountProfile:    r.rec.AccountProfile,
+		ClaudeConfigDir:   r.rec.ClaudeConfigDir,
+		VerifiedIdentity:  handle.VerifiedIdentity,
+		VerifiedAt:        now,
+		BillingMode:       string(r.billing),
+		PID:               handle.PID,
+		Stream:            handle.StreamPath,
+		StatusPath:        handle.StatusPath,
+		LogPath:           filepath.Join(phaseDir, "session.log"),
+		Status:            ledger.SlotRunning,
+		Attempts:          q.attempt,
+		ResumeSHA:         q.resumeSHA,
+		ReviewIters:       q.reviewIters,
+		GateRequeues:      q.gateRequeues,
+		MergeRequeues:     q.mergeRequeues,
+		DispatchedAt:      now,
+		Note:              q.note,
+		RateLimitRequeues: q.rateLimitRequeues,
 	}
 	_ = r.store.SetSlot(r.run, sl)
 	r.dispatched++

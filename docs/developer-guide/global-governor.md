@@ -108,11 +108,76 @@ heartbeat is dropped when its frontier drains or the run ends.
   `project X width N exceeds its fair share M (cap C across D projects); extra
   slots are used only when others are idle`.
 
+### AIMD overlay: adaptive concurrency (koryph-2im.4)
+
+`governor.json`'s cap is static by default — the operator sets it once and it
+never moves. `--adaptive` turns it into a congestion controller (classic AIMD:
+additive increase, multiplicative decrease) so the cap **floats** between a
+floor of 1 and an operator-set ceiling instead:
+
+```
+effectiveCap = adaptive ? clamp(dynamicCap, 1, hardMax) : maxGlobalAgents
+koryph governor set --max-global N [--adaptive] [--hard-max M]
+```
+
+- `--max-global N` seeds `dynamicCap` (and, with `--adaptive` off, is the
+  fixed cap — exactly the pre-koryph-2im.4 behavior).
+- `--adaptive` enables the overlay.
+- `--hard-max M` bounds upward probing (default `2×max-global`) — the ceiling
+  probing is allowed to *discover*, never an unbounded runaway.
+
+Additive fields on `Config` (`internal/govern/types.go`): `Adaptive`,
+`HardMax`, `DynamicCap`, `LastDecreaseAt`, `LastRateLimitAt`, `LastProbeAt`,
+`RateLimitEvents`. A `governor.json` written before these existed unmarshals
+them all to zero, so `Adaptive=false` reproduces the old static-cap behavior
+byte-for-byte (`Config.EffectiveCap`, `internal/govern/aimd.go`).
+
+**Signal.** A dead agent's stream is scanned for an API rate-limit/overload
+marker (`429`, `rate_limit_error`, `overloaded_error`) in an error-flagged
+event — `dispatch.ParseRateLimited` (`internal/dispatch/cli.go`), deliberately
+liberal about the exact event shape. `internal/engine/poll.go`'s
+`completeSlot` checks this *before* the commits/finishCandidate check (a
+rate-limited death is never a completed candidate) and, when it fires, calls
+`requeueRateLimited` instead of the normal requeue path.
+
+**Multiplicative decrease** (`Store.ReportRateLimit`): `dynamicCap =
+max(1, effectiveCap/2)`, at most once per 60s cooldown — events inside the
+cooldown still increment `RateLimitEvents` (observability) but do not
+re-halve, so a burst of near-simultaneous rate-limited deaths across engines
+on the host halves the shared cap once, not once each.
+
+**Additive increase / probe** (`Store.EffectiveCap`, evaluated lazily on every
+`Acquire`): `dynamicCap += 1` per full 5 minutes elapsed with no intervening
+decrease, up to `hardMax`. This is what lets the cap climb **past** the
+operator's starting width to find the real sustainable concurrency — a
+decrease resets the probe's clock (`applyProbe` anchors on
+`max(LastDecreaseAt, LastProbeAt)`), so steady state is a classic AIMD
+sawtooth just under the true API ceiling. No daemon: the probe advances (and
+persists) inside whichever engine happens to call `Acquire` next.
+
+**Slot handling** (`internal/ledger.Slot.RateLimitRequeues`, additive field):
+a rate-limited death requeues WITHOUT incrementing `Attempts` — the failure is
+environmental, not the bead's — bounded instead by its own budget (5,
+`internal/engine/poll.go`'s `rateLimitedRequeueBudget`), using the existing
+linear backoff. Exhausting it blocks with a `rate-limited requeues exhausted`
+note. I5 (never interrupt a running agent) holds unconditionally: the cap only
+gates the *next* `Acquire`, never a live process.
+
+`koryph governor show` prints the operator cap, adaptive on/off, dynamic cap,
+hard max, last decrease timestamp, and rate-limit event count
+(`Store.AIMDStatus`). `koryph doctor` warns when the dynamic cap has sat
+pinned at its floor for a long time after a real decrease — a signal the
+account is being persistently rate-limited, or `--hard-max` is set too low to
+recover.
+
 ### CLI
 
 - `koryph governor` — show the cap, active leases (project/bead/pid/age), demand
-  heartbeats, and free slots, so operators can see contention.
-- `koryph governor set --max-global N` — write `governor.json`.
+  heartbeats, free slots, and (when configured) the AIMD overlay state, so
+  operators can see contention.
+- `koryph governor set --max-global N [--adaptive] [--hard-max M]` — write
+  `governor.json`; without `--adaptive` this clears/disables any previously
+  enabled overlay (it overwrites the file wholesale).
 - `board` / `status` prune stale leases and demand as a hygiene side effect.
 
 ## Failure & edge handling
@@ -136,6 +201,18 @@ heartbeat is dropped when its frontier drains or the run ends.
   - dead-PID leases and stale demand are reclaimed;
   - rotation prevents starvation when `n > cap`;
   - work-conserving top-up uses idle capacity when others are satisfied.
+- AIMD overlay (`internal/govern/aimd_test.go`): halve from various caps,
+  floor at 1, cooldown suppresses a double halve, additive probe climbs past
+  the starting cap up to `hardMax`, adaptive-off is byte-for-byte compatible
+  with a pre-koryph-2im.4 store.
+- Rate-limit stream classification fixtures
+  (`internal/dispatch/cli_test.go`): positive (`429`, `rate_limit_error`,
+  `overloaded_error` shapes) and negative (ordinary errors, clean results,
+  the marker appearing only in non-error-flagged text).
+- Engine (`internal/engine/ratelimit_test.go`): a rate-limited death requeues
+  without incrementing `Attempts`, capping at `RateLimitRequeues` and blocking
+  once exhausted; an ordinary death is unaffected and still burns
+  `ledger.MaxAttempts`.
 
 ## Implementation phases (each gated green)
 
@@ -145,3 +222,6 @@ heartbeat is dropped when its frontier drains or the run ends.
 2. **Engine integration** — demand heartbeat + acquire/release in the wave and
    poll paths; the fair-share width warning.
 3. **CLI** — `koryph governor` show/set; prune on `board`/`status`.
+4. **AIMD overlay (koryph-2im.4)** — adaptive cap, rate-limit stream
+   classification, attempt-free requeue budget; see the dedicated section
+   above.

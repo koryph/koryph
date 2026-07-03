@@ -55,6 +55,14 @@ const (
 	mergeRequeueBudget = 2
 )
 
+// rateLimitedRequeueBudget bounds how many times a slot may requeue on a
+// classified rate-limit/overload death (koryph-2im.4) WITHOUT burning a normal
+// attempt — the failure is environmental (the account got throttled), not a
+// fault of the bead's work, so it must not count toward ledger.MaxAttempts.
+// It is still budgeted independently so a persistently rate-limited account
+// cannot loop a slot forever; exhausting it blocks with a clear note.
+const rateLimitedRequeueBudget = 5
+
 // mergeErrorRetryable reports whether a slot whose merge just errored should be
 // requeued for another attempt rather than blocked. A merge error is usually
 // transient — the base moved, a push raced — and requeueSlot Force-rebases the
@@ -225,6 +233,17 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		}
 	}
 
+	// Rate-limit classification runs upstream of the commits/finishCandidate
+	// check (koryph-2im.4): a death caused by the API throttling us is not a
+	// completed candidate even if some work landed before the 429/overload hit,
+	// so it must not fall through to review/merge. Checked before the
+	// MaxAttempts gate too — the requeue budget here is RateLimitRequeues, not
+	// Attempts (see requeueRateLimited).
+	if dispatch.ParseRateLimited(sl.Stream) {
+		r.requeueRateLimited(ctx, sl)
+		return
+	}
+
 	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")
 	if sl.Commits > 0 || fsx.Exists(summary) {
 		r.finishCandidate(ctx, sl)
@@ -242,6 +261,52 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 	r.requeueSlot(ctx, sl, "", "agent died with no commits")
+}
+
+// requeueRateLimited re-dispatches a slot that died with a classified
+// rate-limit/overload marker in its stream (koryph-2im.4): it reports the
+// signal to the machine-wide governor (so the AIMD overlay backs off admission
+// across every engine on the host) and then requeues WITHOUT incrementing
+// Attempts — the failure is environmental, not the bead's — bounded instead by
+// the independent RateLimitRequeues budget. I5 holds: this never touches a
+// running agent, only gates the NEXT dispatch's admission via the governor.
+func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
+	r.reportRateLimit()
+
+	if sl.RateLimitRequeues >= rateLimitedRequeueBudget {
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = fmt.Sprintf("rate-limited requeues exhausted (%d)", rateLimitedRequeueBudget)
+		})
+		r.checkpointSlot(sl, "rate-limit-exhausted")
+		r.releaseGlobalSlot(sl.PhaseID) // terminal
+		r.progress("bead %s: blocked (rate-limited %d times; requeue budget exhausted)", sl.PhaseID, sl.RateLimitRequeues)
+		return
+	}
+
+	requeues := sl.RateLimitRequeues + 1
+	r.progress("bead %s: rate-limited — requeueing without burning an attempt (%d/%d)",
+		sl.PhaseID, requeues, rateLimitedRequeueBudget)
+	r.backoffSleep(ctx, requeues)
+
+	r.refreshWorktreeForRequeue(ctx, sl)
+
+	resumeSession := ""
+	if m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID); err == nil &&
+		m.SessionID != "" && sl.Worktree != "" && fsx.Exists(sl.Worktree) {
+		resumeSession = m.SessionID
+	}
+
+	r.dispatchBead(ctx, dispatchReq{
+		issue:             r.issueFor(ctx, sl),
+		epicID:            sl.EpicID,
+		attempt:           sl.Attempts, // unchanged: environmental failure, not a bead attempt
+		resumeSHA:         r.branchHead(ctx, sl.Branch),
+		resumeSessionID:   resumeSession,
+		reviewIters:       sl.ReviewIters,
+		note:              "rate-limited requeue",
+		rateLimitRequeues: requeues,
+	})
 }
 
 // finishCandidate runs the configured post-implement pipeline stages, the

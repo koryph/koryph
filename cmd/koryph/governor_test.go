@@ -45,6 +45,63 @@ func TestGovernorSetRejectsNonPositive(t *testing.T) {
 	}
 }
 
+// TestGovernorSetAdaptiveShowsOverlayFields proves koryph-2im.4: --adaptive
+// seeds the AIMD overlay and `governor show` surfaces its fields (adaptive
+// on/off, dynamic cap, hard max, last decrease, rate-limit event count).
+func TestGovernorSetAdaptiveShowsOverlayFields(t *testing.T) {
+	isolate(t)
+
+	code, out, _ := runCmd("governor", "set", "--max-global", "4", "--adaptive")
+	if code != 0 || !strings.Contains(out, "adaptive: dynamic cap 4, hard max 8") {
+		t.Fatalf("set --adaptive: code %d out %q", code, out)
+	}
+
+	_, out, _ = runCmd("governor", "show")
+	for _, want := range []string{
+		"adaptive: on",
+		"dynamic cap 4",
+		"hard max 8",
+		"rate-limit events 0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("governor show missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestGovernorSetAdaptiveExplicitHardMax proves --hard-max overrides the
+// 2x default.
+func TestGovernorSetAdaptiveExplicitHardMax(t *testing.T) {
+	isolate(t)
+	code, out, _ := runCmd("governor", "set", "--max-global", "3", "--adaptive", "--hard-max", "20")
+	if code != 0 || !strings.Contains(out, "hard max 20") {
+		t.Fatalf("set --adaptive --hard-max 20: code %d out %q", code, out)
+	}
+	_, out, _ = runCmd("governor", "show")
+	if !strings.Contains(out, "hard max 20") {
+		t.Errorf("show missing overridden hard max:\n%s", out)
+	}
+}
+
+// TestGovernorSetWithoutAdaptiveDisablesOverlay proves a plain `set` (no
+// --adaptive) clears a previously-enabled overlay — today's semantics.
+func TestGovernorSetWithoutAdaptiveDisablesOverlay(t *testing.T) {
+	isolate(t)
+	if code, _, _ := runCmd("governor", "set", "--max-global", "4", "--adaptive"); code != 0 {
+		t.Fatal("enabling adaptive failed")
+	}
+	if code, _, _ := runCmd("governor", "set", "--max-global", "6"); code != 0 {
+		t.Fatal("disabling adaptive (plain set) failed")
+	}
+	_, out, _ := runCmd("governor", "show")
+	if !strings.Contains(out, "adaptive: off") {
+		t.Errorf("overlay not disabled by a plain set:\n%s", out)
+	}
+	if !strings.Contains(out, "cap: 6") {
+		t.Errorf("cap not updated by the disabling set:\n%s", out)
+	}
+}
+
 func TestGovernorUnknownSubcommand(t *testing.T) {
 	isolate(t)
 	code, _, errs := runCmd("governor", "wat")

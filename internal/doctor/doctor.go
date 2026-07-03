@@ -120,6 +120,7 @@ func Run(opts Options) (*Report, error) {
 	r.addAll(checkBinaries(opts))
 	r.add(checkRegistry(opts))
 	r.add(checkGovernorConfig(opts))
+	r.add(checkAdaptiveCapPinned(opts))
 	r.addAll(checkZombieLeases(opts))
 	r.addAll(checkStaleDemand(opts))
 	r.addAll(checkQuotaCalibration(opts))
@@ -147,6 +148,7 @@ const checkNameLayout = "layout"
 const checkNameBinaries = "binaries"
 const checkNameRegistry = "registry"
 const checkNameGovernor = "governor"
+const checkNameAdaptiveCap = "adaptive-cap"
 const checkNameZombies = "zombie-leases"
 const checkNameDemand = "stale-demand"
 const checkNameQuota = "quota-calibration"
@@ -256,6 +258,54 @@ func checkGovernorConfig(opts Options) Finding {
 	}
 	return Finding{Check: checkNameGovernor, Level: LevelOK,
 		Message: fmt.Sprintf("governor.json: cap=%d", cfg.MaxGlobalAgents)}
+}
+
+// adaptiveCapPinnedThreshold is how long the dynamic cap must have sat at (or
+// near) its floor since the last decrease before checkAdaptiveCapPinned warns
+// — long enough that a single recent halving (which is expected, normal AIMD
+// behavior) does not itself trigger the warning.
+const adaptiveCapPinnedThreshold = 30 * time.Minute
+
+// checkAdaptiveCapPinned flags the AIMD overlay (koryph-2im.4,
+// docs/designs/2026-07-scheduler-throughput.md L5) sitting at its floor for a
+// long time: either the account is being persistently rate-limited, or
+// --hard-max was set too low for the additive probe to recover past 1.
+// Informational only (warn, never error) — the halve-then-probe design
+// already degrades safely to a floor of 1 on its own.
+func checkAdaptiveCapPinned(opts Options) Finding {
+	path := filepath.Join(opts.home(), "governor.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Absent/unreadable is not this check's concern — checkGovernorConfig
+		// already reports on governor.json's readability.
+		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK, Message: "adaptive overlay not configured"}
+	}
+	var cfg govern.Config
+	if jerr := json.Unmarshal(data, &cfg); jerr != nil || !cfg.Adaptive {
+		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK, Message: "adaptive overlay off"}
+	}
+
+	last, perr := time.Parse(time.RFC3339, cfg.LastDecreaseAt)
+	if perr != nil {
+		// Adaptive is on but no decrease has ever been recorded — nothing to
+		// flag yet (dynamic cap sitting at the operator's chosen starting
+		// point is not evidence of throttling).
+		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK,
+			Message: fmt.Sprintf("adaptive: dynamic cap %d (hard max %d), no rate-limit decrease recorded yet",
+				cfg.DynamicCap, cfg.HardMax)}
+	}
+
+	pinned := cfg.DynamicCap <= 1 && opts.now().Sub(last) > adaptiveCapPinnedThreshold
+	if !pinned {
+		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK,
+			Message: fmt.Sprintf("adaptive: dynamic cap %d (hard max %d), last decrease %s, %d rate-limit event(s)",
+				cfg.DynamicCap, cfg.HardMax, cfg.LastDecreaseAt, cfg.RateLimitEvents)}
+	}
+	return Finding{Check: checkNameAdaptiveCap, Level: LevelWarn,
+		Message: fmt.Sprintf(
+			"adaptive: dynamic cap pinned at %d for >%v since the last decrease (%s, %d rate-limit event(s) total) — "+
+				"the account may be persistently rate-limited, or --hard-max (%d) is too low to recover",
+			cfg.DynamicCap, adaptiveCapPinnedThreshold, cfg.LastDecreaseAt, cfg.RateLimitEvents, cfg.HardMax)}
 }
 
 // checkZombieLeases scans governor slot files for leases whose PID is dead.

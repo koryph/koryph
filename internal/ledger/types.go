@@ -115,6 +115,14 @@ type Slot struct {
 	MergedAt     string `json:"merged_at,omitempty"`
 	UpdatedAt    string `json:"updated_at,omitempty"`
 	Note         string `json:"note,omitempty"`
+
+	// RateLimitRequeues counts requeues spent on a classified rate-limit/
+	// overload death (koryph-2im.4, docs/designs/2026-07-scheduler-throughput.md
+	// L5) — bounded independently of Attempts, since the failure is
+	// environmental (the API throttled us), not the bead's fault. Additive: a
+	// Slot decoded from a ledger that predates this field unmarshals it to
+	// zero, which behaves exactly like "none spent yet."
+	RateLimitRequeues int `json:"rate_limit_requeues,omitempty"`
 }
 
 // PlanState tracks structured-plan progress inside a manifest.

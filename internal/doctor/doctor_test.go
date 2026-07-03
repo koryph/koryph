@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,6 +184,96 @@ func TestGovernorCorrupt(t *testing.T) {
 	f := findCheck(r, checkNameGovernor)
 	if f.Level != LevelError {
 		t.Errorf("governor level=%s, want error for corrupt file", f.Level)
+	}
+}
+
+// --- adaptive cap pinned (koryph-2im.4) ---
+
+func writeGovernorConfig(t *testing.T, home string, cfg govern.Config) {
+	t.Helper()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "governor.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdaptiveCapAbsentOK(t *testing.T) {
+	home := fabricate(t)
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameAdaptiveCap)
+	if f.Level != LevelOK {
+		t.Errorf("adaptive-cap level=%s, want ok when governor.json absent", f.Level)
+	}
+}
+
+func TestAdaptiveCapOffOK(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorConfig(t, home, govern.Config{MaxGlobalAgents: 6})
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameAdaptiveCap)
+	if f.Level != LevelOK {
+		t.Errorf("adaptive-cap level=%s, want ok when adaptive is off", f.Level)
+	}
+}
+
+func TestAdaptiveCapNoDecreaseYetOK(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1,
+	})
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameAdaptiveCap)
+	if f.Level != LevelOK {
+		t.Errorf("adaptive-cap level=%s, want ok when no decrease has ever been recorded", f.Level)
+	}
+}
+
+func TestAdaptiveCapRecentlyPinnedOK(t *testing.T) {
+	home := fabricate(t)
+	o := opts(home)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1,
+		LastDecreaseAt: o.now().Add(-5 * time.Minute).UTC().Format(time.RFC3339),
+	})
+	r, _ := Run(o)
+	f := findCheck(r, checkNameAdaptiveCap)
+	if f.Level != LevelOK {
+		t.Errorf("adaptive-cap level=%s, want ok for a recent (not yet long-pinned) decrease", f.Level)
+	}
+}
+
+func TestAdaptiveCapLongPinnedWarns(t *testing.T) {
+	home := fabricate(t)
+	o := opts(home)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1,
+		LastDecreaseAt:  o.now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+		RateLimitEvents: 12,
+	})
+	r, _ := Run(o)
+	f := findCheck(r, checkNameAdaptiveCap)
+	if f.Level != LevelWarn {
+		t.Errorf("adaptive-cap level=%s, want warn for a long-pinned floor", f.Level)
+	}
+	if !strings.Contains(f.Message, "pinned at 1") {
+		t.Errorf("adaptive-cap message = %q, want it to name the pinned value", f.Message)
+	}
+}
+
+func TestAdaptiveCapNotPinnedAboveFloorOK(t *testing.T) {
+	home := fabricate(t)
+	o := opts(home)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 3,
+		LastDecreaseAt: o.now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+	})
+	r, _ := Run(o)
+	f := findCheck(r, checkNameAdaptiveCap)
+	if f.Level != LevelOK {
+		t.Errorf("adaptive-cap level=%s, want ok when the dynamic cap has recovered above 1", f.Level)
 	}
 }
 
