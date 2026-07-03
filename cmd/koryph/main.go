@@ -117,10 +117,11 @@ ONBOARDING
 
 RUN
   run --project ID [--once] [--max N] [--parent EPIC] [--only BEAD] [--budget USD]
-      [--default-model M] [--auto-merge] [--dry-run] [--resume] [--review]
+      [--default-model M] [--auto-merge] [--direct] [--dry-run] [--resume] [--review]
       [--allow-api-spend] [--allow-unvalidated] [--manual]
                         execute one engine run over a project (--only dispatches a
-                        single bead; --budget caps cumulative run cost)
+                        single bead; --budget caps cumulative run cost; --direct
+                        skips PRs and merges straight to the default branch)
   intake --project ID [--label triage] [--limit 20] [--dry-run] [--comment]
                         poll a project's labeled GitHub issues into no-dispatch planning beads
 

@@ -70,6 +70,7 @@ type Options struct {
 	BudgetUSD        float64 // per-run cost ceiling in USD (0 = unlimited)
 	DefaultModel     string  // model for label-less beads
 	AutoMerge        bool    // allow auto-merge for merge:auto/config-auto items
+	Direct           bool    // owner override: skip PRs, merge straight to the default branch
 	Review           bool    // post-implementation review pass before merge
 	Manual           bool    // single manual dispatch semantics (quota-exempt)
 	AllowAPISpend    bool    // permit api-key billing fallback at governor stop

@@ -26,6 +26,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	budget := fs.Float64("budget", 0, "per-run cost ceiling in USD (0 = unlimited)")
 	defaultModel := fs.String("default-model", "", "model for label-less beads")
 	autoMerge := fs.Bool("auto-merge", false, "allow auto-merge for merge:auto items")
+	direct := fs.Bool("direct", false, "owner override: skip PRs and merge straight to the default branch (needs branch-protection bypass)")
 	dryRun := fs.Bool("dry-run", false, "plan and print without dispatching")
 	resume := fs.Bool("resume", false, "classify and re-dispatch the latest run first")
 	review := fs.Bool("review", false, "post-implementation review pass before merge")
@@ -51,6 +52,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		BudgetUSD:        *budget,
 		DefaultModel:     *defaultModel,
 		AutoMerge:        *autoMerge,
+		Direct:           *direct,
 		Review:           *review,
 		Manual:           *manual,
 		AllowAPISpend:    *allowAPISpend,

@@ -102,6 +102,13 @@ When an issue has no epic or the epic carries no merge label, the project config
 Auto-merge never fires without `--auto-merge` on the command line, even when the policy
 says `auto`. This keeps CI-only runs safe by default.
 
+**Owner override — `--direct`.** `koryph run --direct` is the escape hatch for an
+owner/select-maintainer who wants to skip PRs entirely: it forces the effective policy to
+`auto` (direct ff-merge + push to the default branch) **even on a `merge:pr` epic**. koryph
+does not gate on org role — the push to a protected default branch still succeeds only if the
+pushing identity is on the branch-protection **bypass allowlist**. A blocking `--review`
+verdict still downgrades to manual, so the safety path is not bypassed.
+
 ### `pr` — pull-request merges for protected branches
 
 `merge_policy: pr` is the path for a default branch you never push to directly (branch

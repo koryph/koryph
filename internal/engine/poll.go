@@ -156,6 +156,15 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	policy := r.mergePolicy(ctx, sl.EpicID)
 
+	// --direct is the owner override: skip the PR flow and merge straight to the
+	// default branch, even on a merge:pr epic. The push to a protected default
+	// branch still requires the identity to hold a branch-protection bypass —
+	// koryph does not gate on org role. A blocking review can still downgrade
+	// this to manual below, so the safety path is not bypassed (koryph-ufy.5).
+	if r.opts.Direct {
+		policy = "auto"
+	}
+
 	// Post-implement stages (docs, test, ...) run in the worktree before review
 	// and merge (koryph-a14). A required stage failure blocks the slot —
 	// never auto-merge past incomplete pipeline work.
@@ -223,7 +232,7 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 
-	if policy == "auto" && r.opts.AutoMerge {
+	if policy == "auto" && (r.opts.AutoMerge || r.opts.Direct) {
 		r.mergeSlot(ctx, sl)
 		return
 	}
