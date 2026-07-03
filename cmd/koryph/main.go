@@ -58,6 +58,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdStop(rest, stdout, stderr)
 	case "merge":
 		return cmdMerge(rest, stdout, stderr)
+	case "land":
+		return cmdLand(rest, stdout, stderr)
 	case "signing":
 		return cmdSigning(rest, stdout, stderr)
 	case "sign":
@@ -143,6 +145,9 @@ OBSERVE / OPERATE
                         SIGKILL with --force (uncommitted work is lost)
   merge --project ID <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]
                         land a finished agent branch on the default branch
+  land --project ID <bead> [--method ff|squash] [--reason R]
+                        land an engine-opened PR (a pr-opened bead) fast-forward-only,
+                        preserving signed SHAs; closes the bead on success
 
 SIGNING
   signing setup --project ID --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]

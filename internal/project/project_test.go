@@ -49,6 +49,7 @@ func fullConfig() *Config {
 		CommitStyle:     "custom",
 		CommitTemplate:  "{type}: {subject}",
 		MergePolicy:     "auto",
+		MergeMethod:     "squash",
 		RiskTierDefault: 3,
 		Signing: &signing.Config{
 			Required:  true,
@@ -159,6 +160,74 @@ func TestConfig_CommitStyleValidation(t *testing.T) {
 				t.Errorf("Validate() = %v, want nil", err)
 			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
 				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfig_MergeMethodValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		method  string
+		wantErr string
+	}{
+		{"empty is fine", "", ""},
+		{"ff", "ff", ""},
+		{"squash", "squash", ""},
+		{"unknown", "rebase", "merge_method must be ff|squash"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default("proj")
+			c.MergeMethod = tc.method
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfig_LandMethod(t *testing.T) {
+	for method, want := range map[string]string{"": "ff", "ff": "ff", "squash": "squash"} {
+		if got := (&Config{MergeMethod: method}).LandMethod(); got != want {
+			t.Errorf("LandMethod(merge_method=%q) = %q, want %q", method, got, want)
+		}
+	}
+}
+
+func TestConfig_LandMethodError(t *testing.T) {
+	signed := func() *Config {
+		return &Config{Signing: &signing.Config{Required: true, Identity: "x@example.com"}}
+	}
+	cases := []struct {
+		name    string
+		cfg     *Config
+		method  string
+		wantErr string
+	}{
+		{"ff always ok", &Config{}, "ff", ""},
+		{"squash ok without signing", &Config{}, "squash", ""},
+		{"default ff ok when signing required", signed(), "", ""},
+		{"squash refused when signing required", signed(), "squash", "signing.required"},
+		{"unknown method", &Config{}, "rebase", "unknown merge_method"},
+		{"config default squash refused when signing required", func() *Config {
+			c := signed()
+			c.MergeMethod = "squash"
+			return c
+		}(), "", "signing.required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.LandMethodError(tc.method)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("LandMethodError() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("LandMethodError() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
 	}

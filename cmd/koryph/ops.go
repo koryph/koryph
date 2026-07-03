@@ -404,6 +404,14 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
+	// A squash merge rewrites the signed commits into one new commit; refuse it
+	// when signing is required (only ff preserves the signatures).
+	if *squash {
+		if gerr := cfg.LandMethodError("squash"); gerr != nil {
+			return fail(stderr, gerr)
+		}
+	}
+
 	res, merr := merge.Merge(ctx, merge.Opts{
 		RepoRoot:            rec.Root,
 		Branch:              branch,
@@ -442,5 +450,55 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "closed bead %s\n", *closeBead)
 		}
 	}
+	return 0
+}
+
+// cmdLand lands an engine-opened PR (a pr-opened bead) fast-forward-only.
+func cmdLand(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("land", stderr)
+	projectID := fs.String("project", "", "project id (required)")
+	method := fs.String("method", "", "landing method override: ff|squash (default: project merge_method, else ff)")
+	reason := fs.String("reason", "", "bead close reason")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return engine.ExitUsage
+	}
+	if *projectID == "" {
+		return usageErr(stderr, "land: --project is required")
+	}
+	if len(pos) < 1 {
+		return usageErr(stderr, "land: <bead> is required")
+	}
+	bead := pos[0]
+
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rec, err := store.Get(*projectID)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg, err := project.Load(rec.Root)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	res, lerr := engine.Land(ctx, rec, cfg, engine.LandOpts{
+		Bead: bead, Method: *method, Reason: *reason, Out: stdout,
+	})
+	if lerr != nil {
+		return fail(stderr, lerr)
+	}
+	if res.Status != "merged" {
+		fmt.Fprintf(stderr, "koryph land: %s not landed (%s); branch %s kept\n", bead, res.Status, res.Branch)
+		return engine.ExitFatal
+	}
+	sha := res.SHA
+	if len(sha) > 12 {
+		sha = sha[:12]
+	}
+	fmt.Fprintf(stdout, "landed %s on %s (%s)\n", bead, rec.DefaultBranch, sha)
 	return 0
 }

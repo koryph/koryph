@@ -562,6 +562,18 @@ the rebase so a bad-signature commit never touches the target branch.
 | `U`   | Valid sig, key not in `allowed_signers` — **blocked** |
 | `E`   | Cannot verify (missing key / no `allowed_signers`) — **blocked** |
 
+### Interaction with the landing method (`merge_method`)
+
+Landing preserves these signatures by refusing to rewrite them. koryph lands
+via a local `git merge --ff-only` + push (never a GitHub-native merge button),
+because a merge commit adds an *unsigned* commit and squash/rebase merges
+rewrite the SHAs and committer identity — destroying the signatures verified
+above. Consequently, when `required` is `true`, any `merge_method` other than
+`ff` (e.g. `squash`, whether set in project config or passed as `koryph land
+--method` / `koryph merge --squash`) is **refused with a clear error** — only
+`ff` keeps the signed commits byte-for-byte. See
+[Landing an opened PR](running-waves.md#landing-an-opened-pr-fast-forward-only).
+
 ---
 
 ## Artifact signing with cosign

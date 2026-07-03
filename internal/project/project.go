@@ -156,6 +156,14 @@ type Config struct {
 	// "manual" | "auto" | "pr".
 	MergePolicy string `json:"merge_policy"`
 
+	// MergeMethod is how an engine-opened PR lands on the default branch:
+	// "ff" (default, also when empty) preserves the exact gate-checked, signed
+	// commit SHAs via a local fast-forward + push; "squash" collapses them into
+	// one new commit. A non-ff method is refused while signing is required
+	// (only ff preserves signatures). GitHub-native merge methods are never
+	// used — they rewrite SHAs or add an unsigned merge commit.
+	MergeMethod string `json:"merge_method,omitempty"`
+
 	// RiskTierDefault is the recovery tier (0-3) for beads without rt:*.
 	RiskTierDefault int `json:"risk_tier_default"`
 
@@ -223,6 +231,11 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("merge_policy must be manual|auto|pr, got %q", c.MergePolicy)
 	}
+	switch c.MergeMethod {
+	case "", "ff", "squash":
+	default:
+		return fmt.Errorf("merge_method must be ff|squash, got %q", c.MergeMethod)
+	}
 	if c.RiskTierDefault < 0 || c.RiskTierDefault > 3 {
 		return fmt.Errorf("risk_tier_default must be 0-3")
 	}
@@ -258,6 +271,33 @@ func (c *Config) Validate() error {
 // "custom" defers to CommitTemplate and is not conventional-validated.
 func (c *Config) EnforceConventional() bool {
 	return c.CommitStyle == "" || c.CommitStyle == "conventional"
+}
+
+// LandMethod is the effective PR-landing merge method, defaulting to "ff".
+func (c *Config) LandMethod() string {
+	if c.MergeMethod == "" {
+		return "ff"
+	}
+	return c.MergeMethod
+}
+
+// LandMethodError validates a landing method (empty means the config default)
+// and refuses a signature-breaking method while signing is required. Only "ff"
+// preserves the exact signed SHAs; "squash" rewrites them into a new commit, so
+// it is refused when Signing.Required is set.
+func (c *Config) LandMethodError(method string) error {
+	if method == "" {
+		method = c.LandMethod()
+	}
+	switch method {
+	case "ff", "squash":
+	default:
+		return fmt.Errorf("unknown merge_method %q (want ff|squash)", method)
+	}
+	if method != "ff" && c.Signing != nil && c.Signing.Required {
+		return fmt.Errorf("merge_method %q rewrites the gate-checked signed commits, but signing.required is set; only ff preserves signatures", method)
+	}
+	return nil
 }
 
 // validateIntake enforces the intake source list contract: every source has a

@@ -120,6 +120,37 @@ conventional-commit-shaped and the body carries the bead id, title, and acceptan
   and the branch is kept so a `--resume` retries once the remote or `gh` is available.
 - A re-run reuses an already-open PR for the branch rather than opening a duplicate.
 
+### Landing an opened PR (fast-forward only)
+
+Once a PR is opened, a maintainer lands it with:
+
+```sh
+koryph land --project myproject <bead-id>
+```
+
+This re-verifies the branch against the (possibly advanced) default branch, runs the gate,
+and lands it **fast-forward-only** — then flips the slot to `merged` and closes the bead.
+
+**Why not the GitHub merge button?** GitHub has no true fast-forward merge. Every native
+method breaks the koryph merge contract of preserving the exact gate-checked, reviewed,
+SSH-signed commits: a *merge commit* adds an unsigned commit, and *squash* / *rebase* merges
+rewrite SHAs and the committer identity, destroying the signatures `signing.required`
+mandates. koryph therefore lands with **mechanism (a): a local `git merge --ff-only` + push**
+by the engine's signing identity — the only method that keeps the signed SHAs byte-for-byte.
+
+- **Base moved.** If the base advanced, `koryph land` rebases the branch onto it and
+  re-verifies; a genuine conflict is reported (the bead is rebased/re-run, **never**
+  rewrite-merged). A clean rebase re-signs the rewritten commits with the engine's signing
+  key, so signatures still verify.
+- **Override.** `merge_method` in `koryph.project.json` (or `--method` per run) selects the
+  landing method: `ff` (default) or `squash`. A non-`ff` method is **refused with a clear
+  error while `signing.required`** is set, because it rewrites the signed commits.
+- **Required branch-protection ruleset shape.** Protect the default branch (require pull
+  requests / disallow direct pushes for everyone) **and add the engine's signing identity to
+  the ruleset bypass allowlist** ("Allow specified actors to bypass required pull requests").
+  The engine runs the same green gate locally before it pushes, so required status checks stay
+  satisfied; GitHub marks the PR merged automatically once its commits land on the base.
+
 ## Post-implement stages
 
 If the project declares a [`pipeline`](projects-and-accounts.md#post-implement-pipeline-stages),
