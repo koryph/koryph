@@ -48,6 +48,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRun(rest, stdout, stderr)
 	case "board":
 		return cmdBoard(rest, stdout, stderr)
+	case "roster":
+		return cmdRoster(rest, stdout, stderr)
 	case "status":
 		return cmdStatus(rest, stdout, stderr)
 	case "tail":
@@ -135,6 +137,9 @@ OBSERVE / OPERATE
                         leases, stale demand heartbeats, quota calibration, vault providers;
                         --fix removes zombie slots + stale demand; exits 0/1/2 (ok/warn/err)
   board [--json]        one-line-per-project run overview
+  roster --project ID [--run ID] [--json]
+                        per-bead titled roster grouped by lifecycle: MERGED /
+                        RUNNING / QUEUED / DEFERRED (defaults to latest run)
   governor [show]       show the machine-wide concurrency cap, active leases, and demand
   governor set --max-global N
                         set the machine-wide cap on concurrently running agents
