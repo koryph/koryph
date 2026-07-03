@@ -16,15 +16,17 @@ import (
 
 // fakePRHost implements PRHost without a live GitHub remote.
 type fakePRHost struct {
-	meta        PRMeta
-	list        []PRMeta
-	viewer      string
-	approved    bool
-	approveBod  string
-	checkedOut  []string
-	comments    []LineComment
-	commentBody string
-	commentHead string
+	meta         PRMeta
+	list         []PRMeta
+	viewer       string
+	approved     bool
+	approveBod   string
+	checkedOut   []string
+	comments     []LineComment
+	commentBody  string
+	commentHead  string
+	closed       bool
+	closeComment string
 }
 
 func (f *fakePRHost) Viewer(context.Context, string) (string, error)       { return f.viewer, nil }
@@ -44,6 +46,12 @@ func (f *fakePRHost) ReviewComment(_ context.Context, _ string, _ int, headSHA, 
 	f.commentBody = body
 	f.commentHead = headSHA
 	f.comments = append(f.comments, comments...)
+	return nil
+}
+
+func (f *fakePRHost) Close(_ context.Context, _, _, comment string) error {
+	f.closed = true
+	f.closeComment = comment
 	return nil
 }
 
@@ -147,6 +155,65 @@ func TestReviewPRCommentOnPostsOperatorLines(t *testing.T) {
 	}
 	if len(host.comments) != 1 || host.comments[0].Path != "main.go" || host.comments[0].Line != 10 {
 		t.Fatalf("comments = %+v, want main.go:10", host.comments)
+	}
+}
+
+// TestReviewPRClose closes the PR via the host with the given comment.
+func TestReviewPRClose(t *testing.T) {
+	host := &fakePRHost{meta: PRMeta{Number: 3, Author: "carol", URL: "https://x/pull/3"}}
+	rec := &registry.Record{Root: t.TempDir(), DefaultBranch: "main"}
+
+	res, err := ReviewPR(context.Background(), rec, &project.Config{}, host, nil,
+		ReviewPROpts{Selector: "3", Close: true, Body: "superseded"})
+	if err != nil {
+		t.Fatalf("ReviewPR: %v", err)
+	}
+	if res.Verdict != "closed" || !host.closed || host.closeComment != "superseded" {
+		t.Errorf("res=%+v closed=%v comment=%q, want closed with 'superseded'", res, host.closed, host.closeComment)
+	}
+}
+
+// TestReviewPRResumeReplaysPersistedAnalysis: analysis persists state; --resume
+// re-displays it without re-running the reviewer, and flags a moved head.
+func TestReviewPRResumeReplaysPersistedAnalysis(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	rec := &registry.Record{Root: t.TempDir(), DefaultBranch: "main", ProjectID: "proj"}
+	finding := review.Finding{Severity: "major", File: "x.go", Line: 3, Summary: "leaky handle"}
+
+	// 1. Analyze at head "sha-1" (persists state).
+	analyzeHost := &fakePRHost{meta: PRMeta{Number: 12, Author: "dan", HeadSHA: "sha-1"}}
+	if _, err := ReviewPR(context.Background(), rec, &project.Config{}, analyzeHost,
+		fakeReviewer(review.Verdict{Blocking: true, Findings: []review.Finding{finding}}),
+		ReviewPROpts{Selector: "12", Out: &bytes.Buffer{}}); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+
+	// 2. Resume at the SAME head — replays the finding, no staleness note.
+	var out bytes.Buffer
+	resumeHost := &fakePRHost{meta: PRMeta{Number: 12, Author: "dan", HeadSHA: "sha-1"}}
+	if _, err := ReviewPR(context.Background(), rec, &project.Config{}, resumeHost, nil,
+		ReviewPROpts{Selector: "12", Resume: true, Out: &out}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(resumeHost.checkedOut) != 0 {
+		t.Error("resume must not check out / re-run the reviewer")
+	}
+	if !strings.Contains(out.String(), "leaky handle") {
+		t.Errorf("resume did not replay the persisted finding:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "head moved") {
+		t.Errorf("unexpected staleness note when head is unchanged:\n%s", out.String())
+	}
+
+	// 3. Resume at a MOVED head — flags staleness.
+	var out2 bytes.Buffer
+	movedHost := &fakePRHost{meta: PRMeta{Number: 12, Author: "dan", HeadSHA: "sha-2"}}
+	if _, err := ReviewPR(context.Background(), rec, &project.Config{}, movedHost, nil,
+		ReviewPROpts{Selector: "12", Resume: true, Out: &out2}); err != nil {
+		t.Fatalf("resume2: %v", err)
+	}
+	if !strings.Contains(out2.String(), "head moved") {
+		t.Errorf("expected a staleness note after the head moved:\n%s", out2.String())
 	}
 }
 

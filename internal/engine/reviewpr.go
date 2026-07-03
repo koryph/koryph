@@ -15,7 +15,9 @@ import (
 
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/execx"
+	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/modelroute"
+	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/review"
@@ -56,6 +58,8 @@ type PRHost interface {
 	// ReviewComment posts a review with inline line comments (event COMMENT),
 	// anchored to headSHA, in a single call.
 	ReviewComment(ctx context.Context, dir string, number int, headSHA, body string, comments []LineComment) error
+	// Close closes the PR, optionally leaving a comment.
+	Close(ctx context.Context, dir, selector, comment string) error
 }
 
 // PRReviewer runs the reviewer over a checked-out PR. It defaults to
@@ -68,7 +72,9 @@ type ReviewPROpts struct {
 	Approve  bool          // register an approving review (the operator's explicit instruction)
 	Comment  bool          // post koryph's findings as inline PR comments
 	Lines    []LineComment // operator-specified inline comments to post
-	Body     string        // optional review/approval body
+	Resume   bool          // re-display the persisted analysis (after an IDE handoff)
+	Close    bool          // close the PR
+	Body     string        // review/approval body, or the close comment
 	Out      io.Writer     // human-readable output; nil = silent
 }
 
@@ -107,6 +113,21 @@ func ReviewPR(ctx context.Context, rec *registry.Record, cfg *project.Config, ho
 		return ReviewPRResult{}, err
 	}
 	res := ReviewPRResult{Number: meta.Number, Author: meta.Author, URL: meta.URL}
+
+	if o.Close {
+		if err := host.Close(ctx, rec.Root, o.Selector, o.Body); err != nil {
+			return res, err
+		}
+		res.Verdict = "closed"
+		if o.Out != nil {
+			fmt.Fprintf(o.Out, "closed PR #%d (%s)\n", meta.Number, meta.URL)
+		}
+		return res, nil
+	}
+
+	if o.Resume {
+		return resumePR(rec, meta, o.Out)
+	}
 
 	if o.Approve {
 		if login, verr := host.Viewer(ctx, rec.Root); verr == nil && login != "" && strings.EqualFold(login, meta.Author) {
@@ -290,8 +311,66 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	default:
 		res.Verdict = "clean"
 	}
+	// Persist the analysis so the operator can hand off to an IDE and resume
+	// (post comments / approve) without re-running the reviewer.
+	if !v.Degraded {
+		savePRState(rec, prReviewState{
+			Number: meta.Number, HeadSHA: meta.HeadSHA, Blocking: v.Blocking, Findings: v.Findings,
+		})
+	}
 	if out != nil {
 		printPRAnalysis(out, meta, v)
+	}
+	return res, nil
+}
+
+// prReviewState is the persisted analysis for a PR, enabling the IDE-handoff
+// loop: analyze in koryph, review in the IDE, resume in koryph.
+type prReviewState struct {
+	Number   int              `json:"number"`
+	HeadSHA  string           `json:"head_sha"`
+	Blocking bool             `json:"blocking"`
+	Findings []review.Finding `json:"findings"`
+}
+
+func prStatePath(rec *registry.Record, number int) string {
+	return filepath.Join(paths.KoryphHome(), "review-pr", rec.ProjectID, fmt.Sprintf("pr-%d.json", number))
+}
+
+func savePRState(rec *registry.Record, st prReviewState) {
+	p := prStatePath(rec, st.Number)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return // best-effort: persistence is a convenience, not required
+	}
+	_ = fsx.WriteJSONAtomic(p, st)
+}
+
+func loadPRState(rec *registry.Record, number int) (prReviewState, bool) {
+	var st prReviewState
+	if err := fsx.ReadJSON(prStatePath(rec, number), &st); err != nil {
+		return prReviewState{}, false
+	}
+	return st, true
+}
+
+// resumePR re-displays the persisted analysis for a PR after an IDE handoff,
+// without re-running the reviewer, and warns when the PR head has moved since.
+func resumePR(rec *registry.Record, meta PRMeta, out io.Writer) (ReviewPRResult, error) {
+	st, ok := loadPRState(rec, meta.Number)
+	if !ok {
+		return ReviewPRResult{Number: meta.Number}, fmt.Errorf("no saved analysis for PR #%d; run `koryph review-pr %d` first", meta.Number, meta.Number)
+	}
+	res := ReviewPRResult{Number: meta.Number, Author: meta.Author, URL: meta.URL, Blocking: st.Blocking, Findings: st.Findings}
+	res.Verdict = "clean"
+	if st.Blocking {
+		res.Verdict = "blocking"
+	}
+	if out != nil {
+		printPRAnalysis(out, meta, review.Verdict{Blocking: st.Blocking, Findings: st.Findings})
+		if meta.HeadSHA != "" && st.HeadSHA != "" && meta.HeadSHA != st.HeadSHA {
+			fmt.Fprintf(out, "\nNOTE: the PR head moved since this analysis (%.12s → %.12s); re-run `koryph review-pr %d` for a fresh review.\n",
+				st.HeadSHA, meta.HeadSHA, meta.Number)
+		}
 	}
 	return res, nil
 }
@@ -405,7 +484,7 @@ func (GhHost) ReviewComment(ctx context.Context, dir string, number int, headSHA
 func (GhHost) List(ctx context.Context, dir string) ([]PRMeta, error) {
 	res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: "gh", Args: []string{
 		"pr", "list", "--state", "open", "--limit", "200",
-		"--json", "number,url,title,state,author,isDraft",
+		"--json", "number,url,title,state,author,isDraft,headRefOid",
 	}})
 	if err != nil {
 		return nil, err
@@ -414,12 +493,13 @@ func (GhHost) List(ctx context.Context, dir string) ([]PRMeta, error) {
 		return nil, fmt.Errorf("gh pr list: %s", strings.TrimSpace(tailOf(res.Stderr, 300)))
 	}
 	var raw []struct {
-		Number  int    `json:"number"`
-		URL     string `json:"url"`
-		Title   string `json:"title"`
-		State   string `json:"state"`
-		IsDraft bool   `json:"isDraft"`
-		Author  struct {
+		Number     int    `json:"number"`
+		URL        string `json:"url"`
+		Title      string `json:"title"`
+		State      string `json:"state"`
+		IsDraft    bool   `json:"isDraft"`
+		HeadRefOid string `json:"headRefOid"`
+		Author     struct {
 			Login string `json:"login"`
 		} `json:"author"`
 	}
@@ -430,10 +510,26 @@ func (GhHost) List(ctx context.Context, dir string) ([]PRMeta, error) {
 	for _, r := range raw {
 		prs = append(prs, PRMeta{
 			Number: r.Number, URL: r.URL, Title: r.Title, State: r.State,
-			Draft: r.IsDraft, Author: r.Author.Login,
+			Draft: r.IsDraft, HeadSHA: r.HeadRefOid, Author: r.Author.Login,
 		})
 	}
 	return prs, nil
+}
+
+// Close closes the PR, optionally with a comment.
+func (GhHost) Close(ctx context.Context, dir, selector, comment string) error {
+	args := []string{"pr", "close", selector}
+	if strings.TrimSpace(comment) != "" {
+		args = append(args, "--comment", comment)
+	}
+	res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: "gh", Args: args})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("gh pr close: %s", strings.TrimSpace(tailOf(res.Stderr, 400)))
+	}
+	return nil
 }
 
 // Checkout fetches the PR head and adds an ephemeral detached worktree at it.

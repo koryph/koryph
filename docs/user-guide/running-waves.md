@@ -202,6 +202,22 @@ koryph review-pr --project myproject 42 --comment \
 Comments post as a single **`COMMENT`** review anchored to the PR head commit — no approval.
 Approve separately with `--approve` once you're satisfied.
 
+**IDE handoff loop.** The analysis is persisted, so you can review in koryph, switch to your
+IDE to examine the flagged files (and add manual comments there or via `--comment-on`), then
+come back:
+
+```sh
+koryph review-pr --project myproject 42            # analyze (saves state)
+# ...open the flagged files in your IDE, think it over...
+koryph review-pr --project myproject 42 --resume   # replay the saved analysis (no re-run)
+koryph review-pr --project myproject 42 --approve   # or --close --body "superseded"
+```
+
+`--resume` replays the saved findings without re-running the (costly) reviewer, and warns if
+the PR head moved since the analysis. `--close [--body "..."]` closes the PR from koryph. A PR
+closed or merged **by any means** (koryph, the GitHub UI, or another tool) is reflected on the
+next `review-pr` because state is read live from GitHub.
+
 > More of the review workbench — reviewing the whole open-PR queue, inline line comments, an
 > IDE handoff loop, and detecting PRs closed by any means — is tracked under its epic and
 > lands incrementally.

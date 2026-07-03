@@ -515,7 +515,9 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	comment := fs.Bool("comment", false, "post koryph's line-anchored findings as inline PR comments")
 	var lines multiFlag
 	fs.Var(&lines, "comment-on", "post an inline comment: 'path:line:message' (repeatable)")
-	body := fs.String("body", "", "optional review/approval body")
+	resume := fs.Bool("resume", false, "re-display the saved analysis for a PR (after an IDE handoff)")
+	closePR := fs.Bool("close", false, "close the PR (optionally with --body as the comment)")
+	body := fs.String("body", "", "review/approval body, or the --close comment")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return engine.ExitUsage
@@ -523,11 +525,14 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	if *projectID == "" {
 		return usageErr(stderr, "review-pr: --project is required")
 	}
-	if *all && (*approve || *comment || len(lines) > 0) {
-		return usageErr(stderr, "review-pr: --all cannot be combined with --approve/--comment/--comment-on (act on one PR at a time)")
+	if *all && (*approve || *comment || len(lines) > 0 || *resume || *closePR) {
+		return usageErr(stderr, "review-pr: --all cannot be combined with per-PR actions (act on one PR at a time)")
 	}
-	if *approve && (*comment || len(lines) > 0) {
-		return usageErr(stderr, "review-pr: --approve cannot be combined with --comment/--comment-on")
+	if *approve && (*comment || len(lines) > 0 || *resume || *closePR) {
+		return usageErr(stderr, "review-pr: --approve cannot be combined with --comment/--comment-on/--resume/--close")
+	}
+	if *closePR && (*comment || len(lines) > 0 || *resume) {
+		return usageErr(stderr, "review-pr: --close cannot be combined with --comment/--comment-on/--resume")
 	}
 	lineComments, perr := parseLineComments(lines)
 	if perr != nil {
@@ -561,7 +566,8 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if _, rerr := engine.ReviewPR(context.Background(), rec, cfg, nil, nil, engine.ReviewPROpts{
-		Selector: pos[0], Approve: *approve, Comment: *comment, Lines: lineComments, Body: *body, Out: stdout,
+		Selector: pos[0], Approve: *approve, Comment: *comment, Lines: lineComments,
+		Resume: *resume, Close: *closePR, Body: *body, Out: stdout,
 	}); rerr != nil {
 		return fail(stderr, rerr)
 	}
