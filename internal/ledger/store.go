@@ -180,10 +180,10 @@ func (s *Store) SetSlot(run *Run, sl *Slot) error {
 	return s.SaveRun(run)
 }
 
-// UpdateSlot mutates the slot for phaseID in place via mut, stamps the slot's
-// UpdatedAt, and persists the run. A missing slot is created. Single-writer:
-// no locking needed.
-func (s *Store) UpdateSlot(run *Run, phaseID string, mut func(*Slot)) error {
+// MutateSlot mutates the slot for phaseID in place via mut and stamps its
+// UpdatedAt, WITHOUT persisting. Use it to batch several per-tick progress
+// updates into a single SaveRun. A missing slot is created.
+func (s *Store) MutateSlot(run *Run, phaseID string, mut func(*Slot)) {
 	if run.Slots == nil {
 		run.Slots = map[string]*Slot{}
 	}
@@ -194,6 +194,14 @@ func (s *Store) UpdateSlot(run *Run, phaseID string, mut func(*Slot)) error {
 	}
 	mut(sl)
 	sl.UpdatedAt = nowRFC3339()
+}
+
+// UpdateSlot mutates the slot for phaseID via mut and persists the run
+// immediately. Use it for state transitions that must survive a crash; for
+// per-tick progress refresh prefer MutateSlot + a single SaveRun. Single-writer:
+// no locking needed.
+func (s *Store) UpdateSlot(run *Run, phaseID string, mut func(*Slot)) error {
+	s.MutateSlot(run, phaseID, mut)
 	return s.SaveRun(run)
 }
 

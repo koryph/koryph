@@ -156,6 +156,46 @@ func TestUpdateSlotStampsUpdatedAt(t *testing.T) {
 	}
 }
 
+// TestMutateSlotDefersWrite proves the batching primitive: MutateSlot changes
+// the in-memory run but does NOT persist; the next SaveRun flushes it. This is
+// what lets the poll tick coalesce N per-slot progress writes into one.
+func TestMutateSlotDefersWrite(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+	run, err := st.NewRun("p", "bd", "v")
+	if err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	if err := st.SetSlot(run, &Slot{PhaseID: "a", Status: SlotQueued}); err != nil {
+		t.Fatalf("SetSlot: %v", err)
+	}
+
+	// Two in-memory mutations, no write.
+	st.MutateSlot(run, "a", func(s *Slot) { s.Status = SlotRunning })
+	st.MutateSlot(run, "a", func(s *Slot) { s.Commits = 3 })
+
+	// On disk the slot is still queued with 0 commits.
+	onDisk, err := st.LoadRun(run.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if d := onDisk.Slots["a"]; d.Status != SlotQueued || d.Commits != 0 {
+		t.Fatalf("MutateSlot persisted early: status=%q commits=%d", d.Status, d.Commits)
+	}
+
+	// One SaveRun flushes both mutations.
+	if err := st.SaveRun(run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	flushed, err := st.LoadRun(run.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if f := flushed.Slots["a"]; f.Status != SlotRunning || f.Commits != 3 {
+		t.Fatalf("after SaveRun status=%q commits=%d, want running/3", f.Status, f.Commits)
+	}
+}
+
 func TestUpdateSlotCreatesMissing(t *testing.T) {
 	repo := t.TempDir()
 	st := NewStore(repo)

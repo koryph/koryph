@@ -68,6 +68,11 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 			}
 			r.pollSlot(ctx, sl)
 		}
+		// Flush this tick's batched live-slot progress in one write. Terminal
+		// transitions (completeSlot) already persisted immediately; this only
+		// commits the cheap commit-count / heartbeat refresh, which resume
+		// recomputes from git anyway — so batching it costs no crash safety.
+		_ = r.store.SaveRun(r.run)
 	}
 }
 
@@ -76,8 +81,9 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot) {
 	alive := slotAlive(sl.PID)
 
+	// Batch per-tick progress in memory; pollUntilIdle flushes once per tick.
 	if commits, head, err := r.branchProgress(ctx, sl.Worktree); err == nil {
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Commits = commits
 			s.LastCommit = head
 		})
@@ -89,7 +95,7 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot) {
 			status = ledger.SlotStuck
 		}
 		if sl.Status != status {
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = status })
+			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = status })
 			if status == ledger.SlotStuck {
 				r.progress("bead %s: stuck (no heartbeat or commit for >%ds); still polling", sl.PhaseID, r.opts.StuckSec)
 			}
@@ -640,6 +646,7 @@ func (r *runner) checkpointSlot(sl *ledger.Slot, execState string) {
 		cur = sl
 	}
 	m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID)
+	existed := err == nil
 	if err != nil {
 		m = &ledger.Manifest{
 			ProjectID:       r.opts.ProjectID,
@@ -654,6 +661,11 @@ func (r *runner) checkpointSlot(sl *ledger.Slot, execState string) {
 			Branch:          cur.Branch,
 			BillingMode:     cur.BillingMode,
 		}
+	}
+	// Skip the manifest read-modify-write when nothing recovery-relevant moved —
+	// a quietly-running slot re-checkpoints identically every tick otherwise.
+	if existed && m.ExecutionState == execState && m.HeadCommit == cur.LastCommit && m.Attempt == cur.Attempts {
+		return
 	}
 	m.ExecutionState = execState
 	m.HeadCommit = cur.LastCommit
