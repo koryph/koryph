@@ -5,7 +5,6 @@ package metrics
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -162,12 +161,11 @@ func worktreeStats(root string) (stale, orphan int) {
 	return stale, orphan
 }
 
-// Render writes an aligned per-project table, a per-model breakdown, a total,
-// and a trailing one-line JSON of the full report for machine consumption.
+// Render writes an aligned per-project table, a per-model breakdown, and a
+// total line. For machine-readable output use --json (cmdMetrics).
 func Render(r *Report, w io.Writer) {
 	if r == nil {
 		fmt.Fprintln(w, "no metrics")
-		fmt.Fprintln(w, "JSON: null")
 		return
 	}
 
@@ -199,12 +197,6 @@ func Render(r *Report, w io.Writer) {
 	}
 
 	fmt.Fprintf(w, "TOTAL: $%.2f across %d project(s)\n", r.TotalUSD, len(r.Projects))
-
-	data, err := json.Marshal(r)
-	if err != nil {
-		data = []byte("{}")
-	}
-	fmt.Fprintf(w, "JSON: %s\n", data)
 }
 
 // hasModels reports whether any project has model breakdown rows.

@@ -6,7 +6,6 @@ package metrics
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,29 +139,15 @@ func TestCollectAndRender(t *testing.T) {
 		t.Errorf("stale/orphan = %d/%d, want 0/0", p.StaleWorktrees, p.OrphanBranches)
 	}
 
-	// Render: table + trailing single-line JSON that round-trips.
+	// Render: human table only — no trailing JSON line.
 	var buf bytes.Buffer
 	Render(rep, &buf)
 	rendered := buf.String()
 	if !strings.Contains(rendered, "demo") {
 		t.Errorf("Render missing project row:\n%s", rendered)
 	}
-	idx := strings.Index(rendered, "JSON: ")
-	if idx < 0 {
-		t.Fatalf("Render missing JSON line:\n%s", rendered)
-	}
-	jsonLine := strings.TrimSpace(rendered[idx+len("JSON: "):])
-	// The JSON is a single line (no embedded newline before end).
-	if strings.Contains(jsonLine, "\n") {
-		firstNL := strings.IndexByte(jsonLine, '\n')
-		jsonLine = jsonLine[:firstNL]
-	}
-	var round Report
-	if err := json.Unmarshal([]byte(jsonLine), &round); err != nil {
-		t.Fatalf("trailing JSON did not parse: %v\nline=%s", err, jsonLine)
-	}
-	if round.TotalUSD != 3.5 || len(round.Projects) != 1 {
-		t.Errorf("round-tripped report = %+v", round)
+	if strings.Contains(rendered, "JSON: ") {
+		t.Errorf("Render must not emit JSON: line in human mode:\n%s", rendered)
 	}
 }
 
@@ -182,8 +167,8 @@ func TestCollectFilterAndEmpty(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	Render(rep, &buf)
-	if !strings.Contains(buf.String(), "JSON: ") {
-		t.Errorf("Render missing JSON line on empty report:\n%s", buf.String())
+	if strings.Contains(buf.String(), "JSON: ") {
+		t.Errorf("Render must not emit JSON: line on empty report:\n%s", buf.String())
 	}
 	// Nil report is tolerated.
 	Render(nil, &buf)
