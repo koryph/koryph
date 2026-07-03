@@ -55,7 +55,7 @@ func baseSpec(t *testing.T) Spec {
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return Spec{
+	spec := Spec{
 		ProjectID:        "proj",
 		RepoRoot:         root,
 		RunID:            "run-20260702-0001",
@@ -76,6 +76,34 @@ func baseSpec(t *testing.T) Spec {
 		BeadsDir:         filepath.Join(root, ".beads"),
 		Attempt:          1,
 	}
+	// Dispatch detaches (Setsid) and Release()s the fake claude, so it lingers —
+	// still writing under PhaseDir — after the test body returns. Reap it before
+	// this test's t.TempDir() cleanup runs (registered later ⇒ runs first, LIFO)
+	// so RemoveAll cannot race the process and fail with "directory not empty".
+	reapDetachedChildren(t)
+	return spec
+}
+
+// reapDetachedChildren waits (bounded) for the test's detached child processes
+// to exit and reaps them, mirroring the engine's own Wait4-based liveness probe
+// for released agents. Runs as a cleanup so it precedes TempDir removal.
+func reapDetachedChildren(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			var ws syscall.WaitStatus
+			wpid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+			if err == syscall.ECHILD {
+				return // no children remain
+			}
+			if wpid == 0 {
+				time.Sleep(5 * time.Millisecond) // alive, not yet exited
+				continue
+			}
+			// reaped one; loop for any others
+		}
+	})
 }
 
 // waitForFile polls until path exists and is non-empty (deadline 5s).
