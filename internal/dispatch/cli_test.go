@@ -431,6 +431,67 @@ func TestParseResultCost(t *testing.T) {
 	})
 }
 
+func TestParseRateLimited(t *testing.T) {
+	writeStream := func(t *testing.T, lines ...string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		body := strings.Join(lines, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	positive := map[string]string{
+		"top-level error event, rate_limit_error":               `{"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your rate limit."}}`,
+		"top-level error event, 429 in message":                 `{"type":"error","message":"HTTP 429 Too Many Requests"}`,
+		"result is_error true, embedded error object":           `{"type":"result","is_error":true,"subtype":"error_during_execution","result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"}`,
+		"result is_error true, overloaded_error in result text": `{"type":"result","is_error":true,"subtype":"error","result":"overloaded_error: the service is temporarily overloaded"}`,
+	}
+	for name, line := range positive {
+		t.Run("positive/"+name, func(t *testing.T) {
+			path := writeStream(t,
+				`{"type":"system","subtype":"init"}`,
+				line,
+			)
+			if !ParseRateLimited(path) {
+				t.Errorf("ParseRateLimited(%q) = false, want true", line)
+			}
+		})
+	}
+
+	negative := map[string][]string{
+		"ordinary max-turns error": {
+			`{"type":"result","is_error":true,"subtype":"error_max_turns","result":"Max turns reached"}`,
+		},
+		"clean success result": {
+			`{"type":"result","total_cost_usd":1.23,"is_error":false}`,
+		},
+		"429 mentioned in ordinary (non-error) assistant text": {
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"the API returned 429 once but retried fine"}]}}`,
+			`{"type":"result","total_cost_usd":0.10,"is_error":false}`,
+		},
+		"garbage lines and no result": {
+			`not json at all`,
+			`{"type":"system"}`,
+		},
+	}
+	for name, lines := range negative {
+		t.Run("negative/"+name, func(t *testing.T) {
+			path := writeStream(t, lines...)
+			if ParseRateLimited(path) {
+				t.Errorf("ParseRateLimited() = true for %v, want false", lines)
+			}
+		})
+	}
+
+	t.Run("missing file", func(t *testing.T) {
+		if ParseRateLimited(filepath.Join(t.TempDir(), "nope.jsonl")) {
+			t.Error("ParseRateLimited(missing file) = true, want false")
+		}
+	})
+}
+
 func TestAlive(t *testing.T) {
 	if !Alive(os.Getpid()) {
 		t.Error("Alive(self) = false")

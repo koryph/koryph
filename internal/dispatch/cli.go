@@ -259,6 +259,74 @@ func ParseResultCost(streamPath string) (float64, bool) {
 	return cost, found
 }
 
+// rlEvent is the tolerant stream-json shape scanned for a rate-limit/overload
+// signal (koryph-2im.4, docs/designs/2026-07-scheduler-throughput.md L5). The
+// Claude CLI surfaces an API error in more than one shape across versions —
+// a top-level "error" event, an "error" object embedded in a result, or free
+// text in a result's subtype/message/result fields (typically something like
+// `API Error: 429 {"type":"error","error":{"type":"rate_limit_error",...}}`)
+// — so every field that might carry the marker is captured and scanned.
+type rlEvent struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype,omitempty"`
+	IsError *bool  `json:"is_error,omitempty"`
+	Message string `json:"message,omitempty"`
+	Result  string `json:"result,omitempty"`
+	Error   *struct {
+		Type    string `json:"type,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"error,omitempty"`
+}
+
+// rateLimitMarkers are the substrings (matched case-insensitively) that
+// identify a Claude API rate-limit or overload error.
+var rateLimitMarkers = []string{"429", "rate_limit_error", "overloaded_error"}
+
+// ParseRateLimited scans a stream.jsonl for an API rate-limit/overload marker
+// inside an error-flagged event: a top-level "error" event, a "result" event
+// with is_error true, or an embedded "error" object. Matching is deliberately
+// liberal (any of those event shapes, several candidate fields) because the
+// exact error shape is not a stable contract; it is scoped to error-flagged
+// events so ordinary conversation text mentioning "429" cannot false-positive.
+// Unlike ParseResultCost this does not care which line is last — any
+// qualifying event anywhere in the stream marks the whole run rate-limited,
+// since it is the agent's subsequent death that completeSlot reacts to.
+// Returns false when the file is unreadable or no line qualifies.
+func ParseRateLimited(streamPath string) bool {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var ev rlEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		errorish := ev.Type == "error" || ev.Error != nil || (ev.IsError != nil && *ev.IsError)
+		if !errorish {
+			continue
+		}
+		haystack := strings.ToLower(ev.Subtype + " " + ev.Message + " " + ev.Result)
+		if ev.Error != nil {
+			haystack += " " + strings.ToLower(ev.Error.Type+" "+ev.Error.Message)
+		}
+		for _, marker := range rateLimitMarkers {
+			if strings.Contains(haystack, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Alive reports whether pid is a live process (signal 0 probe).
 // ESRCH → false; EPERM → true (it exists, we just can't signal it).
 func Alive(pid int) bool {
