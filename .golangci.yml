@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+#
+# golangci-lint v2 config. Enforced in CI and available via `make lint`. The
+# green gate (`make gate`) runs it when the binary is on PATH and skips with a
+# notice otherwise, so a contributor without the tool is never blocked while CI
+# still enforces it.
+#
+# Scope: the default linter set (errcheck, govet, ineffassign, staticcheck,
+# unused) with the house idioms excluded — deferred Close and best-effort Fprint
+# to std streams are intentionally unchecked (mirrored by the explicit `_ =`
+# style used throughout the engine). Its job is to surface a *real* unchecked
+# error before it hides in that noise, not to churn accepted patterns.
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+    rules:
+      # Test code routinely ignores Close/Setenv/rename errors on temp state and
+      # favors direct expressions over refactors staticcheck's quickfix suggests.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - staticcheck
+          - govet

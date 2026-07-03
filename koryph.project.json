@@ -44,7 +44,8 @@
     "test -z \"$(gofmt -l .)\"",
     "go build ./...",
     "go vet ./...",
-    "go test ./..."
+    "go test ./...",
+    "command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo 'golangci-lint not installed; skipping (CI enforces it)'"
   ],
   "protected_paths": [
     "hooks/",

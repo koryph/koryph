@@ -81,8 +81,18 @@ test-race: ## Run the full test suite with the race detector
 cover: ## Run tests with coverage summary
 	go test -cover ./...
 
+.PHONY: lint
+lint: ## Run golangci-lint (skipped with a notice if not installed; CI enforces it)
+	@command -v golangci-lint >/dev/null 2>&1 \
+		&& golangci-lint run ./... \
+		|| echo "golangci-lint not installed; skipping (CI enforces it) — see .golangci.yml"
+
+.PHONY: lint-ci
+lint-ci: ## Enforced lint for CI (pins golangci-lint via go run, like make vuln)
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
+
 .PHONY: gate
-gate: fmt-check build vet test ## The green gate (mirrors koryph.project.json)
+gate: fmt-check build vet test lint ## The green gate (mirrors koryph.project.json)
 
 ##@ Documentation
 
