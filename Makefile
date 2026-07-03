@@ -28,12 +28,12 @@ init: ## Bootstrap a fresh clone: pinned tools (nix), git hooks, and koryph
 	  exit 1; }
 	@command -v direnv >/dev/null 2>&1 && { direnv allow . 2>/dev/null || true; } || \
 	  echo "note: direnv not found (optional) — enter the shell with 'nix develop': https://direnv.net"
-	nix develop --command pre-commit install --install-hooks
+	nix develop --command pre-commit install-hooks
 	nix develop --command go install ./cmd/koryph
 	@echo ""
 	@echo "koryph dev environment ready:"
 	@echo "  - tools pinned via flake.nix ('nix develop', or automatically via direnv)"
-	@echo "  - git hooks installed (pre-commit)"
+	@echo "  - git hooks: owned by beads (core.hooksPath=.beads/hooks); they chain to pre-commit"
 	@echo "  - koryph installed to \$$(go env GOPATH)/bin (ensure it is on PATH)"
 	@echo "  next — register this project so koryph can build itself:"
 	@echo "    koryph project add . --account personal --identity you@example.com"
