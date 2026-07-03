@@ -12,6 +12,21 @@
     "engine": [
       "go:engine"
     ],
+    "intake": [
+      "go:intake"
+    ],
+    "doctor": [
+      "go:doctor"
+    ],
+    "libs": [
+      "go:libs"
+    ],
+    "project": [
+      "go:project"
+    ],
+    "ide": [
+      "ts:ide"
+    ],
     "onboard": [
       "go:onboard"
     ],
