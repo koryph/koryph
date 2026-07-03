@@ -268,6 +268,29 @@ coordinates:
 smoothing config. Worst case (breaker misconfigured/flapping) degrades to
 serialized dispatch, never to a stampede.
 
+#### L5c — Per-provider governor pools
+
+The service providers behind agent runtimes (Anthropic/claude,
+OpenAI/codex, Google/gemini, xAI/grok build, …) enforce **independent**
+rate limits, so a single machine-wide pool is wrong in both directions: an
+Anthropic 429 must not throttle codex agents, and codex load must not
+consume claude admission slots. The entire governor state — cap, leases,
+demand, fair share, AIMD overlay, settle window, breaker, smoothing clock —
+becomes **per-pool**, keyed by provider:
+
+- A lease carries `Provider`, resolved from the runtime adapter that
+  dispatches the agent (constant `anthropic` until the koryph-v8u adapters
+  land — behavior identical to today). The pool key is an opaque string so
+  it can later refine to `provider:account` (rate limits are really
+  per-account within a provider) without another schema change.
+- `koryph governor set --provider P …` / `show` lists every pool /
+  `doctor` iterates pools. `--provider` omitted = `anthropic`
+  (back-compat). An existing single-pool `governor.json` migrates on load
+  into the `anthropic` pool.
+- Cross-provider there is NO shared cap: total machine concurrency is the
+  sum of pool caps by design (each API is the resource being protected;
+  local CPU/RAM pressure is the operator's `--max-global` per pool).
+
 ### L6 — Requeue budgets
 
 Replace the single-shot Note-marker dedup (`gateRequeueNote`,
