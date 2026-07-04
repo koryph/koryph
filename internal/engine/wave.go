@@ -379,6 +379,14 @@ func (r *runner) guardMode(calibrated bool) (advisory bool, why string) {
 	if r.rec.BillingGuard == "advisory" {
 		return true, "project billing_guard=advisory"
 	}
+	// Live toggle: operator wrote guard advisory/off via `koryph quota guard`.
+	// The config is re-read by governor() at every wave boundary, so this takes
+	// effect on the very next wave without a restart. (koryph-i25)
+	if r.quotaCfg != nil {
+		if ok, reason := quota.ConfigGuardAdvisory(r.quotaCfg, time.Now()); ok {
+			return true, reason
+		}
+	}
 	if r.rt != nil && !r.rt.Capabilities().UsageSource {
 		return true, fmt.Sprintf("runtime %q has no usage source (measured advisory only)", r.rt.Name())
 	}
