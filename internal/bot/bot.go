@@ -10,6 +10,17 @@
 // file; App ID, slug, and owner are also recorded so that downstream commands
 // (release setup, doctor) can validate the installation without re-reading
 // the PEM.
+//
+// # Key storage modes
+//
+// Pointer mode (Provider + KeyRef set): the private key lives in the vault
+// specified by Provider; the JSON file is a credential pointer only. Use
+// ResolveKey to fetch the key at JWT-mint time.
+//
+// Inline mode (Provider empty, PEM set): the private key is stored directly
+// in the JSON file (legacy / back-compat).  New bots created by
+// 'koryph bot create' always use a vault-backed or protected-file provider via
+// the no-vault fallback ladder; use --plaintext to opt into inline storage.
 package bot
 
 import (
@@ -30,6 +41,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/signing"
 )
 
 // nameRe validates a bot name: lowercase letters, digits, and hyphens only,
@@ -40,15 +52,44 @@ var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}$`)
 // It holds only the fields required by downstream consumers; the webhook
 // secret (not requested) and client_id/secret are intentionally omitted to
 // keep the surface minimal.
+//
+// Key storage: either inline (PEM) or pointer (Provider + KeyRef).
+// Use IsPointer to distinguish and ResolveKey to fetch the key at use time.
 type Config struct {
 	Name   string `json:"name"`
 	AppID  int64  `json:"app_id"`
 	Slug   string `json:"slug"`
 	Owner  string `json:"owner"`
 	Public bool   `json:"public"`
-	// PEM is the RSA private key returned by the manifest conversion endpoint.
-	// It is stored 0600 and must never be printed to a terminal.
-	PEM string `json:"pem"`
+
+	// PEM is the RSA private key in inline mode. It is stored at 0600 and must
+	// never be printed to a terminal. Empty when Provider is set (pointer mode).
+	// Preserved for back-compat: existing bot files with only a "pem" field
+	// continue to load and operate without any migration.
+	PEM string `json:"pem,omitempty"`
+
+	// Provider names the vault backend for pointer-mode credentials. Supported
+	// values mirror signing.VaultProviders (protonpass, onepassword,
+	// encrypted-file, keychain, file, aws_secretsmanager, …). Empty = inline
+	// mode (PEM field contains the key).
+	Provider string `json:"provider,omitempty"`
+
+	// KeyRef is the provider-specific reference for the private key:
+	//   protonpass    pass:// URI
+	//   onepassword   op:// reference
+	//   keychain      macOS Keychain service name (e.g. "koryph-bot-mybot")
+	//   encrypted-file file path of the age-encrypted file
+	//   file          plaintext file path (back-compat / --plaintext)
+	//   cloud providers: provider-native ARN or secret name
+	// Required when Provider is non-empty.
+	KeyRef string `json:"key_ref,omitempty"`
+}
+
+// IsPointer reports whether the credentials use vault-backed or protected-file
+// key storage (Provider and KeyRef set) rather than an inline PEM.
+// Pointer-mode configs must go through ResolveKey to obtain the key material.
+func (c *Config) IsPointer() bool {
+	return c.Provider != ""
 }
 
 // BotsDir returns the directory that stores bot credential files.
@@ -145,6 +186,35 @@ type CreateOptions struct {
 	// Timeout caps the entire flow (browser open → redirect caught).
 	// Defaults to 5 minutes.
 	Timeout time.Duration
+
+	// VaultProvider selects where the private key is stored after creation.
+	// When empty, Create applies the no-vault fallback ladder:
+	//   configured vault (project signing block) > keychain (darwin) > encrypted-file.
+	// Override with a specific signing.Provider* constant or the --vault-provider flag.
+	// Use Plaintext=true to bypass the ladder and write a plaintext PEM file.
+	VaultProvider string
+
+	// KeyRef is the provider-specific reference for the new key.
+	// Required for CLI-backed vault providers (protonpass, onepassword, etc.).
+	// Auto-derived for keychain ("koryph-bot-<name>") and encrypted-file
+	// ("<BotsDir>/<name>.age") when left empty.
+	KeyRef string
+
+	// Plaintext, when true, bypasses the fallback ladder and stores the private
+	// key as a plaintext PEM in the credential JSON (inline mode).
+	// This is the legacy behavior and requires an explicit opt-in.
+	// Only use for environments where no vault or encrypted storage is feasible.
+	Plaintext bool
+
+	// ProjectRoot is the managed project root; used by resolveVaultDefaults to
+	// read the project signing block for provider/key_ref defaults.
+	// Empty = no project context (personal bot not associated with a project).
+	ProjectRoot string
+
+	// Passphrase is the age encryption passphrase used when VaultProvider is
+	// "encrypted-file". If empty, the passphrase is read from KORYPH_PASSPHRASE
+	// or prompted on the controlling TTY.
+	Passphrase string
 }
 
 // Create runs the GitHub App Manifest flow:
@@ -261,10 +331,115 @@ func Create(ctx context.Context, opts CreateOptions) (*Config, error) {
 		return nil, err
 	}
 
+	// Store the private key via the selected provider (vault, protected file, or
+	// inline plaintext).  exchangeCode returns cfg with PEM set; storeKey either
+	// moves it into the vault (clearing cfg.PEM and setting Provider/KeyRef) or
+	// leaves it inline when Plaintext=true.
+	if err := storeKeyAfterCreate(ctx, cfg, opts, out); err != nil {
+		return nil, fmt.Errorf("bot create: store private key: %w", err)
+	}
+
 	if err := Save(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// storeKeyAfterCreate resolves the vault provider and stores the private key
+// material from cfg.PEM.  On success it mutates cfg: pointer-mode configs have
+// cfg.PEM cleared and cfg.Provider/cfg.KeyRef set; inline mode is unchanged.
+func storeKeyAfterCreate(ctx context.Context, cfg *Config, opts CreateOptions, out io.Writer) error {
+	if opts.Plaintext {
+		// Explicit inline mode: keep cfg.PEM as-is, no vault interaction.
+		fmt.Fprintf(out, "  ⚠  storing private key inline (--plaintext); "+
+			"consider `koryph bot vault-migrate --name %s` to protect it later\n", cfg.Name)
+		return nil
+	}
+
+	// Resolve provider from: explicit flag > project signing block > OS default.
+	provider := opts.VaultProvider
+	if provider == "" {
+		projProvider, _, _ := resolveVaultDefaults(opts.ProjectRoot)
+		if projProvider != "" {
+			provider = projProvider
+		} else {
+			provider = signing.ResolveDefaultProvider()
+		}
+	}
+
+	// Resolve key_ref from: explicit flag > auto-derive per provider.
+	keyRef := opts.KeyRef
+	if keyRef == "" {
+		keyRef = defaultKeyRef(provider, cfg.Name)
+	}
+
+	pemBytes := []byte(cfg.PEM)
+
+	var storeErr error
+	switch provider {
+	case signing.ProviderEncryptedFile:
+		passphrase := opts.Passphrase
+		if passphrase == "" {
+			// Prompt interactively; signing.PromptPassphraseOnce reads from /dev/tty.
+			passphrase, storeErr = signing.PromptPassphraseOnce(
+				fmt.Sprintf("Passphrase for %s (new encrypted key): ", keyRef))
+			if storeErr != nil {
+				return fmt.Errorf("encrypted-file: %w", storeErr)
+			}
+		}
+		storeErr = signing.StoreEncryptedFile(keyRef, pemBytes, passphrase)
+		if storeErr == nil {
+			fmt.Fprintf(out, "  ✓ private key encrypted and stored at %s\n", keyRef)
+			fmt.Fprintf(out, "    (same posture as a passphrase-protected ~/.ssh key — keep it backed up, never commit it)\n")
+		}
+
+	case signing.ProviderKeychain:
+		storeErr = signing.StoreKeychain(keyRef, pemBytes)
+		if storeErr == nil {
+			fmt.Fprintf(out, "  ✓ private key stored in macOS Keychain (%s)\n", keyRef)
+			fmt.Fprintf(out, "    (same posture as a passphrase-protected ~/.ssh key — keep it backed up)\n")
+		}
+
+	default:
+		// Generic CLI-backed vault provider.
+		storeErr = signing.StoreSecret(ctx, provider, keyRef, pemBytes, "")
+		if storeErr == nil {
+			fmt.Fprintf(out, "  ✓ private key stored in %s (ref: %s)\n", provider, keyRef)
+		}
+	}
+
+	if storeErr != nil {
+		return fmt.Errorf("provider %s: %w", provider, storeErr)
+	}
+
+	// Switch cfg to pointer mode: clear inline PEM, set Provider/KeyRef.
+	cfg.Provider = provider
+	cfg.KeyRef = keyRef
+	cfg.PEM = ""
+	return nil
+}
+
+// DefaultKeyRef returns a provider-appropriate key reference when the user
+// has not supplied --key-ref. Exported so the CLI and tests can call it
+// without duplicating the per-provider defaults.
+func DefaultKeyRef(provider, botName string) string {
+	return defaultKeyRef(provider, botName)
+}
+
+// defaultKeyRef is the internal implementation of DefaultKeyRef.
+func defaultKeyRef(provider, botName string) string {
+	switch provider {
+	case signing.ProviderKeychain:
+		return "koryph-bot-" + botName
+	case signing.ProviderEncryptedFile:
+		return filepath.Join(BotsDir(), botName+".age")
+	case signing.ProviderFile:
+		return filepath.Join(BotsDir(), botName+".pem")
+	default:
+		// For CLI-backed providers, there is no universal default — the caller
+		// must supply --key-ref.  Return a placeholder that will fail fast.
+		return "koryph-bot-" + botName
+	}
 }
 
 // InstallURL returns the browser URL for installing the named bot.

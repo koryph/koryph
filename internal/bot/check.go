@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/koryph/koryph/internal/signing"
 )
 
 // CheckLevel classifies a check finding's severity.
@@ -115,15 +117,20 @@ type appIdentity struct {
 	Name string `json:"name"`
 }
 
-// checkJWT mints a JWT, calls GET /app, and verifies the app_id matches.
+// checkJWT resolves the key (vault or inline), mints a JWT, calls GET /app,
+// and verifies the app_id matches.
 func checkJWT(ctx context.Context, cfg *Config) (string, CheckFinding) {
-	jwt, err := MintJWT(cfg)
+	jwt, err := MintJWTCtx(ctx, cfg)
 	if err != nil {
+		remediation := fmt.Sprintf("koryph bot create --name %s   # re-provision if the PEM is corrupt", cfg.Name)
+		if ve, ok := err.(*VaultErr); ok { //nolint:errorlint
+			remediation = ve.Remediation
+		}
 		return "", CheckFinding{
 			Check:       "jwt-valid",
 			Level:       CheckFail,
 			Message:     fmt.Sprintf("cannot mint JWT: %v", err),
-			Remediation: fmt.Sprintf("koryph bot create --name %s   # re-provision if the PEM is corrupt", cfg.Name),
+			Remediation: remediation,
 		}
 	}
 
@@ -374,9 +381,13 @@ type CredentialFinding struct {
 	Message string
 }
 
-// CheckCredentials performs an offline-only PEM validity check on all stored
+// CheckCredentials performs an offline-only credential check on all stored
 // bots. It is called by koryph doctor to surface corrupted credential files
-// without making any network calls.
+// and plaintext-key posture warnings without making any network calls.
+//
+// For inline-mode bots (Provider == "") the PEM is validated directly.
+// For pointer-mode bots (Provider set) the credential pointer is validated
+// (provider and key_ref present); no vault fetch is performed.
 func CheckCredentials() ([]CredentialFinding, error) {
 	names, err := List()
 	if err != nil {
@@ -393,19 +404,7 @@ func CheckCredentials() ([]CredentialFinding, error) {
 			})
 			continue
 		}
-		if err := ValidatePEM(cfg); err != nil {
-			findings = append(findings, CredentialFinding{
-				Name:    name,
-				Level:   CheckFail,
-				Message: fmt.Sprintf("invalid PEM: %v — run `koryph bot create --name %s` to re-provision", err, name),
-			})
-			continue
-		}
-		findings = append(findings, CredentialFinding{
-			Name:    name,
-			Level:   CheckOK,
-			Message: fmt.Sprintf("credentials ok (app_id=%d owner=%s)", cfg.AppID, cfg.Owner),
-		})
+		findings = append(findings, credentialFindingsFor(cfg)...)
 	}
 	return findings, nil
 }
@@ -417,18 +416,84 @@ func CredentialFindingsFor(name string) ([]CredentialFinding, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidatePEM(cfg); err != nil {
-		return []CredentialFinding{{
-			Name:    name,
-			Level:   CheckFail,
-			Message: fmt.Sprintf("invalid PEM: %v — run `koryph bot create --name %s` to re-provision", err, name),
-		}}, nil
+	return credentialFindingsFor(cfg), nil
+}
+
+// credentialFindingsFor runs the offline credential + posture checks for one bot.
+func credentialFindingsFor(cfg *Config) []CredentialFinding {
+	var findings []CredentialFinding
+
+	if cfg.IsPointer() {
+		// Pointer mode: verify that provider and key_ref are present.
+		if cfg.KeyRef == "" {
+			findings = append(findings, CredentialFinding{
+				Name:    cfg.Name,
+				Level:   CheckFail,
+				Message: fmt.Sprintf("pointer-mode bot %q is missing key_ref — re-run `koryph bot vault-migrate --name %s`", cfg.Name, cfg.Name),
+			})
+		} else {
+			// Check posture of the pointer (provider classification).
+			posture := botPosture(cfg)
+			msg := fmt.Sprintf("credentials ok (app_id=%d owner=%s provider=%s)", cfg.AppID, cfg.Owner, cfg.Provider)
+			level := CheckOK
+			if posture.Note != "" {
+				msg += " — " + posture.Note
+			}
+			findings = append(findings, CredentialFinding{
+				Name:    cfg.Name,
+				Level:   level,
+				Message: msg,
+			})
+		}
+		return findings
 	}
-	return []CredentialFinding{{
-		Name:    name,
+
+	// Inline mode: validate the PEM.
+	if err := ValidatePEM(cfg); err != nil {
+		findings = append(findings, CredentialFinding{
+			Name:    cfg.Name,
+			Level:   CheckFail,
+			Message: fmt.Sprintf("invalid PEM: %v — run `koryph bot create --name %s` to re-provision", err, cfg.Name),
+		})
+		return findings
+	}
+
+	findings = append(findings, CredentialFinding{
+		Name:    cfg.Name,
 		Level:   CheckOK,
 		Message: fmt.Sprintf("credentials ok (app_id=%d owner=%s)", cfg.AppID, cfg.Owner),
-	}}, nil
+	})
+
+	// Posture check: WARN when the key is stored as plaintext.
+	// Keys encrypted with encrypted-file or stored in Keychain are the same
+	// posture as a passphrase-protected ~/.ssh key — no warning for those.
+	posture := botPosture(cfg)
+	if !posture.Level.PostureOK() {
+		findings = append(findings, CredentialFinding{
+			Name:  cfg.Name,
+			Level: CheckWarn,
+			Message: fmt.Sprintf(
+				"%s: private key stored as plaintext in %s — "+
+					"migrate to a secure provider with `koryph bot vault-migrate --name %s`",
+				cfg.Name, BotPath(cfg.Name), cfg.Name),
+		})
+	}
+
+	return findings
+}
+
+// botPosture classifies the security posture of a bot's key storage.
+// It reuses the signing package's posture classifier by mapping the bot
+// config fields to a signing.Config.
+func botPosture(cfg *Config) signing.PostureResult {
+	sigCfg := &signing.Config{
+		Provider: cfg.Provider,
+		KeyRef:   cfg.KeyRef,
+	}
+	// For inline mode (Provider==""), KeyRef is empty and ClassifyPosture returns
+	// PosturePlaintext ("no provider").
+	// For pointer mode, ClassifyPosture inspects Provider correctly.
+	return signing.ClassifyPosture(sigCfg)
 }
 
 // PrintCheckResults renders check findings to w in a human-readable format.

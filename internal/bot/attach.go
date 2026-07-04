@@ -59,12 +59,16 @@ type installation struct {
 
 // Attach implements 'koryph bot attach'. It is idempotent on all steps.
 //
-//  1. Mint an app JWT from the stored PEM.
+//  1. Resolve the private key (vault or inline) and mint an app JWT.
 //  2. GET /app/installations (authenticated as the app) to find the
 //     installation that covers the target owner (no gh dependency here).
 //  3. Add the repo to the installation via gh api (user's auth token).
 //  4. Set repository (or org) secrets via gh secret set.
 //  5. Enable the Actions can_approve_pull_request_reviews toggle.
+//
+// Actions secrets (RELEASE_BOT_APP_ID, RELEASE_BOT_PRIVATE_KEY) always
+// receive the operational PEM — this is inherent to the
+// create-github-app-token action and unchanged by vault storage.
 func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult, error) {
 	if opts.Repo == "" {
 		return nil, fmt.Errorf("bot attach: --repo is required")
@@ -83,12 +87,16 @@ func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult
 		ghBin = "gh"
 	}
 
-	// Step 1: mint JWT.
-	jwt, err := MintJWT(cfg)
+	// Step 1: resolve key (vault fetch or inline) then mint JWT.
+	resolvedPEM, err := ResolveKey(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("bot attach: resolve key: %w", err)
+	}
+	jwt, err := mintJWTFrom(resolvedPEM, cfg.AppID, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("bot attach: mint JWT: %w", err)
 	}
-	fmt.Fprintf(out, "  ✓ JWT minted from stored PEM (app_id %d)\n", cfg.AppID)
+	fmt.Fprintf(out, "  ✓ JWT minted (app_id %d)\n", cfg.AppID)
 
 	// Step 2: resolve installation ID via the GitHub App API (Bearer JWT).
 	iid, err := resolveInstallation(ctx, jwt, owner)
@@ -108,8 +116,9 @@ func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult
 		fmt.Fprintf(out, "  ✓ %s already in installation %d\n", opts.Repo, iid)
 	}
 
-	// Step 4: set secrets.
-	secrets, err := setSecrets(ctx, cfg, opts, ghBin, out)
+	// Step 4: set secrets (uses the resolved PEM — Action secrets always need
+	// the operational PEM copy, regardless of where it is stored locally).
+	secrets, err := setSecrets(ctx, cfg, resolvedPEM, opts, ghBin, out)
 	if err != nil {
 		return nil, fmt.Errorf("bot attach: %w", err)
 	}
@@ -206,8 +215,10 @@ func addRepoToInstallation(_ context.Context, ownerRepo string, iid int64, ghBin
 
 // setSecrets writes RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY either
 // as per-repo secrets (default) or as org-level selected-repo secrets
-// (--org-secrets). Returns the list of secret names written.
-func setSecrets(_ context.Context, cfg *Config, opts AttachOptions, ghBin string, out io.Writer) ([]string, error) {
+// (--org-secrets). resolvedPEM is the operational PEM material obtained via
+// ResolveKey; it is passed directly to GitHub Actions secrets regardless of
+// where the key is stored locally (vault, encrypted file, or inline).
+func setSecrets(_ context.Context, cfg *Config, resolvedPEM string, opts AttachOptions, ghBin string, out io.Writer) ([]string, error) {
 	owner, repo, err := splitOwnerRepo(opts.Repo)
 	if err != nil {
 		return nil, err
@@ -220,7 +231,7 @@ func setSecrets(_ context.Context, cfg *Config, opts AttachOptions, ghBin string
 		// Org-level secrets (selected-repos visibility).
 		for _, s := range []struct{ name, val string }{
 			{"RELEASE_BOT_APP_ID", appIDVal},
-			{"RELEASE_BOT_PRIVATE_KEY", cfg.PEM},
+			{"RELEASE_BOT_PRIVATE_KEY", resolvedPEM},
 		} {
 			if err := setOrgSecret(ghBin, owner, repo, s.name, s.val); err != nil {
 				return nil, fmt.Errorf("set org secret %s: %w", s.name, err)
@@ -232,7 +243,7 @@ func setSecrets(_ context.Context, cfg *Config, opts AttachOptions, ghBin string
 		// Per-repo secrets.
 		for _, s := range []struct{ name, val string }{
 			{"RELEASE_BOT_APP_ID", appIDVal},
-			{"RELEASE_BOT_PRIVATE_KEY", cfg.PEM},
+			{"RELEASE_BOT_PRIVATE_KEY", resolvedPEM},
 		} {
 			if err := setRepoSecret(ghBin, opts.Repo, s.name, s.val); err != nil {
 				return nil, fmt.Errorf("set repo secret %s on %s: %w", s.name, opts.Repo, err)

@@ -4,6 +4,7 @@
 package bot
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -17,7 +18,40 @@ import (
 	"time"
 )
 
-// MintJWT creates a GitHub App JWT from the stored PEM key in cfg.
+// MintJWTCtx resolves the private key for cfg via ResolveKey (vault fetch in
+// pointer mode, inline PEM in back-compat mode) and mints a GitHub App JWT.
+//
+// This is the production entry point: it handles vault-backed credentials
+// transparently.  Use MintJWT / MintJWTAt for tests that supply an inline PEM
+// directly in cfg.PEM.
+func MintJWTCtx(ctx context.Context, cfg *Config) (string, error) {
+	return MintJWTCtxAt(ctx, cfg, time.Now())
+}
+
+// MintJWTCtxAt is the injectable-time variant of MintJWTCtx.
+func MintJWTCtxAt(ctx context.Context, cfg *Config, now time.Time) (string, error) {
+	pemStr, err := ResolveKey(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("bot jwt: resolve key: %w", err)
+	}
+	return mintJWTFrom(pemStr, cfg.AppID, now)
+}
+
+// MintJWT creates a GitHub App JWT from the inline PEM in cfg.PEM.
+//
+// Back-compat entry point for inline-mode configs and tests.  Production code
+// with vault-backed credentials should call MintJWTCtx instead.
+func MintJWT(cfg *Config) (string, error) {
+	return MintJWTAt(cfg, time.Now())
+}
+
+// MintJWTAt is the injectable-time variant of MintJWT (useful in tests).
+// It reads cfg.PEM directly; use MintJWTCtxAt when a vault may be involved.
+func MintJWTAt(cfg *Config, now time.Time) (string, error) {
+	return mintJWTFrom(cfg.PEM, cfg.AppID, now)
+}
+
+// mintJWTFrom mints a GitHub App JWT from an already-resolved PEM string.
 //
 // The JWT format follows GitHub's App authentication contract:
 //   - Algorithm: RS256 (RSASSA-PKCS1-v1_5 with SHA-256)
@@ -27,13 +61,8 @@ import (
 //
 // The returned token string is ready for use as a Bearer token in the
 // Authorization header of any GitHub App API call.
-func MintJWT(cfg *Config) (string, error) {
-	return MintJWTAt(cfg, time.Now())
-}
-
-// MintJWTAt is the injectable-time variant of MintJWT (useful in tests).
-func MintJWTAt(cfg *Config, now time.Time) (string, error) {
-	key, err := parseRSAKey(cfg.PEM)
+func mintJWTFrom(pemStr string, appID int64, now time.Time) (string, error) {
+	key, err := parseRSAKey(pemStr)
 	if err != nil {
 		return "", fmt.Errorf("bot jwt: %w", err)
 	}
@@ -45,7 +74,7 @@ func MintJWTAt(cfg *Config, now time.Time) (string, error) {
 	payload := jwtSegment(map[string]any{
 		"iat": iat,
 		"exp": exp,
-		"iss": strconv.FormatInt(cfg.AppID, 10),
+		"iss": strconv.FormatInt(appID, 10),
 	})
 	signingInput := header + "." + payload
 

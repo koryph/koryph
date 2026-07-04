@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/bot"
+	"github.com/koryph/koryph/internal/signing"
 )
 
 // cmdBot dispatches the 'koryph bot' sub-verbs.
@@ -39,11 +40,12 @@ import (
 func cmdBot(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "bot", "provision and manage koryph GitHub App bots", []subVerb{
-			{"create [--name N] [--org ORG] [--public]", "create a GitHub App via the manifest flow (one browser click)"},
+			{"create [--name N] [--org ORG] [--public] [--vault-provider P] [--key-ref R] [--plaintext]", "create a GitHub App via the manifest flow (one browser click)"},
 			{"install --name N", "print/open the installation page for a provisioned bot"},
 			{"attach --name N --repo OWNER/REPO [--org-secrets]", "wire a repo: add to installation, set secrets, enable Actions toggle"},
 			{"list [--check]", "list provisioned bots; --check does a live GET /app identity check per bot"},
 			{"check --name N [--repo OWNER/REPO]", "run the full validator chain: JWT, installation, secrets, toggle, workflow"},
+			{"vault-migrate --name N [--vault-provider P] [--key-ref R]", "move a plaintext key into a vault or encrypted file"},
 		})
 		return 0
 	}
@@ -59,6 +61,8 @@ func cmdBot(args []string, stdout, stderr io.Writer) int {
 		return cmdBotList(rest, stdout, stderr)
 	case "check":
 		return cmdBotCheck(rest, stdout, stderr)
+	case "vault-migrate":
+		return cmdBotVaultMigrate(rest, stdout, stderr)
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown bot subcommand %q", sub))
 	}
@@ -76,8 +80,12 @@ func cmdBot(args []string, stdout, stderr io.Writer) int {
 //  4. Waits for GitHub to redirect back with ?code=XXX after the click.
 //  5. Exchanges the code via the unauthenticated GitHub endpoint
 //     POST /app-manifests/{code}/conversions.
-//  6. Persists {name, app_id, slug, owner, public, pem} to
-//     ~/.koryph/bots/<name>.json (mode 0600; never printed).
+//  6. Stores the private key via the selected vault provider (no-vault fallback
+//     ladder: configured vault > keychain (darwin) > encrypted-file) or inline
+//     when --plaintext is explicitly requested.
+//  7. Persists {name, app_id, slug, owner, public, provider, key_ref} (pointer
+//     mode) or {name, app_id, slug, owner, public, pem} (inline, --plaintext)
+//     to ~/.koryph/bots/<name>.json (mode 0600; private key never printed).
 //
 // Permissions granted: contents:write + pull_requests:write ONLY.
 // No org permissions — this is what enables repo-admin installs in guest orgs.
@@ -88,11 +96,23 @@ func cmdBotCreate(args []string, stdout, stderr io.Writer) int {
 	flagOrg := fs.String("org", "", "create the app under this GitHub organization (omit for personal account)")
 	flagPublic := fs.Bool("public", false, "make the app publicly installable (required for guest-org repo-admin installs)")
 	flagHeadless := fs.Bool("headless", false, "print the URL instead of opening the browser (set automatically when TERM is unset)")
+	flagVaultProvider := fs.String("vault-provider", "", "vault provider for the private key (protonpass|onepassword|encrypted-file|keychain|file|…); auto-selects when omitted")
+	flagKeyRef := fs.String("key-ref", "", "provider-specific reference for the key (e.g. pass:// URI, op:// ref, or file path); auto-derived when omitted")
+	flagPlaintext := fs.Bool("plaintext", false, "store the private key inline as plaintext PEM (legacy; prefer a vault or encrypted-file provider)")
 	setUsage(fs, stdout,
 		"create a GitHub App via the GitHub App Manifest flow (one browser click)",
-		"[--name N] [--org ORG] [--public] [--headless]")
+		"[--name N] [--org ORG] [--public] [--headless] [--vault-provider P] [--key-ref R] [--plaintext]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
+	}
+
+	// Validate vault-provider flag.
+	if *flagVaultProvider != "" && !isKnownProvider(*flagVaultProvider) {
+		return usageErr(stderr, fmt.Sprintf("bot create: unknown --vault-provider %q; valid: %s",
+			*flagVaultProvider, strings.Join(signing.VaultProviders, "|")))
+	}
+	if *flagPlaintext && *flagVaultProvider != "" {
+		return usageErr(stderr, "bot create: --plaintext and --vault-provider are mutually exclusive")
 	}
 
 	name := *flagName
@@ -115,15 +135,16 @@ func cmdBotCreate(args []string, stdout, stderr io.Writer) int {
 			fmt.Sprintf("bot create: bot %q already exists at %s\n  delete the file manually or choose a different --name to create a new app", name, bot.BotPath(name)))
 	}
 
-	headless := *flagHeadless
-
 	ctx := context.Background()
 	cfg, err := bot.Create(ctx, bot.CreateOptions{
-		Name:     name,
-		Org:      *flagOrg,
-		Public:   *flagPublic,
-		Headless: headless,
-		Out:      stdout,
+		Name:          name,
+		Org:           *flagOrg,
+		Public:        *flagPublic,
+		Headless:      *flagHeadless,
+		Out:           stdout,
+		VaultProvider: *flagVaultProvider,
+		KeyRef:        *flagKeyRef,
+		Plaintext:     *flagPlaintext,
 	})
 	if err != nil {
 		return fail(stderr, fmt.Errorf("bot create: %w", err))
@@ -135,6 +156,9 @@ func cmdBotCreate(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "  slug:   %s\n", cfg.Slug)
 	fmt.Fprintf(stdout, "  owner:  %s\n", cfg.Owner)
 	fmt.Fprintf(stdout, "  public: %v\n", cfg.Public)
+	if cfg.IsPointer() {
+		fmt.Fprintf(stdout, "  key:    provider=%s key_ref=%s\n", cfg.Provider, cfg.KeyRef)
+	}
 	fmt.Fprintf(stdout, "  creds:  %s (0600)\n\n", bot.BotPath(cfg.Name))
 
 	printBotNextSteps(stdout, cfg)
@@ -399,6 +423,131 @@ func runGH(args ...string) (string, error) {
 		return "", fmt.Errorf("gh %s: %w\n%s", strings.Join(args, " "), err, out.String())
 	}
 	return out.String(), nil
+}
+
+// cmdBotVaultMigrate implements 'koryph bot vault-migrate --name N'.
+//
+// Moves a plaintext private key from the bot credential JSON file into a
+// secure provider (vault, macOS Keychain, or age-encrypted file) and rewrites
+// the credential file as a pointer (Provider + KeyRef; no inline PEM).
+//
+// Destinations:
+//
+//	--vault-provider P  use the named vault provider
+//	(default)           apply the no-vault fallback ladder:
+//	                    keychain (darwin) > encrypted-file (other platforms)
+//
+// The migration is atomic from the user's perspective: the old PEM is not
+// erased until the vault store succeeds.  On failure the original file is
+// left untouched.
+func cmdBotVaultMigrate(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("bot vault-migrate", stderr)
+	flagName := fs.String("name", "", "bot name (required)")
+	flagVaultProvider := fs.String("vault-provider", "", "destination vault provider (auto-selected when omitted)")
+	flagKeyRef := fs.String("key-ref", "", "provider-specific key reference (auto-derived when omitted)")
+	setUsage(fs, stdout,
+		"move a plaintext bot private key into a vault or encrypted file",
+		"--name N [--vault-provider P] [--key-ref R]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+	if *flagName == "" {
+		return usageErr(stderr, "bot vault-migrate: --name is required")
+	}
+	if *flagVaultProvider != "" && !isKnownProvider(*flagVaultProvider) {
+		return usageErr(stderr, fmt.Sprintf("bot vault-migrate: unknown --vault-provider %q; valid: %s",
+			*flagVaultProvider, strings.Join(signing.VaultProviders, "|")))
+	}
+
+	cfg, err := bot.Load(*flagName)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	// Guard: already a pointer with no inline PEM.
+	if cfg.IsPointer() && cfg.PEM == "" {
+		fmt.Fprintf(stdout, "bot %q is already vault-backed (provider=%s key_ref=%s); nothing to migrate.\n",
+			cfg.Name, cfg.Provider, cfg.KeyRef)
+		return 0
+	}
+
+	// Must have inline PEM to migrate.
+	if cfg.PEM == "" {
+		return fail(stderr, fmt.Errorf("bot vault-migrate: bot %q has no inline PEM to migrate", cfg.Name))
+	}
+
+	// Resolve destination provider.
+	provider := *flagVaultProvider
+	if provider == "" {
+		provider = signing.ResolveDefaultProvider()
+	}
+
+	keyRef := *flagKeyRef
+	if keyRef == "" {
+		keyRef = bot.DefaultKeyRef(provider, cfg.Name)
+	}
+
+	fmt.Fprintf(stdout, "Migrating bot %q: %s → %s (key_ref=%s)\n\n", cfg.Name, "inline PEM", provider, keyRef)
+
+	ctx := context.Background()
+	pemBytes := []byte(cfg.PEM)
+
+	var storeErr error
+	switch provider {
+	case signing.ProviderEncryptedFile:
+		passphrase, promptErr := signing.PromptPassphraseOnce(
+			fmt.Sprintf("Passphrase for %s (new encrypted key): ", keyRef))
+		if promptErr != nil {
+			return fail(stderr, fmt.Errorf("bot vault-migrate: passphrase prompt: %w", promptErr))
+		}
+		storeErr = signing.StoreEncryptedFile(keyRef, pemBytes, passphrase)
+		if storeErr == nil {
+			fmt.Fprintf(stdout, "  ✓ private key encrypted and stored at %s\n", keyRef)
+			fmt.Fprintf(stdout, "    (same posture as a passphrase-protected ~/.ssh key — keep it backed up, never commit it)\n")
+		}
+
+	case signing.ProviderKeychain:
+		storeErr = signing.StoreKeychain(keyRef, pemBytes)
+		if storeErr == nil {
+			fmt.Fprintf(stdout, "  ✓ private key stored in macOS Keychain (%s)\n", keyRef)
+			fmt.Fprintf(stdout, "    (same posture as a passphrase-protected ~/.ssh key — keep it backed up)\n")
+		}
+
+	default:
+		// Generic CLI-backed vault.
+		storeErr = signing.StoreSecret(ctx, provider, keyRef, pemBytes, "")
+		if storeErr == nil {
+			fmt.Fprintf(stdout, "  ✓ private key stored in %s (ref: %s)\n", provider, keyRef)
+		}
+	}
+
+	if storeErr != nil {
+		return fail(stderr, fmt.Errorf("bot vault-migrate: store via %s: %w", provider, storeErr))
+	}
+
+	// Rewrite cfg as pointer — clear inline PEM.
+	cfg.Provider = provider
+	cfg.KeyRef = keyRef
+	cfg.PEM = ""
+
+	if err := bot.Save(cfg); err != nil {
+		return fail(stderr, fmt.Errorf("bot vault-migrate: save credential pointer: %w", err))
+	}
+
+	fmt.Fprintf(stdout, "\n✓ Migration complete.\n")
+	fmt.Fprintf(stdout, "  %s now points to %s (%s)\n", bot.BotPath(cfg.Name), keyRef, provider)
+	fmt.Fprintf(stdout, "  Verify: koryph bot check --name %s\n", cfg.Name)
+	return 0
+}
+
+// isKnownProvider reports whether name is a recognized vault provider.
+func isKnownProvider(name string) bool {
+	for _, p := range signing.VaultProviders {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }
 
 // printInstallGuidance explains the installation scenarios.

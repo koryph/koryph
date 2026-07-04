@@ -35,15 +35,51 @@ func TestCheckCredentials_ValidPEM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckCredentials: %v", err)
 	}
+	// An inline-PEM bot produces two findings: one OK (credentials valid) and
+	// one WARN (plaintext posture — use vault-migrate to protect the key).
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings (ok + posture warn), got %d: %v", len(findings), findings)
+	}
+	if findings[0].Level != CheckOK {
+		t.Errorf("first finding level = %s, want ok; message: %s", findings[0].Level, findings[0].Message)
+	}
+	if findings[0].Name != "good-bot" {
+		t.Errorf("finding name = %q, want good-bot", findings[0].Name)
+	}
+	if findings[1].Level != CheckWarn {
+		t.Errorf("second finding level = %s, want warn (posture); message: %s", findings[1].Level, findings[1].Message)
+	}
+	if !strings.Contains(findings[1].Message, "vault-migrate") {
+		t.Errorf("posture warning should mention vault-migrate, got: %q", findings[1].Message)
+	}
+}
+
+func TestCheckCredentials_PointerMode(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KORYPH_HOME", tmp)
+
+	// Pointer-mode bot: key is in a vault, no inline PEM.
+	cfg := &Config{
+		Name:     "vaulted-bot",
+		AppID:    99,
+		Owner:    "me",
+		Provider: "encrypted-file",
+		KeyRef:   "/tmp/vaulted-bot.age",
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	findings, err := CheckCredentials()
+	if err != nil {
+		t.Fatalf("CheckCredentials: %v", err)
+	}
+	// Pointer-mode bots produce one OK finding and no posture warning.
 	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings))
+		t.Fatalf("expected 1 finding for pointer-mode bot, got %d: %v", len(findings), findings)
 	}
-	f := findings[0]
-	if f.Level != CheckOK {
-		t.Errorf("finding level = %s, want ok; message: %s", f.Level, f.Message)
-	}
-	if f.Name != "good-bot" {
-		t.Errorf("finding name = %q, want good-bot", f.Name)
+	if findings[0].Level != CheckOK {
+		t.Errorf("pointer-mode finding level = %s, want ok; message: %s", findings[0].Level, findings[0].Message)
 	}
 }
 
@@ -124,8 +160,42 @@ func TestCredentialFindingsFor_OK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CredentialFindingsFor: %v", err)
 	}
+	// Inline-PEM bot: one OK (credentials) + one WARN (plaintext posture).
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings (ok + posture warn) for inline PEM, got %v", findings)
+	}
+	if findings[0].Level != CheckOK {
+		t.Errorf("first finding should be ok, got %s: %s", findings[0].Level, findings[0].Message)
+	}
+	if findings[1].Level != CheckWarn {
+		t.Errorf("second finding should be warn (posture), got %s: %s", findings[1].Level, findings[1].Message)
+	}
+}
+
+func TestCredentialFindingsFor_PointerMode(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KORYPH_HOME", tmp)
+
+	cfg := &Config{
+		Name:     "ptr-bot",
+		AppID:    55,
+		Owner:    "org",
+		Provider: "keychain",
+		KeyRef:   "koryph-bot-ptr-bot",
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := CredentialFindingsFor("ptr-bot")
+	if err != nil {
+		t.Fatalf("CredentialFindingsFor pointer mode: %v", err)
+	}
 	if len(findings) != 1 || findings[0].Level != CheckOK {
-		t.Errorf("expected one ok finding, got %v", findings)
+		t.Errorf("pointer-mode: expected one ok finding, got %v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "keychain") {
+		t.Errorf("expected provider in message, got: %q", findings[0].Message)
 	}
 }
 
