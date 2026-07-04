@@ -9,6 +9,8 @@
 //   - [forge.PRService]  — MR list/get/create/close/reopen/checks/merge/approve/labels
 //   - [forge.BotService] — guided project/group access-token creation, scope
 //     and expiry validation, CI variable management
+//   - [forge.CIService]  — .gitlab-ci.yml rendering: "release" (release train
+//     pipeline) and "docs" (GitLab Pages docs-publish pipeline)
 //
 // Services stubbed (returning [forge.ErrUnsupported]) — to be extracted in
 // later beads:
@@ -16,7 +18,6 @@
 //   - [forge.ProtectionService] — future bead
 //   - [forge.SecretsService]    — future bead
 //   - [forge.ReleaseService]    — future bead
-//   - [forge.CIService]         — future bead
 //
 // # Authentication
 //
@@ -25,6 +26,16 @@
 // The token is read from [forge.BotConfig].PrivateKeyPEM at call time; the
 // field name is reused to keep the credential schema identical to GitHub bots
 // (pointer-mode: Provider + KeyRef; inline: token value stored directly).
+//
+// # Project-specific configuration
+//
+// The global registered instance (obtained via forge.Default.Get("gitlab"))
+// has no project context. For operations that require a project's release
+// configuration (e.g. CI().Render("release")), create a per-invocation
+// provider using [New]:
+//
+//	glf := gitlab.New(gitlab.WithReleaseConfig(rc))
+//	content, err := glf.CI().Render("release")
 //
 // # KORYPH_GITLAB_HOST
 //
@@ -38,16 +49,41 @@ import (
 	"io"
 
 	"github.com/koryph/koryph/internal/forge"
+	"github.com/koryph/koryph/internal/project"
 )
 
 func init() {
-	// Register the zero-config GitLab provider.
+	// Register the zero-config GitLab provider. Project-scoped operations
+	// (CI rendering) require a per-invocation instance from New().
 	forge.Default.Register("gitlab", &Provider{})
 }
 
 // Provider is the GitLab forge implementation.
-// The zero value is valid and satisfies all interface methods.
-type Provider struct{}
+//
+// The zero value is valid and satisfies all interface methods; methods that
+// need a project config (CI().Render("release")) return an error when rc is nil.
+type Provider struct {
+	rc *project.ReleaseConfig // optional; required for CI().Render("release")
+}
+
+// Option is a functional option for [New].
+type Option func(*Provider)
+
+// WithReleaseConfig attaches the project's release config so that
+// [CIService.Render]("release") can produce the release pipeline.
+func WithReleaseConfig(rc *project.ReleaseConfig) Option {
+	return func(p *Provider) { p.rc = rc }
+}
+
+// New constructs a GitLab [Provider] with the supplied options. Use this (not
+// the global registry entry) for project-scoped operations.
+func New(opts ...Option) *Provider {
+	p := &Provider{}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
+}
 
 // Name satisfies [forge.Forge].
 func (p *Provider) Name() string { return "gitlab" }
@@ -85,8 +121,10 @@ func (p *Provider) Secrets() forge.SecretsService { return &stubSecretsSvc{} }
 // Releases returns a stub; to be implemented in a future bead.
 func (p *Provider) Releases() forge.ReleaseService { return &stubReleaseSvc{} }
 
-// CI returns a stub; to be implemented in a future bead.
-func (p *Provider) CI() forge.CIService { return &stubCISvc{} }
+// CI returns a [forge.CIService] that renders GitLab CI/CD pipeline assets.
+// Render("release") requires a non-nil ReleaseConfig; build the provider with
+// [WithReleaseConfig]. Render("docs") does not require a ReleaseConfig.
+func (p *Provider) CI() forge.CIService { return &gitlabCISvc{rc: p.rc} }
 
 // Bot returns a [forge.BotService] backed by the GitLab access-token flow.
 func (p *Provider) Bot() forge.BotService { return &gitlabBotSvc{} }
@@ -150,10 +188,6 @@ func (s *stubReleaseSvc) Publish(_ context.Context, _, _, _ string) error {
 	return forge.ErrUnsupported
 }
 
-type stubCISvc struct{}
-
-func (s *stubCISvc) Render(_ string) ([]byte, error) { return nil, forge.ErrUnsupported }
-
 // ---------- compile-time interface guards ------------------------------------
 
 var (
@@ -163,5 +197,5 @@ var (
 	_ forge.PRService         = (*gitlabPRSvc)(nil)
 	_ forge.SecretsService    = (*stubSecretsSvc)(nil)
 	_ forge.ReleaseService    = (*stubReleaseSvc)(nil)
-	_ forge.CIService         = (*stubCISvc)(nil)
+	_ forge.CIService         = (*gitlabCISvc)(nil)
 )

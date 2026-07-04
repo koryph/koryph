@@ -81,8 +81,28 @@ func TestGitLabStubServicesReturnUnsupported(t *testing.T) {
 	if _, err := gl.Releases().Create(nil, "ns", "proj", "v1.0", "notes"); err != forge.ErrUnsupported { //nolint:staticcheck
 		t.Errorf("Releases().Create: want ErrUnsupported, got %v", err)
 	}
-	if _, err := gl.CI().Render("docs"); err != forge.ErrUnsupported {
-		t.Errorf("CI().Render: want ErrUnsupported, got %v", err)
+}
+
+// TestGitLabCIDocsRendersWithoutConfig verifies that CI().Render("docs")
+// works even with the zero-config provider (no ReleaseConfig required for docs).
+func TestGitLabCIDocsRendersWithoutConfig(t *testing.T) {
+	gl, _ := forge.Default.Get("gitlab")
+	got, err := gl.CI().Render("docs")
+	if err != nil {
+		t.Fatalf("CI().Render(\"docs\"): unexpected error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Error("CI().Render(\"docs\"): returned empty content")
+	}
+}
+
+// TestGitLabCIReleaseRequiresConfig verifies that CI().Render("release")
+// on the zero-config provider returns an informative error.
+func TestGitLabCIReleaseRequiresConfig(t *testing.T) {
+	gl, _ := forge.Default.Get("gitlab")
+	_, err := gl.CI().Render("release")
+	if err == nil {
+		t.Fatal("CI().Render(\"release\") without ReleaseConfig: expected error, got nil")
 	}
 }
 

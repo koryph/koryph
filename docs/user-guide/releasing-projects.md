@@ -127,7 +127,105 @@ Exactly one of `build.commands` or `build.goreleaser` must be set.
 
 ---
 
-## Setting up your project's release pipeline
+## Forge-specific release pipelines
+
+The release pipeline is forge-specific: koryph renders the appropriate CI
+asset for your forge when you run `koryph release setup`.
+
+### GitHub
+
+GitHub uses the reusable `release-train.yml` workflow (hosted in
+`koryph/koryph`) together with release-please for version management and
+GitHub Releases for publishing. Full details in the section below.
+
+### GitLab
+
+GitLab projects get a self-contained `.gitlab-ci.yml` that implements the same
+release train contract without any GitHub-specific tooling:
+
+| Feature | GitLab implementation |
+|---|---|
+| Version management | koryph-native conventional-commit scanner — no release-please (GitHub-bound) |
+| Release MR | Pipeline creates/updates an MR via the GitLab API using `KORYPH_RELEASE_TOKEN` |
+| CI check trigger | GitLab pipelines fire for bot-authored MRs by default — no close/reopen workaround |
+| Artifact staging | Generic package registry (all assets uploaded before Release is created) |
+| Release creation | GitLab Release API — created as the final step (assemble-then-create) |
+| Artifact signing | cosign keyless via GitLab CI OIDC `id_tokens` (sigstore audience) |
+| Docs publish | GitLab Pages via a separate `pages:` job |
+
+#### GitLab quickstart
+
+```sh
+# Set forge in koryph.project.json first
+koryph project set-forge --project myproject gitlab
+
+# Render the .gitlab-ci.yml release pipeline
+koryph release setup --project myproject --mode goreleaser   # GoReleaser
+koryph release setup --project myproject --mode commands     # generic commands
+```
+
+`koryph release setup` for a GitLab project writes:
+
+| File | Purpose |
+|---|---|
+| `.gitlab-ci.yml` | Full release pipeline (version compute, Release MR, build, sign, publish) |
+
+#### Required CI/CD variable
+
+Set one project-level CI/CD variable in **Settings → CI/CD → Variables**:
+
+| Variable | Scopes | Description |
+|---|---|---|
+| `KORYPH_RELEASE_TOKEN` | Protected, Masked | Project or group access token with `api` + `write_repository` scopes. Used to push the release branch, manage the Release MR, push semver tags, and create the GitLab Release. `CI_JOB_TOKEN` is insufficient for branch/tag pushes in most project configurations. |
+
+#### How a GitLab release happens
+
+```
+conventional commits land on main
+        ↓
+pipeline (upkeep kind) runs compute-version
+        ↓
+koryph computes next semver from commits since last tag
+        ↓
+release-mr job creates / updates the Release MR
+  title: "chore(release): vX.Y.Z"
+  label: koryph-release
+        ↓
+CI gate runs on the MR source branch
+        ↓
+operator merges the Release MR (squash merge)
+        ↓
+pipeline (release kind) detects commit title /^chore\(release\): v/
+        ↓
+tag-release: pushes annotated semver tag
+        ↓
+build: GoReleaser --skip=publish (archives in dist/) or custom commands
+        ↓
+sign: cosign keyless sign-blob (checksums.txt) using OIDC id_tokens
+        ↓
+upload-packages: all dist/* → generic package registry
+        ↓
+release-create: GitLab Release created with asset links (last step)
+  → nothing user-visible until this job completes
+```
+
+#### SLSA posture on GitLab (honest capability statement)
+
+The SLSA GitHub Generator is GitHub-specific and is not available on GitLab.
+The cosign keyless signing step provides **artifact authenticity** — a
+verifiable link between the binary and the GitLab CI pipeline that produced
+it — but it does **not** constitute SLSA Build Level 3 provenance.
+
+GitLab 16.1+ artifact attestations (the `--attest` flag on job artifact
+declarations) generate a lighter in-toto record per artifact; enabling them
+requires no pipeline changes but does require a supported GitLab tier. The
+release pipeline template includes a comment describing how to add them.
+
+Projects that require SLSA Build L3 should use the GitHub forge.
+
+---
+
+## Setting up your project's release pipeline (GitHub)
 
 `koryph release setup` renders three files from koryph's embedded templates
 and installs them into your repository:
