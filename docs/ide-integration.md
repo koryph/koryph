@@ -3,50 +3,31 @@
 
 # Using koryph from VS Code (and other IDEs)
 
-Three questions this answers: how to access koryph from an IDE, how the
-existing `CLAUDE_CONFIG_DIR` / `code .` account isolation relates to it, and
-how commands issued from the Claude Code plugin interoperate with koryph
-without crossing accounts.
+This chapter is about **using koryph from your IDE** while it manages your
+projects: how to access it, the upcoming VS Code extension, how the existing
+`CLAUDE_CONFIG_DIR` / `code .` account isolation relates to it, and how
+commands issued from the Claude Code plugin interoperate with koryph without
+crossing accounts.
 
-## 0. Editor configuration
+(Contributing to koryph itself? Editor formatting, workspace setup, and the
+extension's build/test live in the developer guide:
+[Developing koryph: editor setup](developer-guide/ide-setup.md).)
 
-The repo ships two config files so that editor formatting and the pre-commit
-hooks always agree — open the repo and you should never see spurious diffs.
+## 0. The VS Code extension (in development)
 
-### `.editorconfig`
+A first-class **koryph agent cockpit for VS Code** is actively being built
+(epic `koryph-ew2`, source in `ide/vscode/`). Already working today:
 
-Sets per-file-type defaults that any [EditorConfig](https://editorconfig.org)-aware editor picks up automatically:
+- a **tree view of agent threads** — live per-bead lifecycle for the
+  current run (dispatched / reviewing / merging / blocked) without leaving
+  the editor;
+- a **quota status bar** — the account's subscription-window burn at a
+  glance, the same numbers `koryph board` reports.
 
-| File type | Indent | Line ending | Final newline | Trim trailing whitespace |
-|---|---|---|---|---|
-| `*.go` | tab (4-wide) | LF | yes | yes |
-| `*.md`, `*.yaml`, `*.yml`, `*.json`, `*.toml` | 2-space | LF | yes | yes |
-| `Makefile` | tab (4-wide) | LF | yes | yes |
-| everything else | (inherited) | LF | yes | yes |
-
-These rules mirror the `trailing-whitespace`, `end-of-file-fixer`,
-`mixed-line-ending`, and `gofmt` pre-commit hooks exactly.
-
-### `.vscode/settings.json`
-
-Applies the same rules workspace-wide for VS Code:
-
-- `"files.eol": "\n"` — LF for all new files
-- `"editor.formatOnSave": true` — auto-format on every save
-- `"[go].editor.defaultFormatter": "golang.go"` — use the Go extension's `gofmt` wrapper
-- `"[go].editor.codeActionsOnSave"` → `source.organizeImports: "explicit"` — organise imports on save (matches `goimports` behaviour)
-- `"files.trimTrailingWhitespace"` / `"files.insertFinalNewline"` — editor-side enforcement (EditorConfig also handles this, but belt-and-suspenders)
-
-### `.vscode/extensions.json`
-
-Recommends four extensions (VS Code prompts to install on first open):
-
-| Extension ID | Purpose |
-|---|---|
-| `golang.go` | Go language support + `gopls`, `gofmt`, test runner |
-| `EditorConfig.EditorConfig` | reads `.editorconfig` so the settings above are applied |
-| `bierner.markdown-mermaid` | renders the Mermaid diagrams in `docs/architecture.md` in the preview pane |
-| `redhat.vscode-yaml` | schema validation for `koryph.project.json` and workflow YAML |
+Planned: dispatch/drain controls, review-finding surfacing, and per-slot
+log tailing. It is not yet published to the marketplace — early adopters
+can build it from source (`make ext-build` in the koryph repo). Until it
+ships, everything below works with any editor and no extension at all.
 
 ## 1. Accessing koryph from an IDE
 
@@ -59,13 +40,6 @@ Recommends four extensions (VS Code prompts to install on first open):
   the registry and audit log live centrally in `~/.koryph`, and run
   ledgers are plain files in each project's `.plan-logs/`. None of these
   invoke Claude, so the window's account is irrelevant to them.
-- **Working on koryph itself**: open
-  `~/src/github.com/koryph/koryph` as its own workspace root (the Go
-  module is at the root, so gopls just works; opening it as a stray folder
-  inside another workspace produces "not included in your workspace"
-  warnings). The repo carries the personal-account `.envrc` managed block —
-  `direnv allow` once, then `cd` + `code .` opens it in the personal VS Code
-  instance like any other personal repo.
 - **From the Claude Code plugin**: ask the session's Claude to run `koryph
   …` like any other CLI (it is just a Bash invocation). A project-local
   slash command wrapping common invocations (`/koryph` → wave preview,

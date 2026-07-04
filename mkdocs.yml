@@ -68,4 +68,5 @@ nav:
       - Testing: developer-guide/testing.md
       - Releasing & versioning: developer-guide/releasing.md
       - "Self-hosting: koryph builds koryph": developer-guide/self-hosting.md
+      - "Developing koryph: editor setup": developer-guide/ide-setup.md
   - LLMs.txt: llms.txt
