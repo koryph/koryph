@@ -77,7 +77,7 @@ func SetDefaultLevel(levelStr string) (Config, error) {
 	return cfg, SaveConfig(cfg)
 }
 
-// EnableObs sets the default level to "debug" if it is currently "error"
+// EnableObs sets the default level to "info" if it is currently "error"
 // (i.e. previously disabled), otherwise it is a no-op on the level. It always
 // saves the config so callers can treat it as an idempotent enable.
 func EnableObs() (Config, error) {

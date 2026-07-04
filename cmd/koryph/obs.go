@@ -268,22 +268,25 @@ func cmdObsTail(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var minLevel slog.Level
+	hasLvlFilter := false
 	if *levelStr != "" {
 		l, ok := obs.ParseLevel(*levelStr)
 		if !ok {
 			return usageErr(stderr, fmt.Sprintf("obs tail: unknown level %q", *levelStr))
 		}
 		minLevel = l
+		hasLvlFilter = true
 	}
 
 	telDir := paths.TelemetryDir()
 
 	// Print historical records first.
 	recs, err := obs.TailRecords(obs.TailOptions{
-		Dir:       telDir,
-		Component: *component,
-		Level:     minLevel,
-		N:         *n,
+		Dir:            telDir,
+		Component:      *component,
+		Level:          minLevel,
+		HasLevelFilter: hasLvlFilter,
+		N:              *n,
 	})
 	if err != nil {
 		return fail(stderr, err)
@@ -307,7 +310,7 @@ func cmdObsTail(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "\n-- following (Ctrl-C to stop) --")
 	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	obs.TailFollow(sctx, stdout, telDir, *component, minLevel)
+	obs.TailFollow(sctx, stdout, telDir, *component, minLevel, hasLvlFilter)
 	return 0
 }
 

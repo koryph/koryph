@@ -5,6 +5,7 @@ package obs
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,9 +31,6 @@ type TelemetryRecord struct {
 	RunID   string `json:"run_id"`
 	Project string `json:"project"`
 	BeadID  string `json:"bead_id"`
-
-	// Catch-all for any other top-level keys
-	Extra map[string]any `json:"-"`
 }
 
 // TailOptions configures a telemetry tail operation.
@@ -43,16 +41,20 @@ type TailOptions struct {
 	// Empty string means all components.
 	Component string
 	// Level filters records to those at or above this level.
-	// Zero value means all levels.
+	// Only active when HasLevelFilter is true; slog.LevelInfo == 0 so the
+	// zero value of slog.Level cannot be used as a "no filter" sentinel.
 	Level slog.Level
+	// HasLevelFilter must be true for Level to take effect.
+	HasLevelFilter bool
 	// N is the number of trailing records to print. 0 means no cap.
 	N int
 }
 
 // TailRecords reads the last N telemetry records from dir, optionally filtered
-// by component. Records are returned in chronological order. The telemetry dir
-// may hold multiple JSONL files; they are processed in lexicographic order
-// (koryph names them by timestamp so this is also chronological).
+// by component and/or level. Records are returned in chronological order. The
+// telemetry dir may hold multiple JSONL files; they are processed in
+// lexicographic order (koryph names them by timestamp so this is also
+// chronological).
 func TailRecords(opts TailOptions) ([]TelemetryRecord, error) {
 	dir := opts.Dir
 	if dir == "" {
@@ -102,6 +104,10 @@ func readJSONLFile(path string, opts TailOptions) ([]TelemetryRecord, error) {
 
 	var out []TelemetryRecord
 	sc := bufio.NewScanner(f)
+	// Raise the default 64 KB token cap so large telemetry lines don't
+	// silently truncate the file (Scanner returns an error on overflow,
+	// which TailRecords treats as a corrupt-file skip).
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -116,8 +122,9 @@ func readJSONLFile(path string, opts TailOptions) ([]TelemetryRecord, error) {
 		if opts.Component != "" && rec.Component != opts.Component {
 			continue
 		}
-		// Apply level filter.
-		if opts.Level != 0 {
+		// Apply level filter. HasLevelFilter guards the check because
+		// slog.LevelInfo == 0, making the zero value ambiguous.
+		if opts.HasLevelFilter {
 			if l, ok := ParseLevel(rec.Level); !ok || l < opts.Level {
 				continue
 			}
@@ -175,15 +182,32 @@ func FormatRecord(w io.Writer, rec TelemetryRecord) {
 // TailFollow streams new records from the telemetry directory until ctx is
 // cancelled, printing each in human-readable form. It polls every 500 ms.
 // componentFilter and levelFilter mirror TailOptions.Component/Level.
-func TailFollow(ctx interface{ Done() <-chan struct{} }, w io.Writer, dir, componentFilter string, levelFilter slog.Level) {
-	// Track file positions so we only emit new content.
+// hasLvlFilter must be true for levelFilter to take effect; this avoids
+// the ambiguity where slog.LevelInfo == 0 (the zero value of slog.Level).
+//
+// Offsets are seeded to the current file sizes before the first poll so that
+// only records written after TailFollow returns are streamed; existing history
+// is not re-printed.
+func TailFollow(ctx interface{ Done() <-chan struct{} }, w io.Writer, dir, componentFilter string, levelFilter slog.Level, hasLvlFilter bool) {
+	// Seed offsets to current EOF so the first drainNewRecords call only
+	// emits records written after this function was called, not history.
 	offsets := map[string]int64{}
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+				path := filepath.Join(dir, e.Name())
+				if fi, serr := os.Stat(path); serr == nil {
+					offsets[path] = fi.Size()
+				}
+			}
+		}
+	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		drainNewRecords(w, dir, componentFilter, levelFilter, offsets)
+		drainNewRecords(w, dir, componentFilter, levelFilter, hasLvlFilter, offsets)
 		select {
 		case <-ctx.Done():
 			return
@@ -192,7 +216,7 @@ func TailFollow(ctx interface{ Done() <-chan struct{} }, w io.Writer, dir, compo
 	}
 }
 
-func drainNewRecords(w io.Writer, dir, comp string, lvl slog.Level, offsets map[string]int64) {
+func drainNewRecords(w io.Writer, dir, comp string, lvl slog.Level, hasLvlFilter bool, offsets map[string]int64) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -207,7 +231,7 @@ func drainNewRecords(w io.Writer, dir, comp string, lvl slog.Level, offsets map[
 
 	for _, path := range files {
 		off := offsets[path]
-		newOff, recs := readFromOffset(path, off, comp, lvl)
+		newOff, recs := readFromOffset(path, off, comp, lvl, hasLvlFilter)
 		offsets[path] = newOff
 		for _, r := range recs {
 			FormatRecord(w, r)
@@ -215,7 +239,15 @@ func drainNewRecords(w io.Writer, dir, comp string, lvl slog.Level, offsets map[
 	}
 }
 
-func readFromOffset(path string, offset int64, comp string, lvl slog.Level) (int64, []TelemetryRecord) {
+// readFromOffset reads JSONL records from path starting at the given byte
+// offset. It returns the new offset (advanced past all complete newline-
+// terminated lines consumed) and any matching records.
+//
+// Only lines terminated by '\n' are consumed; an incomplete final line (no
+// newline yet) is left for the next poll. This avoids the off-by-one drift
+// that occurs when the writer has not yet flushed a complete line.
+// CRLF line endings are handled by stripping a trailing '\r'.
+func readFromOffset(path string, offset int64, comp string, lvl slog.Level, hasLvlFilter bool) (int64, []TelemetryRecord) {
 	f, err := os.Open(path)
 	if err != nil {
 		return offset, nil
@@ -230,15 +262,36 @@ func readFromOffset(path string, offset int64, comp string, lvl slog.Level) (int
 		return offset, nil
 	}
 
+	// Read all bytes from offset to current EOF in one shot. This avoids
+	// bufio.Scanner's internal buffering which would make it impossible to
+	// recover the exact byte position of the last consumed newline.
+	data, rerr := io.ReadAll(f)
+	if rerr != nil || len(data) == 0 {
+		return offset, nil
+	}
+
 	var out []TelemetryRecord
-	sc := bufio.NewScanner(f)
-	var bytesRead int64
-	for sc.Scan() {
-		line := sc.Bytes()
-		bytesRead += int64(len(line)) + 1 // +1 for newline
+	var consumed int64
+	remaining := data
+	for len(remaining) > 0 {
+		idx := bytes.IndexByte(remaining, '\n')
+		if idx < 0 {
+			// No newline — incomplete line, stop and wait for next poll.
+			break
+		}
+		lineRaw := remaining[:idx]
+		remaining = remaining[idx+1:]
+		consumed += int64(idx) + 1 // idx content bytes + 1 for '\n'
+
+		// Strip trailing '\r' to handle CRLF line endings.
+		line := lineRaw
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
 		if len(line) == 0 {
 			continue
 		}
+
 		var rec TelemetryRecord
 		if jerr := json.Unmarshal(line, &rec); jerr != nil {
 			continue
@@ -246,12 +299,12 @@ func readFromOffset(path string, offset int64, comp string, lvl slog.Level) (int
 		if comp != "" && rec.Component != comp {
 			continue
 		}
-		if lvl != 0 {
+		if hasLvlFilter {
 			if l, ok := ParseLevel(rec.Level); !ok || l < lvl {
 				continue
 			}
 		}
 		out = append(out, rec)
 	}
-	return offset + bytesRead, out
+	return offset + consumed, out
 }
