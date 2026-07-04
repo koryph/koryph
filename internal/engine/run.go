@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
@@ -255,7 +257,10 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		r.run = run
 	}
 
-	return r.loop(ctx)
+	logRunStart(r.run.RunID, r.opts.ProjectID, r.dispatchMode())
+	outcome, loopErr := r.loop(ctx)
+	logRunEnd(r.run.RunID, r.opts.ProjectID, outcome.Reason, outcome.Drained, outcome.Dispatched, outcome.Merged)
+	return outcome, loopErr
 }
 
 // signingPreflight enforces a Required signing policy at run setup:
@@ -310,12 +315,27 @@ func (r *runner) quotaName() string {
 	return r.rec.AccountProfile
 }
 
-// progress writes one human-readable line to opts.Out (nil-safe).
+// progress writes one human-readable line to opts.Out (nil-safe) and emits
+// a structured INFO record via the engine logger for correlation in log
+// pipelines (Section O2: engine instrumentation).
 func (r *runner) progress(format string, args ...any) {
-	if r.opts.Out == nil {
-		return
+	msg := fmt.Sprintf(format, args...)
+	if r.opts.Out != nil {
+		fmt.Fprintln(r.opts.Out, msg)
 	}
-	fmt.Fprintf(r.opts.Out, format+"\n", args...)
+	log.Info(msg, r.runLogAttrs()...)
+}
+
+// runLogAttrs returns run-scoped slog attributes: run_id when a run is active,
+// project always. Callers pass this to log calls that happen in run context.
+func (r *runner) runLogAttrs() []any {
+	if r.run != nil {
+		return []any{
+			slog.String(obs.KeyRunID, r.run.RunID),
+			slog.String(obs.KeyProject, r.opts.ProjectID),
+		}
+	}
+	return []any{slog.String(obs.KeyProject, r.opts.ProjectID)}
 }
 
 // outcome summarizes the run from its slot statuses.

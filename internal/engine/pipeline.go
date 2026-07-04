@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/modelroute"
@@ -59,6 +60,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		}
 
 		r.progress("bead %s: stage %q running (persona %s, model %s)", sl.PhaseID, st.Name, persona, res.Model)
+		stageStart := time.Now()
 		sr := stage.Run(ctx, stage.Opts{
 			RepoRoot:         r.rec.Root,
 			Worktree:         sl.Worktree,
@@ -81,6 +83,14 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			ClaudeBin:        os.Getenv(envClaudeBin),
 		})
 
+		// Emit stage duration for histograms (Section O2).
+		{
+			var stageErr error
+			if !sr.OK {
+				stageErr = fmt.Errorf("%s", sr.Note)
+			}
+			logStageDuration(sl.PhaseID, st.Name, time.Since(stageStart).Milliseconds(), stageErr)
+		}
 		if sr.CostUSD > 0 {
 			model, size, cost := res.Model, r.sizeClass(sl.PhaseID), sr.CostUSD
 			if cfg, err := quota.UpdateConfig(r.quotaName(), func(c *quota.Config) error {

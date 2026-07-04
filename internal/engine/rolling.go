@@ -175,6 +175,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			}
 
 			if len(w.Items) > 0 {
+				logCoDispatch(r.run.RunID, r.opts.ProjectID, r.run.Wave, len(active), width)
 				r.refreshDemand()
 				r.warnIfOverFairShare()
 				stagger := r.staggerDelay()
@@ -210,6 +211,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 					_ = r.store.SaveRun(r.run)
 					r.progress("refill %d: %d ready, dispatched %d%s",
 						r.run.Wave, w.ReadyCount, dispatchedThisIter, r.windowNote(calibrated, usage, est))
+					logRefillDispatched(r.run.RunID, r.opts.ProjectID, r.run.Wave, dispatchedThisIter)
 				}
 			}
 		}

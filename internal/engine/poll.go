@@ -267,6 +267,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		}); err == nil {
 			r.quotaCfg = cfg
 		}
+		logBeadCost(sl.PhaseID, model, cost, sl.EstimateUSD)
 	}
 
 	// Rate-limit classification runs upstream of the commits/finishCandidate
@@ -537,6 +538,9 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 			},
 		})
 		r.progress("bead %s: merged (%s)", sl.PhaseID, shortSHA(res.MergedSHA))
+		if sl2 := r.run.Slots[sl.PhaseID]; sl2 != nil {
+			logSlotMerged(r.run.RunID, r.opts.ProjectID, sl.PhaseID, shortSHA(res.MergedSHA), sl2.CostUSD)
+		}
 		r.releaseGlobalSlot(sl.PhaseID)
 		return
 	}
@@ -592,6 +596,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "conflict")
 		r.progress("bead %s: rebase conflict (details: %s)", sl.PhaseID, res.ConflictMD)
+		logSlotConflict(sl.PhaseID, res.ConflictMD)
 
 	case merge.StatusProtected:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -752,6 +757,8 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	}
 	attempt := sl.Attempts + 1
 	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
+	logSlotRequeue(sl.PhaseID, why, attempt)
+	logRequeueEvent(sl.PhaseID, why, attempt, sl.CostUSD)
 	r.backoffSleep(ctx, sl.Attempts)
 
 	// Never re-run an agent against a checkout that predates a main-side fix

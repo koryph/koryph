@@ -297,6 +297,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 				return r.outcome(ExitOK, "no dispatchable work (all ready items deferred)", false), nil
 			}
 
+			logCoDispatch(r.run.RunID, r.opts.ProjectID, r.run.Wave, len(active), width)
 			r.refreshDemand()
 			r.warnIfOverFairShare()
 			stagger := r.staggerDelay()
@@ -320,6 +321,8 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 				fp := it.Footprint
 				r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp})
 			}
+			// Emit refill dispatched count for the structured log record.
+			logRefillDispatched(r.run.RunID, r.opts.ProjectID, r.run.Wave, len(w.Items))
 		}
 
 		// Poll this wave's slots (and any adopted ones) to a terminal state.
@@ -809,6 +812,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	})
 	r.progress("bead %s: dispatched attempt %d (model %s — %s; pid %d)",
 		beadID, q.attempt, res.Model, res.Rationale, handle.PID)
+	logSlotDispatched(r.run.RunID, r.opts.ProjectID, beadID, q.attempt, res.Model, handle.PID)
 }
 
 // blockSlot records a slot that could not be dispatched. Blocked is terminal:
@@ -823,6 +827,7 @@ func (r *runner) blockSlot(beadID string, q dispatchReq, why string) {
 	})
 	r.releaseGlobalSlot(beadID) // terminal: free the reserved/held slot
 	r.progress("bead %s: blocked (%s)", beadID, why)
+	logSlotBlocked(beadID, why)
 }
 
 // mergePolicy resolves the effective merge policy: an epic merge:* label wins
@@ -846,6 +851,13 @@ func (r *runner) reportWaveSkips(w sched.Wave) {
 	}
 	if len(w.Deferred) == 0 {
 		return
+	}
+	// Emit structured deferral events for deferrals_by_token metric (Section O2).
+	// The Reason field carries the human-readable conflict/wave-full/container
+	// cause; it doubles as the token key since sched.Reason has no separate Token
+	// field at this revision.
+	for _, d := range w.Deferred {
+		logDeferral(d.ID, d.Reason, d.Reason)
 	}
 	if r.opts.DryRun {
 		for _, d := range w.Deferred {
