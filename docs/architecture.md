@@ -79,7 +79,7 @@ flowchart LR
 | `internal/worktree` | worktree lifecycle (ensure/bootstrap/remove) |
 | `internal/merge` | rebase → green gate → ff-merge + protected paths |
 | `internal/quota` | per-account usage windows + Warn/Drain/Stop governor (cost) |
-| `internal/govern` | machine-global concurrency cap across projects (rate-limit safety) |
+| `internal/govern` | machine-global concurrency cap across projects (rate-limit safety); optional AIMD adaptive overlay with settle windows, circuit breaker, and dispatch smoothing |
 | `internal/modelroute` | stage/label model resolution + rationale |
 | `internal/promptc` | cache-stable prompt compiler |
 | `internal/review` | optional security-reviewer / merge-readiness pass |
@@ -99,6 +99,7 @@ flowchart LR
 sequenceDiagram
   participant E as engine
   participant Q as quota governor
+  participant G as concurrency governor
   participant A as account/registry
   participant S as sched
   participant D as dispatch (claude CLI)
@@ -114,20 +115,30 @@ sequenceDiagram
   loop each wave until drained / quota pause
     E->>Q: governor() → level, calibrated, usage
     Q-->>E: level (OK/Warn/Drain/Stop) + ScaleSlots width
+    E->>G: RefreshDemand; EffectiveCap (static or AIMD)
     E->>B: adapter.Ready(parent) → frontier
-    E->>S: BuildWave(issues, max=width) → conflict-free items
+    E->>S: BuildWave(issues, max=min(width,cap), active=in-flight footprints) → items
     opt calibrated & enforcing
       E->>Q: Preflight(usage, estimate)
       Q-->>E: refuse → no new dispatch this wave
     end
     loop each item (staggered)
-      E->>D: promptc.Compile + backend.Dispatch(spec)
-      D->>A: re-verify identity (belt-and-braces)
-      D->>W: launch headless claude in worktree branch
-      E->>B: adapter.Claim(bead) · write ledger slot + manifest v2
+      E->>G: Acquire lease (fair-share + smoothing)
+      alt denied (cap/fair-share/smoothing/breaker)
+        G-->>E: defer item to next tick
+      else granted
+        E->>D: promptc.Compile + backend.Dispatch(spec)
+        D->>A: re-verify identity (belt-and-braces)
+        D->>W: launch headless claude in worktree branch
+        E->>B: adapter.Claim(bead) · write ledger slot + manifest v2
+      end
     end
-    E->>D: pollUntilIdle — status.json heartbeat + git commits
+    E->>D: poll every poll_seconds — status.json heartbeat + git commits
     D-->>E: agent process exits
+    opt AIMD adaptive on
+      E->>G: ReportRateLimit if rate-limited death detected
+    end
+    E->>G: Release lease
     E->>E: review (Opus) — blocking findings?
     alt blocking & ReviewIters < 2
       E->>D: requeue with reviewPath (--resume session)
@@ -141,6 +152,60 @@ sequenceDiagram
     end
   end
 ```
+
+## Wave vs rolling dispatch modes
+
+```mermaid
+flowchart TD
+  subgraph wave["wave mode (default)"]
+    direction TB
+    WS[Scan frontier] --> WB[Build batch\nup to width]
+    WB --> WD[Dispatch all items]
+    WD --> WP[Poll until ALL slots idle]
+    WP --> WM[Merge / close each]
+    WM --> WS
+  end
+
+  subgraph rolling["rolling mode (dispatch_mode: rolling)"]
+    direction TB
+    RS[Scan frontier] --> RB[Build batch from\nfree capacity]
+    RB --> RD[Dispatch free slots\nwith in-flight gating]
+    RD --> RP[Poll tick — poll_seconds]
+    RP --> RC{any slot freed?}
+    RC -- yes --> RS
+    RC -- no --> RP
+    RS --> RM[Merge / close\ncompleted slots]
+    RM --> RS
+  end
+```
+
+**Key difference**: in rolling mode each poll tick recomputes free capacity and refills
+immediately, so a slot that lands early does not sit idle while its wave-mates run.
+In-flight footprints are passed to `BuildWave` on every refill tick so new candidates
+cannot conflict with already-running beads.
+
+## Adaptive governor (AIMD) state
+
+```mermaid
+stateDiagram-v2
+  [*] --> Closed : adaptive enabled\n(DynamicCap = seed)
+  Closed --> Closed : quiet for probeInterval (5 min)\n→ DynamicCap += 1 (up to HardMax)
+  Closed --> Closed : rate-limit event received\n→ DynamicCap ÷= 2 (or 4 on burst)\n   SettleUntil = now + settle_seconds
+  Closed --> Open : rate-limit at floor (cap=1)\nOR 3 decreases in 10 min
+  Open --> HalfOpen : break_seconds elapsed\n→ admit ONE probe lease
+  HalfOpen --> Closed : probe Release — no rate-limit\n→ DynamicCap = 1, reset reopen count
+  HalfOpen --> Open : probe ReportRateLimit\n→ break duration doubles (≤ 3600 s)
+  Open --> Open : rate-limit events counted only\n(admission already 0)
+  HalfOpen --> Open : probe lease disappears\n(crash timeout 30 min)\n→ conservative re-open
+```
+
+While `BreakerState = open`, `Acquire` denies every new lease machine-wide (running
+agents are never interrupted). A settle window freezes cap changes in both directions
+for `settle_seconds` after any `DynamicCap` change, so a burst of concurrent
+rate-limit events halves the cap once rather than once each. Dispatch smoothing adds
+a `min_dispatch_interval_seconds` jittered spacing between admitted dispatches to
+prevent thundering-herd refills when the cap rises. All three mechanisms are
+Adaptive-gated — zero effect when the overlay is off.
 
 ## State ownership
 
@@ -163,7 +228,24 @@ state lives in the worktree and is only as durable as its last commit.
 `engine.Run` sets up once (registry lookup, version check, identity
 verification, run lock) and then calls `loop`, which repeats until the frontier
 drains, the governor pauses on quota, the context is cancelled, or `--once`
-settles exactly one wave. Each iteration:
+settles exactly one wave.
+
+**Two dispatch loop variants** are selected by `dispatch_mode` in
+`koryph.project.json` (overridable per run with `--dispatch-mode`):
+
+- **`wave`** (default) — dispatch a batch, then wait for **every** slot in it
+  to land before scanning again. Simple and predictable; a slot that frees
+  early idles until its wave-mates finish.
+- **`rolling`** — continuously refills: every poll tick recomputes free
+  capacity from the count of currently-running slots and tops off any slot that
+  freed without waiting for the rest of the batch. A slot that lands early is
+  refilled on the next tick.
+
+Both modes share the same scan/preflight/dispatch/poll/merge primitives; only
+when the next scan happens differs. `--once` always runs one single-pass wave
+and exits, in either mode.
+
+Each iteration:
 
 1. **Govern.** `governor()` loads quota config and snapshots usage, returning a
    `Level` and whether the account is `calibrated`. The billing-guard mode is
@@ -173,7 +255,9 @@ settles exactly one wave. Each iteration:
    optionally scoped to a `--parent` epic.
 3. **Build the wave.** `sched.BuildWave` filters to eligible, dispatchable
    issues and greedily packs a conflict-free batch up to the width (see
-   *footprint batching*).
+   *footprint batching*). In rolling mode the active in-flight footprints are
+   passed as `sched.Opts.Active` so freshly-built batches never clash with
+   already-running beads.
 4. **Preflight.** In loop mode on a calibrated, enforcing governor,
    `quota.Preflight` can refuse the whole wave if its estimated spend would
    breach the drain fraction.
@@ -181,24 +265,29 @@ settles exactly one wave. Each iteration:
    `dispatch_stagger_seconds`), `dispatchBead` routes a model, ensures a
    worktree + bootstrap, compiles a prompt, launches the backend, claims the
    bead, and writes a ledger slot + manifest.
-6. **Poll.** `pollUntilIdle` ticks every `poll_sec` (default 45), reading each
-   slot's `status.json` heartbeat and counting git commits ahead of the base
-   branch until every slot reaches a terminal state.
+6. **Poll.** `pollUntilIdle` ticks every `poll_sec` (default 10, configurable
+   via `poll_seconds` in `koryph.project.json` or `KORYPH_POLL_SEC`), reading
+   each slot's `status.json` heartbeat and counting git commits ahead of the
+   base branch until every slot reaches a terminal state.
 7. **Stages, review, merge, record.** A completed slot first runs any configured
    post-implement `pipeline` stages (docs/test/…) in its worktree; then clean
    slots are reviewed and merged. Requeues refresh the worktree onto current main
    first, so a retry never runs a stale checkout. The ledger and manifest are
    updated so a later `--resume` can re-classify anything left running.
 
-**Footprint batching.** A bead's *footprint* is a set of conflict tokens
-derived from `fp:*` labels (explicit), then `area:*` labels mapped through the
-project's `AreaMap`, falling back to `TokenUnknown` (so unlabeled work
-serializes rather than colliding silently). `BuildWave` greedily colors the
-frontier: two beads whose footprints share any token never land in the same
-wave, so parallel agents don't fight over the same files. Epics, features,
-decisions, merge-requests, `no-dispatch` / `refactor-core` / `gt:*`-gated
-issues, already-active beads, and containers with open children are deferred
-with a recorded reason.
+**Footprint batching.** A bead's *footprint* is split into **read** and
+**write** token sets. Two footprints conflict only when they share a token *and*
+at least one side holds it as a write (RWMutex semantics: two readers of the
+same token co-run without conflict). Tokens are derived in precedence order:
+`fp:read:<token>` labels → read tokens; `fp:<token>` labels → write tokens
+(existing grammar, unchanged); `area:*` labels mapped through the project's
+`AreaMap` → write tokens; else `TokenUnknown` (always a write, serializing
+unlabeled beads). `BuildWave` greedily colors the frontier: two beads whose
+footprints conflict never land in the same wave, and in rolling mode a
+candidate conflicting with *any in-flight bead* is additionally deferred until
+that bead lands. Epics, features, decisions, merge-requests, `no-dispatch` /
+`refactor-core` / `gt:*`-gated issues, already-active beads, and containers
+with open children are deferred with a recorded reason.
 
 ## Account safety model
 
@@ -235,6 +324,23 @@ aligned to a fixed UTC grid) and a 7-day `Weekly` window. Each has a
 governor **fails closed** rather than over-spending blind. Usage is measured by
 `quota.Snapshot`, which prefers the `ccusage` CLI and falls back to scanning
 local transcript `*.jsonl` files, and finally to `Source="unavailable"`.
+
+The **machine-global concurrency governor** (`internal/govern`) is a separate,
+orthogonal gate: it bounds the *number* of agents running across all projects
+and processes, so independent `koryph run` invocations cannot collectively
+breach the Claude API rate limits (429s). See
+[docs/developer-guide/global-governor.md](developer-guide/global-governor.md)
+for the full design. The short form: a flock-guarded `governor.json` stores the
+cap; each engine acquires a lease per dispatch and releases it on slot
+completion; fair-share allocation rotates the remainder across all projects with
+ready work. An optional **AIMD adaptive overlay** (enabled with
+`koryph governor set --adaptive`) turns the static cap into a congestion
+controller — additive increase every 5 minutes of quiet, multiplicative
+decrease on a rate-limit signal — hardened by settle windows, a circuit
+breaker, and dispatch smoothing (see `koryph governor set --help` for all
+knobs). Both governors gate every dispatch: the cost governor gates by dollars,
+the concurrency governor gates by rate-limit safety; a dispatch proceeds only
+when *both* allow it.
 
 The governor maps the higher of the two window fractions to a level:
 

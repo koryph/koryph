@@ -74,26 +74,43 @@ koryph run --project myproject --parent beads-001
 ## Footprint labels: fp:\* and area:\*
 
 The scheduler prevents two agents from touching the same code at once via _footprint
-tokens_. Two beads conflict when they share any token; the lower-priority bead is
-deferred to the next wave.
+tokens_. Footprints are split into **read** and **write** token sets and follow
+RWMutex semantics: two beads sharing a token only conflict when **at least one** holds
+it as a write. Two readers of the same token co-run freely — a docs bead that only
+reads engine code no longer excludes an unrelated engine writer.
 
-**Explicit `fp:` labels** — the values after the prefix become conflict tokens directly:
+**`fp:read:<token>` labels (new)** — produce **read** tokens; beads that only read a
+surface run alongside any other reader:
 
 ```
-fp:auth fp:billing   →  tokens: ["auth", "billing"]
+fp:read:engine fp:read:docs   →  reads: ["docs", "engine"], writes: []
 ```
 
-**`area:` labels** — resolved through `koryph.project.json`'s `area_map`:
+A bead carrying `fp:read:engine` does **not** conflict with another bead that merely
+reads `engine`; it **does** conflict with a bead that writes `engine`.
+
+**`fp:<token>` labels (plain suffix)** — produce **write** tokens (existing grammar,
+unchanged); a token declared as both read and write collapses to write-only:
+
+```
+fp:auth fp:billing   →  reads: [], writes: ["auth", "billing"]
+```
+
+`fp:*` labels (either flavor) win outright over `area:*` labels — a bead with any
+`fp:` label ignores its `area:` labels entirely.
+
+**`area:` labels** — resolved through `koryph.project.json`'s `area_map` as **write** tokens:
 
 ```json
 "area_map": { "api": ["auth", "billing", "routes"] }
 ```
 
-A bead with `area:api` gets tokens `["auth", "billing", "routes"]` and conflicts with
-any bead carrying any of those tokens (whether via `fp:*` or another `area:*` mapping).
+A bead with `area:api` gets write tokens `["auth", "billing", "routes"]` and conflicts
+with any bead carrying any of those tokens (whether via `fp:*` or another `area:*`
+mapping).
 
-**No footprint label** — the bead receives the catch-all token `domain:unknown`, which
-conflicts with every other unknown bead. Unknowns serialize: only one runs per wave.
+**No footprint label** — the bead receives the catch-all write token `domain:unknown`,
+which conflicts with every other unknown bead. Unknowns serialize: only one runs per wave.
 
 ## Model labels
 
@@ -303,6 +320,21 @@ Every requeue also refreshes the worktree onto the current default branch first,
 retried agent never runs against a checkout that predates a main-side fix: a bead with
 no commits is rebuilt from a fresh checkout, and one carrying commits is rebased onto the
 advanced base before re-dispatch.
+
+## Poll interval
+
+The engine polls each running slot's `status.json` heartbeat every **10 seconds**
+by default. To tune this per project, set `poll_seconds` in `koryph.project.json`:
+
+```json
+{ "poll_seconds": 20 }
+```
+
+A lower value increases poll frequency (more responsive to fast agents; slightly
+higher filesystem load). A higher value is useful for long-running models where
+frequent polling adds noise. The environment variable `KORYPH_POLL_SEC` and the
+programmatic `Options.PollSec` field take precedence over the project config,
+in that order.
 
 ## Exit code 4 — drained
 

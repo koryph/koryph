@@ -63,14 +63,23 @@ worktree and tracks the resulting PID/stream.
 The wave loop: scan → batch → preflight → dispatch → poll → stages → review →
 merge. Main orchestration entry point called by `cmd/`.
 
-- **`Options`** — full run config (project ID, wave width, auto-merge, review flags, …)
+- **`Options`** — full run config (project ID, wave width, dispatch mode, auto-merge, review flags, …)
 - **`Outcome`** — summary counts (dispatched, merged, failed, blocked)
 - **`Run(ctx, opts)`** — blocking entry point; returns when the run terminates
 
-Internal files: `poll.go` (heartbeat/completion), `recover.go` (resume
-logic), `wave.go` (engine-side wave assembly), `pipeline.go` (post-implement
-stage execution). Requeues refresh the worktree onto current main first (rebuild
-when no commits, rebase when there are) so a retry never runs a stale checkout.
+Internal files: `poll.go` (heartbeat/completion, rate-limit requeue, AIMD
+signal forwarding), `recover.go` (resume logic), `wave.go` (engine-side wave
+assembly, rolling-mode refill loop, in-flight footprint map), `pipeline.go`
+(post-implement stage execution), `govern.go` (AIMD report-rate-limit helper).
+Requeues refresh the worktree onto current main first (rebuild when no commits,
+rebase when there are) so a retry never runs a stale checkout.
+
+`DispatchMode` (from `Options` or `project.Config.DispatchMode`) selects
+`wave` (wait-for-batch, default) or `rolling` (continuous-refill). Both modes
+share poll primitives; rolling additionally passes active in-flight footprints
+(`sched.Opts.Active`) to every `BuildWave` call so freshly-picked candidates
+cannot clash with running beads. Poll interval is `poll_seconds` from project
+config (default 10), overridden by `KORYPH_POLL_SEC` or `Options.PollSec`.
 
 ## execx
 
@@ -99,10 +108,33 @@ collectively breach the Claude API rate limits. Coordinates via lease + demand
 files under `~/.koryph/slots` guarded by a flock — no daemon. See
 [global-governor.md](global-governor.md).
 
-- **`Store`** — `Acquire` (cap-checked reserve) / `Hold` (post-launch attach) /
-  `Release` / `Prune` / `RefreshDemand` / `DropDemand` / `Snapshot` / `Cap` / `SetCap`
+- **`Store`** — `Acquire` (cap-checked reserve) / `Release` / `Prune` /
+  `RefreshDemand` / `DropDemand` / `Snapshot` / `Cap` / `SetCap` /
+  `SetAdaptiveCap` / `ReportRateLimit` / `EffectiveCap` / `AIMDStatus`
+- **`Config`** — serialised `governor.json`; includes AIMD overlay fields
+  (`Adaptive`, `HardMax`, `DynamicCap`) and settle/breaker/smoothing fields
+  (`SettleSeconds`, `SettleUntil`, `BreakSeconds`, `BreakerState`,
+  `MinDispatchIntervalSeconds`, …)
 - **`Lease`** / **`Demand`** — on-disk records
 - Fair-share: `floor(cap/n)` per demander, rotating remainder (no starvation)
+
+**AIMD adaptive overlay** (`--adaptive`). When enabled, `EffectiveCap` floats
+between 1 and `HardMax` instead of pinning to `MaxGlobalAgents`: +1 every
+5 minutes of quiet (additive probe) / halve on a rate-limit signal (multiplicative
+decrease). Hardened by three koryph-2im.11 mechanisms — all Adaptive-gated:
+
+- **Settle window** (`SettleSeconds`, default 120 s): freezes further cap changes in
+  either direction after any `DynamicCap` change; the probe clock anchors on settle
+  expiry.
+- **Burst-scaled decrease**: ≥3 distinct `(project, bead)` rate-limit events within
+  30 s → divide by 4 instead of 2.
+- **Circuit breaker** (`BreakerState`): opens when the cap is already at the floor or
+  on 3 decreases within 10 minutes; denies all new admission machine-wide for
+  `BreakSeconds` (default 300 s, doubling per consecutive re-open up to 3600 s);
+  transitions half-open → admits exactly one probe → closes on clean release /
+  re-opens on probe rate-limit.
+- **Dispatch smoothing** (`MinDispatchIntervalSeconds`, default 3 s): machine-wide
+  minimum inter-dispatch spacing, jittered ±50%, to prevent thundering-herd refills.
 
 ## ledger
 
@@ -171,9 +203,14 @@ Resolves all koryph machine-local state locations from `$KORYPH_HOME`
 
 Loads the per-project adapter configuration (`koryph.project.json`).
 
-- **`Config`** — wave width, green-gate commands, footprint rules
+- **`Config`** — wave width, green-gate commands, footprint rules, dispatch mode,
+  poll interval (`PollSeconds`), and AIMD-adjacent knobs
 - **`FootprintRule`** — path-pattern → conflict-scope mapping
 - **`Default(projectID)`** / **`Load(repoRoot)`** — sensible defaults or parse from disk
+
+Key scheduler fields: `DispatchMode` (`"wave"` | `"rolling"`, default `"wave"`),
+`PollSeconds` (poll tick override; 0 → engine default 10 s), `MaxConcurrentSlots`
+(wave-width cap per project), `DispatchStaggerSeconds` (inter-agent launch spacing).
 
 ## promptc
 
@@ -222,22 +259,27 @@ Builds conflict-free waves from the beads ready frontier, respecting
 footprint rules and the wave-width cap.
 
 - **`Item`** / **`Wave`** — selected issues + deferred/blocked explanations
-- **`Footprint`** — file-path scope claimed by an issue; **`Reason`** — why deferred/blocked
+- **`Footprint`** — RW conflict surface (`Reads []string`, `Writes []string`); **`Reason`** — why deferred/blocked
 - **`FootprintFor(issue, cfg)`** — derive `Footprint` from labels + project rules
-- **`Conflicts(a, b)`** — true if two footprints overlap
+- **`Conflicts(a, b)`** — true iff footprints share a token **and** at least one side holds it as a write (RWMutex semantics: two readers co-run)
 - **`Eligible(issue, activeIDs)`** — can this issue be dispatched now?
-- **`BuildWave(...)`** — main entry: frontier → `Wave`
+- **`BuildWave(...)`** — main entry: frontier → `Wave`; accepts `Opts.Active` (in-flight footprints keyed by bead id) for rolling-mode in-flight gating
 
 **Dispatch shape.** `Eligible` skips any bead whose `issue_type` is
 `epic`/`feature`/`decision`/`merge-request`, or that carries a `no-dispatch`,
 `refactor-core`, or `gt:*` label — so a bead filed with the wrong type sits in
-`bd ready` forever. `FootprintFor` derives conflict tokens with the precedence
-`fp:*` labels → `area:*` resolved through the project's `area_map` → else the
-catch-all `domain:unknown`, which conflicts with **every other unlabeled bead**
-and serializes them 1-per-wave regardless of the width cap. Label implementable
-beads (`task`/`bug`/`chore`) with one `area:*` per area they touch: over-broad
-labeling only costs parallelism, under-broad labeling risks a false-parallel
-merge conflict.
+`bd ready` forever. `FootprintFor` derives conflict tokens with the precedence:
+
+1. `fp:read:<token>` labels → **read** tokens (two readers of the same token co-run);
+2. `fp:<token>` labels (any other suffix) → **write** tokens (existing grammar, unchanged);
+3. `area:*` labels resolved through the project's `area_map` → write tokens;
+4. else `domain:unknown` (a write token) — conflicts with every other unlabeled bead, serializing them 1-per-wave.
+
+`BuildWave` also accepts `Opts.Active` (in-flight footprint map for rolling mode): a candidate
+whose footprint `Conflicts` with any entry here is deferred *before* intra-batch greedy coloring
+even runs, so a rolling refill can never clash with already-running beads. Label implementable
+beads (`task`/`bug`/`chore`) with one `area:*` per area they touch: over-broad labeling only costs
+parallelism, under-broad labeling risks a false-parallel merge conflict.
 
 ## rules
 
