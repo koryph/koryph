@@ -6,8 +6,9 @@
 package signing
 
 import (
-	"fmt"
+	"bufio"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 )
@@ -17,10 +18,13 @@ import (
 func readLineNoEcho(tty *os.File) (string, error) {
 	buf, err := term.ReadPassword(int(tty.Fd()))
 	if err != nil {
-		// Fallback: read without disabling echo (e.g. dumb terminal in tests).
-		var line string
-		_, err2 := fmt.Fscan(tty, &line)
-		return line, err2
+		// Fallback: read with echo visible (e.g. dumb terminal in tests).
+		// Use bufio.ReadString so that passphrases containing spaces are
+		// preserved in full — fmt.Fscan stops at the first whitespace and
+		// silently truncates the passphrase.
+		reader := bufio.NewReader(tty)
+		line, err2 := reader.ReadString('\n')
+		return strings.TrimRight(line, "\r\n"), err2
 	}
 	return string(buf), nil
 }

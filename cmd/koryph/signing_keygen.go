@@ -101,9 +101,12 @@ func cmdSigningKeygen(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("signing keygen: store: %w", err))
 	}
 
-	// On darwin, load with --apple-use-keychain for file/encrypted-file providers
-	// (so the passphrase is cached in macOS Keychain across reboots).
-	if runtime.GOOS == "darwin" && (chosenProvider == signing.ProviderFile || chosenProvider == signing.ProviderEncryptedFile) {
+	// On darwin with the file provider, load via ssh-add --apple-use-keychain
+	// so the passphrase is cached in the macOS Keychain across reboots.
+	// The encrypted-file provider is excluded: chosenRef is an age-encrypted
+	// blob that ssh-add cannot parse; the key can be loaded after decryption
+	// via `koryph signing enable --project <id>`.
+	if runtime.GOOS == "darwin" && chosenProvider == signing.ProviderFile {
 		if err := loadKeyAppleKeychain(ctx, chosenRef, stdout, stderr); err != nil {
 			// Non-fatal: the key is stored; the user can load it manually.
 			fmt.Fprintf(stderr, "note: ssh-add --apple-use-keychain failed (%v); load manually with: ssh-add %s\n", err, chosenRef)
@@ -214,13 +217,17 @@ func generateSSHKey(ctx context.Context, keyRef, identity, passphrase string, pr
 		return "", nil, fmt.Errorf("read public key: %w", err)
 	}
 
-	// For file provider: copy the key to the final location (ssh-keygen
-	// wrote it to tmpDir; we move it to chosenRef).
+	// Always copy the public key to <keyRef>.pub — it is not secret and
+	// is needed for `koryph signing setup --public-key @<keyRef>.pub`
+	// regardless of which provider stores the private key.
+	if err := copyKey(tmpKey+".pub", keyRef+".pub"); err != nil {
+		return "", nil, err
+	}
+
+	// For the file provider, also copy the private key to the final path
+	// (ssh-keygen wrote it to tmpDir; other providers store it natively).
 	if provider == signing.ProviderFile {
 		if err := copyKey(tmpKey, keyRef); err != nil {
-			return "", nil, err
-		}
-		if err := copyKey(tmpKey+".pub", keyRef+".pub"); err != nil {
 			return "", nil, err
 		}
 	}
