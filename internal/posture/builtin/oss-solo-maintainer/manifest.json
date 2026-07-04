@@ -7,5 +7,24 @@
       "default": ""
     }
   },
-  "recommended_fragments": ["gitleaks", "govulncheck"]
+  "recommended_fragments": ["gitleaks", "govulncheck"],
+  "intents": {
+    "require_approvals": 1,
+    "require_signed_commits": true,
+    "no_force_push": true,
+    "no_deletion": true,
+    "secret_scanning": true,
+    "secret_scanning_push_protection": true,
+    "dependabot_security_updates": true,
+    "vulnerability_alerts": true,
+    "allow_merge_commit": false,
+    "allow_squash_merge": true,
+    "allow_rebase_merge": true,
+    "allow_auto_merge": false,
+    "delete_branch_on_merge": true,
+    "allow_update_branch": true,
+    "web_commit_signoff_required": true,
+    "actions_default_permissions": "read",
+    "actions_can_approve_prs": true
+  }
 }

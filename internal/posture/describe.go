@@ -64,12 +64,29 @@ type RulesetEntry struct {
 	// LiveState is one of "", "ok", "missing", or "drift".  It is populated
 	// when live-repo comparison is requested via DescribeSource.
 	LiveState string
+	// IsPassthrough is true when this ruleset comes from a native passthrough
+	// section of the profile (e.g., github/ directory) and is therefore not
+	// portable to other forges.
+	IsPassthrough bool
+	// PassthroughForge names the forge this passthrough applies to (e.g. "github").
+	PassthroughForge string
 }
 
 // Description is the complete describe output for a posture source.
 type Description struct {
 	Settings []SettingEntry
 	Rulesets []RulesetEntry
+}
+
+// PassthroughReporter is an optional interface that a Source may implement to
+// report which rulesets come from native forge passthrough (github/, gitlab/)
+// rather than from compiled intents or legacy profile files.  When a source
+// implements this interface, DescribeSource marks the relevant RulesetEntries
+// with IsPassthrough=true and the forge name.
+type PassthroughReporter interface {
+	// PassthroughRulesets returns a map of ruleset-name → forge-name
+	// (e.g. "extra-protection" → "github") for passthrough-sourced rulesets.
+	PassthroughRulesets() map[string]string
 }
 
 // builtinSettingRationale holds fallback rationale for well-known repo-setting
@@ -338,6 +355,12 @@ func DescribeSource(ctx context.Context, repoSvc forge.RepoService, prot forge.P
 			}
 		}
 
+		// Collect passthrough metadata from the source (if supported).
+		var passthroughRulesets map[string]string
+		if pr, ok := src.(PassthroughReporter); ok {
+			passthroughRulesets = pr.PassthroughRulesets()
+		}
+
 		for _, e := range entries {
 			if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 				continue
@@ -357,6 +380,11 @@ func DescribeSource(ctx context.Context, repoSvc forge.RepoService, prot forge.P
 				} else {
 					re.LiveState = "missing"
 				}
+			}
+			// Mark passthrough rulesets as non-portable.
+			if forge, ok := passthroughRulesets[re.Name]; ok {
+				re.IsPassthrough = true
+				re.PassthroughForge = forge
 			}
 			desc.Rulesets = append(desc.Rulesets, re)
 		}
@@ -420,8 +448,12 @@ func PrintDescription(w io.Writer, d *Description, profileName, profileSummary s
 					liveTag = "  [live: DRIFT]"
 				}
 			}
-			fmt.Fprintf(w, "\n  [%s] target: %s  conditions: %s%s\n",
-				rs.Name, rs.Target, conditions, liveTag)
+			passthroughTag := ""
+			if rs.IsPassthrough && rs.PassthroughForge != "" {
+				passthroughTag = fmt.Sprintf("  [non-portable: %s-native]", rs.PassthroughForge)
+			}
+			fmt.Fprintf(w, "\n  [%s] target: %s  conditions: %s%s%s\n",
+				rs.Name, rs.Target, conditions, liveTag, passthroughTag)
 			if rs.Rationale != "" {
 				fmt.Fprintf(w, "  %s\n", wrapText(rs.Rationale, 76, "  "))
 			}

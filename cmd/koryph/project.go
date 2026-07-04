@@ -420,7 +420,7 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 			hasRulesets, hasSettings := posture.EjectCheck(root)
 			localSrc := posture.LocalSource{Root: root}
 
-			var rulesetSrc posture.Source = profileSrc
+			rulesetSrc := profileSrc
 			if hasRulesets {
 				rulesetSrc = localSrc
 			}
@@ -428,7 +428,7 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 				_, _ = posture.CheckRulesets(ctx, repoSlug, rulesetSrc, &diffBuf, ghProv.Protection())
 			}
 
-			var settingsSrc posture.Source = profileSrc
+			settingsSrc := profileSrc
 			if hasSettings {
 				settingsSrc = localSrc
 			}
@@ -489,7 +489,7 @@ func applyPostureProfile(ctx context.Context, root, ghBin, home, profileName str
 	applyErr := false
 
 	// Apply rulesets.
-	var rulesetSrc posture.Source = profileSrc
+	rulesetSrc := profileSrc
 	if hasRulesets {
 		rulesetSrc = localSrc
 	}
@@ -509,7 +509,7 @@ func applyPostureProfile(ctx context.Context, root, ghBin, home, profileName str
 	}
 
 	// Apply settings.
-	var settingsSrc posture.Source = profileSrc
+	settingsSrc := profileSrc
 	if hasSettings {
 		settingsSrc = localSrc
 	}

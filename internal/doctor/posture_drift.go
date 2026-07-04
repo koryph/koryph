@@ -123,7 +123,7 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 	localSrc := posture.LocalSource{Root: repoRoot}
 
 	// --- rulesets ---
-	var rulesetSrc posture.Source = profileSrc
+	rulesetSrc := profileSrc
 	if hasRulesets {
 		rulesetSrc = localSrc
 	}
@@ -143,7 +143,7 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 	}
 
 	// --- settings ---
-	var settingsSrc posture.Source = profileSrc
+	settingsSrc := profileSrc
 	if hasSettings {
 		settingsSrc = localSrc
 	}

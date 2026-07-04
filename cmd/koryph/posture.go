@@ -261,7 +261,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 	}
 
 	// ---- rulesets -------------------------------------------------------
-	var rulesetSrc posture.Source = profileSrc
+	rulesetSrc := profileSrc
 	if hasRulesets {
 		rulesetSrc = localSrc
 	}
@@ -293,7 +293,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 	}
 
 	// ---- repo settings --------------------------------------------------
-	var settingsSrc posture.Source = profileSrc
+	settingsSrc := profileSrc
 	if hasSettings {
 		settingsSrc = localSrc
 	}

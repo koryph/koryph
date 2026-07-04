@@ -36,6 +36,12 @@ type Manifest struct {
 	// profiles use this to make their profiles self-documenting without
 	// modifying the Go source.
 	Descriptions map[string]string `json:"descriptions,omitempty"`
+	// Intents holds the forge-neutral desired-state core for this profile.
+	// When Intents is non-nil, RenderProfile uses the forge compiler instead of
+	// rendering the profile's raw file tree.  Native passthrough directories
+	// (github/, gitlab/) in the profile are applied verbatim on top of the
+	// compiled output.
+	Intents *Intents `json:"intents,omitempty"`
 }
 
 // ParamDescriptor describes one profile parameter.
@@ -110,60 +116,201 @@ func ListUserProfiles(home string) ([]ProfileEntry, error) {
 	return out, nil
 }
 
+// ProfileSource is a LocalSource that also implements PassthroughReporter.
+// It is returned by RenderProfile when the profile was compiled from intents
+// and native passthrough directories were detected.
+type ProfileSource struct {
+	LocalSource
+	// passthroughRulesets maps ruleset-name → forge-name for rulesets that
+	// originated from the profile's native passthrough directory.
+	passthroughRulesets map[string]string
+}
+
+// PassthroughRulesets implements PassthroughReporter.
+func (ps ProfileSource) PassthroughRulesets() map[string]string {
+	return ps.passthroughRulesets
+}
+
 // RenderProfile loads a named profile (user paths take precedence over
 // built-ins), renders any template files with params, and materialises the
-// result into a fresh temp directory.  The returned LocalSource points at that
+// result into a fresh temp directory.  The returned Source points at that
 // directory; the caller must invoke the cleanup func to remove it.
 //
 // params maps parameter names to string values (e.g. "required_checks" →
 // "pre-commit,make gate").
-func RenderProfile(name string, params map[string]string, home string) (LocalSource, func(), error) {
+//
+// When the profile's manifest.json carries an "intents" block, RenderProfile
+// uses the GitHub compiler to produce desired-state files instead of rendering
+// the profile's raw file tree.  Native passthrough directories ("github/" in
+// the profile) are applied verbatim on top of the compiled output, and the
+// returned Source additionally implements PassthroughReporter.
+func RenderProfile(name string, params map[string]string, home string) (Source, func(), error) {
 	tmpDir, err := os.MkdirTemp("", "koryph-posture-"+name+"-*")
 	if err != nil {
-		return LocalSource{}, nil, fmt.Errorf("posture: create temp dir: %w", err)
+		return nil, nil, fmt.Errorf("posture: create temp dir: %w", err)
 	}
 	cleanup := func() { os.RemoveAll(tmpDir) } //nolint:errcheck
-
-	data, err := buildTemplateData(params)
-	if err != nil {
-		cleanup()
-		return LocalSource{}, nil, err
-	}
 
 	// Profile files are rendered into <tmpDir>/.github/ so LocalSource works
 	// (it expects .github/rulesets/ and .github/repo-settings.json).
 	ghDir := filepath.Join(tmpDir, ".github")
 	if err := os.MkdirAll(ghDir, 0o755); err != nil {
 		cleanup()
-		return LocalSource{}, nil, fmt.Errorf("posture: mkdir .github: %w", err)
+		return nil, nil, fmt.Errorf("posture: mkdir .github: %w", err)
 	}
 
 	// Try user profile first, then built-in.
 	userDir := filepath.Join(home, "postures", name)
 	if fi, err2 := os.Stat(userDir); err2 == nil && fi.IsDir() {
-		if err := renderDir(os.DirFS(userDir), ".", ghDir, data); err != nil {
+		ptRulesets, rerr := renderProfileDir(os.DirFS(userDir), ".", ghDir, name, params)
+		if rerr != nil {
 			cleanup()
-			return LocalSource{}, nil, fmt.Errorf("posture: render user profile %s: %w", name, err)
+			return nil, nil, fmt.Errorf("posture: render user profile %s: %w", name, rerr)
 		}
-		return LocalSource{Root: tmpDir}, cleanup, nil
+		return makeSource(tmpDir, ptRulesets), cleanup, nil
 	}
 
 	// Built-in.
 	builtinDir := "builtin/" + name
 	if _, err := builtinFS.Open(builtinDir); err != nil {
 		cleanup()
-		return LocalSource{}, nil, fmt.Errorf("posture: profile %q not found (checked user and built-in sources)", name)
+		return nil, nil, fmt.Errorf("posture: profile %q not found (checked user and built-in sources)", name)
 	}
 	sub, err := fs.Sub(builtinFS, builtinDir)
 	if err != nil {
 		cleanup()
-		return LocalSource{}, nil, fmt.Errorf("posture: sub fs for %s: %w", name, err)
+		return nil, nil, fmt.Errorf("posture: sub fs for %s: %w", name, err)
 	}
-	if err := renderDir(sub, ".", ghDir, data); err != nil {
+	ptRulesets, err := renderProfileDir(sub, ".", ghDir, name, params)
+	if err != nil {
 		cleanup()
-		return LocalSource{}, nil, fmt.Errorf("posture: render builtin profile %s: %w", name, err)
+		return nil, nil, fmt.Errorf("posture: render builtin profile %s: %w", name, err)
 	}
-	return LocalSource{Root: tmpDir}, cleanup, nil
+	return makeSource(tmpDir, ptRulesets), cleanup, nil
+}
+
+// makeSource returns a Source for tmpDir.  When passthroughRulesets is
+// non-empty, a ProfileSource is returned (which also implements
+// PassthroughReporter).  Otherwise a plain LocalSource suffices.
+func makeSource(tmpDir string, passthroughRulesets map[string]string) Source {
+	ls := LocalSource{Root: tmpDir}
+	if len(passthroughRulesets) == 0 {
+		return ls
+	}
+	return ProfileSource{
+		LocalSource:         ls,
+		passthroughRulesets: passthroughRulesets,
+	}
+}
+
+// renderProfileDir renders a profile's FS (rooted at srcRoot) into ghDir.
+// When the manifest carries an "intents" block, the GitHub compiler is used
+// and native passthrough from github/ is applied on top.  Otherwise the legacy
+// file-tree rendering path is used.
+//
+// It returns a map of passthrough ruleset names → forge name, populated only
+// when intents are used and native passthrough files were applied.
+func renderProfileDir(srcFS fs.FS, srcRoot, ghDir, profileName string, params map[string]string) (map[string]string, error) {
+	// Try to read and parse the manifest.
+	manifest, err := readFSManifest(srcFS, srcRoot)
+	if err != nil {
+		// No manifest (or unreadable) — fall through to legacy path.
+		manifest = Manifest{}
+	}
+
+	if manifest.Intents != nil {
+		// Intents-based path: compile to GitHub native format.
+		if err := CompileGitHub(*manifest.Intents, params, ghDir); err != nil {
+			return nil, fmt.Errorf("compile github for %s: %w", profileName, err)
+		}
+		// Apply native passthrough from github/ subdir (if present).
+		ptRulesets, err := applyPassthrough(srcFS, srcRoot+"/github", ghDir, "github")
+		if err != nil {
+			return nil, fmt.Errorf("apply github passthrough for %s: %w", profileName, err)
+		}
+		return ptRulesets, nil
+	}
+
+	// Legacy path: render raw file tree (skipping forge-specific subdirs).
+	data, err := buildTemplateData(params)
+	if err != nil {
+		return nil, err
+	}
+	return nil, renderDir(srcFS, srcRoot, ghDir, data)
+}
+
+// applyPassthrough copies files from forgeSubdir (e.g. "github") within srcFS
+// verbatim into dstRoot.  A missing forgeSubdir is silently ignored.
+// It returns a map of ruleset-name → forgeName for every ruleset JSON file
+// found in the passthrough's "rulesets/" subdir.
+func applyPassthrough(srcFS fs.FS, forgeSubdir, dstRoot, forgeName string) (map[string]string, error) {
+	// Compute the effective subdir path relative to the FS root.
+	// srcRoot is "." for the root, so the subdir becomes "github" or ".../github".
+	sub, err := fs.Sub(srcFS, forgeSubdir)
+	if err != nil {
+		return nil, nil // directory doesn't exist — nothing to do
+	}
+
+	ptRulesets := make(map[string]string)
+
+	walkErr := fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, walkerr error) error {
+		if walkerr != nil {
+			return walkerr
+		}
+		if path == "." {
+			return nil
+		}
+		dst := filepath.Join(dstRoot, path)
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		raw, err := fs.ReadFile(sub, path)
+		if err != nil {
+			return fmt.Errorf("read passthrough %s: %w", path, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, raw, 0o644); err != nil {
+			return err
+		}
+		// Track passthrough rulesets by name.
+		dir, base := filepath.Split(path)
+		if strings.TrimSuffix(strings.TrimRight(dir, "/"), "/") == "rulesets" && filepath.Ext(base) == ".json" {
+			// Parse the ruleset name from the file.
+			var meta struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(raw, &meta) == nil && meta.Name != "" {
+				ptRulesets[meta.Name] = forgeName
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	if len(ptRulesets) == 0 {
+		return nil, nil
+	}
+	return ptRulesets, nil
+}
+
+// readFSManifest reads and parses manifest.json from srcFS rooted at srcRoot.
+func readFSManifest(srcFS fs.FS, srcRoot string) (Manifest, error) {
+	manifestPath := srcRoot + "/manifest.json"
+	if srcRoot == "." {
+		manifestPath = "manifest.json"
+	}
+	raw, err := fs.ReadFile(srcFS, manifestPath)
+	if err != nil {
+		return Manifest{}, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return Manifest{}, err
+	}
+	return m, nil
 }
 
 // EjectCheck reports whether the current working directory has repo-local
@@ -197,8 +344,13 @@ func buildTemplateData(params map[string]string) (profileTemplateData, error) {
 // renderDir walks srcFS rooted at srcRoot, renders each file into dstRoot.
 // Files ending in ".tmpl" are rendered as text/templates (output is written
 // without the ".tmpl" suffix); all other files are copied verbatim.
-// The manifest.json is skipped — it is metadata, not desired state.
+// The manifest.json and forge-specific passthrough directories (github/,
+// gitlab/) are skipped — they are metadata or handled separately.
 func renderDir(srcFS fs.FS, srcRoot, dstRoot string, data profileTemplateData) error {
+	// Forge-specific subdirectories handled as native passthrough — skip them
+	// in the legacy file-tree rendering path.
+	forgePassthroughDirs := map[string]bool{"github": true, "gitlab": true}
+
 	return fs.WalkDir(srcFS, srcRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -210,6 +362,10 @@ func renderDir(srcFS fs.FS, srcRoot, dstRoot string, data profileTemplateData) e
 		if d.IsDir() {
 			if path == srcRoot {
 				return nil // root itself — skip, already exists
+			}
+			// Skip forge-specific passthrough dirs at the top level.
+			if forgePassthroughDirs[rel] {
+				return fs.SkipDir
 			}
 			return os.MkdirAll(filepath.Join(dstRoot, rel), 0o755)
 		}
