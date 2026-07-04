@@ -43,17 +43,6 @@ func logRunEnd(runID, project, reason string, drained bool, dispatched, merged i
 	)
 }
 
-// logRefillStart emits a DEBUG record at the start of a wave/refill scan.
-func logRefillStart(runID, project string, wave, readyCount, width int) {
-	log.Debug("engine.refill.start",
-		slog.String(obs.KeyRunID, runID),
-		slog.String(obs.KeyProject, project),
-		slog.Int(obs.KeyWave, wave),
-		slog.Int(obs.KeyReadyCount, readyCount),
-		slog.Int("width", width),
-	)
-}
-
 // logRefillDispatched emits an INFO record after a wave/refill dispatches beads.
 func logRefillDispatched(runID, project string, wave, dispatchedCount int) {
 	log.Info("engine.refill.dispatched",

@@ -56,6 +56,14 @@ path = [
 SPDX-FileCopyrightText = "2026 The Koryph Developers"
 SPDX-License-Identifier = "Apache-2.0"
 
+# Test fixture/golden data files that cannot carry inline SPDX headers.
+[[annotations]]
+path = [
+  "internal/engine/testdata/**",
+]
+SPDX-FileCopyrightText = "2026 The Koryph Developers"
+SPDX-License-Identifier = "Apache-2.0"
+
 # Vendored from the Beads project (installed into this repo by `bd`).
 [[annotations]]
 path = [".agents/**", ".beads/README.md"]
