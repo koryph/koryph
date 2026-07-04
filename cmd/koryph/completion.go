@@ -94,6 +94,10 @@ var commandTable = []command{
 	{name: "rules", summary: "install hook scripts + merge wiring", run: cmdRules, subs: []command{
 		{name: "install", summary: "install hooks into <root>/.claude/settings.json", run: cmdRulesInstall},
 	}},
+	{name: "repo", summary: "check or apply .github IaC (rulesets, repo settings)", run: cmdRepo, subs: []command{
+		{name: "check", summary: "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)", run: cmdRepoCheck},
+		{name: "apply", summary: "apply .github IaC (rulesets, repo settings) to the live repo", run: cmdRepoApply},
+	}},
 	{name: "governor", summary: "inspect and set the machine-wide concurrency cap", run: cmdGovernor, subs: []command{
 		{name: "show", summary: "show the cap, leases, and demand"},
 		{name: "set", summary: "set the machine-wide cap", run: cmdGovernorSet},

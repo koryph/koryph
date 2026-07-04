@@ -159,9 +159,9 @@ sbom: ## Generate an SPDX SBOM of the module into dist/ (requires syft)
 ##@ Repo administration (IaC — requires admin-scoped gh auth)
 
 .PHONY: repo-check
-repo-check: ## Diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)
-	@fail=0; for s in scripts/ensure-*.sh; do "$$s" --check || fail=1; done; exit $$fail
+repo-check: build ## Diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)
+	$(BIN) repo check
 
 .PHONY: repo-apply
-repo-apply: ## Apply .github IaC (rulesets, repo settings) to the live repo
-	@for s in scripts/ensure-*.sh; do "$$s" --apply; done
+repo-apply: build ## Apply .github IaC (rulesets, repo settings) to the live repo
+	$(BIN) repo apply

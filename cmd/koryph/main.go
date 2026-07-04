@@ -185,6 +185,12 @@ OBSERVE
   metrics [--project ID] [--json]
                         burn + reliability rollup across projects
 
+REPO IaC  (desired-state files: .github/rulesets/*.json, .github/repo-settings.json)
+  repo check [--repo owner/name]
+                        diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)
+  repo apply [--repo owner/name]
+                        apply .github IaC (rulesets, repo settings) to the live repo
+
 ASSETS  (installed automatically by 'project add'; use these to refresh or repair)
   project install-assets (<root> | --all-projects) [agents|commands|rules|all] [--force]
                         (re)install koryph assets — agents, commands & rules (default all);
