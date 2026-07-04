@@ -96,6 +96,18 @@ func configFilePath() string {
 	return filepath.Join(home, "observability.json")
 }
 
+// ParseConfigBytes parses a Config from raw JSON bytes without reading any
+// file. Env overrides are NOT applied. Used by the doctor package to validate
+// a config file's contents without loading it through LoadConfig (which would
+// apply env vars and obscure the file's actual state).
+func ParseConfigBytes(data []byte) (Config, error) {
+	cfg := defaultConfig()
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return defaultConfig(), err
+	}
+	return cfg, nil
+}
+
 // LoadConfig reads observability.json from the koryph home directory.
 // If the file does not exist, defaultConfig() is returned with no error.
 // Env overrides are applied after the file is parsed.

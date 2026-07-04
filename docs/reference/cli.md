@@ -93,6 +93,12 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph completion zsh`](#koryph-completion-zsh) | print the zsh completion script |
 | ↳ [`koryph completion install`](#koryph-completion-install) | install the completion script to the standard location |
 | [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
+| [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail |
+| ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
+| ↳ [`koryph obs level`](#koryph-obs-level) | set the log level for a component (or default) |
+| ↳ [`koryph obs enable`](#koryph-obs-enable) | enable observability (set default level to info) |
+| ↳ [`koryph obs disable`](#koryph-obs-disable) | silence all output (set all levels to error) |
+| ↳ [`koryph obs tail`](#koryph-obs-tail) | tail the telemetry JSONL stream in human-readable form |
 
 ---
 
@@ -1057,6 +1063,64 @@ interactive terminal cockpit (threads, queue, events)
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--project` | string |  | project id (default: all registered projects) |
+
+
+---
+
+## `koryph obs` { #koryph-obs }
+
+manage observability: status, level, enable, disable, tail
+
+**See also:** [Observability](../user-guide/observability)
+
+Run `koryph obs <subcommand> -h` for subcommand flags.
+
+## `koryph obs status` { #koryph-obs-status }
+
+print current observability configuration
+
+**See also:** [Observability](../user-guide/observability)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit as JSON |
+
+## `koryph obs level` { #koryph-obs-level }
+
+set the log level for a component (or default)
+
+**See also:** [Observability](../user-guide/observability)
+
+No flags.
+
+## `koryph obs enable` { #koryph-obs-enable }
+
+enable observability (set default level to info)
+
+**See also:** [Observability](../user-guide/observability)
+
+No flags.
+
+## `koryph obs disable` { #koryph-obs-disable }
+
+silence all output (set all levels to error)
+
+**See also:** [Observability](../user-guide/observability)
+
+No flags.
+
+## `koryph obs tail` { #koryph-obs-tail }
+
+tail the telemetry JSONL stream in human-readable form
+
+**See also:** [Observability](../user-guide/observability)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--component` | string |  | filter to this component (engine\|govern\|sched\|…) |
+| `--follow` | bool |  | stream new records as they arrive (Ctrl-C to stop) |
+| `--level` | string |  | minimum level to display (trace\|debug\|info\|warn\|error) |
+| `--n` | int | `40` | number of trailing records to show (0 = all) |
 
 
 ---

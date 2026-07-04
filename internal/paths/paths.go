@@ -97,3 +97,12 @@ func ProjectKoryphDir(repoRoot string) string { return filepath.Join(repoRoot, "
 func SnapshotsDir(repoRoot string) string {
 	return filepath.Join(ProjectKoryphDir(repoRoot), "snapshots")
 }
+
+// TelemetryDir is the local telemetry JSONL store under KoryphHome.
+// The engine writes OTLP-file JSONL here; `koryph obs tail` reads it.
+// Files are size-capped and rotated; see §3 of the observability design.
+func TelemetryDir() string { return filepath.Join(KoryphHome(), "telemetry") }
+
+// ObsConfig is the canonical path to the observability configuration file.
+// Live loops re-read it at each scheduler tick (no restart required).
+func ObsConfig() string { return filepath.Join(KoryphHome(), "observability.json") }

@@ -128,6 +128,7 @@ func Run(opts Options) (*Report, error) {
 	r.addAll(checkQuotaCalibration(opts))
 	r.addAll(checkQuotaGuardOverride(opts))
 	r.addAll(checkVaultProviders(opts))
+	r.addAll(checkObs(opts))
 
 	for _, f := range r.Findings {
 		if f.Fixed {
@@ -157,6 +158,7 @@ const checkNameZombies = "zombie-leases"
 const checkNameDemand = "stale-demand"
 const checkNameQuota = "quota-calibration"
 const checkNameVault = "vault-providers"
+const checkNameObs = "obs"
 
 // checkLayout verifies the required subdirectory skeleton under Home.
 func checkLayout(opts Options) Finding {
