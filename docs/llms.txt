@@ -2,7 +2,35 @@
 
 > Multi-project orchestrator for autonomous Claude Code agents: beads-native, account-safe, subscription-first. `koryph` runs autonomous implementation waves across many git projects — reading each project's beads ready-graph, batching conflict-free work by declared footprint, dispatching headless Claude Code agents into isolated git worktrees under the correct Claude account, checkpointing to disk, governing subscription burn, and merging finished work through a green gate.
 
-This file is a machine-readable index for AI agents and tools ingesting the project. Links point to the canonical Markdown sources on GitHub (fetchable as raw text). The same book is published at https://koryph.build/. Install: `go install github.com/koryph/koryph/cmd/koryph@latest`.
+This file is a machine-readable index for AI agents and tools ingesting the project. Links point to the canonical Markdown sources on GitHub (fetchable as raw text). The same book is published at https://koryph.build/.
+
+## Install
+
+Prerequisites: `git`; the Claude CLI (`claude`, from https://claude.ai/download, authenticated via `claude auth login`); the `bd` (beads) CLI (https://github.com/gastownhall/beads, confirm with `bd doctor`). `gh` (GitHub CLI) is optional but simplifies the steps below.
+
+koryph is a single static binary — no Go toolchain or runtime required to run it. Detect your platform, fetch the latest release, verify it, install it:
+
+```sh
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"     # darwin | linux
+arch="$(uname -m)"; case "$arch" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
+
+# with gh (simplest — resolves the latest release automatically)
+gh release download --repo koryph/koryph -p "koryph_*_${os}_${arch}.tar.gz" -p checksums.txt
+
+# without gh (curl + GitHub API only)
+tag="$(curl -fsSL https://api.github.com/repos/koryph/koryph/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)"
+curl -fsSLO "https://github.com/koryph/koryph/releases/download/${tag}/koryph_${tag#v}_${os}_${arch}.tar.gz"
+curl -fsSLO "https://github.com/koryph/koryph/releases/download/${tag}/checksums.txt"
+
+shasum -a 256 -c --ignore-missing checksums.txt   # macOS; use `sha256sum -c --ignore-missing checksums.txt` on Linux
+tar -xzf koryph_*_"$os"_"$arch".tar.gz koryph
+install -m 0755 koryph ~/.local/bin/              # any directory on PATH
+koryph version                                    # expect: koryph <version>
+```
+
+Building from source instead requires Go 1.21+: `go install github.com/koryph/koryph/cmd/koryph@latest`.
+
+A Homebrew tap is planned; until then the release tarball above is the paved road. Full prerequisites, PATH troubleshooting, and shell completions: [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md). To verify a download's checksum, cosign signature, and SLSA provenance before trusting it: [Supply-chain verification](https://github.com/koryph/koryph/blob/main/docs/user-guide/supply-chain.md).
 
 ## Operating contract (read first)
 
