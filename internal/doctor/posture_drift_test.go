@@ -181,6 +181,160 @@ func TestPostureDrift_Validate(t *testing.T) {
 	}
 }
 
+// --- org-posture-drift -------------------------------------------------------
+
+// TestOrgPostureDrift_NoOrg verifies the check is skipped when posture.org is
+// not set.
+func TestOrgPostureDrift_NoOrg(t *testing.T) {
+	postureCfg := &project.PostureConfig{Profile: "oss-solo-maintainer"}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameOrgPostureDrift)
+	if f.Level != LevelOK {
+		t.Errorf("org-posture-drift: want OK (no org declared), got %s: %s", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "skipped") {
+		t.Errorf("org-posture-drift: message should say skipped; got: %s", f.Message)
+	}
+}
+
+// TestOrgPostureDrift_NilPosture verifies the check is skipped when the
+// posture block is nil.
+func TestOrgPostureDrift_NilPosture(t *testing.T) {
+	root := fabricateProject(t)
+	opts := projectOpts(root)
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameOrgPostureDrift)
+	if f.Level != LevelOK {
+		t.Errorf("org-posture-drift: want OK (nil posture), got %s: %s", f.Level, f.Message)
+	}
+}
+
+// TestOrgPostureDrift_NoDrift verifies the check returns OK when the injected
+// OrgPostureDriftCheck reports no drift.
+func TestOrgPostureDrift_NoDrift(t *testing.T) {
+	postureCfg := &project.PostureConfig{
+		Profile: "oss-solo-maintainer",
+		Org:     "acme-org",
+	}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+	opts.OrgPostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) {
+		return false, nil // no drift
+	}
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameOrgPostureDrift)
+	if f.Level != LevelOK {
+		t.Errorf("org-posture-drift: want OK (no drift), got %s: %s", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "acme-org") {
+		t.Errorf("org-posture-drift: message should mention org; got: %s", f.Message)
+	}
+}
+
+// TestOrgPostureDrift_DriftDetected verifies the check returns WARN when the
+// injected OrgPostureDriftCheck reports drift.
+func TestOrgPostureDrift_DriftDetected(t *testing.T) {
+	postureCfg := &project.PostureConfig{
+		Profile: "oss-solo-maintainer",
+		Org:     "acme-org",
+	}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+	opts.OrgPostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) {
+		return true, nil // drift
+	}
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameOrgPostureDrift)
+	if f.Level != LevelWarn {
+		t.Errorf("org-posture-drift: want WARN (drift), got %s: %s", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "acme-org") {
+		t.Errorf("org-posture-drift: message should mention org; got: %s", f.Message)
+	}
+	// Message must contain the remediation command (with --org flag).
+	if !strings.Contains(f.Message, "--org acme-org") {
+		t.Errorf("org-posture-drift: message should contain --org; got: %s", f.Message)
+	}
+}
+
+// TestOrgPostureDrift_CheckError verifies the check degrades gracefully when
+// the injected OrgPostureDriftCheck returns an error.
+func TestOrgPostureDrift_CheckError(t *testing.T) {
+	postureCfg := &project.PostureConfig{
+		Profile: "oss-solo-maintainer",
+		Org:     "acme-org",
+	}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+	opts.OrgPostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) {
+		return false, fmt.Errorf("org admin required")
+	}
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameOrgPostureDrift)
+	if f.Level != LevelOK {
+		t.Errorf("org-posture-drift: want OK (graceful degrade on error), got %s: %s", f.Level, f.Message)
+	}
+}
+
+// TestOrgPostureApplyCmd_WithOrg verifies PostureConfig.OrgPostureApplyCmd.
+func TestOrgPostureApplyCmd_WithOrg(t *testing.T) {
+	cfg := &project.PostureConfig{
+		Profile: "oss-solo-maintainer",
+		Org:     "acme-org",
+	}
+	got := cfg.OrgPostureApplyCmd()
+	if !strings.Contains(got, "--org acme-org") {
+		t.Errorf("OrgPostureApplyCmd() should contain --org; got: %q", got)
+	}
+	if !strings.Contains(got, "oss-solo-maintainer") {
+		t.Errorf("OrgPostureApplyCmd() should contain profile; got: %q", got)
+	}
+}
+
+func TestOrgPostureApplyCmd_NoOrg(t *testing.T) {
+	cfg := &project.PostureConfig{Profile: "oss-solo-maintainer"}
+	if got := cfg.OrgPostureApplyCmd(); got != "" {
+		t.Errorf("OrgPostureApplyCmd() without org should be empty; got: %q", got)
+	}
+}
+
+func TestPostureApplyCmd_IncludesOrgFlag(t *testing.T) {
+	cfg := &project.PostureConfig{
+		Profile: "oss-solo-maintainer",
+		Org:     "acme-org",
+	}
+	got := cfg.PostureApplyCmd()
+	if !strings.Contains(got, "--org acme-org") {
+		t.Errorf("PostureApplyCmd() with org should contain --org; got: %q", got)
+	}
+}
+
 // --- fragment-drift ----------------------------------------------------------
 
 // TestFragmentDrift_NoFragments verifies the check is skipped when no fragments

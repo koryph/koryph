@@ -92,6 +92,13 @@ type ProjectOptions struct {
 	// Inject a fake in tests to avoid gh network calls.
 	PostureDriftCheck func(repoRoot string, cfg *project.PostureConfig) (bool, error)
 
+	// OrgPostureDriftCheck returns whether the live GitHub org has posture
+	// drift from the given profile.  Return (false, nil) when no drift,
+	// (true, nil) on drift, and (_, err) on failure (doctor degrades
+	// gracefully on error).  nil means: call posture.CheckOrgRulesets via
+	// the gh CLI.  Inject a fake in tests to avoid gh network calls.
+	OrgPostureDriftCheck func(repoRoot string, cfg *project.PostureConfig) (bool, error)
+
 	// FragmentDriftCheck returns the fragment drift for the given fragments.
 	// Return (nil, nil) when no drift, (drifts, nil) on drift, and (_, err) on
 	// failure (doctor degrades gracefully on error).
@@ -229,6 +236,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.addAll(checkAssetDrift(opts, repoRoot))
 	r.addAll(checkReleaseInfra(opts, repoRoot, cfg))
 	r.add(checkPostureDrift(opts, repoRoot, cfg))
+	r.add(checkOrgPostureDrift(opts, repoRoot, cfg))
 	r.addAll(checkFragmentDrift(opts, repoRoot, cfg))
 
 	for _, f := range r.Findings {

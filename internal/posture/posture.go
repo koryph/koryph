@@ -39,6 +39,11 @@ type Source interface {
 	// RepoSettingsFile returns the path to the repo-settings.json desired-state
 	// file, or a non-nil error when no such file is available.
 	RepoSettingsFile() (string, error)
+	// OrgRulesetsDir returns the path to the directory containing *.json
+	// org-level ruleset files, or a non-nil error when no such directory is
+	// available.  Callers treat the error as "no org rulesets" and skip the
+	// org section gracefully.
+	OrgRulesetsDir() (string, error)
 }
 
 // LocalSource reads desired state from the project's own .github/ directory.
@@ -64,6 +69,34 @@ func (s LocalSource) RepoSettingsFile() (string, error) {
 		return "", fmt.Errorf("posture: no desired-state file: %s", f)
 	}
 	return f, nil
+}
+
+// OrgRulesetsDir implements [Source].
+func (s LocalSource) OrgRulesetsDir() (string, error) {
+	dir := s.Root + "/.github/org-rulesets"
+	if _, err := os.Stat(dir); err != nil {
+		return "", fmt.Errorf("posture: no org rulesets dir: %s", dir)
+	}
+	return dir, nil
+}
+
+// PermissionError is returned when a GitHub API call fails with HTTP 403 due
+// to insufficient permissions. It names the exact permission the caller needs.
+type PermissionError struct {
+	// Action describes the attempted operation, e.g.
+	// "list org rulesets for koryph-hq".
+	Action string
+	// Needed is the required permission, e.g. "org owner / admin access".
+	Needed string
+	// Detail is the raw message from GitHub (may be empty).
+	Detail string
+}
+
+func (e *PermissionError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("posture: %s requires %s: %s", e.Action, e.Needed, e.Detail)
+	}
+	return fmt.Sprintf("posture: %s requires %s", e.Action, e.Needed)
 }
 
 // GHBin returns the gh CLI binary path, honouring the KORYPH_GH_BIN

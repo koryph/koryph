@@ -23,9 +23,9 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 		parentHelp(stdout, "posture", "apply a named desired-state profile to a GitHub repo", []subVerb{
 			{"list", "list built-in and user-defined profiles"},
 			{"list --fragments", "list built-in security-scanner fragments"},
-			{"check <profile> [--repo owner/name] [--param k=v]...", "diff live GitHub state against profile (exit 1 on drift)"},
-			{"diff <profile> [--repo owner/name] [--param k=v]...", "show drift between live state and profile (always exit 0)"},
-			{"apply <profile> [--repo owner/name] [--param k=v]...", "show diff then apply profile to live GitHub repo"},
+			{"check <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "diff live GitHub state against profile (exit 1 on drift)"},
+			{"diff <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "show drift between live state and profile (always exit 0)"},
+			{"apply <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "show diff then apply profile to live GitHub repo"},
 		})
 		return 0
 	}
@@ -138,12 +138,13 @@ func cmdPostureApply(args []string, stdout, stderr io.Writer) int {
 func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, apply, alwaysExit0 bool) int {
 	fs := newFlagSet(cmdName, stderr)
 	repo := fs.String("repo", "", "repository in owner/name form (default: detected from git remote via gh)")
+	org := fs.String("org", "", "GitHub organisation for org-level ruleset check/apply (requires org owner/admin)")
 	force := fs.Bool("force", false, "with apply: overwrite stale fragment files (default: only install missing fragments)")
 	var rawParams multiFlag
 	fs.Var(&rawParams, "param", "profile parameter as key=value (repeatable, e.g. --param required_checks=\"pre-commit,make gate\")")
 	setUsage(fs, stdout,
 		cmdName+" — compare or apply a named posture profile",
-		"<profile> [--repo owner/name] [--param k=v]... [--force]")
+		"<profile> [--repo owner/name] [--org ORG] [--param k=v]... [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -250,6 +251,36 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 			}
 			if d {
 				drift = true
+			}
+		}
+	}
+
+	// ---- org-level rulesets ---------------------------------------------
+	// Only run when --org is supplied.  Missing org-rulesets dir in the
+	// profile is silently skipped (the profile may not carry any).
+	if *org != "" {
+		if _, err2 := profileSrc.OrgRulesetsDir(); err2 == nil {
+			if apply {
+				fmt.Fprintln(stdout, "--- org rulesets diff ---")
+				d, err2 := posture.CheckOrgRulesets(ctx, ghBin, *org, profileSrc, stdout)
+				if err2 != nil {
+					return fail(stderr, err2)
+				}
+				if d {
+					drift = true
+					fmt.Fprintln(stdout, "--- applying org rulesets ---")
+					if err2 := posture.ApplyOrgRulesets(ctx, ghBin, *org, profileSrc, stdout); err2 != nil {
+						return fail(stderr, err2)
+					}
+				}
+			} else {
+				d, err2 := posture.CheckOrgRulesets(ctx, ghBin, *org, profileSrc, stdout)
+				if err2 != nil {
+					return fail(stderr, err2)
+				}
+				if d {
+					drift = true
+				}
 			}
 		}
 	}

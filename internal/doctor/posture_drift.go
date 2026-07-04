@@ -3,9 +3,10 @@
 
 package doctor
 
-// posture_drift.go — checkPostureDrift + checkFragmentDrift: doctor checks that
-// flag hygiene drift between a project's live GitHub repo / installed files and
-// its declared posture profile / opted-in scanner fragments.
+// posture_drift.go — checkPostureDrift + checkOrgPostureDrift +
+// checkFragmentDrift: doctor checks that flag hygiene drift between a
+// project's live GitHub repo / org / installed files and its declared posture
+// profile / opted-in scanner fragments.
 //
 // checkPostureDrift:
 //   - skipped (LevelOK) when koryph.project.json has no posture block.
@@ -13,14 +14,20 @@ package doctor
 //     `koryph posture check`, then reports LevelOK or LevelWarn.
 //   - degrades gracefully (LevelOK + note) when gh is unavailable.
 //
+// checkOrgPostureDrift (design §3.2):
+//   - skipped (LevelOK) when posture.org is empty.
+//   - renders the named profile and checks org-level rulesets via
+//     `koryph posture check --org`.
+//   - degrades gracefully when gh is unavailable or lacks org admin access.
+//
 // checkFragmentDrift (design §3.3):
 //   - skipped (LevelOK) when posture.fragments is empty.
 //   - compares installed fragment files against embedded versions via SHA-256.
 //   - reports missing or stale files as LevelWarn with a remediation command.
 //   - no gh network calls required — fragment files live in the project tree.
 //
-// The injectable PostureDriftCheck field on ProjectOptions lets tests bypass
-// the real gh network calls for checkPostureDrift.
+// The injectable PostureDriftCheck and OrgPostureDriftCheck fields on
+// ProjectOptions let tests bypass the real gh network calls.
 
 import (
 	"bytes"
@@ -163,6 +170,103 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 		Check:   checkNamePostureDrift,
 		Level:   LevelOK,
 		Message: fmt.Sprintf("profile %q: no drift detected", cfg.Posture.Profile),
+	}
+}
+
+// checkNameOrgPostureDrift is the check name for org-level posture drift.
+const checkNameOrgPostureDrift = "org-posture-drift"
+
+// checkOrgPostureDrift reports whether the live GitHub org-level rulesets
+// drift from the posture profile declared in cfg.Posture.
+//
+// The check is skipped (LevelOK) when:
+//   - cfg.Posture is nil or cfg.Posture.Org is empty
+//   - gh is unavailable or unauthenticated
+//   - the caller lacks org owner / admin access (degrades gracefully)
+//
+// When drift is found the finding message contains the exact
+// `koryph posture apply <profile> --org ORG [--param k=v]...` command.
+func checkOrgPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config) Finding {
+	if cfg == nil || cfg.Posture == nil || cfg.Posture.Org == "" {
+		return Finding{
+			Check:   checkNameOrgPostureDrift,
+			Level:   LevelOK,
+			Message: "no org declared in posture block (skipped)",
+		}
+	}
+
+	orgName := cfg.Posture.Org
+
+	// Use injectable function when provided (test seam).
+	if opts.OrgPostureDriftCheck != nil {
+		drift, err := opts.OrgPostureDriftCheck(repoRoot, cfg.Posture)
+		if err != nil {
+			return Finding{
+				Check:   checkNameOrgPostureDrift,
+				Level:   LevelOK,
+				Message: fmt.Sprintf("org posture check skipped: %v", err),
+			}
+		}
+		if !drift {
+			return Finding{
+				Check:   checkNameOrgPostureDrift,
+				Level:   LevelOK,
+				Message: fmt.Sprintf("org %q profile %q: no drift detected", orgName, cfg.Posture.Profile),
+			}
+		}
+		return Finding{
+			Check:   checkNameOrgPostureDrift,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("org posture drift for %q from profile %q (run `%s`)", orgName, cfg.Posture.Profile, cfg.Posture.OrgPostureApplyCmd()),
+		}
+	}
+
+	// Real check via gh CLI.
+	home := paths.KoryphHome()
+	ghBin := posture.GHBin()
+	ctx := context.Background()
+
+	profileSrc, cleanup, err := posture.RenderProfile(cfg.Posture.Profile, cfg.Posture.Parameters, home)
+	if err != nil {
+		return Finding{
+			Check:   checkNameOrgPostureDrift,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("org posture profile %q not found or failed to render: %v", cfg.Posture.Profile, err),
+		}
+	}
+	defer cleanup()
+
+	// Skip if the profile has no org-rulesets directory.
+	if _, err := profileSrc.OrgRulesetsDir(); err != nil {
+		return Finding{
+			Check:   checkNameOrgPostureDrift,
+			Level:   LevelOK,
+			Message: fmt.Sprintf("profile %q has no org-rulesets/ (skipped)", cfg.Posture.Profile),
+		}
+	}
+
+	var out bytes.Buffer
+	d, err := posture.CheckOrgRulesets(ctx, ghBin, orgName, profileSrc, &out)
+	if err != nil {
+		// Degrade gracefully — permission errors and gh errors are not fatal.
+		return Finding{
+			Check:   checkNameOrgPostureDrift,
+			Level:   LevelOK,
+			Message: fmt.Sprintf("org posture drift check skipped: %v", err),
+		}
+	}
+
+	if d {
+		return Finding{
+			Check:   checkNameOrgPostureDrift,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("org posture drift for %q from profile %q (run `%s`)", orgName, cfg.Posture.Profile, cfg.Posture.OrgPostureApplyCmd()),
+		}
+	}
+	return Finding{
+		Check:   checkNameOrgPostureDrift,
+		Level:   LevelOK,
+		Message: fmt.Sprintf("org %q profile %q: no drift detected", orgName, cfg.Posture.Profile),
 	}
 }
 

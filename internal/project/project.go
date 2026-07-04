@@ -209,6 +209,11 @@ type PostureConfig struct {
 	// A profile's manifest.json may list recommended_fragments (informational
 	// only — listing them here is what opts the project in).
 	Fragments []string `json:"fragments,omitempty"`
+	// Org, when non-empty, names the GitHub organisation whose org-level
+	// rulesets should be drift-checked alongside the repo rulesets by
+	// `koryph doctor --project`.  Requires org owner / admin access; the
+	// doctor check degrades gracefully when permission is absent.
+	Org string `json:"org,omitempty"`
 }
 
 // Config is the per-project adapter.
@@ -578,6 +583,23 @@ func (p *PostureConfig) PostureApplyCmd() string {
 		return ""
 	}
 	cmd := "koryph posture apply " + p.Profile
+	for k, v := range p.Parameters {
+		cmd += " --param " + k + "=" + v
+	}
+	if p.Org != "" {
+		cmd += " --org " + p.Org
+	}
+	return cmd
+}
+
+// OrgPostureApplyCmd returns the exact shell command that would bring the live
+// org-level rulesets into conformance with the posture block.  Returns an
+// empty string when PostureConfig is nil or Org is not set.
+func (p *PostureConfig) OrgPostureApplyCmd() string {
+	if p == nil || p.Org == "" {
+		return ""
+	}
+	cmd := "koryph posture apply " + p.Profile + " --org " + p.Org
 	for k, v := range p.Parameters {
 		cmd += " --param " + k + "=" + v
 	}

@@ -129,6 +129,10 @@
           },
           "type": "array",
           "description": "Fragments lists the security-scanner fragment names this project has\nopted into (design §3.3).  Each name must match a built-in fragment\n(see `koryph posture list --fragments`).  Opted-in fragments are:\n  - installed into the project by `koryph posture apply`\n  - drift-checked by `koryph doctor --project`\nA profile's manifest.json may list recommended_fragments (informational\nonly — listing them here is what opts the project in)."
+        },
+        "org": {
+          "type": "string",
+          "description": "Org, when non-empty, names the GitHub organisation whose org-level\nrulesets should be drift-checked alongside the repo rulesets by\n`koryph doctor --project`.  Requires org owner / admin access; the\ndoctor check degrades gracefully when permission is absent."
         }
       },
       "additionalProperties": false,
