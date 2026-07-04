@@ -30,6 +30,15 @@ docs, CLI front door, and repo bootstrap still assume you arrive with an
 existing repo and know the internals. The journey from *nothing* is not yet
 a product.
 
+## 1b. Standing principle: capabilities live in the binary
+
+Every user-facing capability ships inside the `koryph` binary — a brew
+install is the complete product. Repo scripts (`scripts/ensure-*.sh`) and
+make targets are development conveniences or thin wrappers at most, and any
+capability that starts life as a script retires at binary parity. This rule
+has now recurred three times (release-bot provisioning, release kick,
+hygiene ensure scripts) — treat it as a review gate for all new features.
+
 ## 2. The journey, stage by stage
 
 | Stage | Today | Gap |
