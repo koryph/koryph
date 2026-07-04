@@ -17,6 +17,32 @@ const (
 	KeyPersona  = "persona"
 	KeyPhase    = "phase"
 	KeyError    = "error"
+
+	// §O4 client-span keys — forge.api and vault.resolve spans.
+
+	// KeyEndpointClass is the conceptual operation name for a forge API call
+	// (e.g. "list_installations", "mint_installation_token"). It is stable and
+	// scrubbed of any path parameters that could carry secret material.
+	KeyEndpointClass = "endpoint_class"
+
+	// KeyLatencyMS is the wall-clock duration of a sub-operation in
+	// milliseconds. Emitted on every forge.api and vault.resolve span event.
+	KeyLatencyMS = "latency_ms"
+
+	// KeyStatus is the HTTP response status code for forge API spans.
+	// 0 means the call never received an HTTP response (network error, CLI call,
+	// or a non-HTTP operation).
+	KeyStatus = "status"
+
+	// KeyKeyRef is the vault key reference — the provider-specific URI or path
+	// that identifies WHERE the secret lives (e.g. "pass://share/item",
+	// "koryph-bot-mybot"). It is NEVER the secret value itself.
+	// Logging this key is safe; logging the resolved value is forbidden.
+	KeyKeyRef = "key_ref"
+
+	// KeyLifecycle is the bot lifecycle event label (e.g. "create.started",
+	// "create.succeeded", "load", "save"). Used on bot.lifecycle log records.
+	KeyLifecycle = "lifecycle_event"
 )
 
 // RunAttrs returns slog attributes for a run context. Pass "" for any field

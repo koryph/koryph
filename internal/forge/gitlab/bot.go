@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/forge"
+	"github.com/koryph/koryph/internal/obs"
 )
 
 // gitlabBotSvc implements [forge.BotService] for GitLab access tokens.
@@ -38,8 +40,18 @@ func glHost() string {
 	return "gitlab.com"
 }
 
-// glAPIBase returns the base API URL for the configured host.
+// glAPIBaseOverride is the full API base URL used by tests to redirect HTTP
+// calls to a local httptest.Server. When non-empty it takes precedence over
+// glAPIBase(). Tests in package gitlab set this directly; production code
+// never sets it.
+var glAPIBaseOverride string
+
+// glAPIBase returns the base API URL for the configured host. Tests may set
+// glAPIBaseOverride to redirect calls to a local test server.
 func glAPIBase() string {
+	if glAPIBaseOverride != "" {
+		return glAPIBaseOverride
+	}
 	return "https://" + glHost() + "/api/v4"
 }
 
@@ -129,7 +141,17 @@ type tokenSelfInfo struct {
 // fetchTokenSelf calls GET /personal_access_tokens/self with the given token
 // and returns the parsed response. host overrides the default host when
 // non-empty (avoids mutating the process-global env).
+//
+// Span: provider=gitlab, endpoint_class=token_self.
+// Redaction contract: token is set only as a PRIVATE-TOKEN header; it is
+// NEVER logged. The response body (token metadata, never the raw value) is
+// parsed and only token.Name and token.ID are used for logging.
 func fetchTokenSelf(ctx context.Context, token, host string) (*tokenSelfInfo, error) {
+	sp := obs.StartSpan(ctx, obs.For("forge"), slog.LevelDebug, "forge.api",
+		slog.String(obs.KeyProvider, "gitlab"),
+		slog.String(obs.KeyEndpointClass, "token_self"),
+	)
+
 	base := glAPIBase()
 	if host != "" && host != "gitlab.com" {
 		base = "https://" + host + "/api/v4"
@@ -137,6 +159,7 @@ func fetchTokenSelf(ctx context.Context, token, host string) (*tokenSelfInfo, er
 	apiURL := base + "/personal_access_tokens/self"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, http.NoBody)
 	if err != nil {
+		sp.End(0, err)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("PRIVATE-TOKEN", token)
@@ -144,23 +167,31 @@ func fetchTokenSelf(ctx context.Context, token, host string) (*tokenSelfInfo, er
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		sp.End(0, err)
 		return nil, fmt.Errorf("GET /personal_access_tokens/self: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("token is invalid or revoked (HTTP 401)")
+		callErr := fmt.Errorf("token is invalid or revoked (HTTP 401)")
+		sp.End(resp.StatusCode, callErr)
+		return nil, callErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /personal_access_tokens/self returned HTTP %d: %s",
+		callErr := fmt.Errorf("GET /personal_access_tokens/self returned HTTP %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
+		sp.End(resp.StatusCode, callErr)
+		return nil, callErr
 	}
 
 	var info tokenSelfInfo
 	if err := json.Unmarshal(body, &info); err != nil {
+		sp.End(resp.StatusCode, err)
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
+
+	sp.End(resp.StatusCode, nil)
 	return &info, nil
 }
 
@@ -216,10 +247,22 @@ func SetProjectVariable(ctx context.Context, token, projectID, key, value string
 // doVariableRequest executes an HTTP request to the GitLab variables API.
 // It returns [errVariableNotFound] on HTTP 404 so callers can distinguish
 // a missing-variable response from other failures.
+//
+// Span: provider=gitlab, endpoint_class=variable_{method}.
+// Redaction contract: token is set only as a PRIVATE-TOKEN header; the form
+// body (which may contain a variable value) is NEVER logged. Only the HTTP
+// method, status code, and latency are recorded.
 func doVariableRequest(ctx context.Context, token, method, rawURL string, form url.Values) error {
+	endpointClass := "variable_" + strings.ToLower(method)
+	sp := obs.StartSpan(ctx, obs.For("forge"), slog.LevelDebug, "forge.api",
+		slog.String(obs.KeyProvider, "gitlab"),
+		slog.String(obs.KeyEndpointClass, endpointClass),
+	)
+
 	req, err := http.NewRequestWithContext(ctx, method, rawURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
+		sp.End(0, err)
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("PRIVATE-TOKEN", token)
@@ -228,18 +271,24 @@ func doVariableRequest(ctx context.Context, token, method, rawURL string, form u
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		sp.End(0, err)
 		return fmt.Errorf("%s: %w", method, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
+		sp.End(resp.StatusCode, errVariableNotFound)
 		return errVariableNotFound
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s returned HTTP %d: %s", method, resp.StatusCode,
+		callErr := fmt.Errorf("%s returned HTTP %d: %s", method, resp.StatusCode,
 			strings.TrimSpace(string(b)))
+		sp.End(resp.StatusCode, callErr)
+		return callErr
 	}
+
+	sp.End(resp.StatusCode, nil)
 	return nil
 }
 
@@ -313,10 +362,20 @@ type VariableInfo struct {
 
 // ListProjectVariables returns the keys of CI/CD variables defined on the
 // project identified by projectID. Token must have api or read_api scope.
+//
+// Span: provider=gitlab, endpoint_class=list_project_variables.
+// Redaction contract: token is set only as a PRIVATE-TOKEN header; variable
+// values in the response are parsed but NEVER logged (only key names).
 func ListProjectVariables(ctx context.Context, token, projectID string) ([]string, error) {
+	sp := obs.StartSpan(ctx, obs.For("forge"), slog.LevelDebug, "forge.api",
+		slog.String(obs.KeyProvider, "gitlab"),
+		slog.String(obs.KeyEndpointClass, "list_project_variables"),
+	)
+
 	apiURL := glAPIBase() + "/projects/" + url.PathEscape(projectID) + "/variables"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, http.NoBody)
 	if err != nil {
+		sp.End(0, err)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("PRIVATE-TOKEN", token)
@@ -324,20 +383,26 @@ func ListProjectVariables(ctx context.Context, token, projectID string) ([]strin
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		sp.End(0, err)
 		return nil, fmt.Errorf("GET /projects/.../variables: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /projects/.../variables returned HTTP %d: %s",
+		callErr := fmt.Errorf("GET /projects/.../variables returned HTTP %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
+		sp.End(resp.StatusCode, callErr)
+		return nil, callErr
 	}
 
 	var vars []VariableInfo
 	if err := json.Unmarshal(body, &vars); err != nil {
+		sp.End(resp.StatusCode, err)
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
+
+	sp.End(resp.StatusCode, nil)
 
 	keys := make([]string, 0, len(vars))
 	for _, v := range vars {

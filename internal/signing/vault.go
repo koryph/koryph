@@ -6,6 +6,7 @@ package signing
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
 )
 
@@ -274,7 +276,26 @@ func FetchSecret(ctx context.Context, provider, ref string) ([]byte, error) {
 //
 // Callers that do not already hold a *VaultConfig should use FetchSecret
 // instead, which loads vault config automatically.
+//
+// Span: vault.resolve with provider and key_ref (the reference URI/path, NEVER
+// the resolved secret value). Passphrase prompts are never emitted to any log.
 func (v *VaultConfig) Fetch(ctx context.Context, provider, ref string) ([]byte, error) {
+	// Emit a vault.resolve span. ref is the KEY REFERENCE (e.g. a file path,
+	// a pass:// URI, or a Keychain service name) — safe to log. The returned
+	// bytes (the actual secret) are NEVER included in any attribute.
+	sp := obs.StartSpan(ctx, obs.For("vault"), slog.LevelDebug, "vault.resolve",
+		slog.String(obs.KeyProvider, provider),
+		slog.String(obs.KeyKeyRef, ref),
+	)
+
+	secret, err := v.fetch(ctx, provider, ref)
+	sp.End(0, err)
+	return secret, err
+}
+
+// fetch is the internal implementation of Fetch without span emission.
+// Keeping span logic out of the switch makes each branch simpler.
+func (v *VaultConfig) fetch(ctx context.Context, provider, ref string) ([]byte, error) {
 	switch provider {
 	case ProviderFile:
 		if ref == "" {

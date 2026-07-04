@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,6 +41,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/signing"
 )
@@ -101,6 +103,9 @@ func BotPath(name string) string { return filepath.Join(BotsDir(), name+".json")
 
 // Save persists cfg to BotPath(cfg.Name) with mode 0600, creating BotsDir
 // if necessary.
+//
+// Lifecycle event: bot.lifecycle save. Logs name, app_id, and vault provider
+// only. The PEM field (inline or pointer mode) is NEVER logged.
 func Save(cfg *Config) error {
 	if err := os.MkdirAll(BotsDir(), 0o700); err != nil {
 		return fmt.Errorf("bot save: mkdir bots dir: %w", err)
@@ -119,10 +124,25 @@ func Save(cfg *Config) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("bot save: rename: %w", err)
 	}
+
+	// Emit lifecycle event. Only safe identifiers — PEM and token values are
+	// never present here, even in inline mode.
+	obs.For("bot").LogAttrs(context.Background(), slog.LevelDebug, "bot.lifecycle",
+		slog.String(obs.KeyLifecycle, "save"),
+		slog.String("name", cfg.Name),
+		slog.Int64("app_id", cfg.AppID),
+		slog.String(obs.KeyProvider, cfg.Provider), // vault provider name, not a secret
+		slog.Bool("is_pointer", cfg.IsPointer()),
+	)
+
 	return nil
 }
 
 // Load reads and parses the credential file for the named bot.
+//
+// Lifecycle event: bot.lifecycle load. Logs name, app_id, slug, vault provider
+// and key_ref (the reference, not the key value). The PEM field (inline or
+// pointer mode) is NEVER logged.
 func Load(name string) (*Config, error) {
 	data, err := os.ReadFile(BotPath(name))
 	if errors.Is(err, os.ErrNotExist) {
@@ -135,6 +155,20 @@ func Load(name string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("bot load: unmarshal: %w", err)
 	}
+
+	// Lifecycle event — only safe identifiers. KeyRef is the vault reference
+	// (e.g. "koryph-bot-mybot" or "pass://xxx/yyy"), never the resolved secret.
+	obs.For("bot").LogAttrs(context.Background(), slog.LevelDebug, "bot.lifecycle",
+		slog.String(obs.KeyLifecycle, "load"),
+		slog.String("name", cfg.Name),
+		slog.Int64("app_id", cfg.AppID),
+		slog.String("slug", cfg.Slug),
+		slog.String("owner", cfg.Owner),
+		slog.String(obs.KeyProvider, cfg.Provider), // vault provider name, safe
+		slog.String(obs.KeyKeyRef, cfg.KeyRef),     // vault reference, safe
+		slog.Bool("is_pointer", cfg.IsPointer()),
+	)
+
 	return &cfg, nil
 }
 
@@ -236,6 +270,17 @@ func Create(ctx context.Context, opts CreateOptions) (*Config, error) {
 	if err := ValidateName(opts.Name); err != nil {
 		return nil, err
 	}
+
+	// Lifecycle event: create started. Log only safe identifiers — no PEM,
+	// no token, no passphrase. VaultProvider and KeyRef are references (config
+	// choices, not secret values).
+	obs.For("bot").LogAttrs(ctx, slog.LevelInfo, "bot.lifecycle",
+		slog.String(obs.KeyLifecycle, "create.started"),
+		slog.String("name", opts.Name),
+		slog.String("org", opts.Org),
+		slog.Bool("public", opts.Public),
+		slog.String(obs.KeyProvider, opts.VaultProvider), // vault choice, not a secret
+	)
 	if opts.Timeout == 0 {
 		opts.Timeout = 5 * time.Minute
 	}
@@ -344,6 +389,21 @@ func Create(ctx context.Context, opts CreateOptions) (*Config, error) {
 	if err := Save(cfg); err != nil {
 		return nil, err
 	}
+
+	// Lifecycle event: create succeeded. Log only safe identifiers.
+	// cfg.PEM has already been cleared when using pointer mode (storeKeyAfterCreate
+	// moves it to the vault); in inline mode PEM is present but NEVER logged.
+	obs.For("bot").LogAttrs(ctx, slog.LevelInfo, "bot.lifecycle",
+		slog.String(obs.KeyLifecycle, "create.succeeded"),
+		slog.String("name", cfg.Name),
+		slog.Int64("app_id", cfg.AppID),
+		slog.String("slug", cfg.Slug),
+		slog.String("owner", cfg.Owner),
+		slog.String(obs.KeyProvider, cfg.Provider), // vault provider name, safe
+		slog.String(obs.KeyKeyRef, cfg.KeyRef),     // vault reference, safe
+		slog.Bool("is_pointer", cfg.IsPointer()),
+	)
+
 	return cfg, nil
 }
 
