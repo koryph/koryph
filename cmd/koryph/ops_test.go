@@ -12,7 +12,51 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/paths"
 )
+
+// fakeBDNudge is a stand-in `bd` binary for cmdNudge tests: it always
+// succeeds and logs its argv (one line per invocation) to $BD_ARGS_LOG, so a
+// test can assert exactly what `bd update ... --append-notes` or
+// `bd comment` was called with.
+const fakeBDNudge = `#!/bin/sh
+if [ -n "$BD_ARGS_LOG" ]; then
+  echo "$@" >> "$BD_ARGS_LOG"
+fi
+exit 0
+`
+
+// installFakeBD writes fakeBDNudge to a temp dir, points KORYPH_BD_BIN at it,
+// and returns the argv-log path.
+func installFakeBD(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bd")
+	if err := os.WriteFile(bin, []byte(fakeBDNudge), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+	log := filepath.Join(dir, "argv.log")
+	t.Setenv("KORYPH_BD_BIN", bin)
+	t.Setenv("BD_ARGS_LOG", log)
+	return log
+}
+
+// readArgvLog returns the logged argv lines (one call per line), skipping the
+// leading "bd " the adapter's execx invocation does NOT include (Args passed
+// to execx already exclude argv[0]).
+func readArgvLog(t *testing.T, log string) []string {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
+}
 
 // --- tailFile ---
 
@@ -269,5 +313,122 @@ func TestCmdNudgeMissingText(t *testing.T) {
 	}
 	if !strings.Contains(errb, "text") {
 		t.Errorf("stderr = %q, want text message", errb)
+	}
+}
+
+// --- cmdNudge (dispatch-state branching, koryph-o72) ------------------------
+
+// TestCmdNudgePreDispatchNoRunAtAllAppendsNotes covers the real-world failure
+// this bead fixes: the bead is queued (no run has ever started for the
+// project), so there is no phase dir INBOX.md could land in. The nudge must
+// not silently create one anyway — it must go to bd notes, the channel
+// promptc.Compile actually reads at the bead's eventual dispatch.
+func TestCmdNudgePreDispatchNoRunAtAllAppendsNotes(t *testing.T) {
+	isolate(t)
+	log := installFakeBD(t)
+	rec := registerMinimalProject(t, "proj-nudge-1")
+
+	code, out, errb := runCmd("nudge", "--project", rec.ProjectID, "bead-77", "scope also covers retries")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, errb)
+	}
+	if !strings.Contains(out, "not dispatched yet") {
+		t.Errorf("stdout = %q, want a not-dispatched-yet notice", out)
+	}
+
+	args := readArgvLog(t, log)
+	if len(args) != 1 {
+		t.Fatalf("bd argv log = %+v, want exactly one call", args)
+	}
+	if !strings.HasPrefix(args[0], "update bead-77 --append-notes") {
+		t.Errorf("bd argv = %q, want an --append-notes call against bead-77", args[0])
+	}
+	if !strings.Contains(args[0], "scope also covers retries") {
+		t.Errorf("bd argv = %q, want the nudge text appended", args[0])
+	}
+
+	// No phase dir should have been fabricated for a bead with no run.
+	if entries, err := os.ReadDir(filepath.Join(paths.KoryphRoot(rec.Root))); err == nil {
+		for _, e := range entries {
+			if e.Name() == "bead-77" {
+				t.Errorf("unexpected phase dir created for a never-dispatched bead: %s", e.Name())
+			}
+		}
+	}
+}
+
+// TestCmdNudgePreDispatchQueuedInActiveRunAppendsNotes covers the same bug in
+// its subtler form: a run IS active, but this particular bead has no slot in
+// it yet (still queued in `bd ready`, not yet admitted into a wave). The
+// nudge must still prefer bd notes over speculatively writing an INBOX.md
+// that a future dispatch (possibly in a later run) may never look at.
+func TestCmdNudgePreDispatchQueuedInActiveRunAppendsNotes(t *testing.T) {
+	isolate(t)
+	log := installFakeBD(t)
+	rec := registerMinimalProject(t, "proj-nudge-2")
+	// A run exists, but with a slot for a DIFFERENT bead only.
+	seedTestRun(t, rec, []*ledger.Slot{{PhaseID: "other-bead", Status: ledger.SlotRunning}})
+
+	code, out, errb := runCmd("nudge", "--project", rec.ProjectID, "queued-bead", "must include the retry path")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, errb)
+	}
+	if !strings.Contains(out, "not dispatched yet") {
+		t.Errorf("stdout = %q, want a not-dispatched-yet notice", out)
+	}
+	args := readArgvLog(t, log)
+	if len(args) != 1 || !strings.HasPrefix(args[0], "update queued-bead --append-notes") {
+		t.Fatalf("bd argv log = %+v, want a single --append-notes call against queued-bead", args)
+	}
+}
+
+// TestCmdNudgeDispatchedWritesInboxAndComments covers the already-dispatched
+// case: a slot exists for the bead in the latest run, so the live INBOX.md
+// channel applies (the agent is instructed to poll it), plus a best-effort
+// bd comment for the audit trail.
+func TestCmdNudgeDispatchedWritesInboxAndComments(t *testing.T) {
+	isolate(t)
+	log := installFakeBD(t)
+	rec := registerMinimalProject(t, "proj-nudge-3")
+	run := seedTestRun(t, rec, []*ledger.Slot{{PhaseID: "live-bead", Status: ledger.SlotRunning}})
+
+	code, out, errb := runCmd("nudge", "--project", rec.ProjectID, "live-bead", "narrow the scope now")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, errb)
+	}
+	if !strings.Contains(out, "nudged live-bead") {
+		t.Errorf("stdout = %q, want a nudged confirmation", out)
+	}
+
+	inboxPath := filepath.Join(paths.KoryphRoot(rec.Root), run.RunID, "live-bead", "INBOX.md")
+	data, err := os.ReadFile(inboxPath)
+	if err != nil {
+		t.Fatalf("INBOX.md not written at %s: %v", inboxPath, err)
+	}
+	if !strings.Contains(string(data), "narrow the scope now") {
+		t.Errorf("INBOX.md = %q, missing the nudge text", string(data))
+	}
+
+	args := readArgvLog(t, log)
+	if len(args) != 1 || !strings.HasPrefix(args[0], "comment live-bead") {
+		t.Fatalf("bd argv log = %+v, want a single comment call against live-bead", args)
+	}
+}
+
+// TestCmdNudgePreDispatchNoBDErrorsLoudly asserts the loud-error edge case:
+// when the bead is not dispatched yet AND bd is unavailable, the nudge must
+// not silently no-op — the operator has no other reliable channel, so it
+// must fail with guidance to run `bd update --append-notes` directly.
+func TestCmdNudgePreDispatchNoBDErrorsLoudly(t *testing.T) {
+	isolate(t)
+	t.Setenv("KORYPH_BD_BIN", "/nonexistent/definitely-not-bd")
+	rec := registerMinimalProject(t, "proj-nudge-4")
+
+	code, _, errb := runCmd("nudge", "--project", rec.ProjectID, "bead-99", "urgent scope change")
+	if code == 0 {
+		t.Fatalf("expected a non-zero exit when bd is unavailable pre-dispatch; stderr = %q", errb)
+	}
+	if !strings.Contains(errb, "--append-notes") {
+		t.Errorf("stderr = %q, want guidance to run bd update --append-notes directly", errb)
 	}
 }

@@ -224,13 +224,37 @@ func tailFile(path string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// cmdNudge appends an operator note to a phase's INBOX and (best-effort) posts
-// a bd comment.
+// cmdNudge delivers an operator note to a bead, on exactly ONE channel chosen
+// by dispatch state (koryph-o72 leg 2):
+//
+//   - Bead already dispatched (a slot for it exists in the project's latest
+//     run): the live channel — append to INBOX.md in that run's phase dir,
+//     plus a best-effort bd comment for the audit trail. A running agent is
+//     told (promptc's preamble) to read INBOX.md at start, between steps,
+//     and before finishing, and `koryph tail --follow` surfaces new entries
+//     immediately.
+//   - Bead NOT yet dispatched (no run yet, or no slot for it in the latest
+//     run): INBOX.md is NOT used, because there is no guarantee the bead's
+//     eventual dispatch lands in the run that is "latest" right now — a
+//     still-queued bead can be picked up by a later wave, or by an entirely
+//     new `koryph run` invocation, whose phase dir this call cannot predict.
+//     Writing INBOX.md there anyway is exactly the bug this bead fixes: a
+//     nudge that silently never reaches the agent. Instead the note is
+//     appended to the bead's own notes via `bd update --append-notes`:
+//     Issue.Notes is returned by every `bd show`/`bd ready` call and
+//     promptc.Compile folds it into an OPERATOR NOTES section on whichever
+//     dispatch actually happens (internal/promptc/compile.go), so this is
+//     the one channel guaranteed to survive to the right agent.
+//
+// A bd comment alone cannot serve as that channel: nothing reads bd comments
+// back into a Show/Ready result, so promptc never sees them (see
+// internal/beads's package doc) — comments here are audit trail only.
 func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("nudge", stderr)
 	projectID := fs.String("project", "", "project id (required)")
-	setUsage(fs, stdout, "append an operator note to the phase INBOX (+ bd comment)",
-		`--project ID <phase-id> "text"`)
+	setUsage(fs, stdout,
+		"nudge a bead — live INBOX.md if it's dispatched, else a bd note delivered at its next dispatch",
+		`--project ID <bead-id> "text"`)
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -248,10 +272,41 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, run, err := latestRun(ctx, store, *projectID)
+	rec, err := store.Get(*projectID)
 	if err != nil {
 		return fail(stderr, err)
 	}
+
+	bd := beads.New(rec.Root)
+	if v := os.Getenv("KORYPH_BD_BIN"); v != "" {
+		bd.Bin = v
+	}
+
+	// A slot for this bead in the LATEST run means it is (or was) actually
+	// dispatched — a missing run, or a run with no slot for this bead, means
+	// it is still queued (see doc comment above).
+	var slot *ledger.Slot
+	run, runErr := ledger.NewStore(rec.Root).LoadLatest()
+	if runErr == nil {
+		slot = run.Slots[phaseID]
+	}
+
+	if slot == nil {
+		note := fmt.Sprintf("[nudge %s] %s", time.Now().UTC().Format(time.RFC3339), text)
+		if !bd.Available() {
+			return fail(stderr, fmt.Errorf(
+				"nudge: %s is not dispatched yet and bd is unavailable here — "+
+					"run this directly so it reaches whichever dispatch picks it up: "+
+					"bd update %s --append-notes %q", phaseID, phaseID, text))
+		}
+		if aerr := bd.AppendNotes(ctx, phaseID, note); aerr != nil {
+			return fail(stderr, fmt.Errorf("nudge: %s is not dispatched yet; append-notes failed: %w", phaseID, aerr))
+		}
+		fmt.Fprintf(stdout, "%s: not dispatched yet — recorded as a bd note "+
+			"(delivered as OPERATOR NOTES at its next dispatch)\n", phaseID)
+		return 0
+	}
+
 	phaseDir := filepath.Join(paths.KoryphRoot(rec.Root), run.RunID, phaseID)
 	if err := os.MkdirAll(phaseDir, 0o755); err != nil {
 		return fail(stderr, err)
@@ -269,11 +324,7 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, cerr)
 	}
 
-	// Best-effort bd comment.
-	bd := beads.New(rec.Root)
-	if v := os.Getenv("KORYPH_BD_BIN"); v != "" {
-		bd.Bin = v
-	}
+	// Best-effort bd comment — audit trail only, see doc comment above.
 	if bd.Available() {
 		if cerr := bd.Comment(ctx, phaseID, "operator nudge: "+text); cerr != nil {
 			fmt.Fprintln(stderr, "koryph: warning: bd comment failed:", cerr)
