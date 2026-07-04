@@ -3,11 +3,16 @@
 #
 # GoReleaser config (v2, >=2.16 for immutable releases). Snapshot-first:
 # `make release-snapshot` builds and archives locally with NO publishing.
-# Real releases are cut by merging a release-please Release PR, which tags
-# v<Engine> and creates the GitHub release; GoReleaser then runs in the same
-# workflow run (.github/workflows/release-please.yml) checked out at that
-# tag, and attaches build artifacts to the release release-please already
-# created (release.mode: keep-existing preserves its changelog notes).
+# Real releases are cut by merging a release-please Release PR; the
+# `tag-and-build` job in .github/workflows/release-please.yml then tags
+# v<Engine> and runs GoReleaser at that tag. GoReleaser now OWNS the GitHub
+# release itself (release-please-config.json sets skip-github-release:
+# true) and creates it as a DRAFT (release.draft: true below) so every
+# asset — binaries, checksums, cosign bundle, SBOMs — uploads before
+# anything is published; a separate `publish` job attaches SLSA provenance
+# and then flips the release to published as the pipeline's last step
+# (immutable releases lock the asset set at publication, not before). See
+# docs/developer-guide/releasing.md (koryph-q35.5).
 version: 2
 
 project_name: koryph
@@ -106,7 +111,13 @@ release:
     owner: koryph
     name: koryph
   prerelease: auto
-  # release-please already created the GitHub release for this tag (with its
-  # own conventional-commit changelog); GoReleaser attaches build artifacts
-  # to that same release rather than fighting over the notes.
-  mode: keep-existing
+  # GoReleaser now creates the GitHub release itself (release-please no
+  # longer does — skip-github-release: true) and holds it as a draft until
+  # every asset has uploaded; the workflow's `publish` job flips this to
+  # published only after SLSA provenance has also been attached. GoReleaser's
+  # own changelog (grouped by Conventional Commit type, see `changelog:`
+  # above) becomes the release body, since there is no pre-existing release
+  # to keep notes from (mode: keep-existing is therefore dropped: its default
+  # only matters when a release already exists for the tag, which is never
+  # true here).
+  draft: true
