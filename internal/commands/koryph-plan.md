@@ -44,7 +44,18 @@ whatever runtime you are (codex, cursor, grok build, ...).
    and collide in flight. If an existing bead overlaps, update or unblock it
    instead of creating a new one.
 
-2. **Decompose.** One bead per single-agent-sized unit of work, typed
+2. **Decompose seam-first.** When a design fans out to N sibling beads,
+   the FOUNDATION bead must ship the extension seam — a registry or
+   file-per-unit structure — so siblings ADD files and never EDIT shared
+   ones; label siblings with per-unit write tokens plus `fp:read:` on the
+   shared shell. Registration hubs (command tables, nav blocks, tab bars,
+   config schemas, go.mod for dep-adding siblings) are the recurring
+   serializers: if the epic adds Go dependencies, the foundation bead adds
+   them all, once. Review question before filing: "when all N siblings are
+   done, which files did more than one of them edit?" — the answer must be
+   empty. Then decompose.
+
+2b. **Decompose.** One bead per single-agent-sized unit of work, typed
    `task`/`bug`/`chore` — the **only** types the wave loop dispatches. Use
    `epic` only as the umbrella parent; the loop skips it. Every child bead's
    `--description` must stand alone (the loop's agents see only the bead
