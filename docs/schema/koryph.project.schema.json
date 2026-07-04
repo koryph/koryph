@@ -209,6 +209,13 @@
       },
       "type": "object"
     },
+    "model_map": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object",
+      "description": "ModelMap overrides the active runtime's tier -\u003e concrete-model-id map\n(koryph-v8u.10). Keys are the runtime-agnostic tier vocabulary a\npersona's `tier:` frontmatter carries (\"frontier\", \"standard\",\n\"light\" — see agents/README.md's frontmatter contract); values are\nconcrete model ids for whichever runtime is active (today, always\nClaude: \"opus\"/\"sonnet\"/\"haiku\", or \"fable\" as an explicit frontier\noverride). Sparse: only the tiers an operator wants to re-map need be\npresent, e.g. {\"frontier\": \"fable\"} — every other tier keeps\nruntime.ClaudeModelMap's default. A project-config host (rather than a\nregistry record) was chosen because AllowedModels/Tiers/Stages already\ncarry per-project model policy right here, and because this value is\nread on every dispatch (modelroute.Resolve), the same hot path as\nthose fields — see internal/modelroute/route.go's effectiveModelMap\nfor how it overlays onto the runtime default."
+    },
     "pipeline": {
       "items": {
         "$ref": "#/$defs/PipelineStage"

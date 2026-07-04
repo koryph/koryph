@@ -26,10 +26,11 @@ func fullConfig() *Config {
 		Footprint: []FootprintRule{
 			{Pattern: "src/**", Tokens: []string{"HOT:core"}},
 		},
-		AreaMap: map[string][]string{"cli": {"go:cli"}},
-		Gate:    []string{"make lint", "make test"},
-		Stages:  map[string]string{"implement": "implementer"},
-		Tiers:   map[string]string{"fast": "haiku"},
+		AreaMap:  map[string][]string{"cli": {"go:cli"}},
+		Gate:     []string{"make lint", "make test"},
+		Stages:   map[string]string{"implement": "implementer"},
+		Tiers:    map[string]string{"fast": "haiku"},
+		ModelMap: map[string]string{"frontier": "fable"},
 		Pipeline: []PipelineStage{
 			{Name: "docs", Persona: "feature-docs-author", Model: "sonnet", Effort: "high", Prompt: "update docs", Optional: true},
 		},

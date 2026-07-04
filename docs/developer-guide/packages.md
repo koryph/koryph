@@ -172,12 +172,19 @@ reporting and quota decisions.
 
 Resolves a (stage, bead-labels, run-defaults, project-config) tuple to a
 `(model, effort)` pair, with persona-file overrides and recovery upgrades.
+Precedence (koryph-v8u.10): bead `model:<tier>` label > persona `tier` (via
+the active runtime's model map, project-overridable) > persona `model`
+(legacy pin) > hardcoded stage default — see agents/README.md's "Resolution
+precedence" section.
 
-- **`Req`** / **`Resolution`** — request and resolved `(model, effort)`
-- **`Resolve(r)`** — main entry; consults label rules, then defaults
+- **`Req`** / **`Resolution`** — request and resolved `(model, effort)`;
+  `Req.RepoRoot`/`Req.ModelMap` opt a caller into the persona-tier step
+- **`Resolve(r)`** — main entry; consults label rules, then persona tier/
+  model, then defaults
 - **`PersonaFor(stage, stages)`** — picks persona name from stage map
 - **`RecoveryUpgrade(current)`** — escalates model for a recovery re-dispatch
-- **`PersonaMeta(repoRoot, persona)`** — reads persona file → `(model, effort)`
+- **`PersonaMeta(repoRoot, persona)`** — reads persona file →
+  `(model, effort, tier)`
 
 ## onboard
 

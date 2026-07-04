@@ -38,7 +38,7 @@ description: 'an example agent'
 model: not-this
 `)
 
-	model, effort, err := PersonaMeta(root, "x")
+	model, effort, tier, err := PersonaMeta(root, "x")
 	if err != nil {
 		t.Fatalf("PersonaMeta error = %v", err)
 	}
@@ -48,16 +48,19 @@ model: not-this
 	if effort != "high" {
 		t.Errorf("effort = %q, want high", effort)
 	}
+	if tier != "" {
+		t.Errorf("tier = %q, want empty (frontmatter carries no tier here)", tier)
+	}
 }
 
 func TestPersonaMetaMissingFile(t *testing.T) {
 	root := t.TempDir()
-	model, effort, err := PersonaMeta(root, "nope")
+	model, effort, tier, err := PersonaMeta(root, "nope")
 	if err != nil {
 		t.Fatalf("missing file should not error, got %v", err)
 	}
-	if model != "" || effort != "" {
-		t.Errorf("missing file = (%q, %q), want empty", model, effort)
+	if model != "" || effort != "" || tier != "" {
+		t.Errorf("missing file = (%q, %q, %q), want empty", model, effort, tier)
 	}
 }
 
@@ -69,23 +72,54 @@ description: no model or effort here
 ---
 body
 `)
-	model, effort, err := PersonaMeta(root, "y")
+	model, effort, tier, err := PersonaMeta(root, "y")
 	if err != nil {
 		t.Fatalf("PersonaMeta error = %v", err)
 	}
-	if model != "" || effort != "" {
-		t.Errorf("absent fields = (%q, %q), want empty", model, effort)
+	if model != "" || effort != "" || tier != "" {
+		t.Errorf("absent fields = (%q, %q, %q), want empty", model, effort, tier)
 	}
 }
 
 func TestPersonaMetaNoFrontmatter(t *testing.T) {
 	root := t.TempDir()
 	writeAgent(t, root, "z", "# just a heading\nmodel: sonnet\n")
-	model, effort, err := PersonaMeta(root, "z")
+	model, effort, tier, err := PersonaMeta(root, "z")
 	if err != nil {
 		t.Fatalf("PersonaMeta error = %v", err)
 	}
-	if model != "" || effort != "" {
-		t.Errorf("no frontmatter = (%q, %q), want empty", model, effort)
+	if model != "" || effort != "" || tier != "" {
+		t.Errorf("no frontmatter = (%q, %q, %q), want empty", model, effort, tier)
+	}
+}
+
+// TestPersonaMetaTierParsing exercises tier's own present/absent/quoted
+// shapes independently of model/effort (koryph-v8u.10).
+func TestPersonaMetaTierParsing(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "unquoted-tier", `---
+name: unquoted-tier
+tier: standard
+---
+`)
+	writeAgent(t, root, "quoted-tier", `---
+name: quoted-tier
+tier: "frontier"
+---
+`)
+	writeAgent(t, root, "no-tier", `---
+name: no-tier
+model: sonnet
+---
+`)
+
+	if _, _, tier, err := PersonaMeta(root, "unquoted-tier"); err != nil || tier != "standard" {
+		t.Errorf("unquoted tier = (%q, %v), want (standard, nil)", tier, err)
+	}
+	if _, _, tier, err := PersonaMeta(root, "quoted-tier"); err != nil || tier != "frontier" {
+		t.Errorf("quoted tier = (%q, %v), want (frontier, nil), quotes must be trimmed", tier, err)
+	}
+	if _, _, tier, err := PersonaMeta(root, "no-tier"); err != nil || tier != "" {
+		t.Errorf("absent tier = (%q, %v), want (\"\", nil)", tier, err)
 	}
 }

@@ -345,8 +345,12 @@ func TestRunOnceMergesAndDrains(t *testing.T) {
 	if sl.VerifiedIdentity != fakeIdentityEmail {
 		t.Errorf("slot verified identity = %q", sl.VerifiedIdentity)
 	}
-	if sl.Model != "sonnet" || !strings.Contains(sl.ModelWhy, "stage default") {
-		t.Errorf("slot model = %q (%q), want sonnet via stage default", sl.Model, sl.ModelWhy)
+	// koryph-v8u.10: dispatchBead now passes RepoRoot into modelroute.Resolve,
+	// so the fixture's .claude/agents/koryph-implementer.md legacy `model:
+	// sonnet` pin (it carries no `tier:`) is honored ahead of the hardcoded
+	// stage default, per the new persona-tier/model precedence step.
+	if sl.Model != "sonnet" || !strings.Contains(sl.ModelWhy, "persona koryph-implementer legacy model pin") {
+		t.Errorf("slot model = %q (%q), want sonnet via persona legacy model pin", sl.Model, sl.ModelWhy)
 	}
 
 	// Manifest v2 with billing + account fields.

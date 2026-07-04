@@ -27,7 +27,27 @@ embedded (the glob is `koryph-*.md`).
 - `effort` — reasoning-effort hint; runtimes that lack an effort control
   ignore it.
 
-The engine reads `model`/`effort` via `internal/modelroute.PersonaMeta` (the
-resolved bead tier always wins over the persona `model`; only `effort` is
-taken today). The pluggable-runtime layer (epic koryph-v8u) resolves `tier`
-through each runtime's model map.
+The engine reads `model`/`effort`/`tier` via `internal/modelroute.PersonaMeta`.
+The pluggable-runtime layer (epic koryph-v8u) resolves `tier` through each
+runtime's model map.
+
+## Resolution precedence (koryph-v8u.10)
+
+For a persona-run stage, the implement-stage model is chosen in this order:
+
+1. a bead `model:<tier>` label (`model:opus`, `model:implement:opus`, ...) —
+   wins unconditionally, unchanged from before this bead.
+2. this stage's persona `tier` scalar, resolved through the active runtime's
+   model map (today: the hardcoded Claude map — frontier→opus, standard→
+   sonnet, light→haiku; a project may override any entry via
+   `koryph.project.json`'s `model_map`). `fable` is never an implicit
+   mapping target; a project may explicitly re-map `frontier` to `fable`,
+   but `modelroute.Resolve`'s fable guard still requires an explicit
+   selection source before that takes effect.
+3. this stage's persona `model` scalar (the legacy Claude pin) — the
+   fallback when the persona carries no `tier`, or its `tier` is unmapped.
+4. the engine's hardcoded per-stage default (plan/design/score/review →
+   opus; implement/docs/test → sonnet; explore/debug → haiku).
+
+`effort` is unaffected by this ordering: it is always taken from the
+resolved persona's frontmatter when the bead/run did not already set one.

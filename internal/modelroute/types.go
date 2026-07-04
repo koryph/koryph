@@ -15,11 +15,20 @@
 //     structurally excluded from recovery upgrades.
 //   - Every resolution records a human-readable rationale.
 //
-// Label precedence (kept wire-compatible with the bash engine):
+// Label precedence (kept wire-compatible with the bash engine), extended by
+// koryph-v8u.10's persona tier step:
 //
 //	model:<stage>:<tier>  >  model:<tier>  >  run --default-model  >
+//	persona tier (via the active runtime's model map, project-overridable)  >
+//	persona model (legacy pin, also the fallback when the persona carries no
+//	tier or the tier is unmapped)  >
 //	stage default (plan/design/score → opus; implement/docs/test → sonnet;
 //	explore/debug → haiku; review → opus).
+//
+// The persona-tier step only runs when Req.RepoRoot is set (see Req's doc);
+// it is a strict insertion below run-default and above the hardcoded stage
+// default, so a project or run that never opts in (RepoRoot == "") keeps
+// today's exact behavior.
 //
 // Implementation contract (route.go, persona.go):
 //   - Resolve(Req) (Resolution, error) — applies precedence + policy; error
@@ -31,9 +40,11 @@
 //     koryph-debugger, docs→koryph-feature-docs-author, test→
 //     koryph-test-engineer, score→koryph-plan-scorer). The koryph- prefix
 //     avoids clashing with a project's own .claude/agents entries.
-//   - PersonaMeta(repoRoot, persona) (model, effort, error) — parse the YAML
-//     frontmatter of .claude/agents/<persona>.md (hand-rolled subset parser:
-//     scalars + quoted strings; ignore lists/maps).
+//   - PersonaMeta(repoRoot, persona) (model, effort, tier, error) — parse the
+//     YAML frontmatter of .claude/agents/<persona>.md (hand-rolled subset
+//     parser: scalars + quoted strings; ignore lists/maps). tier is the
+//     runtime-agnostic capability class (koryph-v8u.10); model is the
+//     Claude-specific legacy pin.
 package modelroute
 
 // Model tiers as passed to `claude --model`.
@@ -65,6 +76,16 @@ type Req struct {
 	ExplicitModel string            // --model on a single dispatch (highest precedence)
 	AllowedModels []string          // project policy; empty → ["haiku","sonnet","opus"]
 	Stages        map[string]string // project persona map (may be nil)
+
+	// RepoRoot and ModelMap enable the persona-tier resolution step
+	// (koryph-v8u.10 item 4): RepoRoot locates .claude/agents/<persona>.md
+	// for a PersonaMeta lookup, and ModelMap is the project's sparse
+	// tier->model override (internal/project.Config.ModelMap) layered onto
+	// runtime.ClaudeModelMap. RepoRoot == "" disables this step entirely
+	// (every existing caller/test that omits it keeps today's label/run-
+	// default/stage-default-only behavior unchanged).
+	RepoRoot string
+	ModelMap map[string]string
 }
 
 // Resolution is the outcome.

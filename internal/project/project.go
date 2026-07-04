@@ -127,6 +127,22 @@ type Config struct {
 	Stages map[string]string `json:"stages,omitempty"`
 	Tiers  map[string]string `json:"tiers,omitempty"`
 
+	// ModelMap overrides the active runtime's tier -> concrete-model-id map
+	// (koryph-v8u.10). Keys are the runtime-agnostic tier vocabulary a
+	// persona's `tier:` frontmatter carries ("frontier", "standard",
+	// "light" — see agents/README.md's frontmatter contract); values are
+	// concrete model ids for whichever runtime is active (today, always
+	// Claude: "opus"/"sonnet"/"haiku", or "fable" as an explicit frontier
+	// override). Sparse: only the tiers an operator wants to re-map need be
+	// present, e.g. {"frontier": "fable"} — every other tier keeps
+	// runtime.ClaudeModelMap's default. A project-config host (rather than a
+	// registry record) was chosen because AllowedModels/Tiers/Stages already
+	// carry per-project model policy right here, and because this value is
+	// read on every dispatch (modelroute.Resolve), the same hot path as
+	// those fields — see internal/modelroute/route.go's effectiveModelMap
+	// for how it overlays onto the runtime default.
+	ModelMap map[string]string `json:"model_map,omitempty"`
+
 	// Pipeline lists post-implement stages executed sequentially in the
 	// worktree after the implementer and before review/merge. Empty keeps the
 	// classic implement -> (review) -> merge flow. See PipelineStage.

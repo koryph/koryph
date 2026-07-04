@@ -244,6 +244,137 @@ func TestRecoveryUpgrade(t *testing.T) {
 	}
 }
 
+// TestResolvePersonaTierPrecedence exercises the koryph-v8u.10 persona-tier
+// step: bead label still wins unchanged; a persona `tier` resolves through
+// runtime.ClaudeModelMap (or a project override) when no label/run-default
+// fired; a persona `model` legacy pin is the fallback when tier is absent or
+// unmapped; and the hardcoded stage default is the last resort when the
+// persona carries neither.
+func TestResolvePersonaTierPrecedence(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "koryph-implementer", `---
+name: koryph-implementer
+tier: light
+---
+`)
+	writeAgent(t, root, "legacy-pin", `---
+name: legacy-pin
+model: opus
+---
+`)
+	writeAgent(t, root, "unmapped-tier", `---
+name: unmapped-tier
+tier: quantum
+model: haiku
+---
+`)
+	writeAgent(t, root, "bare", `---
+name: bare
+description: no model or tier
+---
+`)
+
+	cases := []struct {
+		name          string
+		req           Req
+		wantModel     string
+		wantRationale string
+	}{
+		{
+			name: "bead label wins over persona tier, unchanged",
+			req: Req{
+				Stage:    StageImplement,
+				Labels:   []string{"model:opus"},
+				RepoRoot: root,
+			},
+			wantModel:     TierOpus,
+			wantRationale: "label model:opus",
+		},
+		{
+			name: "persona tier resolves via claude default map",
+			req: Req{
+				Stage:    StageImplement,
+				RepoRoot: root,
+			},
+			wantModel:     TierHaiku, // koryph-implementer's tier: light -> haiku
+			wantRationale: "persona koryph-implementer tier light -> haiku",
+		},
+		{
+			name: "project model_map override wins over the claude default",
+			req: Req{
+				Stage:    StageImplement,
+				RepoRoot: root,
+				ModelMap: map[string]string{"light": TierSonnet},
+			},
+			wantModel:     TierSonnet,
+			wantRationale: "persona koryph-implementer tier light -> sonnet",
+		},
+		{
+			name: "legacy model pin used when persona carries no tier",
+			req: Req{
+				Stage:    StageImplement,
+				RepoRoot: root,
+				Stages:   map[string]string{StageImplement: "legacy-pin"},
+			},
+			wantModel:     TierOpus,
+			wantRationale: "persona legacy-pin legacy model pin",
+		},
+		{
+			name: "legacy model pin used when the persona tier is unmapped",
+			req: Req{
+				Stage:    StageImplement,
+				RepoRoot: root,
+				Stages:   map[string]string{StageImplement: "unmapped-tier"},
+			},
+			wantModel:     TierHaiku,
+			wantRationale: "persona unmapped-tier legacy model pin",
+		},
+		{
+			name: "stage default when persona has neither tier nor model",
+			req: Req{
+				Stage:    StageImplement,
+				RepoRoot: root,
+				Stages:   map[string]string{StageImplement: "bare"},
+			},
+			wantModel:     TierSonnet,
+			wantRationale: "stage default (implement)",
+		},
+		{
+			name: "run default still beats persona tier",
+			req: Req{
+				Stage:      StageImplement,
+				RepoRoot:   root,
+				RunDefault: TierOpus,
+			},
+			wantModel:     TierOpus,
+			wantRationale: "run default --default-model",
+		},
+		{
+			name: "RepoRoot unset disables the persona-tier step entirely",
+			req: Req{
+				Stage: StageImplement,
+			},
+			wantModel:     TierSonnet,
+			wantRationale: "stage default (implement)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Resolve(tc.req)
+			if err != nil {
+				t.Fatalf("Resolve() error = %v", err)
+			}
+			if got.Model != tc.wantModel {
+				t.Errorf("Model = %q, want %q", got.Model, tc.wantModel)
+			}
+			if got.Rationale != tc.wantRationale {
+				t.Errorf("Rationale = %q, want %q", got.Rationale, tc.wantRationale)
+			}
+		})
+	}
+}
+
 func TestPersonaFor(t *testing.T) {
 	defaults := map[string]string{
 		StageImplement: "koryph-implementer",

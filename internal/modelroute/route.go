@@ -6,6 +6,8 @@ package modelroute
 import (
 	"fmt"
 	"strings"
+
+	"github.com/koryph/koryph/internal/runtime"
 )
 
 // defaultAllowed is the allowlist when a project declares none. Note that
@@ -84,8 +86,66 @@ func resolveTier(r Req) (tier, rationale string, explicit bool) {
 	if r.RunDefault != "" {
 		return r.RunDefault, "run default --default-model", false
 	}
-	// (5) stage default.
+	// (5) persona tier/model (koryph-v8u.10): the persona assigned to this
+	// stage may carry a runtime-agnostic `tier:` (mapped through the active
+	// runtime's model map) or a legacy `model:` pin, either of which beats
+	// the blunt hardcoded stage default below. Gated on RepoRoot so callers
+	// that never opt in (RepoRoot == "") see no behavior change.
+	if r.RepoRoot != "" {
+		persona := PersonaFor(r.Stage, r.Stages)
+		if t, rat, ok := personaTierOrModel(r.RepoRoot, persona, r.ModelMap); ok {
+			return t, rat, false
+		}
+	}
+	// (6) stage default.
 	return stageDefault(r.Stage), fmt.Sprintf("stage default (%s)", r.Stage), false
+}
+
+// personaTierOrModel resolves persona's frontmatter (tier, then legacy
+// model) to a concrete tier value. ok is false when the persona file is
+// missing/unreadable or carries neither field — the caller then falls
+// through to the hardcoded stage default. A tier present but unmapped by the
+// effective model map (an operator-defined tier the active runtime/project
+// override doesn't cover) also falls through to the legacy model pin rather
+// than erroring here — Resolve's own allowlist/fable checks are what fail
+// closed on a genuinely bad value.
+func personaTierOrModel(repoRoot, persona string, override map[string]string) (tier, rationale string, ok bool) {
+	model, _, personaTier, err := PersonaMeta(repoRoot, persona)
+	if err != nil {
+		return "", "", false
+	}
+	if personaTier != "" {
+		if mapped, found := effectiveModelMap(override)[personaTier]; found && mapped != "" {
+			return mapped, fmt.Sprintf("persona %s tier %s -> %s", persona, personaTier, mapped), true
+		}
+	}
+	if model != "" {
+		return model, fmt.Sprintf("persona %s legacy model pin", persona), true
+	}
+	return "", "", false
+}
+
+// effectiveModelMap overlays a project's sparse model_map override
+// (internal/project.Config.ModelMap) onto runtime.ClaudeModelMap.
+//
+// Claude is hardcoded here, not looked up through a runtime.Registry,
+// because the engine does not yet route dispatch through the pluggable
+// runtime layer (internal/runtime/registry.go's own doc: "registered but not
+// yet consulted by the engine") — koryph only ever drives the Claude CLI
+// today. When koryph-v8u.2 wires per-bead runtime selection, this becomes
+// registry.Get(activeRuntimeName).ModelMap() with the identical override
+// overlay below.
+func effectiveModelMap(override map[string]string) map[string]string {
+	out := make(map[string]string, len(runtime.ClaudeModelMap)+len(override))
+	for k, v := range runtime.ClaudeModelMap {
+		out[k] = v
+	}
+	for k, v := range override {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // stageModelLabel finds the value of a "model:<stage>:<tier>" label.

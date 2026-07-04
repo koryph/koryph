@@ -524,15 +524,26 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		RunDefault:    r.opts.DefaultModel,
 		AllowedModels: r.rec.AllowedModels,
 		Stages:        r.cfg.Stages,
+		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
+		// step inside Resolve: a bead model:<tier> label (above) still wins
+		// unchanged; absent that, the implement-stage persona's `tier`
+		// frontmatter resolves through runtime.ClaudeModelMap (overlaid with
+		// the project's ModelMap override) before falling back to the
+		// persona's legacy `model` pin and finally the hardcoded stage
+		// default.
+		RepoRoot: r.rec.Root,
+		ModelMap: r.cfg.ModelMap,
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "model resolution: "+err.Error())
 		return
 	}
-	// Persona metadata: the meta model never overrides the resolved tier
-	// (tier wins); only the effort hint is taken.
+	// Persona metadata: the meta model/tier never override the resolved
+	// tier here (Resolve already folded persona tier/model into res.Model
+	// above, per koryph-v8u.10); only the effort hint is taken from this
+	// second read.
 	effort := res.Effort
-	if _, metaEffort, err := modelroute.PersonaMeta(r.rec.Root, res.Persona); err == nil && effort == "" {
+	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, res.Persona); err == nil && effort == "" {
 		effort = metaEffort
 	}
 
