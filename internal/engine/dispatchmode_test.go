@@ -16,7 +16,8 @@ import (
 
 // TestDispatchModePrecedence exercises dispatchMode's three-way resolution
 // order (koryph-2im.3, design L1): the --dispatch-mode run flag wins over the
-// project config's dispatch_mode, which wins over the "wave" default.
+// project config's dispatch_mode, which wins over the "rolling" default
+// (koryph-2im.8: rolling became the default after the 2026-07-03 burn-in).
 func TestDispatchModePrecedence(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -26,7 +27,7 @@ func TestDispatchModePrecedence(t *testing.T) {
 	}{
 		{"flag overrides config", "rolling", "wave", "rolling"},
 		{"config used when flag unset", "", "rolling", "rolling"},
-		{"default when nothing set", "", "", "wave"},
+		{"default when nothing set", "", "", "rolling"},
 		{"flag wins even against an explicit wave config", "rolling", "wave", "rolling"},
 	}
 	for _, tc := range cases {

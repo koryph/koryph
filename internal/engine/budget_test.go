@@ -50,8 +50,14 @@ func TestRunOnlyDispatchesNamedBead(t *testing.T) {
 	})
 }
 
-// twoWaveBD serves tb1 on the first `ready`, tb2 on the second, then empty — so
-// a second wave carries new work after the first bead's cost has been recorded.
+// twoWaveBD serves tb1 on the first `ready` and tb2 on every later one — a
+// stateful-frontier stand-in: new work exists after the first bead's cost has
+// been recorded. tb2 persists (rather than the frontier going empty) because
+// the rolling loop scans more often than wave mode's exactly-two calls; a
+// call-counted empty frontier made the budget exit legitimately report
+// "drained" instead of "budget-cap" (koryph-2im.8). Both beads share fp:core,
+// so in-flight footprint gating keeps tb2 undispatched while tb1 runs in
+// either mode.
 const twoWaveBD = `#!/bin/sh
 dir="$FAKE_BD_DIR"
 printf '%s\n' "$*" >> "$dir/bd.log"
@@ -60,10 +66,8 @@ case "$1" in
     n=$(cat "$dir/ready_n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$dir/ready_n"
     if [ "$n" = "1" ]; then
       echo '[{"id":"tb1","title":"one","description":"x","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]'
-    elif [ "$n" = "2" ]; then
-      echo '[{"id":"tb2","title":"two","description":"x","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]'
     else
-      echo '[]'
+      echo '[{"id":"tb2","title":"two","description":"x","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]'
     fi
     ;;
   version) echo "bd version 1.0.5" ;;

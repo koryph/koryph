@@ -86,7 +86,8 @@ type Options struct {
 	NoBillingGuard bool
 	PollSec        int // default 10; project config poll_seconds and KORYPH_POLL_SEC env can also set it (koryph-2im.2)
 	StuckSec       int // default 900
-	// DispatchMode selects the dispatch loop: "wave" (default) or "rolling"
+	// DispatchMode selects the dispatch loop: "rolling" (default,
+	// koryph-2im.8) or "wave"
 	// (koryph-2im.3). Precedence: this flag, when non-empty, wins over the
 	// project config's dispatch_mode; empty defers to config, then "wave".
 	// --once runs today's wave semantics in both modes. Any other value is a

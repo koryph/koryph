@@ -306,7 +306,7 @@
         "wave",
         "rolling"
       ],
-      "description": "DispatchMode selects the engine's dispatch loop (koryph-2im.3,\ndocs/designs/2026-07-scheduler-throughput.md L1): \"wave\" (default, also\nwhen empty) dispatches a fixed-width batch and blocks until every slot\nin it lands before scanning the frontier again; \"rolling\" continuously\nrefills any slot that frees up without waiting for the rest of the\nbatch. A run's --dispatch-mode flag overrides this value; --once runs\ntoday's wave semantics in both modes."
+      "description": "DispatchMode selects the engine's dispatch loop (koryph-2im.3,\ndocs/designs/2026-07-scheduler-throughput.md L1): \"wave\" (also\nwhen empty) dispatches a fixed-width batch and blocks until every slot\nin it lands before scanning the frontier again; \"rolling\" continuously\nrefills any slot that frees up without waiting for the rest of the\nbatch. A run's --dispatch-mode flag overrides this value; --once runs\ntoday's wave semantics in both modes."
     }
   },
   "additionalProperties": false,

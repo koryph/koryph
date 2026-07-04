@@ -33,17 +33,18 @@ cost governor and the global concurrency governor.
 Two dispatch loops share every scan/preflight/dispatch/poll primitive above; they
 differ only in when the next scan happens:
 
-- **`wave`** (default) — the loop described above: dispatch a batch, then wait for
+- **`wave`** — the loop described above: dispatch a batch, then wait for
   **every** slot in it to land before scanning again. Simple and predictable, at the
   cost of idling a slot that frees early while its wave-mates are still running.
-- **`rolling`** — continuously refills: every poll tick it re-checks the governor,
+- **`rolling`** (default) — continuously refills: every poll tick it re-checks the governor,
   recomputes free capacity from the currently-running count, and tops off any slot
   that has freed up — without waiting for the rest of the batch. A slot that lands
   early is refilled on the next tick instead of sitting idle.
 
-Select the mode with `dispatch_mode` in `koryph.project.json` (`"wave"` or
-`"rolling"`) or per run with `--dispatch-mode wave|rolling` (the flag wins over the
-config; an unrecognized value is a usage error). `--once` runs the exact same
+Rolling is the engine default (it became so after the 2026-07-03 self-build
+burn-in). Select a mode explicitly with `dispatch_mode` in `koryph.project.json`
+(`"wave"` or `"rolling"`) or per run with `--dispatch-mode wave|rolling` (the
+flag wins over the config; an unrecognized value is a usage error). `--once` runs the exact same
 single-pass semantics — one dispatch pass, poll to idle, exit — in **both** modes,
 so a validation/canary invocation behaves identically either way. Every other flag
 (`--only`, `--budget`, `--dry-run`, `--resume`, quota governor levels, footprint

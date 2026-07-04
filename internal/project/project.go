@@ -194,7 +194,7 @@ type Config struct {
 	PollSeconds int `json:"poll_seconds,omitempty" jsonschema:"minimum=0"`
 
 	// DispatchMode selects the engine's dispatch loop (koryph-2im.3,
-	// docs/designs/2026-07-scheduler-throughput.md L1): "wave" (default, also
+	// docs/designs/2026-07-scheduler-throughput.md L1): "wave" (also
 	// when empty) dispatches a fixed-width batch and blocks until every slot
 	// in it lands before scanning the frontier again; "rolling" continuously
 	// refills any slot that frees up without waiting for the rest of the

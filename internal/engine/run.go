@@ -386,10 +386,18 @@ func (r *runner) pollInterval() time.Duration {
 
 // dispatchMode resolves the effective dispatch loop (koryph-2im.3, design L1).
 // Precedence, highest first: Options.DispatchMode (the --dispatch-mode run
-// flag) > the project config's dispatch_mode > "wave". Both inputs are
+// flag) > the project config's dispatch_mode > "rolling". Both inputs are
 // validated (Run's own switch; project.Config.Validate) before this ever
 // runs, so any non-empty value seen here is guaranteed to be "wave" or
 // "rolling".
+//
+// Rolling became the default after the 2026-07-03 burn-in (koryph-2im.8): a
+// full self-build canary drained clean through the rolling pipeline (10 beads
+// merged, refill-on-free and blocked-slot refill observed live, zero
+// incorrect merges), with every failure root-caused to non-scheduler issues
+// that were fixed on main (pre-composition footprints, a flaky dispatch
+// test, a stray build artifact). Wave mode remains fully supported via
+// dispatch_mode: "wave" or --dispatch-mode wave.
 func (r *runner) dispatchMode() string {
 	if r.opts.DispatchMode != "" {
 		return r.opts.DispatchMode
@@ -397,7 +405,7 @@ func (r *runner) dispatchMode() string {
 	if r.cfg != nil && r.cfg.DispatchMode != "" {
 		return r.cfg.DispatchMode
 	}
-	return "wave"
+	return "rolling"
 }
 
 // staggerDelay is the pause between dispatches: env override, else project
