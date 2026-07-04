@@ -2,6 +2,41 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://koryph.dev/schemas/config",
   "$defs": {
+    "EpicValidationConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enabled gates the in-loop automatic trigger (default true). When false\nthe engine skips post-epic validation; koryph epic validate still runs on\ndemand regardless. Per-epic opt-out: label no-validate on the epic bead.\nA nil pointer means \"not set\" and resolves to the default of true via\nEffective()."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model is the tier or concrete model id for the validator agent (default\n\"opus\" — frontier tier; judging epic spirit and scheduler-correctness of\ngap-bead labels requires frontier quality)."
+        },
+        "persona": {
+          "type": "string",
+          "description": "Persona is the agent file (.claude/agents/\u003cpersona\u003e) used as the\nvalidator (default \"koryph-epic-validator\")."
+        },
+        "max_rounds": {
+          "type": "integer",
+          "description": "MaxRounds caps how many validation rounds the engine runs per epic before\nparking it (default 2). Beyond this cap the epic receives the label\nvalidation:parked and waits for operator intervention. Must be \u003e= 1 when\nexplicitly set (non-zero); zero resolves to the default via Effective()."
+        },
+        "auto_close": {
+          "type": "boolean",
+          "description": "AutoClose, when true (default), has the engine close the epic after the\nvalidator returns a \"met\" verdict. When false the epic stays open for\nmanual review even after a passing validation. A nil pointer means \"not\nset\" and resolves to the default of true via Effective()."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "TimeoutSeconds is the per-run wall-clock timeout for the validator agent\n(default 420 s). Exceeding it is treated as a Degraded verdict. Zero\nresolves to the default via Effective()."
+        },
+        "structural_parent": {
+          "type": "string",
+          "description": "StructuralParent, when non-empty, is the bead ID of the epic (or\nstandalone container bead) under which structural follow-up beads are\nfiled. When empty (default) structural findings stand alone as top-level\nbeads."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "EpicValidationConfig is the optional epic_validation sub-block of koryph.project.json."
+    },
     "FootprintRule": {
       "properties": {
         "pattern": {
@@ -498,6 +533,10 @@
         "gitlab"
       ],
       "description": "Forge names the git forge provider for this project. Supported values:\n\"github\" (default, also when empty — full back-compat; existing projects\nwithout this field continue to behave as GitHub projects) and \"gitlab\".\nRemote-URL sniffing may suggest a value during `koryph onboard`, but the\noperator always makes the final selection.\n\nThis field is the single source of truth for which internal/forge\nprovider is active; the registry record inherits it at\nonboard/add time."
+    },
+    "epic_validation": {
+      "$ref": "#/$defs/EpicValidationConfig",
+      "description": "EpicValidation configures the whole-epic implementation review that fires\nonce all children of an epic are closed (koryph-wo0.2,\ndocs/designs/2026-07-epic-validation.md §5). Nil = absent; use\nEffectiveEpicValidation() to get the resolved values with defaults."
     }
   },
   "additionalProperties": false,

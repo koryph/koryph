@@ -95,8 +95,21 @@ func fullConfig() *Config {
 			Org:        "acme-org",
 		},
 		Forge: "github",
+		EpicValidation: &EpicValidationConfig{
+			Enabled:          boolPtr(true),
+			Model:            "opus",
+			Persona:          "koryph-epic-validator",
+			MaxRounds:        3,
+			AutoClose:        boolPtr(true),
+			TimeoutSeconds:   300,
+			StructuralParent: "koryph-qta",
+		},
 	}
 }
+
+// boolPtr returns a pointer to the given bool value for use in struct literals
+// where *bool fields must be explicitly set.
+func boolPtr(b bool) *bool { return &b }
 
 // TestConfig_AllFieldsPopulated fails loudly if fullConfig leaves any field at
 // its zero value. This is the coverage forcing-function: adding a field to
@@ -498,5 +511,158 @@ func assertNoZeroFields(t *testing.T, v reflect.Value, path string, skip map[str
 		if v.IsZero() {
 			t.Errorf("%s: zero value (field left unset)", path)
 		}
+	}
+}
+
+// TestEpicValidationConfig_Defaults asserts that an absent (nil) block —
+// as well as a zero-value struct — yields the documented defaults via Effective().
+func TestEpicValidationConfig_Defaults(t *testing.T) {
+	// Absent block (nil pointer on Config) → all defaults.
+	var nilPtr *EpicValidationConfig
+	got := nilPtr.Effective()
+
+	if got.Enabled == nil || !*got.Enabled {
+		t.Errorf("Effective().Enabled: want true, got %v", got.Enabled)
+	}
+	if got.AutoClose == nil || !*got.AutoClose {
+		t.Errorf("Effective().AutoClose: want true, got %v", got.AutoClose)
+	}
+	if got.Model != defaultEpicValidationModel {
+		t.Errorf("Effective().Model: want %q, got %q", defaultEpicValidationModel, got.Model)
+	}
+	if got.Persona != defaultEpicValidationPersona {
+		t.Errorf("Effective().Persona: want %q, got %q", defaultEpicValidationPersona, got.Persona)
+	}
+	if got.MaxRounds != defaultEpicValidationMaxRounds {
+		t.Errorf("Effective().MaxRounds: want %d, got %d", defaultEpicValidationMaxRounds, got.MaxRounds)
+	}
+	if got.TimeoutSeconds != defaultEpicValidationTimeout {
+		t.Errorf("Effective().TimeoutSeconds: want %d, got %d", defaultEpicValidationTimeout, got.TimeoutSeconds)
+	}
+	if got.StructuralParent != "" {
+		t.Errorf("Effective().StructuralParent: want empty, got %q", got.StructuralParent)
+	}
+
+	// Zero-value struct (non-nil pointer, all fields zero) also yields defaults.
+	zeroVal := &EpicValidationConfig{}
+	got2 := zeroVal.Effective()
+	if got2.MaxRounds != defaultEpicValidationMaxRounds {
+		t.Errorf("zero-value Effective().MaxRounds: want %d, got %d", defaultEpicValidationMaxRounds, got2.MaxRounds)
+	}
+	if got2.Model != defaultEpicValidationModel {
+		t.Errorf("zero-value Effective().Model: want %q, got %q", defaultEpicValidationModel, got2.Model)
+	}
+}
+
+// TestEpicValidationConfig_RoundTrip asserts that an explicit EpicValidationConfig
+// block survives a JSON save/load cycle without losing any field.
+func TestEpicValidationConfig_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	c := Default("proj")
+	c.EpicValidation = &EpicValidationConfig{
+		Enabled:          boolPtr(false),
+		Model:            "fable",
+		Persona:          "custom-epic-validator",
+		MaxRounds:        5,
+		AutoClose:        boolPtr(false),
+		TimeoutSeconds:   600,
+		StructuralParent: "koryph-abc",
+	}
+	if err := c.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ev := got.EpicValidation
+	if ev == nil {
+		t.Fatal("EpicValidation: nil after round-trip, want non-nil")
+	}
+	if ev.Enabled == nil || *ev.Enabled != false {
+		t.Errorf("Enabled: want false, got %v", ev.Enabled)
+	}
+	if ev.Model != "fable" {
+		t.Errorf("Model: want %q, got %q", "fable", ev.Model)
+	}
+	if ev.Persona != "custom-epic-validator" {
+		t.Errorf("Persona: want %q, got %q", "custom-epic-validator", ev.Persona)
+	}
+	if ev.MaxRounds != 5 {
+		t.Errorf("MaxRounds: want 5, got %d", ev.MaxRounds)
+	}
+	if ev.AutoClose == nil || *ev.AutoClose != false {
+		t.Errorf("AutoClose: want false, got %v", ev.AutoClose)
+	}
+	if ev.TimeoutSeconds != 600 {
+		t.Errorf("TimeoutSeconds: want 600, got %d", ev.TimeoutSeconds)
+	}
+	if ev.StructuralParent != "koryph-abc" {
+		t.Errorf("StructuralParent: want %q, got %q", "koryph-abc", ev.StructuralParent)
+	}
+}
+
+// TestEpicValidationConfig_Validation covers the epic_validation block contract:
+// max_rounds must be >= 1 when explicitly set (non-zero), negative values are
+// rejected; absent block and zero max_rounds are always valid.
+func TestEpicValidationConfig_Validation(t *testing.T) {
+	base := func(ev *EpicValidationConfig) *Config {
+		c := Default("proj")
+		c.EpicValidation = ev
+		return c
+	}
+	cases := []struct {
+		name    string
+		ev      *EpicValidationConfig
+		wantErr string
+	}{
+		{"nil block is fine", nil, ""},
+		{"zero-value block is fine", &EpicValidationConfig{}, ""},
+		{"max_rounds 1 is valid", &EpicValidationConfig{MaxRounds: 1}, ""},
+		{"max_rounds 2 (default) explicit is valid", &EpicValidationConfig{MaxRounds: 2}, ""},
+		{"max_rounds 10 is valid", &EpicValidationConfig{MaxRounds: 10}, ""},
+		{"max_rounds -1 is rejected", &EpicValidationConfig{MaxRounds: -1}, "max_rounds must be >= 1"},
+		{"max_rounds -100 is rejected", &EpicValidationConfig{MaxRounds: -100}, "max_rounds must be >= 1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.ev).Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfig_EffectiveEpicValidation checks that the Config-level accessor
+// delegates correctly and handles both nil and non-nil EpicValidation.
+func TestConfig_EffectiveEpicValidation(t *testing.T) {
+	// Nil block on config → all defaults.
+	c := Default("proj")
+	ev := c.EffectiveEpicValidation()
+	if ev.MaxRounds != defaultEpicValidationMaxRounds {
+		t.Errorf("nil block: MaxRounds want %d, got %d", defaultEpicValidationMaxRounds, ev.MaxRounds)
+	}
+	if ev.Model != defaultEpicValidationModel {
+		t.Errorf("nil block: Model want %q, got %q", defaultEpicValidationModel, ev.Model)
+	}
+
+	// Explicit block with partial fields → non-zero fields respected, zeros defaulted.
+	c.EpicValidation = &EpicValidationConfig{Model: "sonnet", MaxRounds: 3}
+	ev2 := c.EffectiveEpicValidation()
+	if ev2.Model != "sonnet" {
+		t.Errorf("partial block: Model want %q, got %q", "sonnet", ev2.Model)
+	}
+	if ev2.MaxRounds != 3 {
+		t.Errorf("partial block: MaxRounds want 3, got %d", ev2.MaxRounds)
+	}
+	if ev2.Persona != defaultEpicValidationPersona {
+		t.Errorf("partial block: Persona want %q, got %q", defaultEpicValidationPersona, ev2.Persona)
+	}
+	if ev2.Enabled == nil || !*ev2.Enabled {
+		t.Errorf("partial block: Enabled want true, got %v", ev2.Enabled)
 	}
 }

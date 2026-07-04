@@ -182,6 +182,91 @@ type RuntimeConfig struct {
 	ModelMap map[string]string `json:"model_map,omitempty"`
 }
 
+// EpicValidationConfig is the optional epic_validation sub-block of
+// koryph.project.json. It controls whether and how the engine runs a
+// whole-epic implementation review after all children of an epic close.
+// When the block is absent, all fields take their documented defaults — call
+// EpicValidationConfig.Effective() (or Config.EffectiveEpicValidation()) to
+// resolve. See docs/designs/2026-07-epic-validation.md §5.
+type EpicValidationConfig struct {
+	// Enabled gates the in-loop automatic trigger (default true). When false
+	// the engine skips post-epic validation; koryph epic validate still runs on
+	// demand regardless. Per-epic opt-out: label no-validate on the epic bead.
+	// A nil pointer means "not set" and resolves to the default of true via
+	// Effective().
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Model is the tier or concrete model id for the validator agent (default
+	// "opus" — frontier tier; judging epic spirit and scheduler-correctness of
+	// gap-bead labels requires frontier quality).
+	Model string `json:"model,omitempty"`
+
+	// Persona is the agent file (.claude/agents/<persona>) used as the
+	// validator (default "koryph-epic-validator").
+	Persona string `json:"persona,omitempty"`
+
+	// MaxRounds caps how many validation rounds the engine runs per epic before
+	// parking it (default 2). Beyond this cap the epic receives the label
+	// validation:parked and waits for operator intervention. Must be >= 1 when
+	// explicitly set (non-zero); zero resolves to the default via Effective().
+	MaxRounds int `json:"max_rounds,omitempty"`
+
+	// AutoClose, when true (default), has the engine close the epic after the
+	// validator returns a "met" verdict. When false the epic stays open for
+	// manual review even after a passing validation. A nil pointer means "not
+	// set" and resolves to the default of true via Effective().
+	AutoClose *bool `json:"auto_close,omitempty"`
+
+	// TimeoutSeconds is the per-run wall-clock timeout for the validator agent
+	// (default 420 s). Exceeding it is treated as a Degraded verdict. Zero
+	// resolves to the default via Effective().
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+
+	// StructuralParent, when non-empty, is the bead ID of the epic (or
+	// standalone container bead) under which structural follow-up beads are
+	// filed. When empty (default) structural findings stand alone as top-level
+	// beads.
+	StructuralParent string `json:"structural_parent,omitempty"`
+}
+
+const (
+	defaultEpicValidationModel     = "opus"
+	defaultEpicValidationPersona   = "koryph-epic-validator"
+	defaultEpicValidationMaxRounds = 2
+	defaultEpicValidationTimeout   = 420
+)
+
+// Effective returns an EpicValidationConfig with documented defaults applied to
+// any zero-value fields. It is safe to call on a nil receiver — the nil
+// ("block absent") case returns the full set of defaults.
+func (c *EpicValidationConfig) Effective() EpicValidationConfig {
+	var out EpicValidationConfig
+	if c != nil {
+		out = *c
+	}
+	if out.Enabled == nil {
+		t := true
+		out.Enabled = &t
+	}
+	if out.AutoClose == nil {
+		t := true
+		out.AutoClose = &t
+	}
+	if out.Model == "" {
+		out.Model = defaultEpicValidationModel
+	}
+	if out.Persona == "" {
+		out.Persona = defaultEpicValidationPersona
+	}
+	if out.MaxRounds < 1 {
+		out.MaxRounds = defaultEpicValidationMaxRounds
+	}
+	if out.TimeoutSeconds < 1 {
+		out.TimeoutSeconds = defaultEpicValidationTimeout
+	}
+	return out
+}
+
 // PostureConfig is the optional desired-state posture sub-block of
 // koryph.project.json. When set, koryph doctor --project reports drift between
 // the live GitHub repo and the named profile as WARN, with the exact
@@ -388,6 +473,12 @@ type Config struct {
 	// provider is active; the registry record inherits it at
 	// onboard/add time.
 	Forge string `json:"forge,omitempty" jsonschema:"enum=github,enum=gitlab"`
+
+	// EpicValidation configures the whole-epic implementation review that fires
+	// once all children of an epic are closed (koryph-wo0.2,
+	// docs/designs/2026-07-epic-validation.md §5). Nil = absent; use
+	// EffectiveEpicValidation() to get the resolved values with defaults.
+	EpicValidation *EpicValidationConfig `json:"epic_validation,omitempty"`
 }
 
 // Default returns a conservative baseline config.
@@ -494,6 +585,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateForge(c.Forge); err != nil {
+		return err
+	}
+	if err := validateEpicValidation(c.EpicValidation); err != nil {
 		return err
 	}
 	return nil
@@ -657,6 +751,27 @@ func (c *Config) ResolvedForge() string {
 		return c.Forge
 	}
 	return "github"
+}
+
+// EffectiveEpicValidation returns the resolved EpicValidationConfig for this
+// project, applying documented defaults to any zero-value or absent fields. It
+// delegates to EpicValidationConfig.Effective(), which is safe to call on a nil
+// receiver (nil = block absent = all defaults).
+func (c *Config) EffectiveEpicValidation() EpicValidationConfig {
+	return c.EpicValidation.Effective()
+}
+
+// validateEpicValidation enforces the epic_validation block contract: when the
+// block is present, max_rounds must be >= 1 if explicitly set (non-zero).
+// Zero (absent/omitted) is valid — Effective() resolves it to the default of 2.
+func validateEpicValidation(c *EpicValidationConfig) error {
+	if c == nil {
+		return nil
+	}
+	if c.MaxRounds != 0 && c.MaxRounds < 1 {
+		return fmt.Errorf("epic_validation.max_rounds must be >= 1, got %d", c.MaxRounds)
+	}
+	return nil
 }
 
 // validatePipeline enforces the post-implement stage contract: every stage has
