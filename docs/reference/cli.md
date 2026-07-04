@@ -64,6 +64,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph governor set`](#koryph-governor-set) | set the machine-wide cap |
 | [`koryph quota`](#koryph-quota) | per-account governor snapshot |
 | ↳ [`koryph quota calibrate`](#koryph-quota-calibrate) | calibrate a governor ceiling from an observed /usage reading |
+| ↳ [`koryph quota guard`](#koryph-quota-guard) | live billing-guard toggle — on\|advisory\|off [--until <duration>]; re-read each wave without a restart |
 | [`koryph metrics`](#koryph-metrics) | burn + reliability rollup across projects |
 | ↳ [`koryph metrics estimator`](#koryph-metrics-estimator) | per-(model,size) estimator accuracy stats |
 | [`koryph repo`](#koryph-repo) | check or apply .github IaC (rulesets, repo settings) |
@@ -734,6 +735,17 @@ calibrate a governor ceiling from an observed /usage reading
 | `--observed-usd` | float64 |  | observed ccusage spend (USD) |
 | `--plan-tier` | string |  | plan tier label (e.g. max20x) |
 | `--window` | string |  | window to calibrate: 5h\|weekly (required) |
+
+## `koryph quota guard` { #koryph-quota-guard }
+
+live billing-guard toggle — on|advisory|off [--until <duration>]; re-read each wave without a restart
+
+**See also:** [Billing and quota](../user-guide/billing-and-quota) · [Governors](../concepts/governors)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--account` | string |  | account to configure (required) |
+| `--until` | string |  | auto-revert duration from now (e.g. 2h, 24h); omit for permanent |
 
 
 ---
