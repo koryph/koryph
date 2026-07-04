@@ -82,6 +82,37 @@ GitHub Apps cannot be created headlessly (no REST endpoint — deliberate).
 The **App Manifest flow** reduces creation to one browser click, and
 everything else scripts:
 
+**Binary-first (v2, 2026-07-04):** provisioning is a `koryph bot` command
+family — a brew-installed binary must carry the whole lifecycle with no repo
+clone. The `scripts/provision-release-bot.sh` prototype is superseded and
+retires at parity. Three replication scenarios are first-class: a private
+bot on the personal account, a public bot for guest orgs (repos you admin in
+orgs you don't own), and one private bot per owned org.
+
+- `koryph bot create [--name N] [--org ORG] [--public]` — the manifest flow
+  in Go: serve a localhost redirect catcher, open the browser at
+  `github.com/settings/apps/new` (or `/organizations/ORG/settings/apps/new`)
+  with the manifest form pre-posted, catch the redirect after the ONE
+  confirmation click, exchange the code via `POST
+  /app-manifests/{code}/conversions`, store credentials at
+  `~/.koryph/bots/<name>.json` (0600). Prints the exact install URL and
+  next steps. `--public` sets the manifest's `public: true` (guest-org
+  scenario); default private.
+- `koryph bot install --name N` — prints/opens the installation page
+  (installation is inherently a web click); explains the repo-admin
+  repo-scoped install rule for guest orgs.
+- `koryph bot attach --name N --repo OWNER/REPO [--org-secrets]` — zero
+  click: adds the repo to the existing installation via the API, sets
+  `RELEASE_BOT_APP_ID`/`RELEASE_BOT_PRIVATE_KEY` (org-level secrets with
+  `--org-secrets` when the caller has org admin, else per-repo), asserts
+  the Actions `can_approve_pull_request_reviews` toggle.
+- `koryph bot list` / `koryph bot check [--repo OWNER/REPO]` — validators:
+  the stored key mints a valid app JWT (`GET /app`), the installation
+  exists and covers the repo, secrets are present, the toggle is on, a
+  caller workflow exists. `koryph doctor` runs the same checks per project.
+- `koryph release setup --bot N` wires a project to a named bot.
+
+Legacy sketch (superseded — kept for the manifest-flow mechanics):
 `scripts/provision-release-bot.sh`:
 - `--bootstrap` (once per GitHub account): serves a localhost redirect
   catcher, POSTs the app manifest (name, Contents:RW + PullRequests:RW, no
