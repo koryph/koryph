@@ -47,9 +47,9 @@ burst of cheap agents still exceeds the limit.
 
 | Path | Contents |
 |---|---|
-| `~/.koryph/governor.json` | `{ "max_global_agents": N }` — the machine-wide cap. Absent ⇒ default **8**. Edited only by the machine owner (never per-run), so no single project can lift the ceiling. |
-| `~/.koryph/slots/<project>-<bead>-<pid>.json` | One **lease** per running agent: `{project, bead, pid, engine_pid, model, acquired_at}`. Keyed to the **agent** PID (detached), so a lease survives an engine restart/resume and frees only when the real agent dies. |
-| `~/.koryph/slots/demand/<project>.json` | One **demand heartbeat** per active engine with ready work: `{project, engine_pid, updated_at}`. Refreshed each wave; pruned when stale (TTL) or `engine_pid` dead. |
+| `~/.koryph/governor.json` | `{ "pools": { "<provider>": { "max_global_agents": N, ... } } }` — one independent cap/AIMD-overlay per provider pool (koryph-v8u.11, see below). Absent/missing pool ⇒ default **8**. Edited only by the machine owner (never per-run), so no single project can lift the ceiling. |
+| `~/.koryph/slots/<project>-<bead>-<pid>.json` | One **lease** per running agent: `{project, bead, pid, engine_pid, model, acquired_at, provider}`. Keyed to the **agent** PID (detached), so a lease survives an engine restart/resume and frees only when the real agent dies. `provider` selects which pool the lease counts against. |
+| `~/.koryph/slots/demand/<project>.json` | One **demand heartbeat** per active engine with ready work, per pool: `{project, engine_pid, updated_at, provider}`. Refreshed each wave; pruned when stale (TTL) or `engine_pid` dead. |
 
 All mutations happen under a short-lived flock on the slots directory (the
 `internal/ledger.Lock` pattern), held only for the prune + count + write
@@ -234,17 +234,73 @@ circuit breaker is open/half-open (calling out "flapping" once
 is a signal the account is being persistently rate-limited, or `--hard-max`/
 `--break-sec` need attention.
 
+### Per-provider governor pools (koryph-v8u.11, L5c)
+
+The service providers behind agent runtimes (Anthropic/claude, OpenAI/codex,
+Google/gemini, xAI/grok build, …) enforce **independent** rate limits. Every
+mechanism above — operator cap, leases, demand/fair-share, the AIMD overlay,
+settle window, circuit breaker, dispatch-smoothing clock — is **per-pool**,
+keyed by an opaque provider string:
+
+```
+governor.json:
+{
+  "pools": {
+    "anthropic": { "max_global_agents": 8, "adaptive": true, ... },
+    "openai":    { "max_global_agents": 4 }
+  }
+}
+```
+
+- **Key semantics.** `DefaultPool` (`"anthropic"`) is used whenever a lease,
+  demand heartbeat, or store entry point carries no explicit provider — i.e.
+  every behavior that existed before koryph-v8u.11. The key is deliberately
+  opaque (not an enum) so it can later refine to `"provider:account"` (rate
+  limits are really per-account within a provider) without another schema
+  change. Every store entry point normalizes `""` to `DefaultPool` at its
+  boundary (`govern.NormalizeProvider`), so on-disk state never carries an
+  empty pool key.
+- **A `govern.Lease` carries `Provider`**, resolved today from a single
+  hardcoded constant at the one place `internal/engine` constructs leases
+  (`internal/engine/govern.go`'s `providerAnthropic`) — every agent this
+  engine dispatches IS a claude/Anthropic session until the koryph-v8u.2
+  runtime adapters land and can supply the real provider. Behavior is
+  therefore identical to pre-koryph-v8u.11 until those adapters exist.
+- **No cross-provider shared cap, by design.** Total machine concurrency is
+  the sum of every pool's cap — each provider's API is an independently rate
+  limited resource, so an Anthropic 429 must never throttle a codex agent's
+  admission and vice versa. (Local CPU/RAM pressure is a separate concern:
+  the operator's `--max-global` choice, made per pool, is what bounds it.)
+- **Migration.** A `governor.json` written before koryph-v8u.11 (any shape
+  from koryph-1xk through koryph-2im.11 — a flat document with no top-level
+  `"pools"` key) loads transparently as the `anthropic` pool, preserving
+  every field (`govern.File.UnmarshalJSON`); it round-trips thereafter in the
+  new `{"pools": {...}}` shape. `internal/doctor` reads `governor.json`
+  directly (not through `Store`, since it honors `Options.Home` rather than
+  `KORYPH_HOME`) and shares the same migration-aware type, so its checks see
+  identical pool state.
+- `koryph governor set --provider P ...` configures one pool (`--provider`
+  omitted ⇒ `anthropic`, full back-compat); `koryph governor show` and
+  `koryph doctor` iterate every pool with any live state (an explicit
+  `governor.json` entry, a lease, or a demand heartbeat) — see CLI below.
+
 ### CLI
 
-- `koryph governor` — show the cap, active leases (project/bead/pid/age), demand
-  heartbeats, free slots, and (when configured) the AIMD overlay state
-  including settle/breaker/smoothing, so operators can see contention.
-- `koryph governor set --max-global N [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]` —
-  write `governor.json`; without `--adaptive` this clears/disables any
-  previously enabled overlay (it overwrites the file wholesale). The three
-  L5b flags are meaningful only under `--adaptive` and default (this
-  package's documented constants) when omitted or non-positive.
-- `board` / `status` prune stale leases and demand as a hygiene side effect.
+- `koryph governor` — show EVERY provider pool's cap, active leases
+  (project/bead/pid/age), demand heartbeats, free slots, and (when
+  configured) the AIMD overlay state including settle/breaker/smoothing, so
+  operators can see contention per pool. A machine using only the default
+  `anthropic` pool prints exactly one pool block — a strict superset of the
+  pre-koryph-v8u.11 single-pool output.
+- `koryph governor set --max-global N [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]` —
+  write ONE pool's entry in `governor.json` (`--provider` omitted ⇒
+  `anthropic`); without `--adaptive` this clears/disables any previously
+  enabled overlay ON THAT POOL ONLY (it overwrites that pool's entry
+  wholesale — every other pool is untouched). The three L5b flags are
+  meaningful only under `--adaptive` and default (this package's documented
+  constants) when omitted or non-positive.
+- `board` / `status` prune stale leases and demand (across all pools) as a
+  hygiene side effect.
 
 ## Failure & edge handling
 
@@ -295,6 +351,23 @@ is a signal the account is being persistently rate-limited, or `--hard-max`/
 - Doctor (`internal/doctor/doctor_test.go`): the circuit-breaker check is OK
   when unconfigured/adaptive-off/closed, warns when open or half-open, and
   calls out flapping once `BreakerReopenCount` reaches 2.
+- Per-provider pools (`internal/govern/pools_test.go`, koryph-v8u.11): a
+  rate-limit event (halve/settle/breaker trip) in one pool leaves another
+  pool's admission, dynamic cap, and event count completely untouched (the
+  core assertion); operator cap and lease/Release accounting are scoped per
+  pool; a legacy pre-pools `governor.json` migrates into the `anthropic` pool
+  with every AIMD field preserved and round-trips in the new shape; fair
+  share is computed within a pool only (a project's demand in one pool never
+  affects another project's share in a different pool); `""` normalizes to
+  `anthropic` at every entry point (`Acquire`/`Hold` via `Lease.Provider`,
+  and every other method's explicit `provider` argument); concurrent
+  `Acquire`/`Release` across two pools never breaches either pool's cap
+  (`go test -race`). CLI (`cmd/koryph/governor_test.go`): `--provider`
+  set/show round-trips independently for multiple pools, and a plain
+  (`--provider`-omitted) `set`/`show` stays fully back-compat with the
+  single-pool CLI. Doctor (`internal/doctor/doctor_test.go`): the governor,
+  adaptive-cap, and circuit-breaker checks each emit one Finding per pool,
+  and zombie-lease/stale-demand Findings name the pool they belong to.
 
 ## Implementation phases (each gated green)
 
@@ -314,3 +387,11 @@ is a signal the account is being persistently rate-limited, or `--hard-max`/
    `internal/engine/poll.go` (out of bounds for that change — see the KNOWN
    GAP comment there), so burst-distinct-slot counting is project-level
    rather than per-bead until a one-line follow-up lands.
+6. **Per-provider governor pools (koryph-v8u.11, L5c)** — every piece of
+   governor state (cap, leases, demand, AIMD overlay, settle/breaker/
+   smoothing) becomes per-pool, keyed by an opaque provider string; a
+   pre-koryph-v8u.11 `governor.json` migrates transparently into the
+   `anthropic` pool; `koryph governor set --provider P` / `show` and
+   `koryph doctor` become pool-aware; see the dedicated section above.
+   `internal/engine`'s lease construction hardcodes `providerAnthropic` until
+   the koryph-v8u.2 runtime adapters can supply the real provider.
