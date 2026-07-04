@@ -15,8 +15,8 @@
 #
 # INPUT LOCKSTEP: the `with:` keys below (release_type, extra_files,
 # artifacts_dir, build_mode, goreleaser_version, sbom, provenance,
-# go_version, gate_command) must match release-train.yml's `on.
-# workflow_call.inputs` names exactly. Update both sides together.
+# go_version, gate_command, homebrew_tap) must match release-train.yml's
+# `on.workflow_call.inputs` names exactly. Update both sides together.
 #
 # Uses the SAME-REPOSITORY local path form (`./.github/workflows/
 # release-train.yml`, no `@{ref}`) rather than `koryph/koryph/...@main`:
@@ -55,4 +55,5 @@ jobs:
       provenance: true
       go_version: "1.26"
       gate_command: "make version-check TAG=$RELEASE_TAG && make gate"
+      homebrew_tap: "homebrew-tap"
     secrets: inherit
