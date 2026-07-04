@@ -6,8 +6,9 @@
 // Architecture:
 //   - App is the root Bubble Tea model: tab framework, project switcher,
 //     help overlay, status bar, and refresh loop.
-//   - Each tab is its own embedded model; only the active tab receives Update
-//     calls so inactive tabs are cheap.
+//   - Each tab is a TabModel stored in App.tabs, built once from tabRegistry
+//     at construction time.  Adding a tab = adding one file with init().
+//   - Only the active tab receives Update calls so inactive tabs are cheap.
 //   - Data comes from cockpit.Provider (internal/cockpit), polled every
 //     refreshInterval (default 100 ms) — below the 150 ms perceived-latency
 //     target from the design doc.
@@ -54,12 +55,12 @@ type App struct {
 	providers  []cockpit.Provider
 	projectIdx int
 
-	// active tab.
-	activeTab TabID
+	// activeTab is the index into tabs (and tabRegistry).
+	activeTab int
 
-	// tab sub-models.
-	threads  threadsModel
-	burndown burndownModel
+	// tabs holds the live tab sub-models, one per registered tab definition,
+	// in the same order as tabRegistry (sorted by TabDef.Order).
+	tabs []TabModel
 
 	// UI components.
 	help      help.Model
@@ -88,11 +89,16 @@ func NewApp(providers []cockpit.Provider) *App {
 	h := help.New()
 	h.ShowAll = false
 
+	// Build tab models from the registry (already sorted by Order).
+	tabs := make([]TabModel, len(tabRegistry))
+	for i, def := range tabRegistry {
+		tabs[i] = def.New(theme)
+	}
+
 	a := &App{
 		providers: providers,
-		activeTab: TabThreads,
-		threads:   newThreadsModel(theme),
-		burndown:  newBurndownModel(theme),
+		activeTab: 0,
+		tabs:      tabs,
 		help:      h,
 		keys:      DefaultKeyMap(),
 		theme:     theme,
@@ -123,11 +129,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.help.ShowAll = a.showHelp
 
 		case key.Matches(msg, a.keys.NextTab):
-			a.activeTab = (a.activeTab + 1) % tabCount
+			if len(a.tabs) > 0 {
+				a.activeTab = (a.activeTab + 1) % len(a.tabs)
+			}
 			a.resizeTabs()
 
 		case key.Matches(msg, a.keys.PrevTab):
-			a.activeTab = (a.activeTab + tabCount - 1) % tabCount
+			if len(a.tabs) > 0 {
+				a.activeTab = (a.activeTab + len(a.tabs) - 1) % len(a.tabs)
+			}
 			a.resizeTabs()
 
 		case key.Matches(msg, a.keys.NextProject):
@@ -157,8 +167,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshotMsg:
 		a.snap = cockpit.Snapshot(msg)
 		a.lastError = ""
-		a.threads.setSnapshot(a.snap)
-		a.burndown.setSnapshot(a.snap)
+		for i := range a.tabs {
+			a.tabs[i].SetSnapshot(a.snap)
+		}
 
 	case errMsg:
 		a.lastError = msg.err.Error()
@@ -170,23 +181,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // resizeTabs propagates the current terminal dimensions to all tab models.
 func (a *App) resizeTabs() {
 	contentH := a.height - headerHeight()
-	a.threads.resize(a.width, contentH)
-	a.burndown.resize(a.width, contentH)
+	for i := range a.tabs {
+		a.tabs[i].Resize(a.width, contentH)
+	}
 }
 
 // updateActiveTab routes a key message to the active tab sub-model.
 func (a App) updateActiveTab(msg tea.Msg) (App, tea.Cmd) {
-	switch a.activeTab {
-	case TabThreads:
-		m, cmd := a.threads.Update(msg)
-		a.threads = m
-		return a, cmd
-	case TabBurndown:
-		m, cmd := a.burndown.Update(msg)
-		a.burndown = m
-		return a, cmd
+	if len(a.tabs) == 0 {
+		return a, nil
 	}
-	return a, nil
+	updated, cmd := a.tabs[a.activeTab].Update(msg)
+	if updated != nil {
+		a.tabs[a.activeTab] = updated
+	}
+	return a, cmd
 }
 
 // View implements tea.Model.
@@ -242,13 +251,10 @@ func (a App) renderHeader() string {
 
 // renderActiveTab renders the currently-active tab content.
 func (a App) renderActiveTab() string {
-	switch a.activeTab {
-	case TabThreads:
-		return a.threads.View()
-	case TabBurndown:
-		return a.burndown.View()
+	if len(a.tabs) == 0 || a.activeTab >= len(a.tabs) {
+		return ""
 	}
-	return ""
+	return a.tabs[a.activeTab].View()
 }
 
 // renderHelp renders the help overlay.

@@ -69,6 +69,30 @@ type PoolSnapshot struct {
 	BreakerState string // ""|"open"|"half-open"
 }
 
+// GraphSnapshot is a point-in-time view of the beads dependency graph for one
+// project. It is populated by GraphProvider at graphTTL cadence and embedded in
+// Snapshot so that multiple tabs (queue, detail) can consume the same cached
+// read without each tab independently calling bd.
+//
+// The zero value is safe: consumers check NodeCount == 0 or len(Deps) == 0
+// before rendering graph-derived content.
+type GraphSnapshot struct {
+	// Deps maps each issue ID to the list of issue IDs it directly depends on
+	// (its blockers). Derived from `bd list --format digraph` output.
+	// A missing key means the issue has no dependencies.
+	Deps map[string][]string
+
+	// NodeCount is the number of issues present in the graph (len(Deps) after
+	// including issues that appear only as targets, not sources).
+	NodeCount int
+
+	// EdgeCount is the total number of directed dependency edges.
+	EdgeCount int
+
+	// ComputedAt is when this snapshot was assembled.
+	ComputedAt time.Time
+}
+
 // Snapshot is the full point-in-time view of one project delivered to the TUI.
 // The zero value is safe; every field is optional.
 type Snapshot struct {
@@ -87,6 +111,11 @@ type Snapshot struct {
 	// Burndown holds trajectory projections for the burndown tab (koryph-9af.7).
 	// Populated by LedgerProvider at burndownTTL cadence; zero when unavailable.
 	Burndown BurndownSnapshot
+
+	// Graph holds the beads dependency graph snapshot (koryph-9af.8).
+	// Populated by LedgerProvider via GraphProvider at graphTTL cadence.
+	// Consumed read-only by queue and detail tabs; never written by tab code.
+	Graph GraphSnapshot
 
 	// CapturedAt is when this snapshot was assembled.
 	CapturedAt time.Time

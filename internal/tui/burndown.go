@@ -26,6 +26,14 @@ import (
 	"github.com/koryph/koryph/internal/cockpit"
 )
 
+func init() {
+	registerTab(TabDef{
+		Name:  "Burndown",
+		Order: 1,
+		New:   func(theme Theme) TabModel { return newBurndownModel(theme) },
+	})
+}
+
 // burndownModel is the Bubble Tea model for the Burndown tab.
 type burndownModel struct {
 	theme  Theme
@@ -38,19 +46,19 @@ type burndownModel struct {
 }
 
 // newBurndownModel creates an empty burndown model.
-func newBurndownModel(theme Theme) burndownModel {
-	return burndownModel{
+func newBurndownModel(theme Theme) *burndownModel {
+	return &burndownModel{
 		theme:  theme,
 		width:  80,
 		height: 24,
 	}
 }
 
-// Init implements tea.Model for burndownModel.
-func (m burndownModel) Init() tea.Cmd { return nil }
+// Init implements TabModel.
+func (m *burndownModel) Init() tea.Cmd { return nil }
 
-// Update implements tea.Model for burndownModel.
-func (m burndownModel) Update(msg tea.Msg) (burndownModel, tea.Cmd) {
+// Update implements TabModel.
+func (m *burndownModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -65,8 +73,19 @@ func (m burndownModel) Update(msg tea.Msg) (burndownModel, tea.Cmd) {
 	return m, nil
 }
 
-// View implements tea.Model for burndownModel.
-func (m burndownModel) View() string {
+// SetSnapshot implements TabModel.
+func (m *burndownModel) SetSnapshot(snap cockpit.Snapshot) {
+	m.snap = snap
+}
+
+// Resize implements TabModel.
+func (m *burndownModel) Resize(w, h int) {
+	m.width = w
+	m.height = h
+}
+
+// View implements TabModel.
+func (m *burndownModel) View() string {
 	bd := m.snap.Burndown
 
 	var b strings.Builder
@@ -97,21 +116,10 @@ func (m burndownModel) View() string {
 	return b.String()
 }
 
-// setSnapshot refreshes the model from a new snapshot.
-func (m *burndownModel) setSnapshot(snap cockpit.Snapshot) {
-	m.snap = snap
-}
-
-// resize updates the model dimensions.
-func (m *burndownModel) resize(w, h int) {
-	m.width = w
-	m.height = h
-}
-
 // --- section renderers ------------------------------------------------------
 
 // renderEpicSection renders the Epic Burndown section.
-func (m burndownModel) renderEpicSection(bd cockpit.BurndownSnapshot, maxRows int) string {
+func (m *burndownModel) renderEpicSection(bd cockpit.BurndownSnapshot, maxRows int) string {
 	title := m.sectionTitle("Epic Burndown")
 	if len(bd.Epics) == 0 && bd.AllEpicsSummary.Total == 0 {
 		return title + "\n" + m.dimText("  no epic data yet")
@@ -167,7 +175,7 @@ func (m burndownModel) renderEpicSection(bd cockpit.BurndownSnapshot, maxRows in
 }
 
 // renderBacklogSection renders the Backlog Burndown section.
-func (m burndownModel) renderBacklogSection(bd cockpit.BurndownSnapshot) string {
+func (m *burndownModel) renderBacklogSection(bd cockpit.BurndownSnapshot) string {
 	title := m.sectionTitle("Backlog Burndown")
 	bl := bd.Backlog
 
@@ -200,7 +208,7 @@ func (m burndownModel) renderBacklogSection(bd cockpit.BurndownSnapshot) string 
 }
 
 // renderCostSection renders the Cost Burndown section.
-func (m burndownModel) renderCostSection(bd cockpit.BurndownSnapshot) string {
+func (m *burndownModel) renderCostSection(bd cockpit.BurndownSnapshot) string {
 	title := m.sectionTitle("Cost Burndown")
 	cb := bd.Cost
 
@@ -243,7 +251,7 @@ func (m burndownModel) renderCostSection(bd cockpit.BurndownSnapshot) string {
 }
 
 // renderDurationSection renders the Duration Stats section.
-func (m burndownModel) renderDurationSection(bd cockpit.BurndownSnapshot, maxRows int) string {
+func (m *burndownModel) renderDurationSection(bd cockpit.BurndownSnapshot, maxRows int) string {
 	title := m.sectionTitle("Duration Stats (DispatchedAt→MergedAt)")
 	if len(bd.DurationStats) == 0 {
 		return title + "\n" + m.dimText("  no completed slots in history yet")
@@ -286,7 +294,7 @@ func (m burndownModel) renderDurationSection(bd cockpit.BurndownSnapshot, maxRow
 // --- rendering helpers -------------------------------------------------------
 
 // sectionTitle renders a section header bar.
-func (m burndownModel) sectionTitle(title string) string {
+func (m *burndownModel) sectionTitle(title string) string {
 	bar := "─ " + title + " " + strings.Repeat("─", m.width-len(title)-4)
 	if len(bar) > m.width {
 		bar = bar[:m.width]
@@ -295,7 +303,7 @@ func (m burndownModel) sectionTitle(title string) string {
 }
 
 // tableHeader renders a two-spaces-indented header row with fixed column widths.
-func (m burndownModel) tableHeader(pairs ...interface{}) string {
+func (m *burndownModel) tableHeader(pairs ...interface{}) string {
 	// pairs: (width, title, width, title, ...)
 	var parts []string
 	for i := 0; i+1 < len(pairs); i += 2 {
@@ -308,7 +316,7 @@ func (m burndownModel) tableHeader(pairs ...interface{}) string {
 }
 
 // epicRow renders one row of the epic table.
-func (m burndownModel) epicRow(ep cockpit.EpicBurndown, epicW, remW, velW, spkW, etaW int) string {
+func (m *burndownModel) epicRow(ep cockpit.EpicBurndown, epicW, remW, velW, spkW, etaW int) string {
 	title := truncate(ep.Title, epicW)
 	rem := fmt.Sprintf("%d", ep.Remaining)
 	if ep.Remaining == 0 {
@@ -343,7 +351,7 @@ func (m burndownModel) epicRow(ep cockpit.EpicBurndown, epicW, remW, velW, spkW,
 }
 
 // dimText returns s styled as inactive/gray.
-func (m burndownModel) dimText(s string) string {
+func (m *burndownModel) dimText(s string) string {
 	return lipgloss.NewStyle().Foreground(m.theme.Inactive).Render(s)
 }
 

@@ -15,6 +15,14 @@ import (
 	"github.com/koryph/koryph/internal/cockpit"
 )
 
+func init() {
+	registerTab(TabDef{
+		Name:  "Threads",
+		Order: 0,
+		New:   func(theme Theme) TabModel { return newThreadsModel(theme) },
+	})
+}
+
 // threadsModel is the Bubble Tea model for the Threads tab.
 // It renders the live slot table: bead, stage, model, attempt, elapsed,
 // cost vs estimate, status line.
@@ -27,7 +35,7 @@ type threadsModel struct {
 }
 
 // newThreadsModel creates an empty threads table model.
-func newThreadsModel(theme Theme) threadsModel {
+func newThreadsModel(theme Theme) *threadsModel {
 	cols := threadColumns(80) // initial width; updated on WindowSizeMsg
 	t := table.New(
 		table.WithColumns(cols),
@@ -35,30 +43,30 @@ func newThreadsModel(theme Theme) threadsModel {
 		table.WithHeight(10),
 		table.WithStyles(tableStyles(theme)),
 	)
-	return threadsModel{
+	return &threadsModel{
 		table: t,
 		theme: theme,
 		width: 80,
 	}
 }
 
-// Init implements tea.Model for threadsModel.
-func (m threadsModel) Init() tea.Cmd { return nil }
+// Init implements TabModel.
+func (m *threadsModel) Init() tea.Cmd { return nil }
 
-// Update implements tea.Model for threadsModel.
-func (m threadsModel) Update(msg tea.Msg) (threadsModel, tea.Cmd) {
+// Update implements TabModel.
+func (m *threadsModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }
 
-// View implements tea.Model for threadsModel.
-func (m threadsModel) View() string {
+// View implements TabModel.
+func (m *threadsModel) View() string {
 	return m.table.View()
 }
 
-// setSnapshot refreshes the table rows from a new snapshot.
-func (m *threadsModel) setSnapshot(snap cockpit.Snapshot) {
+// SetSnapshot implements TabModel. It refreshes the table rows from a new snapshot.
+func (m *threadsModel) SetSnapshot(snap cockpit.Snapshot) {
 	m.snap = snap
 	rows := make([]table.Row, 0, len(snap.Slots))
 	for _, sl := range snap.Slots {
@@ -67,8 +75,8 @@ func (m *threadsModel) setSnapshot(snap cockpit.Snapshot) {
 	m.table.SetRows(rows)
 }
 
-// resize updates column widths and table height for new terminal dimensions.
-func (m *threadsModel) resize(w, h int) {
+// Resize implements TabModel. It updates column widths and table height.
+func (m *threadsModel) Resize(w, h int) {
 	m.width = w
 	m.height = h
 	// Reserve rows for header (1) + tab bar (1) + status bar (1) = 3.

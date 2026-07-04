@@ -38,6 +38,9 @@ type LedgerProvider struct {
 	// burndown cache — refreshed at burndownTTL cadence (not every 100 ms tick).
 	burndownCache BurndownSnapshot
 	burndownAt    time.Time
+
+	// graph — shared dependency graph snapshot; refreshed at graphTTL cadence.
+	graph *GraphProvider
 }
 
 // NewLedgerProvider returns a LedgerProvider for the project at repoRoot.
@@ -51,6 +54,7 @@ func NewLedgerProvider(projectID, repoRoot, accountProfile string) *LedgerProvid
 		ls:             ledger.NewStore(repoRoot),
 		gs:             govern.NewStore(),
 		bd:             beads.New(repoRoot),
+		graph:          NewGraphProvider(repoRoot, 0), // 0 → package default graphTTL
 	}
 }
 
@@ -97,6 +101,9 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 		p.burndownAt = snap.CapturedAt
 	}
 	snap.Burndown = p.burndownCache
+
+	// --- graph (cached) ---------------------------------------------------------
+	snap.Graph = p.graph.Refresh(context.Background(), snap.CapturedAt)
 
 	return snap, nil
 }
