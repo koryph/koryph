@@ -81,6 +81,11 @@ test-race: ## Run the full test suite with the race detector
 cover: ## Run tests with coverage summary
 	go test -cover ./...
 
+# Per-checkout lint cache: the default shared cache serves stale results
+# across git worktrees (keyed by relative paths that collide), which has
+# produced phantom gate failures citing files in deleted worktrees.
+export GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
+
 .PHONY: lint
 lint: ## Run golangci-lint (skipped with a notice if not installed; CI enforces it)
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; \

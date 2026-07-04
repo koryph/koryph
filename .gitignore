@@ -35,3 +35,4 @@ result-*
 *.db
 .beads-credential-key
 .beads/proxieddb/
+/.cache/
