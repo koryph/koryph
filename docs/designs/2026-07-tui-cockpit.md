@@ -107,6 +107,23 @@ shell: header, tab bar, Threads tab, help overlay, project switcher,
 80×24 minimum-size guard, 100 ms poll refresh), `cmd/koryph/tui.go`
 command, teatest harness (4 tests). Docs/reference auto-generated.
 
+## 5c. Burndown tab scope (koryph-9af.7)
+
+Shipped: `internal/cockpit/burndown.go` — `BurndownSnapshot` types
+(`EpicBurndown`, `BacklogBurndown`, `CostBurndown`, `DurationStat`,
+`BurndownFit`) + `computeBurndown` computation engine reading ledger
+history + beads adapter; `LedgerProvider` extended with burndown cache
+(5 s TTL, no ccusage subprocess); `internal/tui/burndown.go` — Burndown
+tab Bubble Tea model with four sections; `TabBurndown` added as T2 in
+the tab bar. All projections surface P50/P90 from observed variance;
+sparse states render "insufficient history (n=N)". Duration stats are
+per-model-tier wall-time from DispatchedAt→MergedAt.
+
+Follow-ups filed: live quota window (requires ccusage background refresh);
+exact critical-path via full dep-graph traversal (needs `bd list --all`
+with dep links); persistent duration-stat accumulator alongside 6bl's
+cost stats.
+
 ## 6. Sequencing (the epic's children)
 
 T1 foundation (`internal/cockpit` view-model + app shell + threads view

@@ -133,6 +133,61 @@ func TestAppMinSize(t *testing.T) {
 	})
 }
 
+// TestAppBurndownTab verifies that tab-switching reaches the Burndown tab and
+// renders the expected section headers.
+func TestAppBurndownTab(t *testing.T) {
+	// Populate a snapshot with enough burndown data to exercise the sections.
+	now := time.Now()
+	snap := newTestSnap()
+	snap.Burndown = cockpit.BurndownSnapshot{
+		ComputedAt: now,
+		Backlog: cockpit.BacklogBurndown{
+			Ready:               3,
+			TotalRemaining:      3,
+			CriticalPathHops:    2,
+			ObservedParallelism: 1.5,
+			ParallelismN:        3,
+			InsufficientHistory: false,
+			HistoryN:            7,
+			DrainETA_P50:        now.Add(5 * 24 * time.Hour),
+			DrainETA_P90:        now.Add(10 * 24 * time.Hour),
+			Sparkline:           "   ▃▅▇█",
+		},
+		Cost: cockpit.CostBurndown{
+			RemainingBeads:  3,
+			AvgCostPerBead:  2.50,
+			ProjectedP50USD: 7.50,
+			ProjectedP90USD: 11.25,
+			Fit:             cockpit.FitGreen,
+		},
+		DurationStats: []cockpit.DurationStat{
+			{Tier: "sonnet", N: 8, Mean: 18 * time.Minute, P50: 15 * time.Minute, P90: 42 * time.Minute},
+			{Tier: "haiku", N: 2, Mean: 8 * time.Minute, P50: 7 * time.Minute, P90: 12 * time.Minute, Sparse: true},
+		},
+	}
+
+	p := &staticProvider{id: "proj-1", snap: snap}
+	app := tui.NewApp([]cockpit.Provider{p})
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
+	defer func() { _ = tm.Quit() }()
+
+	// Wait for initial render (Threads tab).
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Threads")
+	})
+
+	// Tab to the Burndown tab.
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+
+	// Burndown tab should render section headers.
+	waitFor(t, tm, func(bts []byte) bool {
+		s := string(bts)
+		return strings.Contains(s, "Burndown") &&
+			strings.Contains(s, "Backlog")
+	})
+}
+
 // TestAppHelp verifies the help overlay renders on "?".
 func TestAppHelp(t *testing.T) {
 	p := &staticProvider{id: "proj-1", snap: newTestSnap()}

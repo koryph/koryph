@@ -4,13 +4,16 @@
 package cockpit
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"sort"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/quota"
 )
 
 // agentStatus matches the shape that koryph dispatch seeds and agents rewrite
@@ -24,20 +27,30 @@ type agentStatus struct {
 // LedgerProvider implements Provider over a project's run ledger and the
 // machine-global governor. It is the primary provider used by the TUI.
 type LedgerProvider struct {
-	projectID string
-	repoRoot  string
+	projectID      string
+	repoRoot       string
+	accountProfile string // for quota config lookup; may be ""
 
 	ls *ledger.Store
 	gs *govern.Store
+	bd *beads.Adapter
+
+	// burndown cache — refreshed at burndownTTL cadence (not every 100 ms tick).
+	burndownCache BurndownSnapshot
+	burndownAt    time.Time
 }
 
 // NewLedgerProvider returns a LedgerProvider for the project at repoRoot.
-func NewLedgerProvider(projectID, repoRoot string) *LedgerProvider {
+// accountProfile is used to load the quota config for cost projections; pass ""
+// to skip quota-sourced window data.
+func NewLedgerProvider(projectID, repoRoot, accountProfile string) *LedgerProvider {
 	return &LedgerProvider{
-		projectID: projectID,
-		repoRoot:  repoRoot,
-		ls:        ledger.NewStore(repoRoot),
-		gs:        govern.NewStore(),
+		projectID:      projectID,
+		repoRoot:       repoRoot,
+		accountProfile: accountProfile,
+		ls:             ledger.NewStore(repoRoot),
+		gs:             govern.NewStore(),
+		bd:             beads.New(repoRoot),
 	}
 }
 
@@ -78,7 +91,77 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 	// --- governor ---------------------------------------------------------------
 	snap.Governor = p.refreshGovernor()
 
+	// --- burndown (cached) ------------------------------------------------------
+	if snap.CapturedAt.Sub(p.burndownAt) >= burndownTTL {
+		p.burndownCache = p.refreshBurndown(snap.CapturedAt)
+		p.burndownAt = snap.CapturedAt
+	}
+	snap.Burndown = p.burndownCache
+
 	return snap, nil
+}
+
+// refreshBurndown builds a fresh BurndownSnapshot, soft-failing on any
+// data source that is unavailable (beads absent, quota uncalibrated, etc.).
+func (p *LedgerProvider) refreshBurndown(now time.Time) BurndownSnapshot {
+	ctx := context.Background()
+
+	// --- ledger history -------------------------------------------------------
+	runIDs, _ := p.ls.ListRuns()
+	if len(runIDs) > burndownMaxRuns {
+		runIDs = runIDs[:burndownMaxRuns]
+	}
+	var runs []*ledger.Run
+	for _, id := range runIDs {
+		run, err := p.ls.LoadRun(id)
+		if err == nil {
+			runs = append(runs, run)
+		}
+	}
+
+	// --- beads ---------------------------------------------------------------
+	var readyIssues []beads.Issue
+	if ri, err := p.bd.Ready(ctx, beads.ReadyOpts{}); err == nil {
+		readyIssues = ri
+	}
+
+	// Collect unique epic IDs from the current run's slots and from
+	// the ledger history.
+	epicIDs := map[string]struct{}{}
+	for _, run := range runs {
+		for _, sl := range run.Slots {
+			if sl != nil && sl.EpicID != "" {
+				epicIDs[sl.EpicID] = struct{}{}
+			}
+		}
+	}
+	epicChildren := map[string][]beads.Issue{}
+	for epicID := range epicIDs {
+		if children, err := p.bd.ListChildren(ctx, epicID); err == nil {
+			epicChildren[epicID] = children
+		}
+	}
+
+	// --- quota config (file read only; no ccusage subprocess in the TUI) --------
+	// We read the persisted Config for estimator calibration but do NOT call
+	// quota.Snapshot (which runs ccusage — too slow for a 5 s TUI refresh).
+	// Window data will be shown as "unknown" until a background refresh bead
+	// adds it (filed as a follow-up in SUMMARY.md).
+	var qcfg *quota.Config
+	if p.accountProfile != "" {
+		if cfg, err := quota.LoadConfig(p.accountProfile); err == nil {
+			qcfg = cfg
+		}
+	}
+
+	return computeBurndown(burndownInput{
+		runs:         runs,
+		readyIssues:  readyIssues,
+		epicChildren: epicChildren,
+		quotaCfg:     qcfg,
+		quotaUsage:   nil, // see above
+		now:          now,
+	})
 }
 
 // refreshGovernor reads the machine-global governor state.

@@ -13,7 +13,8 @@ type TabID int
 
 const (
 	TabThreads TabID = iota
-	// Future tabs (T2-T5 are not implemented in this bead):
+	TabBurndown
+	// Future tabs:
 	// TabQueue
 	// TabBeadDetail
 	// TabEfficiency
@@ -26,6 +27,8 @@ func tabLabel(t TabID) string {
 	switch t {
 	case TabThreads:
 		return "Threads"
+	case TabBurndown:
+		return "Burndown"
 	default:
 		return fmt.Sprintf("Tab%d", t)
 	}

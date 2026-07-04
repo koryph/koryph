@@ -58,7 +58,8 @@ type App struct {
 	activeTab TabID
 
 	// tab sub-models.
-	threads threadsModel
+	threads  threadsModel
+	burndown burndownModel
 
 	// UI components.
 	help      help.Model
@@ -91,6 +92,7 @@ func NewApp(providers []cockpit.Provider) *App {
 		providers: providers,
 		activeTab: TabThreads,
 		threads:   newThreadsModel(theme),
+		burndown:  newBurndownModel(theme),
 		help:      h,
 		keys:      DefaultKeyMap(),
 		theme:     theme,
@@ -122,11 +124,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, a.keys.NextTab):
 			a.activeTab = (a.activeTab + 1) % tabCount
-			a.threads.resize(a.width, a.height)
+			a.resizeTabs()
 
 		case key.Matches(msg, a.keys.PrevTab):
 			a.activeTab = (a.activeTab + tabCount - 1) % tabCount
-			a.threads.resize(a.width, a.height)
+			a.resizeTabs()
 
 		case key.Matches(msg, a.keys.NextProject):
 			a.projectIdx = (a.projectIdx + 1) % len(a.providers)
@@ -146,7 +148,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.threads.resize(a.width, a.height-headerHeight())
+		a.resizeTabs()
 		a.help.Width = a.width
 
 	case tickMsg:
@@ -156,6 +158,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.snap = cockpit.Snapshot(msg)
 		a.lastError = ""
 		a.threads.setSnapshot(a.snap)
+		a.burndown.setSnapshot(a.snap)
 
 	case errMsg:
 		a.lastError = msg.err.Error()
@@ -164,12 +167,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+// resizeTabs propagates the current terminal dimensions to all tab models.
+func (a *App) resizeTabs() {
+	contentH := a.height - headerHeight()
+	a.threads.resize(a.width, contentH)
+	a.burndown.resize(a.width, contentH)
+}
+
 // updateActiveTab routes a key message to the active tab sub-model.
 func (a App) updateActiveTab(msg tea.Msg) (App, tea.Cmd) {
 	switch a.activeTab {
 	case TabThreads:
 		m, cmd := a.threads.Update(msg)
 		a.threads = m
+		return a, cmd
+	case TabBurndown:
+		m, cmd := a.burndown.Update(msg)
+		a.burndown = m
 		return a, cmd
 	}
 	return a, nil
@@ -231,6 +245,8 @@ func (a App) renderActiveTab() string {
 	switch a.activeTab {
 	case TabThreads:
 		return a.threads.View()
+	case TabBurndown:
+		return a.burndown.View()
 	}
 	return ""
 }

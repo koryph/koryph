@@ -84,6 +84,10 @@ type Snapshot struct {
 	// Governor is the machine-wide governor state (cross-project).
 	Governor GovernorSnapshot
 
+	// Burndown holds trajectory projections for the burndown tab (koryph-9af.7).
+	// Populated by LedgerProvider at burndownTTL cadence; zero when unavailable.
+	Burndown BurndownSnapshot
+
 	// CapturedAt is when this snapshot was assembled.
 	CapturedAt time.Time
 }

@@ -51,14 +51,14 @@ func cmdTUI(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, fmt.Errorf("tui: project %q not found: %w", *projectID, err))
 		}
-		providers = append(providers, cockpit.NewLedgerProvider(rec.ProjectID, rec.Root))
+		providers = append(providers, cockpit.NewLedgerProvider(rec.ProjectID, rec.Root, rec.AccountProfile))
 	} else {
 		recs, err := store.List()
 		if err != nil {
 			return fail(stderr, err)
 		}
 		for _, rec := range recs {
-			providers = append(providers, cockpit.NewLedgerProvider(rec.ProjectID, rec.Root))
+			providers = append(providers, cockpit.NewLedgerProvider(rec.ProjectID, rec.Root, rec.AccountProfile))
 		}
 	}
 
