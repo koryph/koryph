@@ -62,7 +62,7 @@ it immediately — use the `ssh-add` fallback (`agent_load: []`) in that case.
 |-------------|----------|-------------|
 | `required`  | yes      | Fail closed: repo config applied at run setup, agent must hold the key, merge verifies all commits. |
 | `mode`      | no       | `ssh` (default) or `gitsign` (sigstore keyless). |
-| `provider`  | ssh only | Vault backend: `protonpass` · `onepassword` · `file` · `command` · `aws_secretsmanager` · `azure_keyvault` · `gcp_secretmanager` · `keepassxc` · `openbao` · `vault`. |
+| `provider`  | ssh only | Vault backend: `protonpass` · `onepassword` · `encrypted-file` · `keychain` (macOS) · `file` · `command` · `aws_secretsmanager` · `azure_keyvault` · `gcp_secretmanager` · `keepassxc` · `openbao` · `vault`. |
 | `key_ref`   | varies   | Provider-specific reference: a `pass://` URI, `op://vault/item/field`, filesystem path, or the `{ref}` value consumed by a `command` template. Also used for public-key resolution when neither `--public-key` nor `--vault-name/--item-title` is given. |
 | `vault_name`| no       | Provenance: vault name used to resolve `public_key` via `--vault-name`. |
 | `item_title`| no       | Provenance: item title used to resolve `public_key` via `--item-title`. |
@@ -96,7 +96,9 @@ examples follow in the per-provider sections below.
 |----------|--------|------------|-----------------|----------------|
 | `protonpass` | `pass-cli` | Proton Pass account (`pass-cli login`) | Requires an active session. Alternative: run Proton Pass as the agent (`pass-cli ssh-agent start --socket-path …`; set `agent_load: []` in `vault.json`). | `fetch`, `agent_load`, `view`, `view_by_title` |
 | `onepassword` | `op` | 1Password CLI (`op signin`) | Use `OP_SERVICE_ACCOUNT_TOKEN` or device trust for CI. `op read` returns raw field values — supply `--public-key` explicitly at setup. | `fetch` |
-| `file` | — | OS file permissions | Fully headless; reads `key_ref` path directly — no CLI or login required. | — (built-in) |
+| `encrypted-file` | — (Go, all platforms) | Passphrase (`KORYPH_PASSPHRASE` env or `/dev/tty`) | Set `KORYPH_PASSPHRASE` for non-interactive CI; see trade-offs above. | — (built-in) |
+| `keychain` | `security` (darwin only) | macOS Keychain (user session) | Interactive Keychain unlock required; prefer `file`+`--apple-use-keychain` for fully headless macOS CI. | — (built-in) |
+| `file` | — | OS file permissions | Fully headless; reads `key_ref` path directly — no CLI or login required. Plaintext keys get a WARN posture. | — (built-in) |
 | `command` | User-supplied | User-supplied | Headless support depends entirely on the template command. | `fetch` (user-supplied) |
 | `aws_secretsmanager` | `aws` | AWS credential chain (env vars, `~/.aws/credentials`, IAM role, EC2 instance profile) | IAM roles and instance profiles work headlessly in CI — no `aws configure` needed. | `fetch` |
 | `azure_keyvault` | `az` | Azure CLI (`az login`) or managed identity / workload identity | Use managed identity or `az login --service-principal` for CI; no interactive login required. | `fetch` |
@@ -143,6 +145,82 @@ Uses `op read op://vault/item/field`. No native `agent_load`; koryph
 fetches the key and pipes it to `ssh-add -t 3600 -` (memory only, max 1 h).
 Provide the public key explicitly via `--public-key` (1Password's `op read`
 returns raw field values, not structured JSON).
+
+---
+
+## No-vault path — signing without a password manager
+
+You do not need Proton Pass, 1Password, or a cloud vault to use commit
+signing. Koryph provides two built-in providers that store key material
+locally with security equivalent to standard `~/.ssh` practice.
+
+### Posture ladder
+
+| Provider | Posture | Doctor / status |
+|----------|---------|-----------------|
+| Any vault-backed provider | **OK** | No note |
+| `keychain` (macOS) | **OK** | No note — macOS Keychain is the guard |
+| `encrypted-file` / passphrase-protected OpenSSH key | **OK** with info note | "same posture as a passphrase-protected ~/.ssh key" |
+| `file` (plaintext, no passphrase) | **WARN** | "key is stored unencrypted on disk" + migration hint |
+
+### Quick start (no vault)
+
+```bash
+# Generate a key — prompts for passphrase twice (non-empty required).
+# Defaults to keychain on macOS, encrypted-file on Linux.
+koryph signing keygen --project myproject --identity you@example.com
+
+# Wire the generated key into the project policy.
+koryph signing setup --project myproject \
+  --provider <provider> --key-ref <path shown by keygen> \
+  --identity you@example.com \
+  --public-key @<path>.pub
+
+# Load into agent + configure git.
+koryph signing enable --project myproject
+```
+
+### macOS Keychain (`keychain`, darwin-only)
+
+`key_ref` is an account name stored in macOS Keychain under service `koryph`.
+
+- **Fetch**: `security find-generic-password -s koryph -a {ref} -w`
+- **Store**: `security -i` (stdin) — password is never in argv/ps
+
+**Keychain vs `--apple-use-keychain`:** the `keychain` provider stores the
+_private key material_ in the Keychain. The `--apple-use-keychain` flag on
+`ssh-add` caches a _passphrase_ in the Keychain (for passphrase-protected
+files). These are complementary — `koryph signing keygen` uses both on macOS
+when the `file` or `encrypted-file` provider is chosen:
+
+```
+ssh-add --apple-use-keychain /path/to/key  # caches passphrase → no prompt on reboot
+```
+
+Add to `~/.ssh/config` to make this persist automatically:
+
+```
+Host *
+    UseKeychain yes
+    AddKeysToAgent yes
+```
+
+### Encrypted-file (`encrypted-file`, all platforms)
+
+`key_ref` is a path to a passphrase-encrypted blob written by
+[filippo.io/age](https://age-encryption.org/) using a scrypt recipient.
+The private key is never stored in plaintext — the age layer is the
+single encryption at rest.
+
+**Passphrase lookup order:**
+
+1. `KORYPH_PASSPHRASE` environment variable — for CI/automated use.
+   Trade-off: the variable is visible to child processes; prefer a vault
+   provider for fully automated production deployments.
+2. `/dev/tty` prompt with echo disabled — for interactive use.
+
+**Store:** atomic write to `{key_ref}` with mode `0600`. Temp file +
+rename so partial writes are never visible.
 
 ### File (`file`)
 
