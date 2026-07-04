@@ -597,11 +597,25 @@ func checkQuotaCalibration(opts Options) []Finding {
 				Message: fmt.Sprintf("account %s: uncalibrated (run `koryph quota calibrate --account %s ...`)", account, account),
 			})
 		} else {
+			eff := cfg.Ladder.Effective()
+			ladderStr := fmt.Sprintf(" ladder=%.0f/%.0f/%.0f/%.0f%%", eff.Warn*100, eff.Throttle*100, eff.GracefulStop*100, eff.HardStop*100)
+			if cfg.Ladder.IsDefault() {
+				ladderStr = "" // don't clutter OK line when defaults are in use
+			}
 			findings = append(findings, Finding{
 				Check:   checkNameQuota,
 				Level:   LevelOK,
-				Message: fmt.Sprintf("account %s: 5h=$%.2f wk=$%.2f", account, cfg.WindowCeilingUSD, cfg.WeeklyCeilingUSD),
+				Message: fmt.Sprintf("account %s: 5h=$%.2f wk=$%.2f%s", account, cfg.WindowCeilingUSD, cfg.WeeklyCeilingUSD, ladderStr),
 			})
+			// If the account has a non-default ladder, report it as a note (LevelOK - it's intentional).
+			if !cfg.Ladder.IsDefault() {
+				findings = append(findings, Finding{
+					Check: checkNameQuota,
+					Level: LevelOK,
+					Message: fmt.Sprintf("account %s: custom ladder warn=%.0f%% throttle=%.0f%% graceful-stop=%.0f%% hard-stop=%.0f%%",
+						account, eff.Warn*100, eff.Throttle*100, eff.GracefulStop*100, eff.HardStop*100),
+				})
+			}
 		}
 	}
 	if len(findings) == 0 {

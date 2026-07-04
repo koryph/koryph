@@ -266,8 +266,8 @@ func TestRollingInFlightFootprintHeldAcrossIterations(t *testing.T) {
 
 // TestRollingGovernorStopWithNoneActivePauses mirrors
 // TestRunBillingGuardEnforcedStops (guard_test.go) in rolling mode: a
-// calibrated governor already reading hard STOP before any dispatch pauses
-// the run immediately (paused-quota), exactly like wave mode.
+// calibrated governor already reading hard STOP before any dispatch parks
+// the run immediately (hard-stop-quota), exactly like wave mode.
 func TestRollingGovernorStopWithNoneActivePauses(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	calibrateStopped(t, "work")
@@ -294,8 +294,8 @@ func TestRollingGovernorStopWithNoneActivePauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLatest: %v", err)
 	}
-	if run.Status != ledger.RunPausedQuota {
-		t.Errorf("run status = %q, want %q", run.Status, ledger.RunPausedQuota)
+	if run.Status != ledger.RunHardStopQuota {
+		t.Errorf("run status = %q, want %q", run.Status, ledger.RunHardStopQuota)
 	}
 }
 
@@ -314,7 +314,7 @@ func TestRollingGovernorDrainStopsRefillButActiveFinish(t *testing.T) {
 
 	// Calibrated governor, initially well under warn (10% of a $100 window) so
 	// the first refill dispatches under enforced (non-advisory) governance —
-	// then bumped into the drain band ([0.90,0.95)) while tb1 sleeps. Both
+	// then bumped into the graceful-stop band ([0.97,0.99)) while tb1 sleeps. Both
 	// scans of the SAME transcript file (5h and weekly windows) pick up the
 	// same cost; a generous weekly ceiling keeps the weekly fraction
 	// negligible so the 5h window is what drives the level. The ceiling is
@@ -366,15 +366,15 @@ func TestRollingGovernorDrainStopsRefillButActiveFinish(t *testing.T) {
 	if !dispatched {
 		t.Fatalf("tb1 never dispatched under OK governance; log:\n%s", out.String())
 	}
-	writeSonnetTranscriptAt(t, transcript, 6133333) // ≈$92 → drain band [0.90,0.95)
+	writeSonnetTranscriptAt(t, transcript, 6500000) // ≈$97.5 → graceful-stop band [0.97,0.99) at $15/1M output
 
-	// While draining, tb2 (ready, non-conflicting, capacity available) must
+	// While graceful-stop/draining, tb2 (ready, non-conflicting, capacity available) must
 	// NEVER get a slot.
 	sawDrain := waitForCondition(6*time.Second, func() bool {
-		return strings.Contains(out.String(), "governor drain")
+		return strings.Contains(out.String(), "governor graceful stop")
 	})
 	if !sawDrain {
-		t.Fatalf("never observed a governor-drain log line; log:\n%s", out.String())
+		t.Fatalf("never observed a governor-graceful-stop log line; log:\n%s", out.String())
 	}
 
 	select {

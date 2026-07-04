@@ -40,11 +40,12 @@ const (
 
 // Run statuses.
 const (
-	RunRunning     = "running"
-	RunPausedQuota = "paused-quota"
-	RunDrained     = "drained"
-	RunDone        = "done"
-	RunAborted     = "aborted"
+	RunRunning       = "running"
+	RunPausedQuota   = "paused-quota"
+	RunHardStopQuota = "hard-stop-quota" // hard stop: agents interrupted, worktrees preserved
+	RunDrained       = "drained"
+	RunDone          = "done"
+	RunAborted       = "aborted"
 )
 
 // Terminal reports whether a slot status is terminal. pr-opened is terminal

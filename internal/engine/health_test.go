@@ -437,13 +437,13 @@ func TestPatrolCheckQuotaBurn_WarnLevel(t *testing.T) {
 		quotaCfg: &quota.Config{WindowCeilingUSD: 10, WeeklyCeilingUSD: 200},
 		lastQuotaUsage: quota.Usage{
 			Account:  "test",
-			Window5h: quota.Window{SpentUSD: 8.5, CeilingUSD: 10.0, Source: "ccusage"}, // 85% → warn
+			Window5h: quota.Window{SpentUSD: 9.1, CeilingUSD: 10.0, Source: "ccusage"}, // 91% → warn (>= 0.90, < 0.94 throttle)
 			Weekly:   freshWeekly(),
 		},
 	}
 	findings := r.patrolCheckQuotaBurn()
 	if countLevel(findings, "warn") == 0 {
-		t.Errorf("85%% usage at warn threshold not flagged; findings = %+v", findings)
+		t.Errorf("91%% usage at warn threshold not flagged; findings = %+v", findings)
 	}
 }
 
@@ -452,13 +452,13 @@ func TestPatrolCheckQuotaBurn_DrainLevel(t *testing.T) {
 		quotaCfg: &quota.Config{WindowCeilingUSD: 10, WeeklyCeilingUSD: 200},
 		lastQuotaUsage: quota.Usage{
 			Account:  "test",
-			Window5h: quota.Window{SpentUSD: 9.2, CeilingUSD: 10.0, Source: "ccusage"}, // 92% → drain
+			Window5h: quota.Window{SpentUSD: 9.75, CeilingUSD: 10.0, Source: "ccusage"}, // 97.5% → drain (>= 0.97 graceful_stop, < 0.99 hard_stop)
 			Weekly:   freshWeekly(),
 		},
 	}
 	findings := r.patrolCheckQuotaBurn()
 	if countLevel(findings, "warn") == 0 {
-		t.Errorf("92%% usage at drain threshold not flagged; findings = %+v", findings)
+		t.Errorf("97.5%% usage at drain threshold not flagged; findings = %+v", findings)
 	}
 	hasKeyword := false
 	for _, f := range findings {

@@ -2,9 +2,12 @@
 // Copyright (c) 2026 The Koryph Developers
 
 // Package quota is the per-account usage governor. Loop-mode policy:
-// warn at 80%, graceful drain at 90% (finish current beads, dispatch nothing
-// new), hard stop at 95% (block dispatch, wait for the current turn — never
-// interrupt mid-turn). Manual dispatch is exempt from stops (still logged).
+// warn at 90%, slot-scale at 90–94% (linear scale-down of parallelism),
+// graceful stop at 97% (no new dispatch; in-flight beads finish), hard stop
+// at 99% (in-flight agents receive SIGTERM; worktrees preserved for resume).
+// Manual dispatch is exempt from stops (still logged). All four thresholds
+// are configurable per-account via Config.Ladder; zero fields use package
+// defaults (DefaultWarnFraction etc.).
 //
 // Usage sources (usage.go), in order:
 //  1. ccusage CLI run with the account's CLAUDE_CONFIG_DIR in env
@@ -24,33 +27,103 @@
 //
 // Implementation contract (governor.go, usage.go, estimate.go):
 //   - Snapshot(ctx, profile) (Usage, error)
-//   - State(u, cfg) Level (ok|warn|drain|stop) using the max of window and
-//     weekly fractions.
-//   - ScaleSlots(u, cfg, max) int — linear scale-down between warn and stop,
-//     min 1 below drain, 0 at/above drain.
+//   - State(u, cfg) Level (ok|warn|throttle|drain|stop) using the max of window
+//     and weekly fractions.
+//   - ScaleSlots(u, cfg, max) int — linear scale-down between throttle and
+//     graceful_stop, min 1 below graceful_stop, 0 at/above graceful_stop.
 //   - Preflight(u, waveEstimateUSD, cfg) (ok bool, reason string) — a loop
-//     wave that would cross drain (90%) does not dispatch.
+//     wave that would cross graceful_stop (97%) does not dispatch.
 //   - EstimateWave / EstimateItem — per-tier base cost x size multiplier x
 //     safety margin, EWMA-calibrated per tier from observed slot costs
 //     (Record(tier, size, actualUSD)).
 package quota
 
+import "fmt"
+
 // Level is the governor verdict.
 type Level string
 
 const (
-	LevelOK    Level = "ok"
-	LevelWarn  Level = "warn"  // >= 0.80
-	LevelDrain Level = "drain" // >= 0.90
-	LevelStop  Level = "stop"  // >= 0.95
+	LevelOK       Level = "ok"
+	LevelWarn     Level = "warn"     // >= DefaultWarnFraction
+	LevelThrottle Level = "throttle" // >= DefaultThrottleFraction; slot scaling starts
+	LevelDrain    Level = "drain"    // >= DefaultGracefulStopFraction; no new dispatch
+	LevelStop     Level = "stop"     // >= DefaultHardStopFraction; interrupt in-flight
 )
 
-// Thresholds (fractions of the calibrated ceiling).
+// Deprecated: use DefaultWarnFraction / DefaultThrottleFraction /
+// DefaultGracefulStopFraction / DefaultHardStopFraction. These
+// constants remain for any caller that has not yet migrated.
 const (
 	WarnFraction  = 0.80
 	DrainFraction = 0.90
 	StopFraction  = 0.95
 )
+
+// Default ladder thresholds (koryph-ivk). All configurable per-account via
+// Config.Ladder; zero config fields fall back to these defaults.
+const (
+	DefaultWarnFraction         = 0.90
+	DefaultThrottleFraction     = 0.94
+	DefaultGracefulStopFraction = 0.97
+	DefaultHardStopFraction     = 0.99
+)
+
+// Ladder holds the configurable governor thresholds for one account.
+// All fields are fractions in (0,1]. Zero values use package defaults
+// (see DefaultWarnFraction etc.). Fields must be strictly ascending.
+//
+// Ladder is embedded in Config.Ladder and re-read at every preflight
+// (governor() re-calls LoadConfig each wave), so changes take effect
+// without a restart.
+type Ladder struct {
+	Warn         float64 `json:"warn,omitempty"`
+	Throttle     float64 `json:"throttle,omitempty"`
+	GracefulStop float64 `json:"graceful_stop,omitempty"`
+	HardStop     float64 `json:"hard_stop,omitempty"`
+}
+
+// Effective returns the ladder with zero fields filled in from package
+// defaults. The receiver is never mutated.
+func (l Ladder) Effective() Ladder {
+	if l.Warn == 0 {
+		l.Warn = DefaultWarnFraction
+	}
+	if l.Throttle == 0 {
+		l.Throttle = DefaultThrottleFraction
+	}
+	if l.GracefulStop == 0 {
+		l.GracefulStop = DefaultGracefulStopFraction
+	}
+	if l.HardStop == 0 {
+		l.HardStop = DefaultHardStopFraction
+	}
+	return l
+}
+
+// Validate checks that effective thresholds are strictly ascending in (0,1].
+// Returns nil when the ladder is valid (including the all-zero default ladder).
+func (l Ladder) Validate() error {
+	el := l.Effective()
+	if el.Warn <= 0 || el.Warn > 1 {
+		return fmt.Errorf("quota: ladder.warn %.4g out of (0,1]", el.Warn)
+	}
+	if el.Throttle <= el.Warn || el.Throttle > 1 {
+		return fmt.Errorf("quota: ladder.throttle %.4g must be > warn %.4g and <= 1", el.Throttle, el.Warn)
+	}
+	if el.GracefulStop <= el.Throttle || el.GracefulStop > 1 {
+		return fmt.Errorf("quota: ladder.graceful_stop %.4g must be > throttle %.4g and <= 1", el.GracefulStop, el.Throttle)
+	}
+	if el.HardStop <= el.GracefulStop || el.HardStop > 1 {
+		return fmt.Errorf("quota: ladder.hard_stop %.4g must be > graceful_stop %.4g and <= 1", el.HardStop, el.GracefulStop)
+	}
+	return nil
+}
+
+// IsDefault reports whether the ladder is all-zero (using package defaults).
+func (l Ladder) IsDefault() bool {
+	return l.Warn == 0 && l.Throttle == 0 && l.GracefulStop == 0 && l.HardStop == 0
+}
 
 // Window is one measured usage window.
 type Window struct {
@@ -138,6 +211,13 @@ type Config struct {
 	// engine treats an expired override identically to GuardMode="on".
 	// (koryph-i25)
 	GuardUntil string `json:"guard_until,omitempty"`
+
+	// Ladder is the configurable governor threshold set for this account.
+	// Zero fields fall back to package defaults (DefaultWarnFraction etc.).
+	// Validated strictly ascending in (0,1] at load time; invalid values are
+	// silently reset to zero (use defaults). Re-read at every wave preflight
+	// without a restart.
+	Ladder Ladder `json:"ladder,omitempty"`
 }
 
 // DefaultConfig returns uncalibrated defaults for a new account profile.

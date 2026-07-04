@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/koryph/koryph/internal/account"
@@ -103,25 +104,35 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	g := govGate{allowDispatch: true, level: level, calibrated: calibrated, advisory: advisory, usage: usage}
 
 	if !r.opts.Manual && !advisory {
+		// eff is the effective ladder for logging threshold annotations.
+		eff := quota.Ladder{}.Effective()
+		if r.quotaCfg != nil {
+			eff = r.quotaCfg.Ladder.Effective()
+		}
 		switch level {
 		case quota.LevelStop:
+			// Hard stop: interrupt active agents (SIGTERM — checkpoints; worktrees
+			// preserved for resume) and park the run immediately.
 			if r.billing != account.BillingAPIKey {
-				if r.activeCount() == 0 {
-					r.run.Status = ledger.RunPausedQuota
-					_ = r.store.SaveRun(r.run)
-					r.progress("governor stop: run %s paused (quota)", r.run.RunID)
-					g.paused = true
-					g.outcome = r.outcome(ExitOK, "quota-stop", false)
-					return g
-				}
-				g.allowDispatch = false
-				r.progress("governor stop: no new dispatch; waiting on %d active slot(s)", r.activeCount())
+				r.interruptActiveSlots()
+				r.run.Status = ledger.RunHardStopQuota
+				_ = r.store.SaveRun(r.run)
+				r.progress("governor hard stop: run %s parked at %.0f%% (hard-stop %.0f%%) — active agents sent SIGTERM, worktrees preserved for resume",
+					r.run.RunID, usage.Window5h.Fraction()*100, eff.HardStop*100)
+				g.paused = true
+				g.outcome = r.outcome(ExitOK, "quota-hard-stop", false)
+				return g
 			}
 		case quota.LevelDrain:
 			g.allowDispatch = false
-			r.progress("governor drain: no new dispatch; finishing %d active slot(s)", r.activeCount())
+			r.progress("governor graceful stop: no new dispatch (%.0f%% >= graceful-stop %.0f%%); finishing %d active slot(s)",
+				usage.Window5h.Fraction()*100, eff.GracefulStop*100, r.activeCount())
+		case quota.LevelThrottle:
+			r.progress("governor throttle: slot scaling active (%.0f%% >= throttle %.0f%%)",
+				usage.Window5h.Fraction()*100, eff.Throttle*100)
 		case quota.LevelWarn:
-			r.progress("governor warn: usage past %.0f%% of the window ceiling", quota.WarnFraction*100)
+			r.progress("governor warn: usage at %.0f%% (warn %.0f%%, throttle %.0f%%, graceful-stop %.0f%%, hard-stop %.0f%%)",
+				usage.Window5h.Fraction()*100, eff.Warn*100, eff.Throttle*100, eff.GracefulStop*100, eff.HardStop*100)
 		}
 	}
 
@@ -163,7 +174,7 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 		width = ov.Max
 	}
 	if !r.opts.Manual && calibrated && !advisory {
-		if scaled := quota.ScaleSlots(usage, width); scaled < width {
+		if scaled := quota.ScaleSlots(usage, r.quotaCfg, width); scaled < width {
 			width = scaled
 		}
 	}
@@ -936,4 +947,26 @@ func (r *runner) baseCommit(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(res.Stdout)
+}
+
+// interruptActiveSlots sends SIGTERM to every non-terminal slot's agent PID
+// (hard budget stop). Agents are designed to checkpoint on SIGTERM; their
+// worktrees and branches are preserved. Never SIGKILLs — a dirty worktree is
+// recoverable; a killed process in the middle of a commit is not.
+func (r *runner) interruptActiveSlots() {
+	for id, sl := range r.run.Slots {
+		if sl == nil || ledger.Terminal(sl.Status) {
+			continue
+		}
+		pid := sl.PID
+		if pid <= 0 {
+			r.progress("hard stop: slot %s has no PID (agent not yet attached or already gone)", id)
+			continue
+		}
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			r.progress("hard stop: could not signal pid %d (slot %s): %v — already gone?", pid, id, err)
+		} else {
+			r.progress("hard stop: sent SIGTERM to pid %d (slot %s)", pid, id)
+		}
+	}
 }

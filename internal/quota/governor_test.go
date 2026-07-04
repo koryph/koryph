@@ -86,31 +86,38 @@ func TestState(t *testing.T) {
 			wantCalibd: true,
 		},
 		{
-			name:       "warn at 0.80",
-			u:          usage(win(5, 80, 100, "ccusage"), win(168, 0, 1000, "ccusage")),
+			name:       "warn at 0.90",
+			u:          usage(win(5, 90, 100, "ccusage"), win(168, 0, 1000, "ccusage")),
 			cfg:        cal,
 			wantLevel:  LevelWarn,
 			wantCalibd: true,
 		},
 		{
-			name:       "drain at 0.90",
-			u:          usage(win(5, 90, 100, "ccusage"), win(168, 0, 1000, "ccusage")),
+			name:       "throttle at 0.94",
+			u:          usage(win(5, 94, 100, "ccusage"), win(168, 0, 1000, "ccusage")),
+			cfg:        cal,
+			wantLevel:  LevelThrottle,
+			wantCalibd: true,
+		},
+		{
+			name:       "drain at 0.97",
+			u:          usage(win(5, 97, 100, "ccusage"), win(168, 0, 1000, "ccusage")),
 			cfg:        cal,
 			wantLevel:  LevelDrain,
 			wantCalibd: true,
 		},
 		{
-			name:       "stop at 0.95",
-			u:          usage(win(5, 95, 100, "ccusage"), win(168, 0, 1000, "ccusage")),
+			name:       "stop at 0.99",
+			u:          usage(win(5, 99, 100, "ccusage"), win(168, 0, 1000, "ccusage")),
 			cfg:        cal,
 			wantLevel:  LevelStop,
 			wantCalibd: true,
 		},
 		{
-			name:       "weekly dominates",
-			u:          usage(win(5, 10, 100, "ccusage"), win(168, 920, 1000, "ccusage")),
+			name:       "weekly dominates at throttle",
+			u:          usage(win(5, 10, 100, "ccusage"), win(168, 950, 1000, "ccusage")),
 			cfg:        cal,
-			wantLevel:  LevelDrain,
+			wantLevel:  LevelThrottle,
 			wantCalibd: true,
 		},
 		{
@@ -137,18 +144,40 @@ func TestScaleSlots(t *testing.T) {
 		frac float64
 		want int
 	}{
-		{0.79, max}, // below warn → full
-		{0.80, max}, // at warn → full
-		{0.85, 5},   // midpoint of [warn,drain): 9 - 0.5*(9-1) = 5
-		{0.895, 1},  // near drain → clamps to 1
-		{0.90, 0},   // at drain → 0
-		{0.95, 0},   // above drain → 0
+		{0.93, max}, // below throttle → full
+		{0.94, max}, // at throttle → full
+		{0.955, 5},  // midpoint of [0.94, 0.97): 9 - 0.5*(9-1) = 5
+		{0.969, 1},  // near graceful_stop → clamps to 1
+		{0.97, 0},   // at graceful_stop → 0
+		{0.99, 0},   // above graceful_stop → 0
 	}
 	for _, tc := range cases {
 		// window carries the fraction; weekly is idle.
 		u := usage(win(5, tc.frac*100, 100, "ccusage"), win(168, 0, 1000, "ccusage"))
-		if got := ScaleSlots(u, max); got != tc.want {
+		if got := ScaleSlots(u, nil, max); got != tc.want {
 			t.Fatalf("ScaleSlots(frac=%.3f) = %d, want %d", tc.frac, got, tc.want)
+		}
+	}
+}
+
+func TestScaleSlotsCustomLadder(t *testing.T) {
+	const max = 9
+	cfg := DefaultConfig("acct")
+	cfg.Ladder = Ladder{Throttle: 0.80, GracefulStop: 0.90}
+	cases := []struct {
+		frac float64
+		want int
+	}{
+		{0.79, max}, // below throttle → full
+		{0.80, max}, // at throttle → full
+		{0.85, 5},   // midpoint → scaled
+		{0.895, 1},  // near graceful_stop → 1
+		{0.90, 0},   // at graceful_stop → 0
+	}
+	for _, tc := range cases {
+		u := usage(win(5, tc.frac*100, 100, "ccusage"), win(168, 0, 1000, "ccusage"))
+		if got := ScaleSlots(u, cfg, max); got != tc.want {
+			t.Fatalf("ScaleSlots(frac=%.3f,custom) = %d, want %d", tc.frac, got, tc.want)
 		}
 	}
 }
@@ -157,15 +186,17 @@ func TestPreflight(t *testing.T) {
 	cal := calibratedCfg() // window ceiling 100
 	base := usage(win(5, 50, 100, "ccusage"), win(168, 100, 1000, "ccusage"))
 
-	if ok, reason := Preflight(base, 35, cal); !ok {
-		t.Fatalf("wave to 85%% should pass, got not-ok: %s", reason)
+	// (50+45)/100 = 0.95, below graceful_stop=0.97 → should pass
+	if ok, reason := Preflight(base, 45, cal); !ok {
+		t.Fatalf("wave to 95%% should pass (graceful-stop is 97%%), got not-ok: %s", reason)
 	}
-	ok, reason := Preflight(base, 45, cal) // (50+45)/100 = 0.95 >= drain
+	// (50+48)/100 = 0.98 >= graceful_stop=0.97 → should fail
+	ok, reason := Preflight(base, 48, cal)
 	if ok {
-		t.Fatalf("wave crossing drain should not dispatch")
+		t.Fatalf("wave crossing graceful-stop should not dispatch")
 	}
-	if !strings.Contains(reason, "drain") {
-		t.Fatalf("reason should mention drain, got %q", reason)
+	if !strings.Contains(reason, "graceful-stop") {
+		t.Fatalf("reason should mention graceful-stop, got %q", reason)
 	}
 
 	// Uncalibrated → always ok, advisory.
@@ -180,6 +211,40 @@ func TestPreflight(t *testing.T) {
 	un := usage(win(5, 0, 100, "unavailable"), win(168, 10, 1000, "ccusage"))
 	if ok, _ := Preflight(un, 0, cal); ok {
 		t.Fatalf("unavailable window should fail closed")
+	}
+}
+
+func TestLadder(t *testing.T) {
+	// All-zero (defaults) is valid.
+	if err := (Ladder{}).Validate(); err != nil {
+		t.Fatalf("default ladder invalid: %v", err)
+	}
+	// Custom valid ladder.
+	custom := Ladder{Warn: 0.85, Throttle: 0.90, GracefulStop: 0.95, HardStop: 0.98}
+	if err := custom.Validate(); err != nil {
+		t.Fatalf("custom ladder invalid: %v", err)
+	}
+	// Not strictly ascending → error.
+	bad := Ladder{Warn: 0.90, Throttle: 0.85}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("expected error for non-ascending ladder")
+	}
+	// Out of range → error.
+	outOfRange := Ladder{Warn: 1.1}
+	if err := outOfRange.Validate(); err == nil {
+		t.Fatal("expected error for warn > 1")
+	}
+	// Effective() fills defaults.
+	el := (Ladder{}).Effective()
+	if el.Warn != DefaultWarnFraction {
+		t.Fatalf("Effective().Warn = %g, want %g", el.Warn, DefaultWarnFraction)
+	}
+	// IsDefault.
+	if !(Ladder{}).IsDefault() {
+		t.Fatal("zero Ladder should be IsDefault")
+	}
+	if custom.IsDefault() {
+		t.Fatal("custom Ladder should not be IsDefault")
 	}
 }
 

@@ -98,6 +98,10 @@ func LoadConfig(account string) (*Config, error) {
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = ConfigSchemaVersion
 	}
+	// Validate the ladder; reset invalid rungs to zero (falls back to defaults).
+	if err := cfg.Ladder.Validate(); err != nil {
+		cfg.Ladder = Ladder{} // reset to defaults
+	}
 	return &cfg, nil
 }
 
@@ -176,14 +180,18 @@ func maxFraction(u Usage) float64 {
 	return math.Max(u.Window5h.Fraction(), u.Weekly.Fraction())
 }
 
-// levelFor maps a fraction of the ceiling onto a governor level.
-func levelFor(frac float64) Level {
+// levelFor maps a fraction of the ceiling onto a governor level using the
+// effective ladder thresholds.
+func levelFor(frac float64, l Ladder) Level {
+	el := l.Effective()
 	switch {
-	case frac >= StopFraction:
+	case frac >= el.HardStop:
 		return LevelStop
-	case frac >= DrainFraction:
+	case frac >= el.GracefulStop:
 		return LevelDrain
-	case frac >= WarnFraction:
+	case frac >= el.Throttle:
+		return LevelThrottle
+	case frac >= el.Warn:
 		return LevelWarn
 	default:
 		return LevelOK
@@ -202,26 +210,36 @@ func State(u Usage, cfg *Config) (Level, bool) {
 	if !isCalibrated(u, cfg) {
 		return LevelOK, false
 	}
-	return levelFor(maxFraction(u)), true
+	var l Ladder
+	if cfg != nil {
+		l = cfg.Ladder
+	}
+	return levelFor(maxFraction(u), l), true
 }
 
-// ScaleSlots scales a desired parallelism (max) down as usage climbs: full max
-// at or below the warn fraction, linearly interpolated max→1 across
-// [Warn, Drain), and 0 at or above the drain fraction. The result never dips
-// below 1 while below drain.
-func ScaleSlots(u Usage, max int) int {
+// ScaleSlots scales a desired parallelism (max) down as usage climbs:
+// full max at or below the throttle fraction, linearly interpolated max→1
+// across [Throttle, GracefulStop), and 0 at or above the graceful_stop
+// fraction. The result never dips below 1 while below graceful_stop.
+// cfg may be nil (uses package defaults).
+func ScaleSlots(u Usage, cfg *Config, max int) int {
 	if max <= 0 {
 		return 0
 	}
+	var l Ladder
+	if cfg != nil {
+		l = cfg.Ladder
+	}
+	el := l.Effective()
 	frac := maxFraction(u)
-	if frac >= DrainFraction {
+	if frac >= el.GracefulStop {
 		return 0
 	}
-	if frac <= WarnFraction {
+	if frac <= el.Throttle {
 		return max
 	}
-	// t in (0,1): 0 at Warn, →1 approaching Drain.
-	t := (frac - WarnFraction) / (DrainFraction - WarnFraction)
+	// t in (0,1): 0 at Throttle, →1 approaching GracefulStop.
+	t := (frac - el.Throttle) / (el.GracefulStop - el.Throttle)
 	scaled := float64(max) - t*(float64(max)-1.0)
 	n := int(math.Round(scaled))
 	if n < 1 {
@@ -239,6 +257,12 @@ func Preflight(u Usage, waveEstimateUSD float64, cfg *Config) (ok bool, reason s
 	if !isCalibrated(u, cfg) {
 		return true, "uncalibrated: governor advisory only"
 	}
+	var l Ladder
+	if cfg != nil {
+		l = cfg.Ladder
+	}
+	el := l.Effective()
+
 	w := u.Window5h
 	ceiling := w.CeilingUSD
 	if ceiling <= 0 && cfg != nil {
@@ -251,12 +275,12 @@ func Preflight(u Usage, waveEstimateUSD float64, cfg *Config) (ok bool, reason s
 		return false, "5h usage unavailable — failing closed"
 	}
 	projected := (w.SpentUSD + waveEstimateUSD) / ceiling
-	if projected >= DrainFraction {
+	if projected >= el.GracefulStop {
 		return false, fmt.Sprintf(
-			"wave ($%.2f est) would put the 5h window at %.0f%% ($%.2f/$%.2f) — crosses drain (%.0f%%)",
-			waveEstimateUSD, projected*100, w.SpentUSD+waveEstimateUSD, ceiling, DrainFraction*100)
+			"wave ($%.2f est) would put the 5h window at %.0f%% ($%.2f/$%.2f) — crosses graceful-stop (%.0f%%)",
+			waveEstimateUSD, projected*100, w.SpentUSD+waveEstimateUSD, ceiling, el.GracefulStop*100)
 	}
 	return true, fmt.Sprintf(
-		"5h window projected %.0f%% after wave (drain at %.0f%%)",
-		projected*100, DrainFraction*100)
+		"5h window projected %.0f%% after wave (graceful-stop at %.0f%%)",
+		projected*100, el.GracefulStop*100)
 }

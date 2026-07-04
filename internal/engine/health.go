@@ -456,10 +456,13 @@ func (r *runner) patrolCheckQuotaBurn() []patrolFinding {
 	switch level {
 	case quota.LevelStop:
 		return []patrolFinding{{check: patrolCheckQuota, level: "warn",
-			message: fmt.Sprintf("quota STOP: window %.0f%% of ceiling — dispatch paused", u.Window5h.Fraction()*100)}}
+			message: fmt.Sprintf("quota HARD-STOP: window %.0f%% of ceiling — agents interrupted, run parked", u.Window5h.Fraction()*100)}}
 	case quota.LevelDrain:
 		return []patrolFinding{{check: patrolCheckQuota, level: "warn",
 			message: fmt.Sprintf("quota DRAIN: window %.0f%% of ceiling — no new dispatch", u.Window5h.Fraction()*100)}}
+	case quota.LevelThrottle:
+		return []patrolFinding{{check: patrolCheckQuota, level: "warn",
+			message: fmt.Sprintf("quota THROTTLE: window %.0f%% of ceiling — slot scaling active", u.Window5h.Fraction()*100)}}
 	case quota.LevelWarn:
 		return []patrolFinding{{check: patrolCheckQuota, level: "warn",
 			message: fmt.Sprintf("quota WARN: window %.0f%% of ceiling", u.Window5h.Fraction()*100)}}

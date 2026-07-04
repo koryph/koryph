@@ -157,6 +157,20 @@ func cmdQuotaShow(args []string, stdout, stderr io.Writer) int {
 			s.Account, s.Level, yesno(s.Calibrated), windowCell(s.Usage.Window5h), windowCell(s.Usage.Weekly))
 	}
 	tw.Flush()
+	// Print active ladder below the table.
+	for _, s := range snaps {
+		cfg, cerr := quota.LoadConfig(s.Account)
+		if cerr != nil {
+			continue
+		}
+		eff := cfg.Ladder.Effective()
+		custom := ""
+		if !cfg.Ladder.IsDefault() {
+			custom = " (custom)"
+		}
+		fmt.Fprintf(stdout, "  %s: ladder%s warn=%.0f%% throttle=%.0f%% graceful-stop=%.0f%% hard-stop=%.0f%%\n",
+			s.Account, custom, eff.Warn*100, eff.Throttle*100, eff.GracefulStop*100, eff.HardStop*100)
+	}
 	return 0
 }
 
