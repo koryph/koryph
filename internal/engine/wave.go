@@ -57,15 +57,25 @@ type govGate struct {
 	budgetHit     bool
 	width         int
 
-	// paused is set when the gate itself already finalized the run as
-	// paused-quota (quota-stop with nothing active): the caller must return
-	// outcome immediately without scanning the frontier, exactly as the
-	// pre-koryph-2im.3 wave loop did (an early exit is cheaper than building
-	// a wave that will never dispatch, and — more importantly — must not be
-	// reordered after a drained check: quota-stop always wins over drained
-	// when nothing is running, unlike drain/budget below).
+	// paused is set when the gate itself already finalized the run — either
+	// paused-quota (quota-stop with nothing active) or operator-drain-with-
+	// nothing-active below (koryph-57v.1; the latter finalizes DRAINED, not
+	// paused, but shares the same "return outcome immediately" shape): the
+	// caller must return outcome immediately without scanning the frontier,
+	// exactly as the pre-koryph-2im.3 wave loop did (an early exit is cheaper
+	// than building a wave that will never dispatch, and — more importantly —
+	// must not be reordered after a drained check: quota-stop always wins over
+	// drained when nothing is running, unlike drain/budget below).
 	paused  bool
 	outcome Outcome
+
+	// operatorDrain is set whenever `koryph drain`'s sentinel is present this
+	// boundary (koryph-57v.1), regardless of whether it already short-circuited
+	// via paused above. It lets both loops' "nothing active, can't dispatch"
+	// fallback (below the frontier scan) report the operator-drain reason
+	// instead of a quota-* one, on the off chance the sentinel is consumed by
+	// something else between this gate and that check.
+	operatorDrain bool
 }
 
 // governorGate runs the governor/billing/budget checks once per wave or
@@ -109,7 +119,43 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 		}
 	}
 
+	// Operator drain (koryph-57v.1): a one-shot sentinel written by
+	// `koryph drain`, re-read here so BOTH loops honor it for free at every
+	// boundary. Unlike quota drain/stop, this is a deliberate operator
+	// instruction rather than an account-spend signal, so a drain found with
+	// nothing active does not merely PAUSE the run — it finalizes through the
+	// same normal drained-exit shape as an empty frontier and consumes the
+	// sentinel itself, so a fresh run afterwards starts clean (see
+	// ledger.Store.ConsumeDrain and the stale-sentinel clear at run start in
+	// run.go). With something still active, it behaves exactly like governor
+	// drain: no new dispatch, active slots finish untouched.
+	if r.store.DrainRequested() {
+		g.operatorDrain = true
+		if r.activeCount() == 0 {
+			r.run.Status = ledger.RunDrained
+			_ = r.store.FinalizeRun(r.run)
+			r.store.ConsumeDrain()
+			r.dropDemand() // withdraw from the fair-share denominator, same as any drained exit
+			r.progress("operator drain: run %s finished (no active slots) — sentinel consumed", r.run.RunID)
+			g.paused = true
+			g.outcome = r.outcome(ExitDrained, "operator-drain", true)
+			return g
+		}
+		if g.allowDispatch {
+			r.progress("operator drain: no new dispatch; finishing %d active slot(s)", r.activeCount())
+		}
+		g.allowDispatch = false
+	}
+
 	width := r.width
+	// Operator resize (koryph-57v.1): re-read every boundary; an active
+	// override replaces the configured base width BEFORE quota scaling, so
+	// `koryph resize` takes effect on the very next boundary without a
+	// restart. Clamping to the project cap (unless --force) happens once, at
+	// write time (cmd/koryph), not here.
+	if ov, ok := r.store.LoadResize(); ok {
+		width = ov.Max
+	}
 	if !r.opts.Manual && calibrated && !advisory {
 		if scaled := quota.ScaleSlots(usage, width); scaled < width {
 			width = scaled
@@ -191,11 +237,16 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		}
 
 		// Gate with nothing active to finish: pause rather than spin. The
-		// per-run budget cap and the quota governor both land here.
+		// per-run budget cap and the quota governor both land here. (Operator
+		// drain with nothing active already returned via gate.paused above; this
+		// is defensive so the reason is never mislabeled quota-* if it weren't.)
 		if !allowDispatch && len(active) == 0 {
 			reason := "quota-" + string(level)
 			if budgetHit {
 				reason = "budget-cap"
+			}
+			if gate.operatorDrain {
+				reason = "operator-drain"
 			}
 			r.run.Status = ledger.RunPausedQuota
 			_ = r.store.SaveRun(r.run)

@@ -100,7 +100,7 @@ type Record struct {
 // Event is one append-only audit entry (audit.jsonl).
 type Event struct {
 	At        string `json:"at"`
-	Kind      string `json:"kind"` // register|update|set-account|dispatch|validate|onboard|quota|merge
+	Kind      string `json:"kind"` // register|update|set-account|dispatch|validate|onboard|quota|merge|drain|resize
 	ProjectID string `json:"project_id,omitempty"`
 	Actor     string `json:"actor,omitempty"` // e.g. "koryph@<host>:<pid>"
 	Detail    any    `json:"detail,omitempty"`

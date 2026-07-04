@@ -116,11 +116,16 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		}
 
 		// Gate with nothing active to finish: pause rather than spin. The
-		// per-run budget cap and the quota governor both land here.
+		// per-run budget cap and the quota governor both land here. (Operator
+		// drain with nothing active already returned via gate.paused above; this
+		// is defensive so the reason is never mislabeled quota-* if it weren't.)
 		if !allowDispatch && len(active) == 0 {
 			reason := "quota-" + string(level)
 			if budgetHit {
 				reason = "budget-cap"
+			}
+			if gate.operatorDrain {
+				reason = "operator-drain"
 			}
 			r.run.Status = ledger.RunPausedQuota
 			_ = r.store.SaveRun(r.run)

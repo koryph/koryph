@@ -181,6 +181,17 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		r.sshAuthSock = paths.SigningAgentSock()
 	}
 
+	// Clear a stale operator-drain sentinel at process start (koryph-57v.1),
+	// unconditionally (fresh run OR --resume): the sentinel is normally
+	// consumed the moment the prior run's last active slot lands (see
+	// governorGate), so one still present here can only be left over from a
+	// run that never got back around to a boundary (e.g. killed out-of-band).
+	// A leftover sentinel must never instantly drain-and-exit a fresh,
+	// intentional invocation before it dispatches anything.
+	if r.store.ConsumeDrain() {
+		r.progress("cleared a stale operator-drain request from a previous run")
+	}
+
 	resumed := false
 	if opts.Resume {
 		resumed, err = r.resume(ctx)
