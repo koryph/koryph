@@ -281,23 +281,49 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 
+	// Probe the live branch commit count as a fallback when the progress probe
+	// has not yet updated sl.Commits (koryph-ek2): the per-tick progress probe
+	// runs only on timer ticks — NOT on every SIGCHLD wake — so a fast
+	// commit-then-die leaves sl.Commits == 0 even though the branch has work.
+	// Without this fallback the engine classified such deaths as "no commits"
+	// and requeued, burning the attempt budget on already-complete branches.
+	// The same gap bit resumed agents that exited cleanly after concluding the
+	// work was done (their new slot starts at Commits=0 too).
+	commits := sl.Commits
+	if commits == 0 && sl.Branch != "" {
+		if n, err := r.commitCount(ctx, sl.Branch); err == nil && n > 0 {
+			commits = n
+			// Update the persisted slot so ledger / status output reflects the
+			// actual commit count that triggered finishCandidate.
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Commits = n })
+		}
+	}
+
 	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")
-	if sl.Commits > 0 || fsx.Exists(summary) {
+	if commits > 0 || fsx.Exists(summary) {
 		r.finishCandidate(ctx, sl)
 		return
+	}
+
+	// No commits on the branch and no SUMMARY.md: distinguish a clean exit
+	// (agent concluded work was done, or finished with an empty result) from an
+	// unclean death (crashed / killed before producing a result line).
+	deathDesc := "agent died with no commits"
+	if sl.Stream != "" && dispatch.ParseCleanExit(sl.Stream) {
+		deathDesc = "agent exited cleanly with no new commits"
 	}
 
 	if sl.Attempts >= ledger.MaxAttempts {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
-			s.Note = fmt.Sprintf("agent died with no commits; %d attempts exhausted", sl.Attempts)
+			s.Note = fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts)
 		})
 		r.checkpointSlot(sl, "blocked")
 		r.releaseGlobalSlot(sl.PhaseID) // terminal
-		r.progress("bead %s: blocked (died with no commits, %d attempts)", sl.PhaseID, sl.Attempts)
+		r.progress("bead %s: blocked (%s, %d attempts)", sl.PhaseID, deathDesc, sl.Attempts)
 		return
 	}
-	r.requeueSlot(ctx, sl, "", "agent died with no commits")
+	r.requeueSlot(ctx, sl, "", deathDesc)
 }
 
 // requeueRateLimited re-dispatches a slot that died with a classified

@@ -198,6 +198,39 @@ func ParseResultCost(r io.Reader) (float64, bool) {
 	return cost, found
 }
 
+// ParseCleanExit reports whether the LAST "result" line in r has is_error
+// absent or false — that is, the agent completed its turn without a fatal
+// error. Returns false when no result line is present (a process that crashed
+// or was killed before writing its final JSON is NOT a clean exit) or when
+// the reader is unreadable.
+//
+// Note: ParseCleanExit scans the raw bytes directly (bypassing classify) so
+// it can read the is_error pointer independently of EventKind — classify maps
+// a result+is_error:true line to EventResult (not EventError) to preserve
+// ParseResultCost's documented "is_error is irrelevant to cost" behavior, so
+// the normalized Event does not carry an IsError field.
+func ParseCleanExit(r io.Reader) bool {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	found, clean := false, false
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var rl rawLine
+		if err := json.Unmarshal(line, &rl); err != nil {
+			continue
+		}
+		if rl.Type == "result" {
+			found = true
+			// Clean iff is_error is absent or explicitly false.
+			clean = rl.IsError == nil || !*rl.IsError
+		}
+	}
+	return found && clean
+}
+
 // ParseRateLimited scans r for any event whose text matched a rate-limit/
 // overload marker — the reader-based equivalent of
 // dispatch.ParseRateLimited(path string), which now opens the file and

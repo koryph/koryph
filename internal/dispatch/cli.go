@@ -306,6 +306,22 @@ func ParseResultCost(streamPath string) (float64, bool) {
 	return claude.ParseResultCost(f)
 }
 
+// ParseCleanExit scans a stream.jsonl for the LAST "result" line and reports
+// whether the agent exited successfully (is_error absent or false). Returns
+// false when no result line is found or the file is unreadable.
+//
+// Use this to distinguish a clean-exit agent (work concluded, no new commits)
+// from a crashed agent (killed before writing its final JSON). See
+// internal/runtime/claude.ParseCleanExit for the reader-based implementation.
+func ParseCleanExit(streamPath string) bool {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	return claude.ParseCleanExit(f)
+}
+
 // ParseRateLimited scans a stream.jsonl for an API rate-limit/overload marker
 // inside an error-flagged event: a top-level "error" event, a "result" event
 // with is_error true, or an embedded "error" object. Matching is deliberately
