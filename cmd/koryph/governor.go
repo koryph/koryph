@@ -23,10 +23,10 @@ func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 	case "set":
 		return cmdGovernorSet(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		parentHelp(stdout, "governor", "inspect and set the machine-wide agent concurrency cap", []subVerb{
-			{"show", "show the cap, active leases, and demanding projects (default)"},
-			{"set --max-global N [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]",
-				"set the machine-wide cap; --adaptive enables the AIMD overlay (settle/breaker/smoothing apply only with --adaptive)"},
+		parentHelp(stdout, "governor", "inspect and set per-provider agent concurrency pools", []subVerb{
+			{"show", "show every pool's cap, active leases, and demanding projects (default)"},
+			{"set --max-global N [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]",
+				"set one pool's cap (--provider omitted = anthropic); --adaptive enables the AIMD overlay (settle/breaker/smoothing apply only with --adaptive)"},
 		})
 		return 0
 	default:
@@ -34,61 +34,80 @@ func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// cmdGovernorShow prints the machine-wide cap plus the live leases and demand,
-// pruning stale state as a side effect.
+// cmdGovernorShow prints EVERY provider pool's cap plus its live leases and
+// demand (koryph-v8u.11: independent per-provider governor pools — see
+// internal/govern's package doc), pruning stale state as a side effect. A
+// machine with only the default anthropic pool in use prints exactly one
+// pool block, so this is a superset of the pre-koryph-v8u.11 single-pool
+// output.
 func cmdGovernorShow(stdout, stderr io.Writer) int {
 	gs := govern.NewStore()
-	cap, leases, demand, err := gs.Snapshot()
+	pools, err := gs.Pools()
 	if err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "global concurrency cap: %d\n", cap)
+	for i, pool := range pools {
+		if i > 0 {
+			fmt.Fprintln(stdout)
+		}
+		if err := printPoolStatus(stdout, gs, pool); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	return 0
+}
+
+// printPoolStatus prints one pool's block of `governor show` output.
+func printPoolStatus(stdout io.Writer, gs *govern.Store, pool string) error {
+	ps, err := gs.PoolStatus(pool)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "pool %s:\n", pool)
+	fmt.Fprintf(stdout, "  global concurrency cap: %d\n", gs.Cap(pool))
 
 	// AIMD overlay (koryph-2im.4): show adaptive status and, when on, the
-	// dynamic cap that Acquire actually admits against.
-	aimd, err := gs.AIMDStatus()
-	if err != nil {
-		return fail(stderr, err)
-	}
+	// dynamic cap that Acquire actually admits against — for THIS pool only.
+	aimd := ps.AIMD
 	eff := aimd.EffectiveCap()
 	if aimd.Adaptive {
 		lastDecrease := aimd.LastDecreaseAt
 		if lastDecrease == "" {
 			lastDecrease = "never"
 		}
-		fmt.Fprintf(stdout, "adaptive: on (dynamic cap %d, hard max %d, last decrease %s, rate-limit events %d)\n",
+		fmt.Fprintf(stdout, "  adaptive: on (dynamic cap %d, hard max %d, last decrease %s, rate-limit events %d)\n",
 			aimd.DynamicCap, aimd.HardMax, lastDecrease, aimd.RateLimitEvents)
 
 		// Settle/breaker/smoothing (koryph-2im.11).
 		if until, perr := time.Parse(time.RFC3339, aimd.SettleUntil); perr == nil && time.Now().Before(until) {
-			fmt.Fprintf(stdout, "settle: active until %s\n", aimd.SettleUntil)
+			fmt.Fprintf(stdout, "  settle: active until %s\n", aimd.SettleUntil)
 		} else {
-			fmt.Fprintln(stdout, "settle: not active")
+			fmt.Fprintln(stdout, "  settle: not active")
 		}
-		fmt.Fprintf(stdout, "breaker: %s\n", breakerSummary(aimd))
-		fmt.Fprintf(stdout, "smoothing: min dispatch interval %ds (jittered ±50%%)\n", minDispatchIntervalDisplay(aimd))
+		fmt.Fprintf(stdout, "  breaker: %s\n", breakerSummary(aimd))
+		fmt.Fprintf(stdout, "  smoothing: min dispatch interval %ds (jittered ±50%%)\n", minDispatchIntervalDisplay(aimd))
 	} else {
-		fmt.Fprintln(stdout, "adaptive: off")
+		fmt.Fprintln(stdout, "  adaptive: off")
 	}
 
-	fmt.Fprintf(stdout, "in use: %d    free: %d\n", len(leases), max0(eff-len(leases)))
+	fmt.Fprintf(stdout, "  in use: %d    free: %d\n", len(ps.Leases), max0(eff-len(ps.Leases)))
 
-	if len(demand) > 0 {
-		projects := make([]string, 0, len(demand))
-		for _, d := range demand {
+	if len(ps.Demand) > 0 {
+		projects := make([]string, 0, len(ps.Demand))
+		for _, d := range ps.Demand {
 			projects = append(projects, d.Project)
 		}
-		fmt.Fprintf(stdout, "demanding projects (%d): %v\n", len(demand), projects)
+		fmt.Fprintf(stdout, "  demanding projects (%d): %v\n", len(ps.Demand), projects)
 	}
 
-	if len(leases) == 0 {
-		fmt.Fprintln(stdout, "no active leases")
-		return 0
+	if len(ps.Leases) == 0 {
+		fmt.Fprintln(stdout, "  no active leases")
+		return nil
 	}
-	fmt.Fprintln(stdout, "\nactive leases:")
+	fmt.Fprintln(stdout, "\n  active leases:")
 	tw := tabwriter.NewWriter(stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "  PROJECT\tBEAD\tPID\tMODEL\tSINCE")
-	for _, l := range leases {
+	fmt.Fprintln(tw, "    PROJECT\tBEAD\tPID\tMODEL\tSINCE")
+	for _, l := range ps.Leases {
 		pid := "-"
 		if l.PID > 0 {
 			pid = fmt.Sprintf("%d", l.PID)
@@ -97,54 +116,58 @@ func cmdGovernorShow(stdout, stderr io.Writer) int {
 		if model == "" {
 			model = "-"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", l.Project, l.Bead, pid, model, l.AcquiredAt)
+		fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\t%s\n", l.Project, l.Bead, pid, model, l.AcquiredAt)
 	}
 	_ = tw.Flush()
-	return 0
+	return nil
 }
 
-// cmdGovernorSet writes a new machine-wide cap to governor.json. Without
-// --adaptive it is exactly today's static cap (and clears/disables any
-// previously-enabled AIMD overlay, since it overwrites governor.json wholesale
-// — koryph-2im.4). With --adaptive, it seeds the AIMD overlay: --max-global is
-// the starting/floor cap and --hard-max bounds upward probing (default
-// 2x --max-global). --settle-sec/--break-sec/--min-dispatch-interval
-// (koryph-2im.11) configure the settle window, circuit breaker, and dispatch
-// smoothing; all three are meaningless without --adaptive (a plain `set`
-// ignores them) and default when omitted or non-positive.
+// cmdGovernorSet writes a new cap to ONE provider pool ("" is anthropic,
+// koryph-v8u.11) in governor.json. Without --adaptive it is exactly today's
+// static cap for that pool (and clears/disables any previously-enabled AIMD
+// overlay on that same pool, since it overwrites that pool's entry wholesale
+// — koryph-2im.4; every OTHER pool is untouched). With --adaptive, it seeds
+// that pool's AIMD overlay: --max-global is the starting/floor cap and
+// --hard-max bounds upward probing (default 2x --max-global).
+// --settle-sec/--break-sec/--min-dispatch-interval (koryph-2im.11) configure
+// the settle window, circuit breaker, and dispatch smoothing; all three are
+// meaningless without --adaptive (a plain `set` ignores them) and default
+// when omitted or non-positive.
 func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("governor set", stderr)
-	maxGlobal := fs.Int("max-global", 0, "machine-wide cap on concurrently running agents (required, > 0)")
+	provider := fs.String("provider", "", "governor pool to configure (default: anthropic) — koryph-v8u.11 independent per-provider pools")
+	maxGlobal := fs.Int("max-global", 0, "cap on concurrently running agents in this pool (required, > 0)")
 	adaptive := fs.Bool("adaptive", false, "enable the AIMD overlay: probe the cap up on quiet, halve it on rate-limit")
 	hardMax := fs.Int("hard-max", 0, "absolute ceiling for upward probing under --adaptive (default 2x --max-global)")
 	settleSec := fs.Int("settle-sec", 0, "settle window after any cap change, under --adaptive (default 120)")
 	breakSec := fs.Int("break-sec", 0, "circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600)")
 	minDispatchInterval := fs.Int("min-dispatch-interval", 0, "minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%)")
-	setUsage(fs, stdout, "set the machine-wide cap on concurrently running agents",
-		"--max-global N [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
+	setUsage(fs, stdout, "set one provider pool's cap on concurrently running agents",
+		"--max-global N [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
 	if *maxGlobal <= 0 {
 		return usageErr(stderr, "governor set: --max-global must be a positive integer")
 	}
+	pool := govern.NormalizeProvider(*provider)
 	gs := govern.NewStore()
 	if *adaptive {
-		if err := gs.SetAdaptiveCap(*maxGlobal, *hardMax, *settleSec, *breakSec, *minDispatchInterval); err != nil {
+		if err := gs.SetAdaptiveCap(pool, *maxGlobal, *hardMax, *settleSec, *breakSec, *minDispatchInterval); err != nil {
 			return fail(stderr, err)
 		}
 		hm := *hardMax
 		if hm <= 0 {
 			hm = *maxGlobal * 2
 		}
-		fmt.Fprintf(stdout, "global concurrency cap set to %d (adaptive: dynamic cap %d, hard max %d)\n",
-			*maxGlobal, *maxGlobal, hm)
+		fmt.Fprintf(stdout, "global concurrency cap set to %d (adaptive: dynamic cap %d, hard max %d) [pool %s]\n",
+			*maxGlobal, *maxGlobal, hm, pool)
 		return 0
 	}
-	if err := gs.SetCap(*maxGlobal); err != nil {
+	if err := gs.SetCap(pool, *maxGlobal); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "global concurrency cap set to %d\n", *maxGlobal)
+	fmt.Fprintf(stdout, "global concurrency cap set to %d [pool %s]\n", *maxGlobal, pool)
 	return 0
 }
 

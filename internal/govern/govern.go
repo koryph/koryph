@@ -69,44 +69,66 @@ func NewStore() *Store {
 	}
 }
 
-// Cap returns the machine-wide cap, defaulting when governor.json is absent or
-// unset.
-func (s *Store) Cap() int {
-	var c Config
-	if err := fsx.ReadJSON(s.cfgPath, &c); err != nil || c.MaxGlobalAgents <= 0 {
+// Cap returns provider's pool cap, defaulting when governor.json (or the
+// pool's entry) is absent or unset. provider=="" is DefaultPool
+// (koryph-v8u.11).
+func (s *Store) Cap(provider string) int {
+	pool := NormalizeProvider(provider)
+	f, err := s.readFile()
+	if err != nil {
+		return DefaultMaxGlobalAgents
+	}
+	c, ok := f.Pools[pool]
+	if !ok || c.MaxGlobalAgents <= 0 {
 		return DefaultMaxGlobalAgents
 	}
 	return c.MaxGlobalAgents
 }
 
-// SetCap writes the machine-wide cap to governor.json.
-func (s *Store) SetCap(n int) error {
+// SetCap writes provider's pool cap to governor.json, resetting that pool's
+// AIMD/settle/breaker/smoothing state wholesale (exactly today's single-pool
+// SetCap semantics — a plain `set` disables any previously-enabled overlay)
+// while leaving every OTHER pool untouched (koryph-v8u.11).
+func (s *Store) SetCap(provider string, n int) error {
 	if n <= 0 {
 		return errors.New("govern: max_global_agents must be positive")
 	}
-	return fsx.WriteJSONAtomic(s.cfgPath, Config{MaxGlobalAgents: n})
+	pool := NormalizeProvider(provider)
+	return s.withLock(func() error {
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		f.Pools[pool] = Config{MaxGlobalAgents: n}
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
 }
 
-// RefreshDemand records (or refreshes) this project's demand heartbeat: it has
-// ready work and wants slots. Call once per wave while work remains.
-func (s *Store) RefreshDemand(project string, enginePID int) error {
+// RefreshDemand records (or refreshes) this project's demand heartbeat within
+// provider's pool: it has ready work and wants slots. Call once per wave
+// while work remains. provider=="" is DefaultPool.
+func (s *Store) RefreshDemand(provider, project string, enginePID int) error {
+	pool := NormalizeProvider(provider)
 	return s.withLock(func() error {
 		if err := os.MkdirAll(s.demandDir, 0o755); err != nil {
 			return err
 		}
-		return fsx.WriteJSONAtomic(s.demandPath(project), Demand{
+		return fsx.WriteJSONAtomic(s.demandPath(pool, project), Demand{
 			Project:   project,
 			EnginePID: enginePID,
 			UpdatedAt: s.Now().UTC().Format(time.RFC3339),
+			Provider:  pool,
 		})
 	})
 }
 
-// DropDemand removes this project's demand heartbeat (frontier drained / run
-// ended), releasing it from the fair-share denominator.
-func (s *Store) DropDemand(project string) error {
+// DropDemand removes this project's demand heartbeat from provider's pool
+// (frontier drained / run ended), releasing it from that pool's fair-share
+// denominator. provider=="" is DefaultPool.
+func (s *Store) DropDemand(provider, project string) error {
+	pool := NormalizeProvider(provider)
 	return s.withLock(func() error {
-		err := os.Remove(s.demandPath(project))
+		err := os.Remove(s.demandPath(pool, project))
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -114,30 +136,35 @@ func (s *Store) DropDemand(project string) error {
 	})
 }
 
-// Acquire attempts to take a global slot for one agent. It prunes stale state,
-// computes the caller's fair share, and grants iff the cap has room AND either
-// the caller is under its fair share or every other demander already holds its
-// share (work-conserving top-up). Returns whether a slot was granted.
+// Acquire attempts to take a slot for one agent, in the pool named by
+// l.Provider ("" normalizes to DefaultPool — koryph-v8u.11). It prunes stale
+// state, computes the caller's fair share WITHIN THAT POOL, and grants iff
+// that pool's cap has room AND either the caller is under its fair share or
+// every other demander in the pool already holds its share (work-conserving
+// top-up). Returns whether a slot was granted.
 //
-// When the AIMD overlay is Adaptive, koryph-2im.11's circuit breaker and
-// dispatch smoothing gate admission BEFORE the cap/fair-share checks below:
-// a fully-open breaker denies everything (I5 holds — this only refuses a NEW
-// lease, never revokes one already granted); a half-open breaker admits
-// exactly one lease as the probe (the flock serializes concurrent callers, so
-// exactly one wins the race) and nothing else until it resolves; closed
-// admission is further spaced by the jittered minimum dispatch interval.
+// When the pool's AIMD overlay is Adaptive, koryph-2im.11's circuit breaker
+// and dispatch smoothing gate admission BEFORE the cap/fair-share checks
+// below: a fully-open breaker denies everything IN THIS POOL (I5 holds — this
+// only refuses a NEW lease, never revokes one already granted, and never
+// touches any other pool); a half-open breaker admits exactly one lease as
+// the probe (the flock serializes concurrent callers, so exactly one wins the
+// race) and nothing else in this pool until it resolves; closed admission is
+// further spaced by the jittered minimum dispatch interval.
 func (s *Store) Acquire(l Lease) (bool, error) {
+	pool := NormalizeProvider(l.Provider)
+	l.Provider = pool // stored state never has an empty key (koryph-v8u.11)
 	granted := false
 	err := s.withLock(func() error {
 		if err := s.prune(); err != nil {
 			return err
 		}
-		// loadAndProbeLocked (koryph-2im.4/2im.11): the static operator cap
-		// when the AIMD overlay is off (byte-for-byte the prior s.Cap()
-		// admission via c.EffectiveCap() below), or the probed/backed-off
-		// dynamic cap — plus current settle/breaker/smoothing state — when
-		// adaptive is enabled.
-		c, err := s.loadAndProbeLocked()
+		// loadAndProbeLocked (koryph-2im.4/2im.11/koryph-v8u.11): the static
+		// operator cap when this pool's AIMD overlay is off (byte-for-byte
+		// the prior s.Cap() admission via c.EffectiveCap() below), or the
+		// probed/backed-off dynamic cap — plus current settle/breaker/
+		// smoothing state — when adaptive is enabled for this pool.
+		c, f, err := s.loadAndProbeLocked(pool)
 		if err != nil {
 			return err
 		}
@@ -146,7 +173,7 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		if c.Adaptive {
 			switch c.BreakerState {
 			case "open":
-				return nil // deny: zero admission machine-wide while open
+				return nil // deny: zero admission in this pool while open
 			case "half-open":
 				if c.ProbeProject != "" || c.ProbeBead != "" {
 					return nil // a probe is already outstanding; deny everyone else
@@ -159,7 +186,8 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 					return err
 				}
 				granted = true
-				return fsx.WriteJSONAtomic(s.cfgPath, c) // persist the probe claim
+				f.Pools[pool] = c
+				return fsx.WriteJSONAtomic(s.cfgPath, f) // persist the probe claim
 			}
 
 			// Dispatch smoothing (koryph-2im.11): closed-state admission only —
@@ -173,22 +201,22 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		}
 
 		cap := c.EffectiveCap()
-		leases, err := s.leases()
+		leases, err := s.leasesForPool(pool)
 		if err != nil {
 			return err
 		}
 		if len(leases) >= cap {
-			return nil // globally full
+			return nil // pool full
 		}
 
-		demanders := s.demanders(l.Project)
+		demanders := s.demanders(pool, l.Project)
 		myActive := countProject(leases, l.Project)
 
-		// Strict fair share: a project may hold up to its share of the cap.
-		// Idle capacity is reclaimed not by lending (agents are never
-		// preempted) but when a project drains its frontier and drops its
-		// demand — that shrinks the denominator and raises everyone else's
-		// share on the next acquire.
+		// Strict fair share WITHIN THIS POOL: a project may hold up to its
+		// share of the pool's cap. Idle capacity is reclaimed not by lending
+		// (agents are never preempted) but when a project drains its
+		// frontier and drops its demand — that shrinks the denominator and
+		// raises everyone else's share on the next acquire.
 		if myActive >= fairShare(cap, demanders, l.Project, s.epoch()) {
 			return nil
 		}
@@ -200,7 +228,8 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 
 		if c.Adaptive {
 			c.LastAdmitAt = now.UTC().Format(time.RFC3339)
-			if err := fsx.WriteJSONAtomic(s.cfgPath, c); err != nil {
+			f.Pools[pool] = c
+			if err := fsx.WriteJSONAtomic(s.cfgPath, f); err != nil {
 				return err
 			}
 		}
@@ -209,8 +238,9 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 	return granted, err
 }
 
-// grantLease writes l's lease file, stamping AcquiredAt if unset. Callers
-// must already hold the store's flock and have already decided admission.
+// grantLease writes l's lease file, stamping AcquiredAt if unset. l.Provider
+// must already be normalized (non-empty). Callers must already hold the
+// store's flock and have already decided admission.
 func (s *Store) grantLease(l Lease, now time.Time) error {
 	if l.AcquiredAt == "" {
 		l.AcquiredAt = now.UTC().Format(time.RFC3339)
@@ -218,7 +248,7 @@ func (s *Store) grantLease(l Lease, now time.Time) error {
 	if err := os.MkdirAll(s.slotsDir, 0o755); err != nil {
 		return err
 	}
-	return fsx.WriteJSONAtomic(s.leasePath(l.Project, l.Bead), l)
+	return fsx.WriteJSONAtomic(s.leasePath(l.Provider, l.Project, l.Bead), l)
 }
 
 // jitter returns Store.Jitter() when set, else a process-global math/rand
@@ -230,14 +260,16 @@ func (s *Store) jitter() float64 {
 	return mathrand.Float64() - 0.5
 }
 
-// Hold unconditionally writes (or updates) a lease WITHOUT a cap check. It is
-// the second half of the two-phase acquire: Acquire reserves a slot under the
+// Hold unconditionally writes (or updates) a lease WITHOUT a cap check, in
+// the pool named by l.Provider ("" normalizes to DefaultPool). It is the
+// second half of the two-phase acquire: Acquire reserves a slot under the
 // engine pid before launch (cap-checked), and Hold attaches the detached agent
 // pid after launch so the lease is keyed to a process that outlives the engine.
 // Because it skips the cap check it also correctly re-counts a requeued or
 // resumed agent whose reservation was pruned in the death→relaunch gap — a 1:1
 // replacement for an already-admitted bead, so it cannot breach the cap.
 func (s *Store) Hold(l Lease) error {
+	l.Provider = NormalizeProvider(l.Provider)
 	return s.withLock(func() error {
 		if err := os.MkdirAll(s.slotsDir, 0o755); err != nil {
 			return err
@@ -245,12 +277,13 @@ func (s *Store) Hold(l Lease) error {
 		if l.AcquiredAt == "" {
 			l.AcquiredAt = s.Now().UTC().Format(time.RFC3339)
 		}
-		return fsx.WriteJSONAtomic(s.leasePath(l.Project, l.Bead), l)
+		return fsx.WriteJSONAtomic(s.leasePath(l.Provider, l.Project, l.Bead), l)
 	})
 }
 
-// Release frees the slot held by (project, bead). A missing lease is not an
-// error (idempotent / already pruned).
+// Release frees the slot held by (project, bead) in provider's pool ("" is
+// DefaultPool). A missing lease is not an error (idempotent / already
+// pruned).
 //
 // Circuit breaker (koryph-2im.11): releasing the half-open probe's own lease
 // WITHOUT a prior rate-limit report for it (ReportRateLimit would already
@@ -259,75 +292,159 @@ func (s *Store) Hold(l Lease) error {
 // AIMD from DynamicCap=1. A probe that never reaches Release at all (crashed,
 // or its owning engine died) is instead resolved by pruneCrashedProbe's
 // timeout fallback.
-func (s *Store) Release(project, bead string) error {
+func (s *Store) Release(provider, project, bead string) error {
+	pool := NormalizeProvider(provider)
 	return s.withLock(func() error {
-		err := os.Remove(s.leasePath(project, bead))
+		err := os.Remove(s.leasePath(pool, project, bead))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 
-		var c Config
-		if rerr := fsx.ReadJSON(s.cfgPath, &c); rerr == nil &&
-			c.Adaptive && c.BreakerState == "half-open" && bead != "" &&
-			project == c.ProbeProject && bead == c.ProbeBead {
-			closeBreaker(&c, s.Now())
-			if werr := fsx.WriteJSONAtomic(s.cfgPath, c); werr != nil {
-				return werr
+		f, ferr := s.readFile()
+		if ferr == nil {
+			if c, ok := f.Pools[pool]; ok && c.Adaptive && c.BreakerState == "half-open" &&
+				bead != "" && project == c.ProbeProject && bead == c.ProbeBead {
+				closeBreaker(&c, s.Now())
+				f.Pools[pool] = c
+				if werr := fsx.WriteJSONAtomic(s.cfgPath, f); werr != nil {
+					return werr
+				}
 			}
 		}
 		return nil
 	})
 }
 
-// Prune removes dead/stale leases and demand heartbeats.
+// Prune removes dead/stale leases and demand heartbeats across ALL pools.
 func (s *Store) Prune() error {
 	return s.withLock(func() error { return s.prune() })
 }
 
-// FairShareFor returns project p's current fair share of the cap given the live
-// demand set (p is always counted, since asking implies demand). Backs the
-// per-project override warning.
-func (s *Store) FairShareFor(project string) (int, error) {
+// FairShareFor returns project p's current fair share of provider's pool cap
+// given that pool's live demand set (p is always counted, since asking
+// implies demand). Backs the per-project override warning. provider=="" is
+// DefaultPool.
+func (s *Store) FairShareFor(provider, project string) (int, error) {
+	pool := NormalizeProvider(provider)
 	var share int
 	err := s.withLock(func() error {
 		if err := s.prune(); err != nil {
 			return err
 		}
-		cap, err := s.effectiveCapLocked()
+		cap, err := s.effectiveCapLocked(pool)
 		if err != nil {
 			return err
 		}
-		share = fairShare(cap, s.demanders(project), project, s.epoch())
+		share = fairShare(cap, s.demanders(pool, project), project, s.epoch())
 		return nil
 	})
 	return share, err
 }
 
-// Snapshot returns the cap and the current (pruned) leases and demands, for
-// `koryph governor`.
-func (s *Store) Snapshot() (int, []Lease, []Demand, error) {
-	var (
-		leases []Lease
-		dem    []Demand
-	)
+// Snapshot returns provider's pool's operator cap and its current (pruned)
+// leases and demands, for `koryph governor`/tests. provider=="" is
+// DefaultPool. Use Pools + PoolStatus to enumerate every pool at once.
+func (s *Store) Snapshot(provider string) (int, []Lease, []Demand, error) {
+	pool := NormalizeProvider(provider)
+	ps, err := s.PoolStatus(pool)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	return s.Cap(pool), ps.Leases, ps.Demand, nil
+}
+
+// PoolStatus returns provider's pool's full snapshot (pruning stale state
+// first): its leases, demand heartbeats, and AIMD/settle/breaker/smoothing
+// overlay. provider=="" is DefaultPool.
+func (s *Store) PoolStatus(provider string) (PoolStatus, error) {
+	pool := NormalizeProvider(provider)
+	var ps PoolStatus
 	err := s.withLock(func() error {
 		if err := s.prune(); err != nil {
 			return err
 		}
-		var e error
-		if leases, e = s.leases(); e != nil {
-			return e
+		leases, err := s.leasesForPool(pool)
+		if err != nil {
+			return err
 		}
-		dem, e = s.demand()
-		return e
+		dem, err := s.demandForPool(pool)
+		if err != nil {
+			return err
+		}
+		c, _, err := s.loadAndProbeLocked(pool)
+		if err != nil {
+			return err
+		}
+		ps = PoolStatus{Pool: pool, Leases: leases, Demand: dem, AIMD: c}
+		return nil
 	})
-	return s.Cap(), leases, dem, err
+	return ps, err
+}
+
+// Pools returns the sorted set of every pool with any live state: an
+// explicit governor.json entry, a lease, or a demand heartbeat. DefaultPool
+// is always included so `governor show`/`doctor` never report zero pools on
+// a freshly initialized ~/.koryph (koryph-v8u.11).
+func (s *Store) Pools() ([]string, error) {
+	set := map[string]struct{}{DefaultPool: {}}
+	err := s.withLock(func() error {
+		if err := s.prune(); err != nil {
+			return err
+		}
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		for p := range f.Pools {
+			set[p] = struct{}{}
+		}
+		leases, err := s.leases()
+		if err != nil {
+			return err
+		}
+		for _, l := range leases {
+			set[NormalizeProvider(l.Provider)] = struct{}{}
+		}
+		dem, err := s.demand()
+		if err != nil {
+			return err
+		}
+		for _, d := range dem {
+			set[NormalizeProvider(d.Provider)] = struct{}{}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // --- internals (must be called under the lock) ---------------------------
 
+// readFile reads governor.json into a File (transparently migrating a legacy
+// single-pool document — see File.UnmarshalJSON). Absent/corrupt fails open
+// to an empty pool map, matching this package's existing fail-open
+// convention (a stuck/missing governor.json must never block dispatch).
+func (s *Store) readFile() (File, error) {
+	var f File
+	if err := fsx.ReadJSON(s.cfgPath, &f); err != nil {
+		return File{Pools: map[string]Config{}}, nil
+	}
+	if f.Pools == nil {
+		f.Pools = map[string]Config{}
+	}
+	return f, nil
+}
+
 // prune drops leases whose agent pid is dead or that exceed LeaseTTL, and
-// demand heartbeats whose engine pid is dead or that exceed DemandTTL.
+// demand heartbeats whose engine pid is dead or that exceed DemandTTL, across
+// ALL pools (pid liveness/TTL staleness are pool-agnostic facts).
 func (s *Store) prune() error {
 	leases, err := s.leaseFiles()
 	if err != nil {
@@ -356,7 +473,8 @@ func (s *Store) prune() error {
 	return s.pruneCrashedProbe()
 }
 
-// pruneCrashedProbe resolves a half-open circuit breaker (koryph-2im.11)
+// pruneCrashedProbe resolves a half-open circuit breaker (koryph-2im.11), IN
+// EVERY POOL that has one (koryph-v8u.11 — the breaker is now per-pool state)
 // whose probe lease is gone — the agent pid died (pruned above, or never
 // launched), or its owning engine crashed before ever calling Release/
 // ReportRateLimit for it — without EITHER of the two definitive signals
@@ -369,26 +487,34 @@ func (s *Store) prune() error {
 // still-throttled account. This is the "cannot wedge the breaker half-open
 // forever" fallback the L5b design calls for.
 func (s *Store) pruneCrashedProbe() error {
-	var c Config
-	if err := fsx.ReadJSON(s.cfgPath, &c); err != nil {
+	f, err := s.readFile()
+	if err != nil {
 		return nil // absent/corrupt: checkGovernorConfig-style checks own this
 	}
-	if !c.Adaptive || c.BreakerState != "half-open" || c.ProbeProject == "" {
+	changed := false
+	for pool, c := range f.Pools {
+		if !c.Adaptive || c.BreakerState != "half-open" || c.ProbeProject == "" {
+			continue
+		}
+		if _, err := os.Stat(s.leasePath(pool, c.ProbeProject, c.ProbeBead)); err == nil {
+			continue // probe lease still present — not resolved yet
+		}
+		timeout := s.ProbeTimeout
+		if timeout <= 0 {
+			timeout = 30 * time.Minute
+		}
+		admitted := parseTime(c.ProbeAdmittedAt)
+		if admitted.IsZero() || s.Now().Sub(admitted) < timeout {
+			continue // could still be mid-flight toward a normal Release/report
+		}
+		openBreaker(&c, s.Now(), true)
+		f.Pools[pool] = c
+		changed = true
+	}
+	if !changed {
 		return nil
 	}
-	if _, err := os.Stat(s.leasePath(c.ProbeProject, c.ProbeBead)); err == nil {
-		return nil // probe lease still present — not resolved yet
-	}
-	timeout := s.ProbeTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Minute
-	}
-	admitted := parseTime(c.ProbeAdmittedAt)
-	if admitted.IsZero() || s.Now().Sub(admitted) < timeout {
-		return nil // could still be mid-flight toward a normal Release/report
-	}
-	openBreaker(&c, s.Now(), true)
-	return fsx.WriteJSONAtomic(s.cfgPath, c)
+	return fsx.WriteJSONAtomic(s.cfgPath, f)
 }
 
 // expired reports whether ts (RFC3339) is older than ttl. An unparseable
@@ -401,11 +527,12 @@ func (s *Store) expired(ts string, ttl time.Duration) bool {
 	return s.Now().Sub(t) > ttl
 }
 
-// demanders returns the sorted, de-duplicated set of projects with live demand,
-// always including self (Acquire implies demand even if the heartbeat lagged).
-func (s *Store) demanders(self string) []string {
+// demanders returns the sorted, de-duplicated set of projects with live
+// demand WITHIN pool, always including self (Acquire implies demand even if
+// the heartbeat lagged).
+func (s *Store) demanders(pool, self string) []string {
 	set := map[string]struct{}{self: {}}
-	dem, _ := s.demand()
+	dem, _ := s.demandForPool(pool)
 	for _, d := range dem {
 		set[d.Project] = struct{}{}
 	}
@@ -426,6 +553,7 @@ func (s *Store) epoch() int {
 	return int(s.Now().Unix() / int64(w.Seconds()))
 }
 
+// leases returns every lease across ALL pools.
 func (s *Store) leases() ([]Lease, error) {
 	m, err := s.leaseFiles()
 	if err != nil {
@@ -439,6 +567,22 @@ func (s *Store) leases() ([]Lease, error) {
 	return out, nil
 }
 
+// leasesForPool returns only pool's leases (koryph-v8u.11).
+func (s *Store) leasesForPool(pool string) ([]Lease, error) {
+	all, err := s.leases()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Lease, 0, len(all))
+	for _, l := range all {
+		if NormalizeProvider(l.Provider) == pool {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// demand returns every demand heartbeat across ALL pools.
 func (s *Store) demand() ([]Demand, error) {
 	m, err := s.demandFiles()
 	if err != nil {
@@ -449,6 +593,21 @@ func (s *Store) demand() ([]Demand, error) {
 		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
+	return out, nil
+}
+
+// demandForPool returns only pool's demand heartbeats (koryph-v8u.11).
+func (s *Store) demandForPool(pool string) ([]Demand, error) {
+	all, err := s.demand()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Demand, 0, len(all))
+	for _, d := range all {
+		if NormalizeProvider(d.Provider) == pool {
+			out = append(out, d)
+		}
+	}
 	return out, nil
 }
 
@@ -495,12 +654,25 @@ func (s *Store) demandFiles() (map[string]Demand, error) {
 	return out, nil
 }
 
-func (s *Store) leasePath(project, bead string) string {
-	return filepath.Join(s.slotsDir, sanitize(project)+"__"+sanitize(bead)+".json")
+// leasePath derives the lease filename for (provider, project, bead). pool
+// must already be normalized (non-empty). The DefaultPool case deliberately
+// keeps the pre-koryph-v8u.11 filename (no provider segment) so a lease
+// written by an engine mid-upgrade is found by both old and new code paths;
+// every other pool gets a namespaced filename to avoid collisions.
+func (s *Store) leasePath(pool, project, bead string) string {
+	if pool == DefaultPool {
+		return filepath.Join(s.slotsDir, sanitize(project)+"__"+sanitize(bead)+".json")
+	}
+	return filepath.Join(s.slotsDir, sanitize(pool)+"__"+sanitize(project)+"__"+sanitize(bead)+".json")
 }
 
-func (s *Store) demandPath(project string) string {
-	return filepath.Join(s.demandDir, sanitize(project)+".json")
+// demandPath derives the demand-heartbeat filename for (provider, project);
+// see leasePath for the DefaultPool back-compat naming rationale.
+func (s *Store) demandPath(pool, project string) string {
+	if pool == DefaultPool {
+		return filepath.Join(s.demandDir, sanitize(project)+".json")
+	}
+	return filepath.Join(s.demandDir, sanitize(pool)+"__"+sanitize(project)+".json")
 }
 
 // withLock runs fn while holding an exclusive flock on slots/.lock. The flock is

@@ -128,6 +128,145 @@ func TestBreakerOpenFlappingMentionsFlapping(t *testing.T) {
 	}
 }
 
+// --- per-provider pools (koryph-v8u.11, L5c) ---
+
+// writeGovernorFile writes a multi-pool governor.json ({"pools": {...}}
+// shape) directly, for tests exercising more than the single default pool.
+func writeGovernorFile(t *testing.T, home string, f govern.File) {
+	t.Helper()
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "governor.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// findAllChecks returns every Finding for the given check name, in report
+// order — unlike findCheck (which returns only the first), used here because
+// a multi-pool governor.json is expected to produce one Finding PER POOL.
+func findAllChecks(r *Report, check string) []Finding {
+	var out []Finding
+	for _, f := range r.Findings {
+		if f.Check == check {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// TestBreakerOnePerPool proves checkCircuitBreaker reports independently per
+// pool: an open breaker in one pool must not affect another pool's (closed)
+// finding, and each Finding names its own pool.
+func TestBreakerOnePerPool(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorFile(t, home, govern.File{Pools: map[string]govern.Config{
+		"anthropic": {MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 4},
+		"openai":    {MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1, BreakerState: "open"},
+	}})
+	r, _ := Run(opts(home))
+	findings := findAllChecks(r, checkNameBreaker)
+	if len(findings) != 2 {
+		t.Fatalf("breaker findings = %d, want 2 (one per pool):\n%+v", len(findings), findings)
+	}
+	byPool := map[string]Finding{}
+	for _, f := range findings {
+		if strings.Contains(f.Message, "pool anthropic") {
+			byPool["anthropic"] = f
+		}
+		if strings.Contains(f.Message, "pool openai") {
+			byPool["openai"] = f
+		}
+	}
+	if byPool["anthropic"].Level != LevelOK {
+		t.Errorf("anthropic pool breaker = %+v, want ok (closed)", byPool["anthropic"])
+	}
+	if byPool["openai"].Level != LevelWarn {
+		t.Errorf("openai pool breaker = %+v, want warn (open)", byPool["openai"])
+	}
+}
+
+// TestAdaptiveCapPinnedOnePerPool proves checkAdaptiveCapPinned is scoped per
+// pool: a long-pinned dynamic cap in one pool warns while another pool that
+// has never decreased stays ok.
+func TestAdaptiveCapPinnedOnePerPool(t *testing.T) {
+	home := fabricate(t)
+	o := opts(home)
+	writeGovernorFile(t, home, govern.File{Pools: map[string]govern.Config{
+		"anthropic": {MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1,
+			LastDecreaseAt: o.now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)},
+		"openai": {MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 4},
+	}})
+	r, _ := Run(o)
+	findings := findAllChecks(r, checkNameAdaptiveCap)
+	if len(findings) != 2 {
+		t.Fatalf("adaptive-cap findings = %d, want 2 (one per pool):\n%+v", len(findings), findings)
+	}
+	var anthropicWarn, openaiOK bool
+	for _, f := range findings {
+		if strings.Contains(f.Message, "pool anthropic") && f.Level == LevelWarn && strings.Contains(f.Message, "pinned at 1") {
+			anthropicWarn = true
+		}
+		if strings.Contains(f.Message, "pool openai") && f.Level == LevelOK {
+			openaiOK = true
+		}
+	}
+	if !anthropicWarn {
+		t.Errorf("expected a warn Finding naming pool anthropic and 'pinned at 1':\n%+v", findings)
+	}
+	if !openaiOK {
+		t.Errorf("expected an ok Finding naming pool openai:\n%+v", findings)
+	}
+}
+
+// TestGovernorConfigOnePerPool proves checkGovernorConfig reports one Finding
+// per pool, each naming its own cap.
+func TestGovernorConfigOnePerPool(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorFile(t, home, govern.File{Pools: map[string]govern.Config{
+		"anthropic": {MaxGlobalAgents: 8},
+		"openai":    {MaxGlobalAgents: 3},
+	}})
+	r, _ := Run(opts(home))
+	findings := findAllChecks(r, checkNameGovernor)
+	if len(findings) != 2 {
+		t.Fatalf("governor findings = %d, want 2 (one per pool):\n%+v", len(findings), findings)
+	}
+	var sawAnthropic8, sawOpenAI3 bool
+	for _, f := range findings {
+		if strings.Contains(f.Message, "pool anthropic: cap=8") {
+			sawAnthropic8 = true
+		}
+		if strings.Contains(f.Message, "pool openai: cap=3") {
+			sawOpenAI3 = true
+		}
+	}
+	if !sawAnthropic8 || !sawOpenAI3 {
+		t.Errorf("expected per-pool cap findings for both pools:\n%+v", findings)
+	}
+}
+
+// TestZombieLeaseNamesItsPool proves a zombie-lease Finding names the pool
+// the lease belongs to (Lease.Provider, koryph-v8u.11).
+func TestZombieLeaseNamesItsPool(t *testing.T) {
+	home := fabricate(t)
+	slotsDir := filepath.Join(home, "slots")
+	writeLease(t, slotsDir, govern.Lease{
+		Project: "myproject", Bead: "abc-1", PID: 99999, EnginePID: 88888, Provider: "openai",
+	})
+	o := opts(home)
+	o.Alive = func(pid int) bool { return false }
+	r, _ := Run(o)
+	f := findCheck(r, checkNameZombies)
+	if f.Level != LevelWarn {
+		t.Errorf("zombie level=%s, want warn", f.Level)
+	}
+	if !strings.Contains(f.Message, "pool openai") {
+		t.Errorf("zombie message = %q, want it to name pool openai", f.Message)
+	}
+}
+
 // --- layout ---
 
 func TestLayoutOK(t *testing.T) {

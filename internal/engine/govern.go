@@ -16,12 +16,22 @@ import (
 // governor error never blocks dispatch — because a stuck governor must not wedge
 // the engine; the cap is a safety rail, not a correctness dependency.
 
+// providerAnthropic is the pool every lease this engine constructs is
+// admitted against today (koryph-v8u.11, L5c: independent per-provider
+// governor pools — see internal/govern's package doc). Hardcoded rather than
+// resolved from the bead/project until the koryph-v8u.2 runtime adapters
+// land and can supply the actual provider behind the dispatched agent; until
+// then every agent this engine launches IS a claude/Anthropic session, so
+// this constant is exactly today's (only) behavior, made explicit at the one
+// place leases are constructed.
+const providerAnthropic = govern.DefaultPool
+
 // refreshDemand records this project's demand for slots (it has ready work).
 func (r *runner) refreshDemand() {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.RefreshDemand(r.opts.ProjectID, os.Getpid())
+	_ = r.gov.RefreshDemand(providerAnthropic, r.opts.ProjectID, os.Getpid())
 }
 
 // dropDemand withdraws this project from the fair-share denominator.
@@ -29,7 +39,7 @@ func (r *runner) dropDemand() {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.DropDemand(r.opts.ProjectID)
+	_ = r.gov.DropDemand(providerAnthropic, r.opts.ProjectID)
 }
 
 // warnIfOverFairShare logs, once per run, when this project's configured wave
@@ -39,13 +49,13 @@ func (r *runner) warnIfOverFairShare() {
 	if r.gov == nil || r.govWarned {
 		return
 	}
-	fs, err := r.gov.FairShareFor(r.opts.ProjectID)
+	fs, err := r.gov.FairShareFor(providerAnthropic, r.opts.ProjectID)
 	if err != nil || r.width <= fs {
 		return
 	}
 	r.govWarned = true
 	r.progress("warning: project width %d exceeds its global fair share %d (cap %d across active projects) — extra slots wait for others to idle and may pressure the Claude API rate limit",
-		r.width, fs, r.gov.Cap())
+		r.width, fs, r.gov.Cap(providerAnthropic))
 }
 
 // acquireGlobalSlot reserves a global concurrency slot for beadID (keyed to the
@@ -59,6 +69,7 @@ func (r *runner) acquireGlobalSlot(beadID string) bool {
 		Project:   r.opts.ProjectID,
 		Bead:      beadID,
 		EnginePID: os.Getpid(),
+		Provider:  providerAnthropic,
 	})
 	if err != nil {
 		r.progress("bead %s: global governor error (allowing dispatch): %v", beadID, err)
@@ -81,6 +92,7 @@ func (r *runner) holdGlobalSlot(beadID string, agentPID int, model string) {
 		PID:       agentPID,
 		EnginePID: os.Getpid(),
 		Model:     model,
+		Provider:  providerAnthropic,
 	})
 }
 
@@ -90,19 +102,21 @@ func (r *runner) releaseGlobalSlot(beadID string) {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.Release(r.opts.ProjectID, beadID)
+	_ = r.gov.Release(providerAnthropic, r.opts.ProjectID, beadID)
 }
 
 // reportRateLimit informs the machine-wide governor of a rate-limit/overload
 // signal from a dead agent's stream (koryph-2im.4): every engine on the host
-// shares the same AIMD backoff state, so a rate limit observed by any one of
-// them halves the cap for all of them. The bead id makes burst detection
-// count distinct slots and lets half-open probe reports match exactly
-// (koryph-2im.11). Fails open like every other governor helper — a stuck
-// governor must never wedge completion handling.
+// shares the same AIMD backoff state for this pool, so a rate limit observed
+// by any one of them halves the cap for all of them — but only within THIS
+// pool (koryph-v8u.11): an Anthropic rate limit never throttles another
+// provider's pool. The bead id makes burst detection count distinct slots
+// and lets half-open probe reports match exactly (koryph-2im.11). Fails open
+// like every other governor helper — a stuck governor must never wedge
+// completion handling.
 func (r *runner) reportRateLimit(beadID string) {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.ReportRateLimit(r.opts.ProjectID, beadID, time.Now())
+	_ = r.gov.ReportRateLimit(providerAnthropic, r.opts.ProjectID, beadID, time.Now())
 }

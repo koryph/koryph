@@ -270,17 +270,17 @@ func TestStoreSetAdaptiveCapAndEffectiveCap(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 
-	if err := s.SetAdaptiveCap(4, 0, 0, 0, 0); err != nil { // hardMax 0 ⇒ default 2x
+	if err := s.SetAdaptiveCap("", 4, 0, 0, 0, 0); err != nil { // hardMax 0 ⇒ default 2x
 		t.Fatal(err)
 	}
-	if got := s.EffectiveCap(); got != 4 {
+	if got := s.EffectiveCap(""); got != 4 {
 		t.Errorf("EffectiveCap() right after enabling = %d, want 4 (seeded to max-global)", got)
 	}
 
 	// Probing past the starting cap: advance the clock past several 5-minute
 	// intervals; EffectiveCap must climb, clamped at hardMax = 8 (2x4).
 	now = epoch0.Add(30 * time.Minute)
-	if got := s.EffectiveCap(); got != 8 {
+	if got := s.EffectiveCap(""); got != 8 {
 		t.Errorf("EffectiveCap() after 30 minutes quiet = %d, want clamped at hard max 8", got)
 	}
 }
@@ -289,16 +289,16 @@ func TestStoreReportRateLimitHalvesSharedCap(t *testing.T) {
 	s := newTestStore(t)
 	now := epoch0
 	s.Now = func() time.Time { return now }
-	if err := s.SetAdaptiveCap(8, 16, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 8, 16, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReportRateLimit("p", "b1", now); err != nil {
+	if err := s.ReportRateLimit("", "p", "b1", now); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.EffectiveCap(); got != 4 {
+	if got := s.EffectiveCap(""); got != 4 {
 		t.Errorf("EffectiveCap() after rate-limit = %d, want 4", got)
 	}
-	status, err := s.AIMDStatus()
+	status, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestStoreAcquireUsesEffectiveCapNotStaticCap(t *testing.T) {
 	// (koryph-2im.11) — neutralize the jittered spacing so back-to-back
 	// Acquire calls at the same instant are not denied for spacing.
 	s.Jitter = func() float64 { return -1 }
-	if err := s.SetAdaptiveCap(2, 6, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 2, 6, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -350,17 +350,17 @@ func TestStoreEffectiveCapCompatibleWithOldStore(t *testing.T) {
 	if err := os.WriteFile(s.cfgPath, old, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Cap(); got != 5 {
+	if got := s.Cap(""); got != 5 {
 		t.Fatalf("Cap() = %d, want 5", got)
 	}
-	if got := s.EffectiveCap(); got != 5 {
+	if got := s.EffectiveCap(""); got != 5 {
 		t.Errorf("EffectiveCap() on an old-style store = %d, want 5 (byte-for-byte compatible with Cap())", got)
 	}
 }
 
 func TestSetAdaptiveCapRejectsNonPositive(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.SetAdaptiveCap(0, 0, 0, 0, 0); err == nil {
+	if err := s.SetAdaptiveCap("", 0, 0, 0, 0, 0); err == nil {
 		t.Error("SetAdaptiveCap(0, ...) should error")
 	}
 }
@@ -369,10 +369,10 @@ func TestSetAdaptiveCapRejectsNonPositive(t *testing.T) {
 // smoothing knobs default when omitted (<=0) and persist when given.
 func TestSetAdaptiveCapAppliesL5bDefaults(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.SetAdaptiveCap(4, 0, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 4, 0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	status, err := s.AIMDStatus()
+	status, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,10 +386,10 @@ func TestSetAdaptiveCapAppliesL5bDefaults(t *testing.T) {
 		t.Errorf("MinDispatchIntervalSeconds = %d, want default %d", status.MinDispatchIntervalSeconds, DefaultMinDispatchIntervalSeconds)
 	}
 
-	if err := s.SetAdaptiveCap(4, 0, 30, 60, 1); err != nil {
+	if err := s.SetAdaptiveCap("", 4, 0, 30, 60, 1); err != nil {
 		t.Fatal(err)
 	}
-	status, err = s.AIMDStatus()
+	status, err = s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}

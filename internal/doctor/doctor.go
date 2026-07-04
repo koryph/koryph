@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -119,9 +120,9 @@ func Run(opts Options) (*Report, error) {
 	r.add(checkLayout(opts))
 	r.addAll(checkBinaries(opts))
 	r.add(checkRegistry(opts))
-	r.add(checkGovernorConfig(opts))
-	r.add(checkAdaptiveCapPinned(opts))
-	r.add(checkCircuitBreaker(opts))
+	r.addAll(checkGovernorConfig(opts))
+	r.addAll(checkAdaptiveCapPinned(opts))
+	r.addAll(checkCircuitBreaker(opts))
 	r.addAll(checkZombieLeases(opts))
 	r.addAll(checkStaleDemand(opts))
 	r.addAll(checkQuotaCalibration(opts))
@@ -237,29 +238,55 @@ func checkRegistry(opts Options) Finding {
 	}
 }
 
-// checkGovernorConfig validates governor.json when present.
-func checkGovernorConfig(opts Options) Finding {
+// sortedPoolNames returns pools' keys sorted, for deterministic per-pool
+// Finding ordering (koryph-v8u.11: every governor pool check now iterates
+// pools rather than assuming a single flat governor.json).
+func sortedPoolNames(pools map[string]govern.Config) []string {
+	out := make([]string, 0, len(pools))
+	for p := range pools {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkGovernorConfig validates governor.json when present, one Finding per
+// pool (koryph-v8u.11 — governor.json is now {"pools": {<provider>: {...}}};
+// govern.File's UnmarshalJSON transparently migrates a legacy single-pool
+// document into the anthropic pool, so a pre-koryph-v8u.11 store still
+// yields exactly the one Finding it always has).
+func checkGovernorConfig(opts Options) []Finding {
 	path := filepath.Join(opts.home(), "governor.json")
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Finding{Check: checkNameGovernor, Level: LevelOK,
-			Message: fmt.Sprintf("governor.json absent (default cap %d in use)", govern.DefaultMaxGlobalAgents)}
+		return []Finding{{Check: checkNameGovernor, Level: LevelOK,
+			Message: fmt.Sprintf("governor.json absent (default cap %d in use)", govern.DefaultMaxGlobalAgents)}}
 	}
 	if err != nil {
-		return Finding{Check: checkNameGovernor, Level: LevelError,
-			Message: fmt.Sprintf("read governor.json: %v", err)}
+		return []Finding{{Check: checkNameGovernor, Level: LevelError,
+			Message: fmt.Sprintf("read governor.json: %v", err)}}
 	}
-	var cfg govern.Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return Finding{Check: checkNameGovernor, Level: LevelError,
-			Message: fmt.Sprintf("parse governor.json: %v", err)}
+	var f govern.File
+	if err := json.Unmarshal(data, &f); err != nil {
+		return []Finding{{Check: checkNameGovernor, Level: LevelError,
+			Message: fmt.Sprintf("parse governor.json: %v", err)}}
 	}
-	if cfg.MaxGlobalAgents <= 0 {
-		return Finding{Check: checkNameGovernor, Level: LevelWarn,
-			Message: fmt.Sprintf("governor.json: max_global_agents=0 (default %d in use)", govern.DefaultMaxGlobalAgents)}
+	pools := sortedPoolNames(f.Pools)
+	if len(pools) == 0 {
+		return []Finding{{Check: checkNameGovernor, Level: LevelOK, Message: "governor.json: no pools configured"}}
 	}
-	return Finding{Check: checkNameGovernor, Level: LevelOK,
-		Message: fmt.Sprintf("governor.json: cap=%d", cfg.MaxGlobalAgents)}
+	findings := make([]Finding, 0, len(pools))
+	for _, pool := range pools {
+		cfg := f.Pools[pool]
+		if cfg.MaxGlobalAgents <= 0 {
+			findings = append(findings, Finding{Check: checkNameGovernor, Level: LevelWarn,
+				Message: fmt.Sprintf("pool %s: max_global_agents=0 (default %d in use)", pool, govern.DefaultMaxGlobalAgents)})
+			continue
+		}
+		findings = append(findings, Finding{Check: checkNameGovernor, Level: LevelOK,
+			Message: fmt.Sprintf("pool %s: cap=%d", pool, cfg.MaxGlobalAgents)})
+	}
+	return findings
 }
 
 // adaptiveCapPinnedThreshold is how long the dynamic cap must have sat at (or
@@ -270,44 +297,61 @@ const adaptiveCapPinnedThreshold = 30 * time.Minute
 
 // checkAdaptiveCapPinned flags the AIMD overlay (koryph-2im.4,
 // docs/designs/2026-07-scheduler-throughput.md L5) sitting at its floor for a
-// long time: either the account is being persistently rate-limited, or
-// --hard-max was set too low for the additive probe to recover past 1.
-// Informational only (warn, never error) — the halve-then-probe design
-// already degrades safely to a floor of 1 on its own.
-func checkAdaptiveCapPinned(opts Options) Finding {
+// long time, PER POOL (koryph-v8u.11): either the account is being
+// persistently rate-limited, or --hard-max was set too low for the additive
+// probe to recover past 1. Informational only (warn, never error) — the
+// halve-then-probe design already degrades safely to a floor of 1 on its own.
+func checkAdaptiveCapPinned(opts Options) []Finding {
 	path := filepath.Join(opts.home(), "governor.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// Absent/unreadable is not this check's concern — checkGovernorConfig
 		// already reports on governor.json's readability.
-		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK, Message: "adaptive overlay not configured"}
+		return []Finding{{Check: checkNameAdaptiveCap, Level: LevelOK, Message: "adaptive overlay not configured"}}
 	}
-	var cfg govern.Config
-	if jerr := json.Unmarshal(data, &cfg); jerr != nil || !cfg.Adaptive {
-		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK, Message: "adaptive overlay off"}
+	var f govern.File
+	if jerr := json.Unmarshal(data, &f); jerr != nil {
+		return []Finding{{Check: checkNameAdaptiveCap, Level: LevelOK, Message: "adaptive overlay off"}}
 	}
-
-	last, perr := time.Parse(time.RFC3339, cfg.LastDecreaseAt)
-	if perr != nil {
-		// Adaptive is on but no decrease has ever been recorded — nothing to
-		// flag yet (dynamic cap sitting at the operator's chosen starting
-		// point is not evidence of throttling).
-		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK,
-			Message: fmt.Sprintf("adaptive: dynamic cap %d (hard max %d), no rate-limit decrease recorded yet",
-				cfg.DynamicCap, cfg.HardMax)}
+	pools := sortedPoolNames(f.Pools)
+	if len(pools) == 0 {
+		return []Finding{{Check: checkNameAdaptiveCap, Level: LevelOK, Message: "adaptive overlay not configured"}}
 	}
 
-	pinned := cfg.DynamicCap <= 1 && opts.now().Sub(last) > adaptiveCapPinnedThreshold
-	if !pinned {
-		return Finding{Check: checkNameAdaptiveCap, Level: LevelOK,
-			Message: fmt.Sprintf("adaptive: dynamic cap %d (hard max %d), last decrease %s, %d rate-limit event(s)",
-				cfg.DynamicCap, cfg.HardMax, cfg.LastDecreaseAt, cfg.RateLimitEvents)}
+	findings := make([]Finding, 0, len(pools))
+	for _, pool := range pools {
+		cfg := f.Pools[pool]
+		if !cfg.Adaptive {
+			findings = append(findings, Finding{Check: checkNameAdaptiveCap, Level: LevelOK,
+				Message: fmt.Sprintf("pool %s: adaptive overlay off", pool)})
+			continue
+		}
+
+		last, perr := time.Parse(time.RFC3339, cfg.LastDecreaseAt)
+		if perr != nil {
+			// Adaptive is on but no decrease has ever been recorded — nothing
+			// to flag yet (dynamic cap sitting at the operator's chosen
+			// starting point is not evidence of throttling).
+			findings = append(findings, Finding{Check: checkNameAdaptiveCap, Level: LevelOK,
+				Message: fmt.Sprintf("pool %s: adaptive: dynamic cap %d (hard max %d), no rate-limit decrease recorded yet",
+					pool, cfg.DynamicCap, cfg.HardMax)})
+			continue
+		}
+
+		pinned := cfg.DynamicCap <= 1 && opts.now().Sub(last) > adaptiveCapPinnedThreshold
+		if !pinned {
+			findings = append(findings, Finding{Check: checkNameAdaptiveCap, Level: LevelOK,
+				Message: fmt.Sprintf("pool %s: adaptive: dynamic cap %d (hard max %d), last decrease %s, %d rate-limit event(s)",
+					pool, cfg.DynamicCap, cfg.HardMax, cfg.LastDecreaseAt, cfg.RateLimitEvents)})
+			continue
+		}
+		findings = append(findings, Finding{Check: checkNameAdaptiveCap, Level: LevelWarn,
+			Message: fmt.Sprintf(
+				"pool %s: adaptive: dynamic cap pinned at %d for >%v since the last decrease (%s, %d rate-limit event(s) total) — "+
+					"the account may be persistently rate-limited, or --hard-max (%d) is too low to recover",
+				pool, cfg.DynamicCap, adaptiveCapPinnedThreshold, cfg.LastDecreaseAt, cfg.RateLimitEvents, cfg.HardMax)})
 	}
-	return Finding{Check: checkNameAdaptiveCap, Level: LevelWarn,
-		Message: fmt.Sprintf(
-			"adaptive: dynamic cap pinned at %d for >%v since the last decrease (%s, %d rate-limit event(s) total) — "+
-				"the account may be persistently rate-limited, or --hard-max (%d) is too low to recover",
-			cfg.DynamicCap, adaptiveCapPinnedThreshold, cfg.LastDecreaseAt, cfg.RateLimitEvents, cfg.HardMax)}
+	return findings
 }
 
 // breakerFlapReopenThreshold is how many CONSECUTIVE re-opens (a half-open
@@ -319,38 +363,59 @@ func checkAdaptiveCapPinned(opts Options) Finding {
 const breakerFlapReopenThreshold = 2
 
 // checkCircuitBreaker flags the koryph-2im.11 circuit breaker sitting open
-// (or half-open) — evidence the account is being persistently rate-limited,
-// admission is 0 machine-wide while it holds. Informational only (warn,
-// never error): the breaker's own exponential backoff already degrades
-// safely on its own; a closed breaker (the steady state) is always OK
-// regardless of how many times it has re-opened in the past, since
-// BreakerReopenCount resets on every clean close.
-func checkCircuitBreaker(opts Options) Finding {
+// (or half-open) in any pool (koryph-v8u.11) — evidence that pool's provider
+// is persistently rate-limiting, admission is 0 IN THAT POOL while it holds
+// (every other pool is unaffected — that is the whole point of per-provider
+// pools). Informational only (warn, never error): the breaker's own
+// exponential backoff already degrades safely on its own; a closed breaker
+// (the steady state) is always OK regardless of how many times it has
+// re-opened in the past, since BreakerReopenCount resets on every clean
+// close.
+func checkCircuitBreaker(opts Options) []Finding {
 	path := filepath.Join(opts.home(), "governor.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// Absent/unreadable is not this check's concern — checkGovernorConfig
 		// already reports on governor.json's readability.
-		return Finding{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker not configured"}
+		return []Finding{{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker not configured"}}
 	}
-	var cfg govern.Config
-	if jerr := json.Unmarshal(data, &cfg); jerr != nil || !cfg.Adaptive {
-		return Finding{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker off (adaptive overlay off)"}
+	var f govern.File
+	if jerr := json.Unmarshal(data, &f); jerr != nil {
+		return []Finding{{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker off (adaptive overlay off)"}}
+	}
+	pools := sortedPoolNames(f.Pools)
+	if len(pools) == 0 {
+		return []Finding{{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker not configured"}}
 	}
 
-	if cfg.BreakerState != "open" && cfg.BreakerState != "half-open" {
-		return Finding{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker closed"}
+	findings := make([]Finding, 0, len(pools))
+	for _, pool := range pools {
+		cfg := f.Pools[pool]
+		if !cfg.Adaptive {
+			findings = append(findings, Finding{Check: checkNameBreaker, Level: LevelOK,
+				Message: fmt.Sprintf("pool %s: circuit breaker off (adaptive overlay off)", pool)})
+			continue
+		}
+		if cfg.BreakerState != "open" && cfg.BreakerState != "half-open" {
+			findings = append(findings, Finding{Check: checkNameBreaker, Level: LevelOK,
+				Message: fmt.Sprintf("pool %s: circuit breaker closed", pool)})
+			continue
+		}
+		flap := ""
+		if cfg.BreakerReopenCount >= breakerFlapReopenThreshold {
+			flap = " — flapping: it has re-opened repeatedly without a clean close"
+		}
+		findings = append(findings, Finding{Check: checkNameBreaker, Level: LevelWarn,
+			Message: fmt.Sprintf("pool %s: circuit breaker %s (reopen count %d)%s — admission is 0 in this pool while it holds",
+				pool, cfg.BreakerState, cfg.BreakerReopenCount, flap)})
 	}
-	flap := ""
-	if cfg.BreakerReopenCount >= breakerFlapReopenThreshold {
-		flap = " — flapping: it has re-opened repeatedly without a clean close"
-	}
-	return Finding{Check: checkNameBreaker, Level: LevelWarn,
-		Message: fmt.Sprintf("circuit breaker %s (reopen count %d)%s — admission is 0 machine-wide while it holds",
-			cfg.BreakerState, cfg.BreakerReopenCount, flap)}
+	return findings
 }
 
-// checkZombieLeases scans governor slot files for leases whose PID is dead.
+// checkZombieLeases scans governor slot files for leases whose PID is dead,
+// across every provider pool (koryph-v8u.11 — a lease's Provider field
+// identifies its pool; "" decodes as DefaultPool, a lease written before
+// pools existed).
 func checkZombieLeases(opts Options) []Finding {
 	slotsDir := filepath.Join(opts.home(), "slots")
 	entries, err := os.ReadDir(slotsDir)
@@ -390,15 +455,16 @@ func checkZombieLeases(opts Options) []Finding {
 		if probePID > 0 {
 			pidStr = fmt.Sprintf("%d", probePID)
 		}
+		pool := govern.NormalizeProvider(l.Provider)
 		f := Finding{
 			Check:   checkNameZombies,
 			Level:   LevelWarn,
-			Message: fmt.Sprintf("zombie lease: %s/%s pid=%s (dead)", l.Project, l.Bead, pidStr),
+			Message: fmt.Sprintf("zombie lease: pool %s: %s/%s pid=%s (dead)", pool, l.Project, l.Bead, pidStr),
 		}
 		if opts.Fix {
 			if rerr := os.Remove(path); rerr == nil {
 				f.Level = LevelOK
-				f.Message = fmt.Sprintf("zombie removed: %s/%s pid=%s", l.Project, l.Bead, pidStr)
+				f.Message = fmt.Sprintf("zombie removed: pool %s: %s/%s pid=%s", pool, l.Project, l.Bead, pidStr)
 				f.Fixed = true
 			}
 		}
@@ -412,7 +478,8 @@ func checkZombieLeases(opts Options) []Finding {
 	return zombies
 }
 
-// checkStaleDemand scans demand heartbeats for dead engines or expired TTLs.
+// checkStaleDemand scans demand heartbeats for dead engines or expired TTLs,
+// across every provider pool (koryph-v8u.11 — see checkZombieLeases).
 func checkStaleDemand(opts Options) []Finding {
 	const demandTTL = 10 * time.Minute
 
@@ -454,15 +521,16 @@ func checkStaleDemand(opts Options) []Finding {
 		if heartbeatStale && !engineDead {
 			reason = fmt.Sprintf("heartbeat stale >%v", demandTTL)
 		}
+		pool := govern.NormalizeProvider(d.Provider)
 		f := Finding{
 			Check:   checkNameDemand,
 			Level:   LevelWarn,
-			Message: fmt.Sprintf("stale demand: %s engine_pid=%d (%s)", d.Project, d.EnginePID, reason),
+			Message: fmt.Sprintf("stale demand: pool %s: %s engine_pid=%d (%s)", pool, d.Project, d.EnginePID, reason),
 		}
 		if opts.Fix {
 			if rerr := os.Remove(path); rerr == nil {
 				f.Level = LevelOK
-				f.Message = fmt.Sprintf("stale demand removed: %s (%s)", d.Project, reason)
+				f.Message = fmt.Sprintf("stale demand removed: pool %s: %s (%s)", pool, d.Project, reason)
 				f.Fixed = true
 			}
 		}

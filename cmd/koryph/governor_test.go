@@ -152,3 +152,63 @@ func TestGovernorSetL5bFlagsDefaultWhenOmitted(t *testing.T) {
 		t.Errorf("governor show missing closed breaker:\n%s", out)
 	}
 }
+
+// --- per-provider pools (koryph-v8u.11, L5c) --------------------------------
+
+// TestGovernorSetProviderRoundTripsIndependentPools proves --provider set/
+// show: a pool other than the default (anthropic) round-trips its own cap,
+// `governor show` lists BOTH pools, and setting one pool never touches the
+// other's cap.
+func TestGovernorSetProviderRoundTripsIndependentPools(t *testing.T) {
+	isolate(t)
+
+	// Default (--provider omitted) is exactly the anthropic pool.
+	if code, out, _ := runCmd("governor", "set", "--max-global", "5"); code != 0 || !strings.Contains(out, "set to 5") {
+		t.Fatalf("set (default pool): code %d out %q", code, out)
+	}
+	// A second, named pool.
+	if code, out, _ := runCmd("governor", "set", "--max-global", "3", "--provider", "openai"); code != 0 || !strings.Contains(out, "set to 3") {
+		t.Fatalf("set --provider openai: code %d out %q", code, out)
+	}
+
+	_, out, _ := runCmd("governor", "show")
+	if !strings.Contains(out, "pool anthropic:") || !strings.Contains(out, "pool openai:") {
+		t.Errorf("governor show did not list both pools:\n%s", out)
+	}
+	// Each pool's own cap must appear, and NEITHER cap value may have leaked
+	// into the other pool's block.
+	anthropicBlock := out[strings.Index(out, "pool anthropic:"):]
+	openaiBlock := out[strings.Index(out, "pool openai:"):]
+	if !strings.Contains(anthropicBlock, "cap: 5") {
+		t.Errorf("anthropic pool block missing cap 5:\n%s", anthropicBlock)
+	}
+	if !strings.Contains(openaiBlock, "cap: 3") {
+		t.Errorf("openai pool block missing cap 3:\n%s", openaiBlock)
+	}
+
+	// Re-setting the anthropic pool must not disturb openai's cap.
+	if code, _, _ := runCmd("governor", "set", "--max-global", "7"); code != 0 {
+		t.Fatal("re-set of default pool failed")
+	}
+	_, out, _ = runCmd("governor", "show")
+	openaiBlock = out[strings.Index(out, "pool openai:"):]
+	if !strings.Contains(openaiBlock, "cap: 3") {
+		t.Errorf("openai pool cap changed by an unrelated anthropic-pool set:\n%s", openaiBlock)
+	}
+}
+
+// TestGovernorProviderOmittedDefaultsToAnthropic proves --provider omitted on
+// `set` is fully back-compat with the pre-koryph-v8u.11 single-pool CLI: it
+// writes the anthropic pool, and `governor show` (still no --provider flag —
+// show always lists every pool) contains exactly one pool block for a
+// freshly configured machine.
+func TestGovernorProviderOmittedDefaultsToAnthropic(t *testing.T) {
+	isolate(t)
+	if code, _, _ := runCmd("governor", "set", "--max-global", "4"); code != 0 {
+		t.Fatal("set failed")
+	}
+	_, out, _ := runCmd("governor", "show")
+	if strings.Count(out, "pool ") != 1 || !strings.Contains(out, "pool anthropic:") {
+		t.Errorf("expected exactly one (anthropic) pool block:\n%s", out)
+	}
+}

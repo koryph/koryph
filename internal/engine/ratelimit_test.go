@@ -79,7 +79,7 @@ func TestRateLimitedDeathRequeuesWithoutBurningAttempt(t *testing.T) {
 	// Every rate-limited death (including the one that ultimately blocked) was
 	// reported to the shared governor.
 	gs := govern.NewStore()
-	status, err := gs.AIMDStatus()
+	status, err := gs.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestOrdinaryDeathStillUsesAttemptsBudget(t *testing.T) {
 	}
 
 	gs := govern.NewStore()
-	status, err := gs.AIMDStatus()
+	status, err := gs.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}

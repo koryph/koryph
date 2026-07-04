@@ -441,98 +441,119 @@ func applyProbe(c *Config, now time.Time) (changed bool) {
 	return true
 }
 
-// loadAndProbeLocked reads governor.json and applies (persisting, if
-// anything advanced) any pending breaker-open→half-open promotion
-// (resolveBreaker) and additive-probe growth (applyProbe). Callers must
-// already hold the store's flock (s.withLock) — it does not lock itself, so
-// effectiveCapLocked, AIMDStatus, and Acquire can share one lock acquisition
-// with it.
-func (s *Store) loadAndProbeLocked() (Config, error) {
-	var c Config
-	_ = fsx.ReadJSON(s.cfgPath, &c) // absent/corrupt ⇒ zero Config (adaptive off)
+// loadAndProbeLocked reads governor.json, extracts pool's Config, and applies
+// (persisting the WHOLE file, if anything advanced) any pending
+// breaker-open→half-open promotion (resolveBreaker) and additive-probe
+// growth (applyProbe) for that pool only — every other pool's entry is
+// carried through untouched (koryph-v8u.11). Callers must already hold the
+// store's flock (s.withLock) — it does not lock itself, so
+// effectiveCapLocked, AIMDStatus, PoolStatus, and Acquire can share one lock
+// acquisition with it. The returned File lets a caller that needs to persist
+// a FURTHER change to the same pool (e.g. Acquire granting a lease) avoid a
+// redundant read — set File.Pools[pool] and write it back.
+func (s *Store) loadAndProbeLocked(pool string) (Config, File, error) {
+	f, err := s.readFile()
+	if err != nil {
+		return Config{}, File{}, err
+	}
+	c := f.Pools[pool] // zero Config if this pool has no entry yet
 	now := s.Now()
 	changed := resolveBreaker(&c, now)
 	if applyProbe(&c, now) {
 		changed = true
 	}
+	f.Pools[pool] = c
 	if changed {
-		if err := fsx.WriteJSONAtomic(s.cfgPath, c); err != nil {
-			return c, err
+		if err := fsx.WriteJSONAtomic(s.cfgPath, f); err != nil {
+			return c, f, err
 		}
 	}
-	return c, nil
+	return c, f, nil
 }
 
-// effectiveCapLocked is loadAndProbeLocked's result reduced to the effective
-// cap; callers must already hold the store's flock.
-func (s *Store) effectiveCapLocked() (int, error) {
-	c, err := s.loadAndProbeLocked()
+// effectiveCapLocked is loadAndProbeLocked's result (for pool) reduced to the
+// effective cap; callers must already hold the store's flock.
+func (s *Store) effectiveCapLocked(pool string) (int, error) {
+	c, _, err := s.loadAndProbeLocked(pool)
 	return c.EffectiveCap(), err
 }
 
-// EffectiveCap returns the cap Acquire admits against: the static operator
-// cap when the AIMD overlay is off, or the clamped dynamic cap when adaptive
-// is enabled — after lazily applying (and persisting) any additive-probe
-// growth pending since the last read. Fails open to the static Cap() on any
-// store error, matching this package's fail-open convention.
-func (s *Store) EffectiveCap() int {
+// EffectiveCap returns the cap Acquire admits against for provider's pool
+// ("" is DefaultPool): the static operator cap when that pool's AIMD overlay
+// is off, or the clamped dynamic cap when adaptive is enabled — after lazily
+// applying (and persisting) any additive-probe growth pending since the last
+// read. Fails open to the static Cap() on any store error, matching this
+// package's fail-open convention.
+func (s *Store) EffectiveCap(provider string) int {
+	pool := NormalizeProvider(provider)
 	var eff int
 	err := s.withLock(func() error {
 		var lerr error
-		eff, lerr = s.effectiveCapLocked()
+		eff, lerr = s.effectiveCapLocked(pool)
 		return lerr
 	})
 	if err != nil {
-		return s.Cap()
+		return s.Cap(pool)
 	}
 	return eff
 }
 
-// AIMDStatus returns the full persisted AIMD/L5b overlay state for
-// observability (`koryph governor show`, `koryph doctor`), applying (and
-// persisting) any pending breaker promotion, crashed-probe timeout
-// resolution, and additive-probe growth first — a "show" always reflects the
-// same lazily-recovered state the next Acquire would use.
-func (s *Store) AIMDStatus() (Config, error) {
+// AIMDStatus returns the full persisted AIMD/L5b overlay state for provider's
+// pool ("" is DefaultPool), for observability (`koryph governor show`,
+// `koryph doctor`), applying (and persisting) any pending breaker promotion,
+// crashed-probe timeout resolution, and additive-probe growth first — a
+// "show" always reflects the same lazily-recovered state the next Acquire
+// would use.
+func (s *Store) AIMDStatus(provider string) (Config, error) {
+	pool := NormalizeProvider(provider)
 	var c Config
 	err := s.withLock(func() error {
 		if perr := s.prune(); perr != nil {
 			return perr
 		}
 		var lerr error
-		c, lerr = s.loadAndProbeLocked()
+		c, _, lerr = s.loadAndProbeLocked(pool)
 		return lerr
 	})
 	return c, err
 }
 
 // ReportRateLimit records a rate-limit/overload signal observed from a dead
-// agent's stream (koryph-2im.4), identified by project/bead so koryph-2im.11's
-// burst-distinct-slot counting and half-open probe matching can work (bead
-// may be "" — see applyRateLimit's degraded-caller fallback). It always
-// counts toward RateLimitEvents for observability; the rest (decrease,
-// settle, breaker trip/re-open) is applyRateLimit's pure logic, applied here
-// under the flock so every engine on the host shares one outcome.
-func (s *Store) ReportRateLimit(project, bead string, now time.Time) error {
+// agent's stream (koryph-2im.4) against provider's pool ("" is DefaultPool),
+// identified by project/bead so koryph-2im.11's burst-distinct-slot counting
+// and half-open probe matching can work (bead may be "" — see
+// applyRateLimit's degraded-caller fallback). It always counts toward
+// RateLimitEvents for observability; the rest (decrease, settle, breaker
+// trip/re-open) is applyRateLimit's pure logic, applied here under the flock
+// so every engine on the host shares one outcome FOR THAT POOL — every other
+// pool's entry is untouched (koryph-v8u.11).
+func (s *Store) ReportRateLimit(provider, project, bead string, now time.Time) error {
+	pool := NormalizeProvider(provider)
 	return s.withLock(func() error {
-		var c Config
-		_ = fsx.ReadJSON(s.cfgPath, &c)
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		c := f.Pools[pool]
 		applyRateLimit(&c, project, bead, now)
-		return fsx.WriteJSONAtomic(s.cfgPath, c)
+		f.Pools[pool] = c
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
 	})
 }
 
-// SetAdaptiveCap enables the AIMD overlay: maxGlobal is the operator's
-// starting/floor cap (also the DynamicCap seed), hardMax bounds upward
-// probing (defaulting to 2×maxGlobal, matching `koryph governor set
-// --adaptive`'s documented default). settleSeconds/breakSeconds/
-// minDispatchIntervalSeconds are koryph-2im.11's L5b knobs; <=0 uses this
-// package's documented default for each (DefaultSettleSeconds/
-// DefaultBreakSeconds/DefaultMinDispatchIntervalSeconds). Enabling adaptive
-// mode always starts the probe clock fresh from now — any prior
-// decrease/probe/breaker history is intentionally discarded, mirroring
-// SetCap's "last write wins" semantics.
-func (s *Store) SetAdaptiveCap(maxGlobal, hardMax, settleSeconds, breakSeconds, minDispatchIntervalSeconds int) error {
+// SetAdaptiveCap enables the AIMD overlay for provider's pool ("" is
+// DefaultPool): maxGlobal is the operator's starting/floor cap (also the
+// DynamicCap seed), hardMax bounds upward probing (defaulting to 2×maxGlobal,
+// matching `koryph governor set --adaptive`'s documented default).
+// settleSeconds/breakSeconds/minDispatchIntervalSeconds are koryph-2im.11's
+// L5b knobs; <=0 uses this package's documented default for each
+// (DefaultSettleSeconds/DefaultBreakSeconds/
+// DefaultMinDispatchIntervalSeconds). Enabling adaptive mode always starts
+// THIS POOL's probe clock fresh from now — any prior decrease/probe/breaker
+// history for this pool is intentionally discarded, mirroring SetCap's "last
+// write wins" semantics; every OTHER pool's entry is left untouched
+// (koryph-v8u.11).
+func (s *Store) SetAdaptiveCap(provider string, maxGlobal, hardMax, settleSeconds, breakSeconds, minDispatchIntervalSeconds int) error {
 	if maxGlobal <= 0 {
 		return errors.New("govern: max_global_agents must be positive")
 	}
@@ -551,8 +572,9 @@ func (s *Store) SetAdaptiveCap(maxGlobal, hardMax, settleSeconds, breakSeconds, 
 	if minDispatchIntervalSeconds <= 0 {
 		minDispatchIntervalSeconds = DefaultMinDispatchIntervalSeconds
 	}
+	pool := NormalizeProvider(provider)
 	now := s.Now().UTC().Format(time.RFC3339)
-	return fsx.WriteJSONAtomic(s.cfgPath, Config{
+	newPool := Config{
 		MaxGlobalAgents:            maxGlobal,
 		Adaptive:                   true,
 		HardMax:                    hardMax,
@@ -561,5 +583,13 @@ func (s *Store) SetAdaptiveCap(maxGlobal, hardMax, settleSeconds, breakSeconds, 
 		SettleSeconds:              settleSeconds,
 		BreakSeconds:               breakSeconds,
 		MinDispatchIntervalSeconds: minDispatchIntervalSeconds,
+	}
+	return s.withLock(func() error {
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		f.Pools[pool] = newPool
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
 	})
 }

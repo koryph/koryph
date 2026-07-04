@@ -78,7 +78,7 @@ func TestFairShareRotationNoStarvation(t *testing.T) {
 func TestAcquireEnforcesGlobalCap(t *testing.T) {
 	s := newTestStore(t)
 	capN := DefaultMaxGlobalAgents
-	if err := s.SetCap(capN); err != nil {
+	if err := s.SetCap("", capN); err != nil {
 		t.Fatal(err)
 	}
 	granted := 0
@@ -94,7 +94,7 @@ func TestAcquireEnforcesGlobalCap(t *testing.T) {
 	if granted != capN {
 		t.Errorf("granted %d, want %d (cap)", granted, capN)
 	}
-	_, leases, _, err := s.Snapshot()
+	_, leases, _, err := s.Snapshot("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,14 +105,14 @@ func TestAcquireEnforcesGlobalCap(t *testing.T) {
 
 func TestReleaseFreesSlot(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.SetCap(1)
+	_ = s.SetCap("", 1)
 	if ok, _ := s.Acquire(lease("p", "b1", 10)); !ok {
 		t.Fatal("first acquire denied")
 	}
 	if ok, _ := s.Acquire(lease("p", "b2", 11)); ok {
 		t.Fatal("second acquire granted over cap 1")
 	}
-	if err := s.Release("p", "b1"); err != nil {
+	if err := s.Release("", "p", "b1"); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := s.Acquire(lease("p", "b2", 11)); !ok {
@@ -124,12 +124,12 @@ func TestReleaseFreesSlot(t *testing.T) {
 
 func TestFairShareReservesOtherProjectsSlots(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.SetCap(4)
+	_ = s.SetCap("", 4)
 	// Both projects demand → fair share 2 each.
-	if err := s.RefreshDemand("a", 1); err != nil {
+	if err := s.RefreshDemand("", "a", 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RefreshDemand("b", 2); err != nil {
+	if err := s.RefreshDemand("", "b", 2); err != nil {
 		t.Fatal(err)
 	}
 	// A takes its 2, then is denied its 3rd because B's share is reserved.
@@ -149,9 +149,9 @@ func TestFairShareReservesOtherProjectsSlots(t *testing.T) {
 
 func TestDroppingDemandRaisesRemainingShare(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.SetCap(4)
-	_ = s.RefreshDemand("a", 1)
-	_ = s.RefreshDemand("b", 2)
+	_ = s.SetCap("", 4)
+	_ = s.RefreshDemand("", "a", 1)
+	_ = s.RefreshDemand("", "b", 2)
 
 	// A is capped at its fair share (2) while B still demands.
 	for i := 0; i < 2; i++ {
@@ -164,7 +164,7 @@ func TestDroppingDemandRaisesRemainingShare(t *testing.T) {
 	}
 
 	// B finishes its frontier and drops demand → A alone now, share = cap.
-	if err := s.DropDemand("b"); err != nil {
+	if err := s.DropDemand("", "b"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 2; i < 4; i++ {
@@ -182,13 +182,13 @@ func TestDroppingDemandRaisesRemainingShare(t *testing.T) {
 
 func TestReserveThenHold(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.SetCap(2)
+	_ = s.SetCap("", 2)
 	// Reserve under the engine pid (agent pid unknown pre-launch).
 	if ok, _ := s.Acquire(Lease{Project: "p", Bead: "b1", EnginePID: 1}); !ok {
 		t.Fatal("reserve denied")
 	}
 	// The reservation counts toward the cap even though PID is still 0.
-	_, leases, _, err := s.Snapshot()
+	_, leases, _, err := s.Snapshot("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestReserveThenHold(t *testing.T) {
 	if err := s.Hold(Lease{Project: "p", Bead: "b1", PID: 4242, EnginePID: 1, Model: "sonnet"}); err != nil {
 		t.Fatal(err)
 	}
-	_, leases, _, err = s.Snapshot()
+	_, leases, _, err = s.Snapshot("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestReserveThenHold(t *testing.T) {
 	if err := s.Hold(Lease{Project: "p", Bead: "b2", PID: 99, EnginePID: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, leases, _, _ = s.Snapshot(); len(leases) != 2 {
+	if _, leases, _, _ = s.Snapshot(""); len(leases) != 2 {
 		t.Errorf("Hold without reserve did not count: %d leases, want 2", len(leases))
 	}
 }
@@ -219,7 +219,7 @@ func TestReserveThenHold(t *testing.T) {
 
 func TestPruneReclaimsDeadLease(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.SetCap(1)
+	_ = s.SetCap("", 1)
 	if ok, _ := s.Acquire(lease("p", "b1", 10)); !ok {
 		t.Fatal("acquire denied")
 	}
@@ -234,7 +234,7 @@ func TestPruneReclaimsStaleDemand(t *testing.T) {
 	s := newTestStore(t)
 	base := time.Unix(0, 0).UTC()
 	s.Now = func() time.Time { return base }
-	if err := s.RefreshDemand("stale", 7); err != nil {
+	if err := s.RefreshDemand("", "stale", 7); err != nil {
 		t.Fatal(err)
 	}
 	// Advance well past DemandTTL; the heartbeat should be pruned.
@@ -242,7 +242,7 @@ func TestPruneReclaimsStaleDemand(t *testing.T) {
 	if err := s.Prune(); err != nil {
 		t.Fatal(err)
 	}
-	_, _, dem, err := s.Snapshot()
+	_, _, dem, err := s.Snapshot("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,16 +255,16 @@ func TestPruneReclaimsStaleDemand(t *testing.T) {
 
 func TestCapDefaultAndSet(t *testing.T) {
 	s := newTestStore(t)
-	if got := s.Cap(); got != DefaultMaxGlobalAgents {
+	if got := s.Cap(""); got != DefaultMaxGlobalAgents {
 		t.Errorf("default cap = %d, want %d", got, DefaultMaxGlobalAgents)
 	}
-	if err := s.SetCap(7); err != nil {
+	if err := s.SetCap("", 7); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Cap(); got != 7 {
+	if got := s.Cap(""); got != 7 {
 		t.Errorf("cap after set = %d, want 7", got)
 	}
-	if err := s.SetCap(0); err == nil {
+	if err := s.SetCap("", 0); err == nil {
 		t.Error("SetCap(0) should error")
 	}
 }
@@ -274,7 +274,7 @@ func TestCapDefaultAndSet(t *testing.T) {
 func TestConcurrentAcquireNeverExceedsCap(t *testing.T) {
 	s := newTestStore(t)
 	capN := DefaultMaxGlobalAgents
-	_ = s.SetCap(capN)
+	_ = s.SetCap("", capN)
 
 	const workers = 32
 	var granted int64
@@ -294,7 +294,7 @@ func TestConcurrentAcquireNeverExceedsCap(t *testing.T) {
 	if int(granted) != capN {
 		t.Errorf("granted %d under contention, want exactly %d (cap)", granted, capN)
 	}
-	_, leases, _, err := s.Snapshot()
+	_, leases, _, err := s.Snapshot("")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -205,17 +205,20 @@ func TestBreakerReopenCounterResetsOnClose(t *testing.T) {
 // --- circuit breaker: Store-level half-open admission ------------------------
 
 // seedBreakerOpen writes an "open" breaker directly to disk (bypassing the
-// decrease path, which this test suite exercises separately) and returns the
-// resulting Config so callers can read BreakerBreakSeconds to advance the
-// clock past it.
+// decrease path, which this test suite exercises separately), in the
+// anthropic pool (koryph-v8u.11 — these tests predate per-provider pools and
+// exercise the default one), and returns the resulting Config so callers can
+// read BreakerBreakSeconds to advance the clock past it.
 func seedBreakerOpen(t *testing.T, s *Store, now time.Time) Config {
 	t.Helper()
-	var c Config
-	if err := fsx.ReadJSON(s.cfgPath, &c); err != nil {
+	f, err := s.readFile()
+	if err != nil {
 		t.Fatal(err)
 	}
+	c := f.Pools[DefaultPool]
 	openBreaker(&c, now, false)
-	if err := fsx.WriteJSONAtomic(s.cfgPath, c); err != nil {
+	f.Pools[DefaultPool] = c
+	if err := fsx.WriteJSONAtomic(s.cfgPath, f); err != nil {
 		t.Fatal(err)
 	}
 	return c
@@ -226,7 +229,7 @@ func TestHalfOpenAdmitsExactlyOneProbe(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return -1 } // this test is not about smoothing
-	if err := s.SetAdaptiveCap(4, 8, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 4, 8, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	c := seedBreakerOpen(t, s, now)
@@ -241,7 +244,7 @@ func TestHalfOpenAdmitsExactlyOneProbe(t *testing.T) {
 		t.Errorf("second acquire while a probe is outstanding: ok=%v err=%v, want denied", ok2, err)
 	}
 
-	status, err := s.AIMDStatus()
+	status, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +261,7 @@ func TestHalfOpenConcurrentAcquiresOnlyOneWins(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return -1 }
-	if err := s.SetAdaptiveCap(4, 8, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 4, 8, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	c := seedBreakerOpen(t, s, now)
@@ -282,7 +285,7 @@ func TestHalfOpenConcurrentAcquiresOnlyOneWins(t *testing.T) {
 	if granted != 1 {
 		t.Errorf("granted = %d concurrent half-open acquires, want exactly 1", granted)
 	}
-	status, err := s.AIMDStatus()
+	status, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +299,7 @@ func TestHalfOpenCloseOnCleanRelease(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return -1 }
-	if err := s.SetAdaptiveCap(4, 8, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 4, 8, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	c := seedBreakerOpen(t, s, now)
@@ -305,11 +308,11 @@ func TestHalfOpenCloseOnCleanRelease(t *testing.T) {
 	if ok, err := s.Acquire(lease("p1", "b1", 100)); err != nil || !ok {
 		t.Fatalf("probe acquire: ok=%v err=%v", ok, err)
 	}
-	if err := s.Release("p1", "b1"); err != nil {
+	if err := s.Release("", "p1", "b1"); err != nil {
 		t.Fatal(err)
 	}
 
-	status, err := s.AIMDStatus()
+	status, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +332,7 @@ func TestHalfOpenReopensOnProbeRateLimit(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return -1 }
-	if err := s.SetAdaptiveCap(4, 8, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 4, 8, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	c := seedBreakerOpen(t, s, now)
@@ -338,11 +341,11 @@ func TestHalfOpenReopensOnProbeRateLimit(t *testing.T) {
 	if ok, err := s.Acquire(lease("p1", "b1", 100)); err != nil || !ok {
 		t.Fatalf("probe acquire: ok=%v err=%v", ok, err)
 	}
-	if err := s.ReportRateLimit("p1", "b1", now); err != nil {
+	if err := s.ReportRateLimit("", "p1", "b1", now); err != nil {
 		t.Fatal(err)
 	}
 
-	status, err := s.AIMDStatus()
+	status, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +370,7 @@ func TestCrashedProbeTimeoutReopensBreaker(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return -1 }
-	if err := s.SetAdaptiveCap(4, 8, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 4, 8, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	c := seedBreakerOpen(t, s, now)
@@ -385,7 +388,7 @@ func TestCrashedProbeTimeoutReopensBreaker(t *testing.T) {
 	// Immediately after (well inside ProbeTimeout): the crashed lease has
 	// already been pruned (Alive always false), but the breaker must NOT
 	// resolve yet — it could still be a legitimate in-flight Release/report.
-	status, err := s.AIMDStatus()
+	status, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +397,7 @@ func TestCrashedProbeTimeoutReopensBreaker(t *testing.T) {
 	}
 
 	now = now.Add(s.ProbeTimeout + time.Second)
-	status, err = s.AIMDStatus()
+	status, err = s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +416,7 @@ func TestSmoothingDeniesSecondAcquireWithinInterval(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return 0 } // exactly the base 3s interval
-	if err := s.SetAdaptiveCap(8, 16, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 8, 16, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -436,7 +439,7 @@ func TestSmoothingDeniesWithinJitteredBounds(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return 0.5 }
-	if err := s.SetAdaptiveCap(8, 16, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 8, 16, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -458,14 +461,14 @@ func TestSmoothingDenialDoesNotAdvanceTimestamp(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 	s.Jitter = func() float64 { return 0 }
-	if err := s.SetAdaptiveCap(8, 16, 0, 0, 0); err != nil {
+	if err := s.SetAdaptiveCap("", 8, 16, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 
 	if ok, err := s.Acquire(lease("p1", "b1", 100)); err != nil || !ok {
 		t.Fatalf("first acquire: ok=%v err=%v", ok, err)
 	}
-	before, err := s.AIMDStatus()
+	before, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +480,7 @@ func TestSmoothingDenialDoesNotAdvanceTimestamp(t *testing.T) {
 	if ok, _ := s.Acquire(lease("p3", "b3", 300)); ok {
 		t.Fatal("expected denial")
 	}
-	after, err := s.AIMDStatus()
+	after, err := s.AIMDStatus("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +506,7 @@ func TestMultiEngineStoresShareAdaptiveStateConsistently(t *testing.T) {
 	s2.Alive = func(int) bool { return true }
 	s2.Jitter = func() float64 { return -1 }
 
-	if err := s1.SetAdaptiveCap(4, 8, 0, 0, 0); err != nil {
+	if err := s1.SetAdaptiveCap("", 4, 8, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 

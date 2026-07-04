@@ -9,7 +9,7 @@
 // It coordinates through files under ~/.koryph (paths.SlotsDir) guarded by a
 // short flock — no daemon:
 //
-//   - governor.json          machine-wide cap {max_global_agents} (default 8)
+//   - governor.json          per-provider pools {"pools": {<provider>: {...}}}
 //   - slots/<lease>.json      one lease per running agent (keyed to the AGENT pid)
 //   - slots/demand/<proj>.json per-project demand heartbeat (fair-share input)
 //
@@ -18,26 +18,67 @@
 // time (so no project starves when projects outnumber slots), and idle capacity
 // is handed out work-conservingly when every other demander already holds its
 // share. See docs/developer-guide/global-governor.md.
+//
+// # Per-provider pools (koryph-v8u.11, design doc L5c)
+//
+// The service providers behind agent runtimes (Anthropic/claude, OpenAI/codex,
+// Google/gemini, xAI/grok build, …) enforce INDEPENDENT rate limits, so a
+// single machine-wide pool would be wrong in both directions: an Anthropic 429
+// must not throttle codex agents, and codex load must not consume claude
+// admission slots. EVERY piece of governor state — operator cap, leases,
+// demand, fair share, the AIMD overlay, settle window, circuit breaker,
+// dispatch-smoothing clock — is scoped to a pool, keyed by an opaque provider
+// string (see DefaultPool, NormalizeProvider, and Config for what one pool
+// holds). There is deliberately NO cross-provider shared cap: total machine
+// concurrency is the sum of pool caps, since each provider's API is the
+// resource being protected (local CPU/RAM pressure is the operator's
+// --max-global choice, made per pool).
 package govern
 
-// DefaultMaxGlobalAgents is the cap used when governor.json is absent. Raised
+import "encoding/json"
+
+// DefaultMaxGlobalAgents is the cap used when a pool has no configured
+// max_global_agents (governor.json absent, or the pool has no entry). Raised
 // to 8 to let a single self-hosting project run a wider wave; being monitored
 // for Claude API rate limiting — drop to 6 if beads start getting throttled. A
-// governor.json still overrides this per machine.
+// governor.json still overrides this per machine, per pool.
 const DefaultMaxGlobalAgents = 8
 
-// Config is the machine-wide concurrency governor config (governor.json).
-//
-// The AIMD overlay fields (koryph-2im.4,
-// docs/designs/2026-07-scheduler-throughput.md L5) are additive: a
-// governor.json written before they existed unmarshals them all to their zero
-// values, i.e. Adaptive=false, which reproduces today's static-cap behavior
-// byte-for-byte — see Config.EffectiveCap.
+// DefaultPool is the pool key used when a lease, demand heartbeat, or store
+// entry point carries no explicit provider — i.e. today's single implicit
+// pool, and the migration target for a legacy (pre-koryph-v8u.11)
+// governor.json. The key is deliberately an opaque string (not an enum) so it
+// can later refine to "provider:account" (rate limits are really per-account
+// within a provider) without another schema change.
+const DefaultPool = "anthropic"
+
+// NormalizeProvider maps "" to DefaultPool so every store entry point and
+// on-disk record uses a non-empty pool key — the API-boundary normalization
+// koryph-v8u.11 requires ("stored state never has an empty key"). Every other
+// value passes through unchanged (an opaque pool key).
+func NormalizeProvider(provider string) string {
+	if provider == "" {
+		return DefaultPool
+	}
+	return provider
+}
+
+// Config is one pool's full governor state: the operator cap plus the AIMD
+// overlay. A governor.json predating the AIMD overlay (koryph-2im.4,
+// docs/designs/2026-07-scheduler-throughput.md L5) unmarshals those fields to
+// their zero values, i.e. Adaptive=false, which reproduces the original
+// static-cap behavior byte-for-byte — see Config.EffectiveCap.
 //
 // The settle-window / circuit-breaker / dispatch-smoothing fields
 // (koryph-2im.11, docs/designs/2026-07-scheduler-throughput.md L5b) are
 // likewise additive and, like the rest of the AIMD overlay, only take effect
 // when Adaptive is on — see internal/govern/aimd.go.
+//
+// Per koryph-v8u.11 (L5c), a Config is now ALWAYS one entry in File.Pools
+// (keyed by provider) rather than the whole of governor.json — see File and
+// Store's pool-scoped entry points. The type itself is unchanged from
+// koryph-2im.11 so every pure AIMD/settle/breaker function below (and its
+// existing unit tests) keeps operating on a plain Config value.
 type Config struct {
 	MaxGlobalAgents int `json:"max_global_agents"`
 
@@ -121,7 +162,7 @@ type Config struct {
 	// this section, for zero behavior change on non-adaptive setups.
 	MinDispatchIntervalSeconds int `json:"min_dispatch_interval_seconds,omitempty"`
 	// LastAdmitAt is the RFC3339 timestamp of the most recent admitted
-	// dispatch (any project) — the spacing clock's anchor.
+	// dispatch (any project IN THIS POOL) — the spacing clock's anchor.
 	LastAdmitAt string `json:"last_admit_at,omitempty"`
 }
 
@@ -134,9 +175,61 @@ type RateLimitEvent struct {
 	Bead    string `json:"bead,omitempty"`
 }
 
-// Lease records one running agent holding a global slot. It is keyed to the
-// detached AGENT pid so the lease survives an engine restart/resume and frees
-// only when the real agent process dies.
+// File is the on-disk shape of governor.json: independent per-provider
+// governor pools (koryph-v8u.11, L5c). See Config for what one pool holds.
+//
+// UnmarshalJSON transparently migrates a legacy (pre-koryph-v8u.11)
+// governor.json — a flat document with no top-level "pools" key, i.e. every
+// shape from koryph-1xk/2im.4/2im.11 — into Pools[DefaultPool], preserving
+// every field. This is what makes "an existing single-pool governor.json
+// loads transparently as the anthropic pool" true for every reader (Store AND
+// internal/doctor, which parses governor.json directly): the migration lives
+// once, here, rather than being re-implemented at each call site.
+type File struct {
+	Pools map[string]Config `json:"pools"`
+}
+
+// UnmarshalJSON implements the legacy-shape migration described on File.
+func (f *File) UnmarshalJSON(data []byte) error {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if raw, ok := probe["pools"]; ok {
+		var pools map[string]Config
+		if err := json.Unmarshal(raw, &pools); err != nil {
+			return err
+		}
+		f.Pools = pools
+		return nil
+	}
+	// No "pools" key: this is a pre-koryph-v8u.11 document. The whole thing
+	// IS one flat Config — decode it as such and wrap it as the sole
+	// anthropic pool so every existing field (cap, AIMD overlay, settle,
+	// breaker, smoothing) round-trips unchanged.
+	var legacy Config
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	f.Pools = map[string]Config{DefaultPool: legacy}
+	return nil
+}
+
+// PoolStatus is one pool's full observable state, for `koryph governor show`
+// and `koryph doctor` (koryph-v8u.11): the live leases and demand heartbeats
+// plus the AIMD/settle/breaker/smoothing overlay. AIMD.EffectiveCap() is the
+// cap Acquire actually admits against for this pool.
+type PoolStatus struct {
+	Pool   string
+	Leases []Lease
+	Demand []Demand
+	AIMD   Config
+}
+
+// Lease records one running agent holding a global slot in one provider pool
+// (koryph-v8u.11). It is keyed to the detached AGENT pid so the lease
+// survives an engine restart/resume and frees only when the real agent
+// process dies.
 type Lease struct {
 	Project    string `json:"project"`
 	Bead       string `json:"bead"`
@@ -144,13 +237,24 @@ type Lease struct {
 	EnginePID  int    `json:"engine_pid"` // owning koryph run pid
 	Model      string `json:"model,omitempty"`
 	AcquiredAt string `json:"acquired_at"` // RFC3339
+	// Provider identifies the pool this lease counts against (koryph-v8u.11).
+	// "" means DefaultPool (anthropic) — every Store entry point normalizes
+	// before it reads/writes, so a freshly written lease always carries the
+	// resolved, non-empty pool key; a lease file written before this field
+	// existed decodes with Provider=="" and is treated as anthropic, which is
+	// exactly what it always was.
+	Provider string `json:"provider,omitempty"`
 }
 
-// Demand is a project's "I have ready work and want slots" heartbeat, refreshed
-// each wave and pruned when stale or its engine dies. The set of live demands
-// is the fair-share denominator.
+// Demand is a project's "I have ready work and want slots" heartbeat in one
+// provider pool (koryph-v8u.11), refreshed each wave and pruned when stale or
+// its engine dies. The set of live demands within a pool is that pool's
+// fair-share denominator.
 type Demand struct {
 	Project   string `json:"project"`
 	EnginePID int    `json:"engine_pid"`
 	UpdatedAt string `json:"updated_at"` // RFC3339
+	// Provider identifies the pool this demand heartbeat counts in
+	// (koryph-v8u.11); see Lease.Provider for the "" == DefaultPool contract.
+	Provider string `json:"provider,omitempty"`
 }
