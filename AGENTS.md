@@ -45,8 +45,9 @@ several and the token sets union:
 - `fp:<token>` → a raw **write** token.
 - `fp:read:<token>` → a **read** token; read-only touches co-run with any other reader and
   exclude only a *writer* of that token (e.g. a docs bead that merely reads engine code).
-- Any `fp:*` label makes the bead ignore its `area:*` labels; a token declared both read
-  and write collapses to **write**.
+- `area:*` and `fp:*` labels **union** — an `fp:*` label never suppresses the area write
+  tokens; to narrow an over-broad area, drop the `area:*` label. A token declared both
+  read and write collapses to **write**.
 - **No footprint label** → the catch-all write token `domain:unknown`, colliding with
   every other unlabeled bead — unknowns serialize one-per-wave.
 
@@ -99,9 +100,10 @@ fast-forwarding, landed later with `koryph land`. Full flow:
 
 ## Dispatch modes
 
-- **wave** (default) — dispatch a conflict-free batch, wait for every slot to land, rescan.
-- **rolling** — refill continuously; each poll tick tops off freed slots without waiting
-  for the batch. Footprint conflicts are honored identically in both modes.
+- **rolling** (default) — refill continuously; each poll tick tops off freed slots without
+  waiting for the batch.
+- **wave** — dispatch a conflict-free batch, wait for every slot to land, rescan.
+  Footprint conflicts are honored identically in both modes.
 
 Set via `dispatch_mode` in `koryph.project.json` or `--dispatch-mode`.
 
