@@ -297,6 +297,98 @@ reopen the Release PR with a different token to trigger checks).
 
 ---
 
+---
+
+## Fallback ladder
+
+When a GitHub App cannot be installed (org policy, personal-account restrictions,
+or simply not worth the setup for a low-frequency project), the release pipeline
+degrades gracefully through a ladder of supported alternatives. Choose the
+rung that fits your constraints.
+
+| Rung | Mechanism | Checks fire automatically? | Operator can self-approve? | Per-release action required |
+|------|-----------|---------------------------|---------------------------|----------------------------|
+| **1 — Bot (preferred)** | GitHub App (`RELEASE_BOT_APP_ID` + `RELEASE_BOT_PRIVATE_KEY`) | Yes — App is not GITHUB_TOKEN | Yes — operator is not the PR author | None |
+| **2 — Bot-less + kick** | GITHUB_TOKEN fallback | No — use `koryph release kick` | Yes | `koryph release kick --repo OWNER/REPO` |
+| **3 — PAT as token** | Fine-grained PAT in `token:` action input | Yes — PAT is a real actor | **No** — PAT owner becomes PR author; cannot self-approve | None, but needs a second reviewer (or no required-approval ruleset) |
+| **4 — Admin-merge** | Admin bypass of branch-protection on merge | N/A — admin bypasses check requirement | N/A | Admin merge via GitHub UI or `gh pr merge --admin` |
+
+### Rung 1 — GitHub App (preferred)
+
+See the sections above. Run `koryph bot create` + `koryph bot attach` then
+`koryph release setup --bot`. The Release PR is authored by the App identity;
+checks fire on every push; the operator approves and merges normally.
+
+### Rung 2 — Bot-less with `koryph release kick`
+
+No bot installed. The caller workflow falls back to `GITHUB_TOKEN` — release-please
+opens and updates the Release PR normally, but GitHub's platform rule prevents
+`GITHUB_TOKEN`-triggered events from firing workflows. Close+reopen under a
+real actor's token to unblock:
+
+```bash
+koryph release kick --repo OWNER/REPO
+# auto-detects the PR by the "autorelease: pending" label
+
+koryph release kick --repo OWNER/REPO --pr 42
+# explicit PR number (guard relaxed to a warning)
+
+koryph release kick --repo OWNER/REPO --wait
+# blocks until all check conclusions arrive (default timeout: 10 min)
+```
+
+`koryph doctor --project ID` reports **"bot-less: kick required per release"**
+when secrets are absent, so the operator knows exactly what to do.
+
+**Trade-off:** one manual step per release cycle. Suitable for infrequent
+releases where bot setup overhead is not justified.
+
+### Rung 3 — Fine-grained PAT as the action token
+
+Set a fine-grained PAT (with `Contents: write` + `Pull requests: write`
+permissions on the repo) as a repository secret, then pass it as the `token:`
+input to `actions/create-github-app-token` — or, more directly, supply it as
+the workflow `GITHUB_TOKEN` override via environment:
+
+```yaml
+# In the caller workflow (manual customization):
+jobs:
+  release:
+    uses: koryph/koryph/.github/workflows/release-train.yml@main
+    with:
+      ...
+    secrets:
+      token: ${{ secrets.MY_PAT_SECRET }}
+```
+
+**Checks fire automatically** because the PAT is a real actor. **However**:
+the PAT owner becomes the PR author. GitHub's branch-protection rules prevent
+an author from approving their own PR — so:
+
+- Without a required-approval ruleset → fine (no approver needed).
+- With a required reviewer count ≥ 1 → a **second reviewer** must approve,
+  or the approval requirement must be waived for release-bot PRs.
+
+**Trade-off:** no per-release manual step, but the self-approval limitation
+means either a second reviewer is required or the required-approval rule must
+be relaxed/bypassed for release-bot PRs. The PAT must also be rotated
+periodically (fine-grained PATs expire).
+
+### Rung 4 — Admin-merge escape hatch
+
+An admin (anyone with the "Bypass pull request requirements" permission on the
+repository) can merge the Release PR without satisfying checks or approval
+rules. This is an emergency escape hatch, not a workflow:
+
+```bash
+gh pr merge --repo OWNER/REPO 42 --admin --squash
+```
+
+**Trade-off:** bypasses all branch-protection requirements. Only appropriate
+when a release is time-critical and no other rung is available.
+
+---
+
 ## Troubleshooting
 
 ### "Timed out waiting for the GitHub callback"

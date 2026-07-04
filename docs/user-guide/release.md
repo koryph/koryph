@@ -3,6 +3,19 @@
 
 # Release pipeline setup
 
+## Opt-in: koryph never blocks you
+
+The release pipeline is **fully optional**. If a project has no
+`release` block in `koryph.project.json` and no `.github/workflows/release.yml`
+caller workflow installed, koryph never creates, touches, or expects release
+infrastructure. `koryph doctor` reports "release not configured" for such
+projects (LevelOK — it is a valid, intentional state).
+
+You opt in by running `koryph release setup`. You opt out by removing (or
+never adding) the release block and workflow file.
+
+---
+
 `koryph release setup` wires a project's release pipeline by rendering three files from koryph's embedded templates and installing them into your repository:
 
 | File | Purpose |
@@ -103,6 +116,32 @@ After `koryph release setup` prints "Remaining HUMAN steps:", you need to:
 4. **Commit and push** the generated files to trigger the first release-please run.
 5. **GoReleaser users**: verify `.goreleaser.yaml` is present at the repo root.
 6. **Provenance users**: confirm `id-token: write` permission is available in your GitHub org.
+
+## Bot-less mode (rung 2)
+
+Installing a GitHub App is optional. The caller workflow falls back to
+`GITHUB_TOKEN` when `RELEASE_BOT_APP_ID` / `RELEASE_BOT_PRIVATE_KEY` are
+absent. **Release PRs are opened and updated correctly**, but check workflows
+do NOT fire on release-please-authored events because GitHub prevents
+`GITHUB_TOKEN`-caused events from triggering workflows (platform rule, not a
+koryph limitation).
+
+To trigger checks without a bot, run once per release:
+
+```bash
+koryph release kick --repo OWNER/REPO
+```
+
+This closes then reopens the Release PR under **your** `gh` auth token (a real
+actor), which causes GitHub to fire all required check workflows. Add `--wait`
+to poll until checks conclude:
+
+```bash
+koryph release kick --repo OWNER/REPO --wait
+```
+
+See [release-bot.md](release-bot.md) for a complete fallback ladder (PAT
+alternative, admin-merge escape hatch) and their trade-offs.
 
 ## Re-running setup
 

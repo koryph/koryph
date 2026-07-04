@@ -149,6 +149,40 @@ Release PRs trigger checks normally AND remain approvable by the operator
 (a PAT would make the operator the author, who cannot approve their own PR —
 the trap that rules out the simpler fix).
 
+### Bot-less fallback ladder (2026-07-04 addendum)
+
+When a GitHub App cannot be installed, the pipeline degrades through four
+supported rungs rather than failing:
+
+| Rung | Mechanism | Checks auto-fire? | Self-approve? | Per-release cost |
+|------|-----------|-------------------|---------------|-----------------|
+| 1 | GitHub App (`RELEASE_BOT_APP_ID`/`RELEASE_BOT_PRIVATE_KEY`) | Yes | Yes | None |
+| 2 | GITHUB_TOKEN fallback + `koryph release kick` | No (kick triggers) | Yes | `koryph release kick --repo OWNER/REPO` |
+| 3 | Fine-grained PAT as token input | Yes | No — PAT owner = PR author | None (but needs second reviewer or no required-approval rule) |
+| 4 | Admin-merge escape hatch | N/A — admin bypasses | N/A | Admin `gh pr merge --admin` |
+
+**Why GITHUB_TOKEN cannot self-trigger (platform rule):** GitHub prevents
+workflow runs triggered by a `GITHUB_TOKEN`-authored event from themselves
+triggering further workflows. This means release-please's `GITHUB_TOKEN`-
+authored commits and PR events never fire check workflows. The same rule also
+makes close/reopen from within an Actions run ineffective when that run
+uses `GITHUB_TOKEN` — the platform blocks it. `koryph release kick` solves
+this by performing the close+reopen under the operator's real `gh` auth token
+(a non-GITHUB_TOKEN actor), which GitHub treats as a genuine user event and
+fires workflows normally.
+
+**Why a PAT blocks self-approval:** a fine-grained PAT is attached to a user
+account; GitHub treats the PAT as that user. When the PAT opens the Release PR,
+that user becomes the PR author and GitHub's branch-protection rules prevent
+the same user from approving their own PR. A second reviewer or a relaxed
+approval ruleset is required. This limitation does not apply to GitHub Apps
+(rung 1) because Apps have a distinct identity from any human account.
+
+`koryph release setup` prints which rung the project is on after install.
+`koryph doctor --project ID` reports `release-bot-secrets: bot-less: kick required per release`
+when secrets are absent, so the operator knows the exact per-release action
+without re-reading this doc. Full user-facing runbook: `docs/user-guide/release-bot.md §Fallback ladder`.
+
 ## 5. koryph integration
 
 - `koryph release setup --project ID [--mode a|b] [--bot]`: renders and
