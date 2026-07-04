@@ -4,6 +4,15 @@
 // Package cockpit is the TUI-agnostic view-model layer for the koryph terminal
 // cockpit (docs/designs/2026-07-tui-cockpit.md §1).
 //
+// EfficiencySnapshot (koryph-9af.4) — efficiency + calibration dashboard data:
+//   - DispatchSparkline: daily dispatch counts (sparkline data).
+//   - AchievedConcurrency / PermittedConcurrency: live vs AIMD cap.
+//   - TopDeferralTokens: most-contended footprint write-tokens from active slots.
+//   - GovernorPools: per-pool cap/probe/settle/breaker detail.
+//   - EstimatorRows: per-(tier:size) bucket n/bias/MAPE/corrected.
+//   - QuotaWindow5h / QuotaWindowWeekly: quota burn bars (ceiling from config;
+//     live spent requires ccusage background — marked unavailable when absent).
+//
 // It provides typed snapshots and subscription interfaces over the koryph run
 // ledger, global governor, and quota store so that both the Bubble Tea TUI
 // (internal/tui) and the VS Code extension (koryph-ew2) can consume the same
@@ -117,6 +126,108 @@ type Snapshot struct {
 	// Consumed read-only by queue and detail tabs; never written by tab code.
 	Graph GraphSnapshot
 
+	// Efficiency holds the efficiency + calibration dashboard data (koryph-9af.4).
+	// Populated by LedgerProvider at efficiencyTTL cadence; zero when unavailable.
+	Efficiency EfficiencySnapshot
+
 	// CapturedAt is when this snapshot was assembled.
 	CapturedAt time.Time
+}
+
+// EfficiencySnapshot is the efficiency + calibration dashboard data assembled
+// for the Efficiency tab (koryph-9af.4, design §2.4).
+//
+// The zero value is safe: all slice fields are nil (renders "no data") and
+// numeric fields are 0 ("not available").
+type EfficiencySnapshot struct {
+	ComputedAt time.Time
+
+	// DispatchSparkline is the number of slots dispatched per day for the last
+	// SparklineLen days (index 0 = oldest, last index = today). Used to render
+	// the dispatched-per-refill sparkline.
+	DispatchSparkline []float64
+
+	// AchievedConcurrency is the current count of running/dispatching slots.
+	AchievedConcurrency int
+
+	// PermittedConcurrency is the governor's effective (AIMD dynamic) cap for
+	// the default pool — the upper bound on concurrency right now.
+	PermittedConcurrency int
+
+	// TopDeferralTokens lists the footprint write-tokens held by the most
+	// active slots, in descending hold-count order. These are the tokens most
+	// likely to be causing deferral for waiting beads (the coupling metric).
+	TopDeferralTokens []DeferralToken
+
+	// GovernorPools is the expanded per-pool state (cap/probe/settle/breaker),
+	// one entry per pool present in governor.json.
+	GovernorPools []GovernorPoolDetail
+
+	// EstimatorRows is the per-(tier:size) bucket accuracy table derived from
+	// quota.Config.ErrorStats + quota.Config.Calibration (koryph-6bl).
+	EstimatorRows []EstimatorRow
+
+	// QuotaWindow5hCeiling / QuotaWindowWeeklyCeiling are the configured
+	// per-window USD ceilings. 0 means uncalibrated (run koryph quota calibrate).
+	QuotaWindow5hCeiling     float64
+	QuotaWindowWeeklyCeiling float64
+
+	// QuotaWindow5hFrac / QuotaWindowWeeklyFrac are the spent/ceiling fractions
+	// when live usage is available (from ccusage background refresh). NaN or
+	// negative means unavailable.
+	QuotaWindow5hFrac     float64
+	QuotaWindowWeeklyFrac float64
+
+	// QuotaWindow5hSpent / QuotaWindowWeeklySpent are the raw spent-USD values.
+	// 0 when unavailable.
+	QuotaWindow5hSpent     float64
+	QuotaWindowWeeklySpent float64
+
+	// QuotaSource identifies the data source for the quota window values:
+	// "ccusage", "jsonl-scan", "unavailable", or "uncalibrated".
+	QuotaSource string
+}
+
+// DeferralToken is one footprint write-token held by active slots, with a
+// count of how many slots are holding it as a write-lock.
+type DeferralToken struct {
+	// Token is the footprint token string, e.g. "area:engine" or "domain:unknown".
+	Token string
+	// HeldBy is the number of currently-active slots holding this token as a write.
+	HeldBy int
+}
+
+// GovernorPoolDetail is one pool's full observable state for the efficiency tab.
+// It extends PoolSnapshot with probe/settle/breaker detail for the governor section.
+type GovernorPoolDetail struct {
+	Provider     string
+	Cap          int // operator-configured MaxGlobalAgents
+	Dynamic      int // current AIMD cap (= Cap when not adaptive)
+	Leases       int // active leases
+	Adaptive     bool
+	BreakerState string // ""|"open"|"half-open"
+	Settling     bool   // true when inside a settle window
+	SettleUntil  string // RFC3339 settle-window deadline; "" when not settling
+	ProbeProject string // project/bead of the current half-open probe; both "" when none
+	ProbeBead    string
+}
+
+// EstimatorRow is one row of the per-(tier:size) estimator accuracy table.
+// Derived from quota.Config.ErrorStats (koryph-6bl) and quota.Config.Calibration.
+type EstimatorRow struct {
+	// Bucket is the "<tier>:<size>" key, e.g. "sonnet:M".
+	Bucket string
+	// N is the total observation count (not EWMA-decayed).
+	N int
+	// Bias is the EWMA of (actual/estimate) ratios: 1.0 = perfect;
+	// >1 = under-estimating; <1 = over-estimating.
+	Bias float64
+	// MAPE is the EWMA mean absolute percentage error.
+	MAPE float64
+	// Corrected is the calibrated USD estimate from quota.Config.Calibration.
+	// 0 means not yet calibrated.
+	Corrected float64
+	// Base is the uncalibrated base cost (PerTierUSD * SizeMultiplier) —
+	// the fallback estimate before calibration data accumulates.
+	Base float64
 }

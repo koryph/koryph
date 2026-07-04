@@ -39,6 +39,10 @@ type LedgerProvider struct {
 	burndownCache BurndownSnapshot
 	burndownAt    time.Time
 
+	// efficiency cache — refreshed at efficiencyTTL cadence (not every 100 ms tick).
+	efficiencyCache EfficiencySnapshot
+	efficiencyAt    time.Time
+
 	// graph — shared dependency graph snapshot; refreshed at graphTTL cadence.
 	graph *GraphProvider
 }
@@ -101,6 +105,13 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 		p.burndownAt = snap.CapturedAt
 	}
 	snap.Burndown = p.burndownCache
+
+	// --- efficiency (cached) ----------------------------------------------------
+	if snap.CapturedAt.Sub(p.efficiencyAt) >= efficiencyTTL {
+		p.efficiencyCache = p.refreshEfficiency(snap, snap.CapturedAt)
+		p.efficiencyAt = snap.CapturedAt
+	}
+	snap.Efficiency = p.efficiencyCache
 
 	// --- graph (cached) ---------------------------------------------------------
 	snap.Graph = p.graph.Refresh(context.Background(), snap.CapturedAt)
@@ -168,6 +179,49 @@ func (p *LedgerProvider) refreshBurndown(now time.Time) BurndownSnapshot {
 		quotaCfg:     qcfg,
 		quotaUsage:   nil, // see above
 		now:          now,
+	})
+}
+
+// refreshEfficiency builds a fresh EfficiencySnapshot, soft-failing on any
+// data source that is unavailable.
+func (p *LedgerProvider) refreshEfficiency(snap Snapshot, now time.Time) EfficiencySnapshot {
+	// Load historical runs for the dispatch sparkline.
+	runIDs, _ := p.ls.ListRuns()
+	if len(runIDs) > efficiencyMaxRuns {
+		runIDs = runIDs[:efficiencyMaxRuns]
+	}
+	var runs []*ledger.Run
+	for _, id := range runIDs {
+		run, err := p.ls.LoadRun(id)
+		if err == nil {
+			runs = append(runs, run)
+		}
+	}
+
+	// Active slots from the current run's snapshot (already fetched above).
+	var active []*ledger.Slot
+	if snap.RunID != "" {
+		if run, err := p.ls.LoadRun(snap.RunID); err == nil {
+			active = activeSlots(run)
+		}
+	}
+
+	// Quota config (file read only).
+	var qcfg *quota.Config
+	if p.accountProfile != "" {
+		if cfg, err := quota.LoadConfig(p.accountProfile); err == nil {
+			qcfg = cfg
+		}
+	}
+
+	return computeEfficiency(efficiencyInput{
+		runs:        runs,
+		activeSlots: active,
+		govStore:    p.gs,
+		govSnap:     snap.Governor,
+		quotaCfg:    qcfg,
+		quotaUsage:  nil, // ccusage not run in TUI path
+		now:         now,
 	})
 }
 
