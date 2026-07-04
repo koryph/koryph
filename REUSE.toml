@@ -14,6 +14,7 @@ path = [
   "koryph.project.json",
   "release-please-config.json",
   ".release-please-manifest.json",
+  "CHANGELOG.md",
   "AGENTS.md",
   "NOTICE",
   "docs/llms.txt",
