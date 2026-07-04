@@ -13,6 +13,16 @@ repo_url: https://github.com/koryph/koryph
 # .github/workflows/docs.yml). The key stays for intent + forward compat.
 exclude_docs: |
   designs/
+# NAV COUPLING: zensical has no auto-nav mechanism for explicit `nav:` blocks.
+# Every new page requires a manual edit here. Auto-dir-nav plugins (awesome-nav,
+# literate-nav, include-dir-to-nav) are tracked upstream but not yet shipped:
+#   zensical/backlog#12  — mkdocs-awesome-nav support
+#   zensical/backlog#13  — mkdocs-literate-nav support
+#   zensical/backlog#106 — mkdocs-include-dir-to-nav support
+#   (all children of the "Modular navigation" proposal: zensical/backlog#43)
+# Mitigation for parallel docs work: any bead that adds a new page carries the
+# write token fp:docs-nav alongside area:docs so only nav-editing beads serialize
+# while content-only edits remain parallel (see koryph-plan skill, step 3).
 theme:
   name: material
   features:
