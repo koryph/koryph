@@ -33,7 +33,7 @@ func TestInstallWritesKoryphCommands(t *testing.T) {
 			t.Errorf("command %q not written: %v", r.Name, serr)
 		}
 	}
-	for _, want := range []string{"koryph-calibrate", "koryph-issue", "koryph-build", "koryph-loop", "koryph-plan", "koryph-stop", "koryph-kill"} {
+	for _, want := range []string{"koryph-calibrate", "koryph-import", "koryph-issue", "koryph-build", "koryph-loop", "koryph-plan", "koryph-stop", "koryph-kill"} {
 		if !got[want] {
 			t.Errorf("missing embedded command %q (installed: %v)", want, keys(got))
 		}

@@ -60,6 +60,8 @@ editor's command list):
 |---|---|
 | `/koryph-issue "<desc>"` | File a well-formed beads issue (no work started) |
 | `/koryph-build [bead]` | Build one issue — picks from `bd ready` if none named |
+| `/koryph-import [path]` | Convert existing markdown plans/TODOs into a bead corpus (onboarding) |
+| `/koryph-plan <doc>` | Decompose a design doc into a filed, conflict-aware bead graph |
 | `/koryph-loop [max= budget= auto-merge=]` | Start the wave loop (joins the shared cross-project governor) |
 | `/koryph-stop [--all]` | Graceful stop (SIGTERM) for this project or all |
 | `/koryph-kill [--all]` | Forceful stop (SIGKILL) — last resort |
@@ -166,6 +168,12 @@ Add `--json` to get the full ledger entry for scripting or post-processing.
 
 ## What's next
 
+- **If your project's work lives in markdown** (design docs, `ROADMAP.md`,
+  `TODO.md`, inline TODO/FIXME clusters): run `/koryph-import` in the editor
+  to convert that corpus into a filed bead graph before starting waves. This
+  creates conflict-aware, footprint-labelled beads the loop can dispatch in
+  parallel — without it, `bd ready` is empty and the loop has nothing to
+  build.
 - **Remove `--dry-run`** to fire a live wave:
   `koryph run --project myproject --once`
 - After a successful wave, re-run `koryph validate myproject` — once a run
