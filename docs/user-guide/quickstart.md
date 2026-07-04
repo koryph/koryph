@@ -25,13 +25,22 @@ koryph project add ~/src/myproject \
 ```
 
 `project add` inspects the repo, writes a registry record, scaffolds the
-koryph adapter if one is missing, and installs the koryph scaffolding —
-fallback personas into `.claude/agents/`, the `koryph-*` Claude slash commands
-into `.claude/commands/`, and the enforcement **rules** (the hook scripts into
-`hooks/` plus their wiring merged into `.claude/settings.json`). It prints the
-record as JSON on success.
+koryph adapter if one is missing, and installs the koryph scaffolding. Exactly
+what it installs depends on the project's configured runtime (koryph-v8u.9):
 
-The rules are what make koryph's boundaries hold in-editor: the
+| Asset | Where | When |
+|---|---|---|
+| **`AGENTS.md`** | repo root | **always** — canonical cross-runtime operating contract |
+| **fallback personas** | `.claude/agents/` | **always** (rendered for the configured runtime) |
+| `koryph-*` slash commands | `.claude/commands/` | Claude Code only (`Capabilities.Personas`) |
+| hook scripts + `settings.json` | `hooks/` + `.claude/settings.json` | Claude Code only (`Capabilities.Hooks`) |
+
+`AGENTS.md` is the runtime-neutral instruction file read natively by Codex, Cursor, Grok,
+Copilot, opencode, and amp — it documents the koryph operating contract so every runtime
+follows the same rules. Runtimes without hook support rely on **worktree isolation** and
+**merge-time protected-path refusal** for containment instead of in-editor lifecycle guards.
+
+The rules are what make koryph's boundaries hold in-editor (Claude Code only): the
 `agent-boundary-guard` and `worktree-guard` hooks and the `bd prime`
 session-start hook, plus a baseline permission allow/deny list. Unlike the
 whole-file agents and commands, `.claude/settings.json` is **merged
@@ -48,10 +57,10 @@ stage's persona by name via the `stages`/`tiers` maps in
 Installing is idempotent and never clobbers your edits: a file that already
 exists with **identical** content is a silent no-op, and one whose content
 **differs** is left untouched with a warning. To refresh or repair the assets
-later, the canonical grouped verb installs all three at once:
+later, the canonical grouped verb installs all four at once:
 
 ```sh
-koryph project install-assets <root> [agents|commands|rules|all]   # default: all
+koryph project install-assets <root> [agentsmd|agents|commands|rules|all]  # default: all
 ```
 
 Pass a single kind to narrow it, `--force` to overwrite differing files, or
