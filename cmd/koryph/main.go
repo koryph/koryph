@@ -34,62 +34,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "init":
-		return cmdInit(rest, stdout, stderr)
-	case "version":
-		return cmdVersion(rest, stdout, stderr)
-	case "project":
-		return cmdProject(rest, stdout, stderr)
-	case "onboard":
-		return cmdOnboard(rest, stdout, stderr)
-	case "validate":
-		return cmdValidate(rest, stdout, stderr)
-	case "intake":
-		return cmdIntake(rest, stdout, stderr)
-	case "run":
-		return cmdRun(rest, stdout, stderr)
-	case "board":
-		return cmdBoard(rest, stdout, stderr)
-	case "roster":
-		return cmdRoster(rest, stdout, stderr)
-	case "status":
-		return cmdStatus(rest, stdout, stderr)
-	case "tail":
-		return cmdTail(rest, stdout, stderr)
-	case "nudge":
-		return cmdNudge(rest, stdout, stderr)
-	case "stop":
-		return cmdStop(rest, stdout, stderr)
-	case "merge":
-		return cmdMerge(rest, stdout, stderr)
-	case "land":
-		return cmdLand(rest, stdout, stderr)
-	case "review-pr":
-		return cmdReviewPR(rest, stdout, stderr)
-	case "pr-sync":
-		return cmdPRSync(rest, stdout, stderr)
-	case "signing":
-		return cmdSigning(rest, stdout, stderr)
-	case "sign":
-		return cmdSign(rest, stdout, stderr)
-	case "quota":
-		return cmdQuota(rest, stdout, stderr)
-	case "batch":
-		return cmdBatch(rest, stdout, stderr)
-	case "metrics":
-		return cmdMetrics(rest, stdout, stderr)
-	case "agents":
-		return cmdAgents(rest, stdout, stderr)
-	case "commands":
-		return cmdCommands(rest, stdout, stderr)
-	case "rules":
-		return cmdRules(rest, stdout, stderr)
-	case "governor":
-		return cmdGovernor(rest, stdout, stderr)
-	case "doctor":
-		return cmdDoctor(rest, stdout, stderr)
-	case "plan":
-		return cmdPlan(rest, stdout, stderr)
 	case "-h", "--help":
 		usage(stdout)
 		return 0
@@ -106,11 +50,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		return run(append(rest, "-h"), stdout, stderr)
-	default:
-		fmt.Fprintf(stderr, "koryph: unknown command %q\n\n", cmd)
-		usage(stderr)
-		return engine.ExitUsage
+	case completeVerb:
+		// Hidden: the shell-completion resolver. Never mutates state.
+		return cmdComplete(rest, stdout, stderr)
 	}
+	if c := lookupCommand(cmd); c != nil {
+		return c.run(rest, stdout, stderr)
+	}
+	fmt.Fprintf(stderr, "koryph: unknown command %q\n\n", cmd)
+	usage(stderr)
+	return engine.ExitUsage
 }
 
 // usage prints the global command listing.
@@ -222,6 +171,12 @@ BILLING / METRICS
 
   version               print the engine version
 
+SHELL COMPLETION
+  completion bash|zsh   print a completion script for the shell (source it)
+  completion install [--shell bash|zsh]
+                        install the completion script to the standard user
+                        location (run 'koryph completion -h' for details)
+
 ENVIRONMENT
   KORYPH_HOME           central registry + governor root (default ~/.koryph)
   KORYPH_BD_BIN         path to the bd (beads) binary (default: bd on PATH)
@@ -294,11 +249,45 @@ func setUsage(fs *flag.FlagSet, stdout io.Writer, purpose, synopsis string) {
 	}
 }
 
+// flagCapture, when non-nil, diverts parseFlags: the fully-populated FlagSet is
+// stashed for the completion engine and a sentinel error is returned so the
+// calling command returns immediately (via flagExit) before any side effects.
+// This lets `koryph __complete` enumerate a command's real flags without
+// hand-duplicating any flag list. Access is single-threaded (the CLI is not
+// concurrent), so a package var is sufficient.
+var flagCapture *flag.FlagSet
+
+// errCaptured is the sentinel parseFlags returns while flagCapture is active.
+var errCaptured = errors.New("flagset captured for completion")
+
+// captureFlags runs cmd with capture mode armed and returns the FlagSet the
+// command built (nil for a command that defines no flags, e.g. a pure parent).
+// Only flag registration runs — every command returns at its parseFlags guard
+// before touching the registry, filesystem, or network.
+func captureFlags(cmd func([]string, io.Writer, io.Writer) int) *flag.FlagSet {
+	prev := flagCapture
+	flagCapture = &flag.FlagSet{} // non-nil sentinel; replaced by the real set
+	defer func() { flagCapture = prev }()
+	cmd(nil, io.Discard, io.Discard)
+	if flagCapture == nil {
+		return nil
+	}
+	fs := flagCapture
+	if fs.Name() == "" { // untouched sentinel: the command defined no flags
+		return nil
+	}
+	return fs
+}
+
 // parseFlags parses args that may lead with positional arguments (stdlib flag
 // stops at the first non-flag token, so leading positionals are lifted out
 // first, then trailing fs.Args() are appended). A -h/--help request prints the
 // usage (via fs.Usage) and returns errHelp so callers can exit 0.
 func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	if flagCapture != nil {
+		flagCapture = fs
+		return nil, errCaptured
+	}
 	var pre []string
 	i := 0
 	for i < len(args) && !strings.HasPrefix(args[i], "-") {
@@ -318,7 +307,7 @@ func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 // clean exit 0; any other parse error is a usage error. The usage/help text
 // has already been printed.
 func flagExit(err error) int {
-	if errors.Is(err, errHelp) {
+	if errors.Is(err, errHelp) || errors.Is(err, errCaptured) {
 		return 0
 	}
 	return engine.ExitUsage

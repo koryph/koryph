@@ -114,6 +114,63 @@ For example, `koryph project -h`, `koryph signing help`, and
 
 ---
 
+## Shell completions
+
+koryph ships first-class tab completion for **bash** and **zsh**. The completion
+scripts are thin wrappers: every keypress delegates to the hidden
+`koryph __complete` resolver, so the binary is the single source of truth and the
+scripts never go stale as commands and flags evolve. Completion covers top-level
+commands, each command's subcommands and flags, and dynamic values where they are
+cheap and read-only — `--project` completes your registered project ids,
+`--model`/`--default-model` complete `haiku|sonnet|opus|fable`, and `--shell`
+completes `bash|zsh`.
+
+Run `koryph completion -h` to discover the subcommands.
+
+### Try it in the current shell
+
+Source the script into your running shell to try it immediately:
+
+```sh
+# bash
+source <(koryph completion bash)
+
+# zsh
+source <(koryph completion zsh)
+```
+
+Then type `koryph <TAB>` to complete subcommands, or `koryph run --<TAB>` for flags.
+
+### Install it permanently
+
+`koryph completion install` writes the script to the standard user-level location
+for your shell. With no `--shell` it detects the shell from `$SHELL`; pass
+`--shell bash` or `--shell zsh` to be explicit. It is idempotent (re-running
+overwrites the same path) and never edits your shell rc files — it prints the path
+it wrote and any activation step you still need.
+
+```sh
+koryph completion install                 # detect from $SHELL
+koryph completion install --shell bash
+koryph completion install --shell zsh
+```
+
+- **bash** installs to
+  `${XDG_DATA_HOME:-~/.local/share}/bash-completion/completions/koryph`.
+  With [bash-completion](https://github.com/scop/bash-completion) enabled, new
+  shells pick it up automatically.
+- **zsh** installs to `~/.koryph/completions/_koryph`. If that directory is not
+  already on your `fpath`, add the snippet the command prints to your `~/.zshrc`:
+
+  ```sh
+  fpath=(~/.koryph/completions $fpath)
+  autoload -U compinit && compinit
+  ```
+
+Start a new shell after installing (or source the script as shown above).
+
+---
+
 ## Troubleshooting
 
 ### `koryph: command not found`
