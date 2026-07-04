@@ -52,33 +52,60 @@ func init() {
 //     (Private app owned by the org; org members can install within that org.)
 func cmdBot(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "bot", "provision and manage koryph GitHub App bots", []subVerb{
-			{"create [--name N] [--org ORG] [--public] [--vault-provider P] [--key-ref R] [--plaintext]", "create a GitHub App via the manifest flow (one browser click)"},
-			{"install --name N", "print/open the installation page for a provisioned bot"},
-			{"attach --name N --repo OWNER/REPO [--org-secrets]", "wire a repo: add to installation, set secrets, enable Actions toggle"},
-			{"list [--check]", "list provisioned bots; --check does a live GET /app identity check per bot"},
-			{"check --name N [--repo OWNER/REPO]", "run the full validator chain: JWT, installation, secrets, toggle, workflow"},
+		parentHelp(stdout, "bot", "provision and manage koryph bots (GitHub App or GitLab access token)", []subVerb{
+			{"create [--forge github|gitlab] [--name N] ...", "create a bot (GitHub: App manifest flow; GitLab: access-token flow)"},
+			{"install --name N", "print/open the installation page for a GitHub App bot"},
+			{"attach [--forge github|gitlab] --name N ...", "wire a repo/project to a bot: set secrets or CI variables"},
+			{"list [--check] [--forge github|gitlab]", "list provisioned bots; --check does a live identity check"},
+			{"check [--forge github|gitlab] --name N ...", "run the full validator chain"},
 			{"vault-migrate --name N [--vault-provider P] [--key-ref R]", "move a plaintext key into a vault or encrypted file"},
 		})
 		return 0
 	}
 	sub, rest := args[0], args[1:]
+
+	// Peek at --forge flag to dispatch to forge-specific handlers.
+	forge := peekForgeFlag(rest)
+
 	switch sub {
 	case "create":
+		if forge == "gitlab" {
+			return cmdBotCreateGitLab(rest, stdout, stderr)
+		}
 		return cmdBotCreate(rest, stdout, stderr)
 	case "install":
 		return cmdBotInstall(rest, stdout, stderr)
 	case "attach":
+		if forge == "gitlab" {
+			return cmdBotAttachGitLab(rest, stdout, stderr)
+		}
 		return cmdBotAttach(rest, stdout, stderr)
 	case "list":
 		return cmdBotList(rest, stdout, stderr)
 	case "check":
+		if forge == "gitlab" {
+			return cmdBotCheckGitLab(rest, stdout, stderr)
+		}
 		return cmdBotCheck(rest, stdout, stderr)
 	case "vault-migrate":
 		return cmdBotVaultMigrate(rest, stdout, stderr)
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown bot subcommand %q", sub))
 	}
+}
+
+// peekForgeFlag does a linear scan of args looking for --forge <value> or
+// --forge=<value>. Returns "" when the flag is absent.
+func peekForgeFlag(args []string) string {
+	for i, a := range args {
+		if a == "--forge" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if len(a) > 8 && a[:8] == "--forge=" {
+			return a[8:]
+		}
+	}
+	return ""
 }
 
 // cmdBotCreate implements 'koryph bot create'.

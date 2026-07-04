@@ -394,10 +394,19 @@ func checkBotCredentials(opts ProjectOptions, cfg *project.Config) []Finding {
 	}
 
 	// Use injectable function if provided (test seam); fall back to the real
-	// bot.CheckCredentials() which reads ~/.koryph/bots/.
+	// check functions which read ~/.koryph/bots/. The default aggregates both
+	// GitHub bots (*.json) and GitLab bots (*.gitlab.json).
 	listFn := opts.BotCredentialCheck
 	if listFn == nil {
-		listFn = bot.CheckCredentials
+		listFn = func() ([]bot.CredentialFinding, error) {
+			ghFindings, ghErr := bot.CheckCredentials()
+			glFindings, glErr := bot.CheckGitLabCredentials()
+			combined := append(ghFindings, glFindings...)
+			if ghErr != nil {
+				return combined, ghErr
+			}
+			return combined, glErr
+		}
 	}
 
 	credFindings, err := listFn()
