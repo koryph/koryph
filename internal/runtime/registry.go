@@ -25,6 +25,19 @@ func NewRegistry() *Registry {
 	return &Registry{byID: make(map[string]Runtime)}
 }
 
+// Default is the process-wide Registry real adapters self-register into at
+// init (koryph-v8u.2 — see internal/runtime/claude's register.go for the
+// first real entry). It exists as a package-level singleton, rather than
+// requiring every adapter package's caller to construct and thread through a
+// *Registry by hand, so importing an adapter package for its Runtime methods
+// (e.g. internal/dispatch importing internal/runtime/claude to delegate
+// Command/ParseEvents) is enough to also make that adapter discoverable —
+// the same "import for side effect" pattern database/sql drivers use.
+// Nothing consults Default for dispatch decisions yet; that is
+// koryph-v8u.3's job (selection/routing). Tests that need an isolated
+// registry should still use NewRegistry, never Default.
+var Default = NewRegistry()
+
 // Register adds rt under rt.Name(). It returns an error, and leaves the
 // registry unchanged, when rt.Name() is empty or already registered —
 // duplicate registration is a programming error (two adapters claiming the
