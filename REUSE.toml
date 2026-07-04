@@ -12,6 +12,8 @@ path = [
   "go.sum",
   "flake.lock",
   "koryph.project.json",
+  "release-please-config.json",
+  ".release-please-manifest.json",
   "AGENTS.md",
   "NOTICE",
   "docs/llms.txt",

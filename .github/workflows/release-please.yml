@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+#
+# release-please maintains a standing Release PR from Conventional Commits;
+# merging it bumps internal/version.Engine (via extra-files +
+# x-release-please-version, see release-please-config.json), tags v<Engine>,
+# and creates the GitHub release with a conventional-commit changelog.
+#
+# GoReleaser then runs as a SECOND JOB IN THIS SAME WORKFLOW, gated on
+# `release_created`, checking out the tag release-please just made. This is
+# not cosmetic: tags created via the default GITHUB_TOKEN do not trigger
+# other `on: push: tags` workflows, so GoReleaser cannot be a separate
+# tag-triggered workflow here — it has to be chained in-run. GoReleaser
+# attaches its build artifacts (binaries, checksums, cosign bundle, SBOMs) to
+# the release release-please already created (.goreleaser.yaml
+# release.mode: keep-existing), so every asset for a given tag lands in one
+# run (GoReleaser >=2.16 immutable-release requirement) and there is only one
+# release-writer at a time.
+#
+# See docs/developer-guide/releasing.md for the full flow and the
+# first-release checklist (this pipeline replaces the old tag-triggered
+# release.yml, retired in the same change that added this file).
+name: release-please
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+
+  goreleaser:
+    name: goreleaser (tag-triggered, same workflow run)
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload release artifacts
+      id-token: write # sigstore keyless OIDC
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          fetch-depth: 0
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: "1.26"
+      - name: Verify engine version matches the tag
+        run: make version-check TAG="${{ needs.release-please.outputs.tag_name }}"
+      - name: Green gate
+        run: make gate
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "~> v2.16"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_YES: "true"

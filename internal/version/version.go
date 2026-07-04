@@ -23,7 +23,15 @@ import (
 
 // Engine is the koryph engine's semantic version. Bump per semver;
 // releases are tagged v<Engine>.
-const Engine = "0.3.0"
+//
+// release-please's "go" release-type strategy ignores `version-file`
+// entirely, so this constant is NOT wired via that mechanism. Instead it is
+// listed in release-please-config.json's `extra-files` (generic updater),
+// which finds and rewrites the quoted version on whichever line carries the
+// `x-release-please-version` annotation comment below. Do not remove that
+// annotation or move the version off this line — see
+// docs/developer-guide/releasing.md.
+const Engine = "0.3.0" // x-release-please-version
 
 // parse splits a semantic version into major/minor/patch (missing parts = 0).
 func parse(v string) (maj, min, pat int, err error) {
