@@ -20,13 +20,19 @@ import (
 
 // fakeClaude writes a shell script that records its argv and env into
 // $KORYPH_DIR, emits one stream-json result line, and lingers briefly.
+//
+// Each capture file (argv.txt, env.txt, stdin.txt) is written atomically via a
+// temp-file + mv so that waitForFile never reads a partial write under load.
+// Without the atomic rename, printf(1) may emit each argument as a separate
+// write(2) syscall, letting the Go reader observe a truncated file as soon as
+// len(data) > 0 is satisfied by the very first line.
 func fakeClaude(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-claude")
 	script := `#!/bin/sh
-printf '%s\n' "$@" > "$KORYPH_DIR/argv.txt"
-env > "$KORYPH_DIR/env.txt"
-cat > "$KORYPH_DIR/stdin.txt"
+printf '%s\n' "$@" > "$KORYPH_DIR/argv.txt.tmp" && mv "$KORYPH_DIR/argv.txt.tmp" "$KORYPH_DIR/argv.txt"
+env > "$KORYPH_DIR/env.txt.tmp" && mv "$KORYPH_DIR/env.txt.tmp" "$KORYPH_DIR/env.txt"
+cat > "$KORYPH_DIR/stdin.txt.tmp" && mv "$KORYPH_DIR/stdin.txt.tmp" "$KORYPH_DIR/stdin.txt"
 printf '{"type":"result","total_cost_usd":1.23}\n'
 sleep 0.2
 `
