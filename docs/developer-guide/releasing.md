@@ -342,7 +342,9 @@ in the actual provenance is `git+https://github.com/koryph/koryph@refs/heads/mai
 never a tag ref — confirmed by decoding the real
 `checksums.txt.intoto.jsonl` DSSE payload from the koryph/koryph v0.5.0
 release. `--source-branch main` is the form that matches how this
-provenance is actually anchored. (The cosign certificate's SAN has the same
+provenance is actually anchored. The consumer-side verification walkthrough
+(every command validated against v0.5.0) lives in
+[docs/user-guide/supply-chain.md](../user-guide/supply-chain.md). (The cosign certificate's SAN has the same
 shape for the same reason: `https://github.com/koryph/koryph/.github/
 workflows/release-please.yml@refs/heads/main` — confirmed against the same
 release's `checksums.txt.sigstore.json` certificate. Extracting
