@@ -101,20 +101,45 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Install the koryph scaffolding so the project enforces koryph
-	// semantics whether `koryph` is run explicitly or implied by a prompt:
-	// fallback personas (.claude/agents) and the koryph-* slash commands
-	// (.claude/commands). Idempotent; differing files are left untouched
-	// (re-run `koryph agents|commands install --force` to update). Personas
-	// render for the project's just-scaffolded default_runtime (koryph-v8u.12;
-	// resolveInstallRuntime falls back to "claude" when unset/unreadable, the
-	// pre-koryph-v8u.12 behavior).
+	// Install the koryph scaffolding so the project enforces koryph semantics
+	// whether `koryph` is run explicitly or implied by a prompt. Idempotent;
+	// differing files are left untouched (re-run `koryph project install-assets
+	// <root> --force` to update them).
+	//
+	// Asset install order and capability-gating (koryph-v8u.9):
+	//
+	//   1. AGENTS.md — always installed; the canonical, runtime-neutral
+	//      instruction file read natively by Codex, Cursor, Grok, Copilot,
+	//      opencode, amp, and Claude Code.
+	//
+	//   2. agents (.claude/agents) — always installed; personas render correctly
+	//      for any runtime via InstallForRuntime (koryph-v8u.12; resolves to
+	//      "claude" when unset/unreadable, the pre-koryph-v8u.12 behavior).
+	//
+	//   3. commands (.claude/commands) — Claude Code only; skip when the project's
+	//      runtime does not support .claude/ (Capabilities.Personas == false).
+	//      Containment for runtimes without commands: worktree isolation +
+	//      merge-time protected-path refusal.
+	//
+	//   4. rules (hooks + settings.json) — Claude Code only; skip when the
+	//      project's runtime does not support lifecycle hooks (Capabilities.Hooks
+	//      == false). Same containment note as above.
+	onboardInstallAgentsMD(stderr, root)
 	onboardInstall(stderr, "agents", func() ([]scaffold.Result, error) {
 		results, _, ierr := personas.InstallForRuntime(root, false, resolveInstallRuntime(root, ""))
 		return results, ierr
 	})
-	onboardInstall(stderr, "commands", func() ([]scaffold.Result, error) { return commands.Install(root, false) })
-	onboardRules(stderr, root)
+	caps := resolveRuntimeCapabilities(root)
+	if caps.Personas {
+		onboardInstall(stderr, "commands", func() ([]scaffold.Result, error) { return commands.Install(root, false) })
+	} else {
+		fmt.Fprintln(stderr, "koryph: commands skipped (runtime does not support .claude/commands; containment via worktree isolation + merge gate)")
+	}
+	if caps.Hooks {
+		onboardRules(stderr, root)
+	} else {
+		fmt.Fprintln(stderr, "koryph: rules skipped (runtime does not support hooks; containment via worktree isolation + merge gate)")
+	}
 
 	if err := printJSON(stdout, rec); err != nil {
 		return fail(stderr, err)

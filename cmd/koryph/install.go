@@ -10,16 +10,21 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/koryph/koryph/internal/agentsmd"
 	"github.com/koryph/koryph/internal/commands"
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/personas"
+	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/rules"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
 // assetTargets is the canonical ordered set of koryph asset kinds that
-// `project install-assets` (and `project add`) install.
-var assetTargets = []string{"agents", "commands", "rules"}
+// `project install-assets` (and `project add`) install. agentsmd comes first
+// because it is the runtime-neutral file installed unconditionally; the others
+// are capability-gated (see installAssetType's per-target notes).
+var assetTargets = []string{"agentsmd", "agents", "commands", "rules"}
 
 // cmdProjectInstallAssets is the canonical grouped installer: it (re)installs
 // the koryph assets — fallback personas, koryph-* slash commands, and the hook
@@ -33,8 +38,8 @@ func cmdProjectInstallAssets(args []string, stdout, stderr io.Writer) int {
 	force := fs.Bool("force", false, "overwrite existing assets whose content differs")
 	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
 	setUsage(fs, stdout,
-		"(re)install koryph assets (agents, commands & rules) — normally run automatically by `koryph project add`",
-		"(<root> | --all-projects) [agents|commands|rules|all] [--force]")
+		"(re)install koryph assets (AGENTS.md, agents, commands & rules) — normally run automatically by `koryph project add`",
+		"(<root> | --all-projects) [agentsmd|agents|commands|rules|all] [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -48,7 +53,7 @@ func cmdProjectInstallAssets(args []string, stdout, stderr io.Writer) int {
 		switch p {
 		case "all":
 			targets = assetTargets
-		case "agents", "commands", "rules":
+		case "agentsmd", "agents", "commands", "rules":
 			targets = []string{p}
 		default:
 			if rootArg != "" {
@@ -120,8 +125,26 @@ func installAssetsAllProjects(stdout, stderr io.Writer, targets []string, force 
 // installAssetType installs one asset kind into root and reports it via the
 // shared installer reporters. It returns an error only on a hard failure; a
 // differing/skipped file is a warning surfaced by the reporter, not an error.
+//
+// Capability gating: commands and rules are only installed when the project's
+// configured runtime supports the corresponding capability:
+//   - commands → Capabilities.Personas (Claude Code slash commands require the
+//     .claude/ subtree that only Claude Code reads; skip for other runtimes).
+//   - rules    → Capabilities.Hooks (settings.json + hook scripts are
+//     Claude Code-specific; runtimes without hooks rely on worktree isolation
+//   - merge-time protected-path refusal instead).
+//
+// agentsmd and agents are always installed: AGENTS.md is the runtime-neutral
+// canonical instruction file, and personas render correctly for any runtime
+// via InstallForRuntime.
 func installAssetType(stdout, stderr io.Writer, root, target string, force bool) error {
 	switch target {
+	case "agentsmd":
+		action, err := agentsmd.Install(root, force)
+		if err != nil {
+			return err
+		}
+		reportAgentsMD(stdout, stderr, action, force)
 	case "agents":
 		// Render for root's own default_runtime (koryph-v8u.12), matching
 		// `koryph agents install`'s unset-flag default; see
@@ -136,12 +159,24 @@ func installAssetType(stdout, stderr io.Writer, root, target string, force bool)
 				len(untiered), strings.Join(untiered, ", "))
 		}
 	case "commands":
+		caps := resolveRuntimeCapabilities(root)
+		if !caps.Personas {
+			fmt.Fprintf(stdout, "commands install: skipped (runtime %q does not support .claude/commands; containment via worktree isolation + merge gate)\n",
+				resolveInstallRuntime(root, ""))
+			return nil
+		}
 		results, err := commands.Install(root, force)
 		if err != nil {
 			return err
 		}
 		reportInstall(stdout, stderr, "commands", results, force)
 	case "rules":
+		caps := resolveRuntimeCapabilities(root)
+		if !caps.Hooks {
+			fmt.Fprintf(stdout, "rules install: skipped (runtime %q does not support hooks; containment via worktree isolation + merge gate)\n",
+				resolveInstallRuntime(root, ""))
+			return nil
+		}
 		hookResults, settings, err := rules.Install(root, force)
 		if err != nil {
 			return err
@@ -226,6 +261,25 @@ func reportSettings(stdout, stderr io.Writer, action string) {
 	case rules.SettingsSkipped:
 		fmt.Fprintln(stderr, "koryph: warning: .claude/settings.json is unparseable or has an incompatible shape — left unchanged; fix it or re-run with --force to rebuild.")
 	}
+}
+
+// onboardInstallAgentsMD installs AGENTS.md during `project add` (best-effort:
+// a warning, never a failure). AGENTS.md is always installed regardless of
+// runtime capability — it is the canonical cross-runtime instruction file
+// (koryph-v8u.9).
+func onboardInstallAgentsMD(stderr io.Writer, root string) {
+	action, err := agentsmd.Install(root, false)
+	if err != nil {
+		fmt.Fprintf(stderr, "koryph: warning: could not install AGENTS.md: %v\n", err)
+		return
+	}
+	switch action {
+	case scaffold.ActionInstalled:
+		fmt.Fprintln(stderr, "koryph: installed AGENTS.md (koryph operating contract)")
+	case scaffold.ActionSkipped:
+		fmt.Fprintln(stderr, "koryph: warning: AGENTS.md already exists with different content, left unchanged — run `koryph project install-assets <root> agentsmd --force` to update")
+	}
+	// Unchanged: silent no-op.
 }
 
 // onboardRules installs the enforcement rules during `project add` (best-effort:
@@ -386,5 +440,69 @@ func reportInstall(stdout, stderr io.Writer, label string, results []scaffold.Re
 			"koryph: warning: %d %s already exist with different content and were left unchanged: %s\n",
 			len(conflicts), label, strings.Join(conflicts, ", "))
 		fmt.Fprintln(stderr, "koryph: re-run with --force to overwrite them.")
+	}
+}
+
+// reportAgentsMD reports the outcome of an AGENTS.md install step.
+func reportAgentsMD(stdout, stderr io.Writer, action string, force bool) {
+	switch action {
+	case scaffold.ActionInstalled:
+		fmt.Fprintln(stdout, "agentsmd install: installed AGENTS.md (koryph operating contract)")
+	case scaffold.ActionOverwritten:
+		fmt.Fprintln(stdout, "agentsmd install: overwritten AGENTS.md")
+	case scaffold.ActionUnchanged:
+		fmt.Fprintln(stdout, "agentsmd install: unchanged (already up-to-date)")
+	case scaffold.ActionSkipped:
+		fmt.Fprintln(stdout, "agentsmd install: skipped AGENTS.md (differs from template)")
+		if !force {
+			fmt.Fprintln(stderr, "koryph: warning: AGENTS.md already exists with different content — left unchanged; re-run with --force to overwrite.")
+		}
+	}
+}
+
+// resolveRuntimeCapabilities returns the Capabilities of the runtime
+// configured in root's koryph.project.json (koryph-v8u.9). It falls back to
+// claude's full Capabilities when the project config is absent/unreadable or
+// the configured runtime is not registered — matching the pre-capability-gating
+// behavior (all assets installed) so existing projects without a config do not
+// silently lose assets.
+func resolveRuntimeCapabilities(root string) runtime.Capabilities {
+	cfg, err := project.Load(root)
+	if err != nil {
+		return claudeCapabilities()
+	}
+	rtName := cfg.DefaultRuntime
+	if rtName == "" {
+		rtName = "claude"
+	}
+	rt, ok := runtime.Default.Get(rtName)
+	if !ok {
+		return claudeCapabilities()
+	}
+	return rt.Capabilities()
+}
+
+// claudeCapabilities returns the full capability set of the registered claude
+// adapter, or a hard-coded full set when (somehow) claude is not registered —
+// so the fallback is always permissive (all assets installed), never
+// restrictive.
+func claudeCapabilities() runtime.Capabilities {
+	if rt, ok := runtime.Default.Get("claude"); ok {
+		return rt.Capabilities()
+	}
+	// Claude is always registered in a real binary (engine/run.go imports
+	// internal/runtime/claude); this branch is only reachable in a stripped
+	// test binary that never imports the engine. Return all-true so no asset
+	// install is silently skipped.
+	return runtime.Capabilities{
+		JSONStream:  true,
+		Personas:    true,
+		Hooks:       true,
+		Resume:      true,
+		EffortFlag:  true,
+		BudgetFlag:  true,
+		Sandbox:     false,
+		ModelSelect: true,
+		UsageSource: true,
 	}
 }
