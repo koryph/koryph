@@ -279,10 +279,94 @@ Add the check to CI (e.g. a scheduled GitHub Actions workflow):
 
 ---
 
-## Creating a custom profile
+## Profile architecture: intents vs. native passthrough
 
-A user profile lives at `~/.koryph/postures/<name>/`. Its structure mirrors the
-built-in profiles:
+Posture profiles support two complementary authoring styles:
+
+### Intents (forge-neutral)
+
+An `intents` block in `manifest.json` describes **what** the profile enforces in
+forge-agnostic terms.  Koryph compiles intents to native controls for the active
+forge (currently GitHub).  The same intent vocabulary will apply to GitLab and
+other forges without changes to your profile.
+
+```json
+{
+  "name": "my-company",
+  "description": "Company-standard posture",
+  "intents": {
+    "require_approvals": 2,
+    "require_signed_commits": true,
+    "no_force_push": true,
+    "no_deletion": true,
+    "secret_scanning": true,
+    "secret_scanning_push_protection": true,
+    "dependabot_security_updates": true,
+    "vulnerability_alerts": true,
+    "allow_merge_commit": false,
+    "allow_squash_merge": true,
+    "allow_rebase_merge": false,
+    "allow_auto_merge": false,
+    "delete_branch_on_merge": true,
+    "allow_update_branch": true,
+    "web_commit_signoff_required": true,
+    "actions_default_permissions": "read",
+    "actions_can_approve_prs": false
+  }
+}
+```
+
+**Intent fields** (all optional — omit fields the profile does not manage):
+
+| Field | Type | GitHub target |
+|---|---|---|
+| `require_approvals` | int (0 = none) | pr-checks ruleset `required_approving_review_count` |
+| `required_checks` | string[] | pr-checks ruleset `required_status_checks` |
+| `require_signed_commits` | bool | signed-commits ruleset `required_signatures` |
+| `no_force_push` | bool | signed-commits ruleset `non_fast_forward` |
+| `no_deletion` | bool | signed-commits ruleset `deletion` |
+| `secret_scanning` | bool | repo security — `secret_scanning: enabled` |
+| `secret_scanning_push_protection` | bool | repo security — `secret_scanning_push_protection: enabled` |
+| `dependabot_security_updates` | bool | repo security — `dependabot_security_updates: enabled` |
+| `vulnerability_alerts` | bool | vulnerability alerts enabled |
+| `allow_merge_commit` | bool\|null | `repo.allow_merge_commit` |
+| `allow_squash_merge` | bool\|null | `repo.allow_squash_merge` |
+| `allow_rebase_merge` | bool\|null | `repo.allow_rebase_merge` |
+| `allow_auto_merge` | bool\|null | `repo.allow_auto_merge` |
+| `delete_branch_on_merge` | bool | `repo.delete_branch_on_merge` |
+| `allow_update_branch` | bool | `repo.allow_update_branch` |
+| `web_commit_signoff_required` | bool | `repo.web_commit_signoff_required` |
+| `actions_default_permissions` | `"read"` or `"write"` | actions workflow permissions |
+| `actions_can_approve_prs` | bool | actions workflow can approve PRs |
+
+`required_checks` in the intents block can also be supplied (or overridden) at
+runtime via `--param required_checks=...`.
+
+### Native passthrough (forge-specific escape hatch)
+
+When you need forge-specific controls that have no intent equivalent, place them
+in a forge subdirectory inside the profile:
+
+```
+~/.koryph/postures/my-company/
+  manifest.json          ← intents block (forge-neutral)
+  github/                ← applied verbatim on GitHub only
+    rulesets/
+      extra-protection.json
+```
+
+Files in `github/` are copied to `.github/` verbatim (no template rendering)
+on top of the compiled intent output.  They are marked **`[non-portable: github-native]`**
+in `posture describe` output to make the forge coupling visible.
+
+Repo-local `.github/` IaC continues to override profile output entirely
+(ejectability is unchanged).
+
+### Legacy file-based profiles
+
+Profiles without an `intents` block use the original file-tree layout (raw
+JSON / JSON template files in the profile root).  This mode is still fully
+supported for backward compatibility with existing user profiles.
 
 ```
 ~/.koryph/postures/my-company/
@@ -293,7 +377,46 @@ built-in profiles:
   repo-settings.json
 ```
 
-`manifest.json` describes the profile:
+Template files (suffix `.json.tmpl`) are rendered with Go `text/template`.
+Available variables:
+
+| Variable | Description |
+|---|---|
+| `.RequiredChecks` | Slice of `{Context string}` objects for required CI checks |
+
+Use `{{toJSON .RequiredChecks}}` to emit a JSON array of `{"context":"…"}` objects.
+
+Static files (`.json`, no `.tmpl` suffix) are copied verbatim.
+
+---
+
+## Creating a custom profile
+
+A user profile lives at `~/.koryph/postures/<name>/`. Its structure depends on
+the authoring style you choose (see above).
+
+**Intents-based (recommended for new profiles):**
+
+```
+~/.koryph/postures/my-company/
+  manifest.json    ← with "intents" block
+  github/          ← optional native passthrough
+    rulesets/
+      extra.json
+```
+
+**Legacy file-based:**
+
+```
+~/.koryph/postures/my-company/
+  manifest.json
+  rulesets/
+    main-protection.json
+    signed-commits.json
+  repo-settings.json
+```
+
+`manifest.json` example (legacy style):
 
 ```json
 {
@@ -307,17 +430,6 @@ built-in profiles:
   }
 }
 ```
-
-Template files (suffix `.json.tmpl`) are rendered with Go `text/template`.
-Available variables:
-
-| Variable | Description |
-|---|---|
-| `.RequiredChecks` | Slice of `{Context string}` objects for required CI checks |
-
-Use `{{toJSON .RequiredChecks}}` to emit a JSON array of `{"context":"…"}` objects.
-
-Static files (`.json`, no `.tmpl` suffix) are copied verbatim.
 
 User profiles take precedence over built-ins of the same name — you can override
 `oss-solo-maintainer` by creating `~/.koryph/postures/oss-solo-maintainer/`.
