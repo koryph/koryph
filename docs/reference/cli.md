@@ -92,13 +92,13 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph completion bash`](#koryph-completion-bash) | print the bash completion script |
 | ↳ [`koryph completion zsh`](#koryph-completion-zsh) | print the zsh completion script |
 | ↳ [`koryph completion install`](#koryph-completion-install) | install the completion script to the standard location |
-| [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail |
 | ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
 | ↳ [`koryph obs level`](#koryph-obs-level) | set the log level for a component (or default) |
 | ↳ [`koryph obs enable`](#koryph-obs-enable) | enable observability (set default level to info) |
 | ↳ [`koryph obs disable`](#koryph-obs-disable) | silence all output (set all levels to error) |
 | ↳ [`koryph obs tail`](#koryph-obs-tail) | tail the telemetry JSONL stream in human-readable form |
+| [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
 
 ---
 
@@ -1054,19 +1054,6 @@ install the completion script to the standard location
 
 ---
 
-## `koryph tui` { #koryph-tui }
-
-interactive terminal cockpit (threads, queue, events)
-
-**See also:** [Tui](../user-guide/tui) · [2026 07 tui cockpit](../designs/2026-07-tui-cockpit)
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--project` | string |  | project id (default: all registered projects) |
-
-
----
-
 ## `koryph obs` { #koryph-obs }
 
 manage observability: status, level, enable, disable, tail
@@ -1121,6 +1108,19 @@ tail the telemetry JSONL stream in human-readable form
 | `--follow` | bool |  | stream new records as they arrive (Ctrl-C to stop) |
 | `--level` | string |  | minimum level to display (trace\|debug\|info\|warn\|error) |
 | `--n` | int | `40` | number of trailing records to show (0 = all) |
+
+
+---
+
+## `koryph tui` { #koryph-tui }
+
+interactive terminal cockpit (threads, queue, events)
+
+**See also:** [Tui](../user-guide/tui) · [2026 07 tui cockpit](../designs/2026-07-tui-cockpit)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--project` | string |  | project id (default: all registered projects) |
 
 
 ---
