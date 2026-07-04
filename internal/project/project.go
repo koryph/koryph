@@ -192,6 +192,15 @@ type Config struct {
 	// programmatic Options.PollSec caller override still take precedence over
 	// this value (see engine.runner.pollInterval; koryph-2im.2).
 	PollSeconds int `json:"poll_seconds,omitempty" jsonschema:"minimum=0"`
+
+	// DispatchMode selects the engine's dispatch loop (koryph-2im.3,
+	// docs/designs/2026-07-scheduler-throughput.md L1): "wave" (default, also
+	// when empty) dispatches a fixed-width batch and blocks until every slot
+	// in it lands before scanning the frontier again; "rolling" continuously
+	// refills any slot that frees up without waiting for the rest of the
+	// batch. A run's --dispatch-mode flag overrides this value; --once runs
+	// today's wave semantics in both modes.
+	DispatchMode string `json:"dispatch_mode,omitempty" jsonschema:"enum=wave,enum=rolling"`
 }
 
 // Default returns a conservative baseline config.
@@ -251,6 +260,11 @@ func (c *Config) Validate() error {
 	case "", "ff", "squash":
 	default:
 		return fmt.Errorf("merge_method must be ff|squash, got %q", c.MergeMethod)
+	}
+	switch c.DispatchMode {
+	case "", "wave", "rolling":
+	default:
+		return fmt.Errorf("dispatch_mode must be wave|rolling, got %q", c.DispatchMode)
 	}
 	if c.RiskTierDefault < 0 || c.RiskTierDefault > 3 {
 		return fmt.Errorf("risk_tier_default must be 0-3")

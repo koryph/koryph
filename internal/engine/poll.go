@@ -331,6 +331,12 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		reviewIters:       sl.ReviewIters,
 		note:              "rate-limited requeue",
 		rateLimitRequeues: requeues,
+		// Carry the persisted footprint forward (koryph-2im.3): a requeue is
+		// the SAME bead attempt continuing, not a relabeled re-evaluation, so
+		// in-flight gating must stay exact across it rather than falling back
+		// to a recompute that could have drifted from what was actually
+		// admitted.
+		footprint: sl.Footprint,
 	})
 }
 
@@ -717,6 +723,9 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		gateRequeues:  sl.GateRequeues,
 		mergeRequeues: sl.MergeRequeues,
 		note:          why,
+		// Carry the persisted footprint forward too (koryph-2im.3) — see
+		// requeueRateLimited's identical comment.
+		footprint: sl.Footprint,
 	})
 }
 

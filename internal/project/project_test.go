@@ -65,6 +65,7 @@ func fullConfig() *Config {
 		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 6,
 		PollSeconds:            5,
+		DispatchMode:           "rolling",
 	}
 }
 
@@ -181,6 +182,36 @@ func TestConfig_MergeMethodValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := Default("proj")
 			c.MergeMethod = tc.method
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfig_DispatchModeValidation proves the koryph-2im.3 config contract:
+// dispatch_mode accepts wave|rolling (empty defaults to wave semantics at the
+// engine layer, not here — Validate only rejects garbage), and anything else
+// is a load-time error.
+func TestConfig_DispatchModeValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		mode    string
+		wantErr string
+	}{
+		{"empty is fine (defaults to wave)", "", ""},
+		{"wave", "wave", ""},
+		{"rolling", "rolling", ""},
+		{"unknown value", "continuous", "dispatch_mode must be wave|rolling"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default("proj")
+			c.DispatchMode = tc.mode
 			err := c.Validate()
 			switch {
 			case tc.wantErr == "" && err != nil:

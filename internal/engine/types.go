@@ -84,9 +84,15 @@ type Options struct {
 	// automatically advisory while the account is uncalibrated (baseline
 	// establishment is never blocked).
 	NoBillingGuard bool
-	PollSec        int       // default 10; project config poll_seconds and KORYPH_POLL_SEC env can also set it (koryph-2im.2)
-	StuckSec       int       // default 900
-	Out            io.Writer // human-readable progress; nil = silent
+	PollSec        int // default 10; project config poll_seconds and KORYPH_POLL_SEC env can also set it (koryph-2im.2)
+	StuckSec       int // default 900
+	// DispatchMode selects the dispatch loop: "wave" (default) or "rolling"
+	// (koryph-2im.3). Precedence: this flag, when non-empty, wins over the
+	// project config's dispatch_mode; empty defers to config, then "wave".
+	// --once runs today's wave semantics in both modes. Any other value is a
+	// usage error (see Run's validation).
+	DispatchMode string
+	Out          io.Writer // human-readable progress; nil = silent
 }
 
 // Outcome summarizes a run.

@@ -26,9 +26,117 @@ import (
 	"github.com/koryph/koryph/internal/worktree"
 )
 
-// loop runs waves until drained, quota pause, ctx cancellation, or (Once)
-// exactly one wave has fully settled.
+// loop selects the effective dispatch loop and runs it to completion
+// (koryph-2im.3, design L1): "rolling" with !Once runs the continuous refill
+// loop (rollingLoop); every other combination — "wave" mode, or rolling with
+// --once — runs today's wave semantics unchanged (waveLoop). This is a
+// selection made ONCE at loop entry, not a per-iteration branch: --once's
+// contract ("one dispatch pass, poll to idle, exit") is identical in both
+// modes, so it is simplest and safest to keep it on the well-tested wave path
+// rather than special-case it inside rollingLoop.
 func (r *runner) loop(ctx context.Context) (Outcome, error) {
+	if r.dispatchMode() == "rolling" && !r.opts.Once {
+		return r.rollingLoop(ctx)
+	}
+	return r.waveLoop(ctx)
+}
+
+// govGate is the per-wave/per-refill governor decision shared by waveLoop and
+// rollingLoop (koryph-2im.3): quota level + calibration + usage snapshot,
+// billing selection (a side effect on r.billing/r.apiKey), the effective
+// (possibly quota-scaled) width, the per-run budget-cap check, and the
+// quota-stop-with-nothing-active immediate pause. Both loops call
+// governorGate identically so they cannot drift on governor semantics
+// (design L1/I4).
+type govGate struct {
+	allowDispatch bool
+	level         quota.Level
+	calibrated    bool
+	advisory      bool
+	usage         quota.Usage
+	budgetHit     bool
+	width         int
+
+	// paused is set when the gate itself already finalized the run as
+	// paused-quota (quota-stop with nothing active): the caller must return
+	// outcome immediately without scanning the frontier, exactly as the
+	// pre-koryph-2im.3 wave loop did (an early exit is cheaper than building
+	// a wave that will never dispatch, and — more importantly — must not be
+	// reordered after a drained check: quota-stop always wins over drained
+	// when nothing is running, unlike drain/budget below).
+	paused  bool
+	outcome Outcome
+}
+
+// governorGate runs the governor/billing/budget checks once per wave or
+// refill. See govGate's doc for why this is factored out rather than
+// duplicated between waveLoop and rollingLoop.
+func (r *runner) governorGate(ctx context.Context) govGate {
+	level, calibrated, usage := r.governor(ctx)
+	advisory, advisoryWhy := r.guardMode(calibrated)
+	if advisory {
+		// Advisory: measure + log, never block, never switch billing.
+		r.billing, r.apiKey = account.BillingSubscription, ""
+		if level != quota.LevelOK {
+			r.progress("billing guard ADVISORY (%s): governor level %s — not blocking", advisoryWhy, level)
+		}
+	} else {
+		r.billing, r.apiKey = r.billingFor(level)
+	}
+
+	g := govGate{allowDispatch: true, level: level, calibrated: calibrated, advisory: advisory, usage: usage}
+
+	if !r.opts.Manual && !advisory {
+		switch level {
+		case quota.LevelStop:
+			if r.billing != account.BillingAPIKey {
+				if r.activeCount() == 0 {
+					r.run.Status = ledger.RunPausedQuota
+					_ = r.store.SaveRun(r.run)
+					r.progress("governor stop: run %s paused (quota)", r.run.RunID)
+					g.paused = true
+					g.outcome = r.outcome(ExitOK, "quota-stop", false)
+					return g
+				}
+				g.allowDispatch = false
+				r.progress("governor stop: no new dispatch; waiting on %d active slot(s)", r.activeCount())
+			}
+		case quota.LevelDrain:
+			g.allowDispatch = false
+			r.progress("governor drain: no new dispatch; finishing %d active slot(s)", r.activeCount())
+		case quota.LevelWarn:
+			r.progress("governor warn: usage past %.0f%% of the window ceiling", quota.WarnFraction*100)
+		}
+	}
+
+	width := r.width
+	if !r.opts.Manual && calibrated && !advisory {
+		if scaled := quota.ScaleSlots(usage, width); scaled < width {
+			width = scaled
+		}
+	}
+	g.width = width
+
+	// Per-run budget ceiling: once cumulative run cost reaches the cap, stop
+	// starting new agents; any active slots still finish.
+	if r.opts.BudgetUSD > 0 {
+		if spent := r.runCostUSD(); spent >= r.opts.BudgetUSD {
+			g.budgetHit = true
+			if g.allowDispatch {
+				r.progress("run budget reached: $%.2f spent >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
+			}
+			g.allowDispatch = false
+		}
+	}
+	return g
+}
+
+// waveLoop runs waves until drained, quota pause, ctx cancellation, or (Once)
+// exactly one wave has fully settled. Unchanged behavior from before
+// koryph-2im.3 — only the governor/billing/budget block was extracted into
+// governorGate (shared with rollingLoop); every decision and its ordering is
+// identical.
+func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 	for {
 		if ctx.Err() != nil {
 			return r.interrupted()
@@ -36,60 +144,13 @@ func (r *runner) loop(ctx context.Context) (Outcome, error) {
 		r.run.Wave++
 		_ = r.store.SaveRun(r.run)
 
-		// Governor.
-		level, calibrated, usage := r.governor(ctx)
-		advisory, advisoryWhy := r.guardMode(calibrated)
-		if advisory {
-			// Advisory: measure + log, never block, never switch billing.
-			r.billing, r.apiKey = account.BillingSubscription, ""
-			if level != quota.LevelOK {
-				r.progress("billing guard ADVISORY (%s): governor level %s — not blocking", advisoryWhy, level)
-			}
-		} else {
-			r.billing, r.apiKey = r.billingFor(level)
+		gate := r.governorGate(ctx)
+		if gate.paused {
+			return gate.outcome, nil
 		}
-
-		allowDispatch := true
-		if !r.opts.Manual && !advisory {
-			switch level {
-			case quota.LevelStop:
-				if r.billing != account.BillingAPIKey {
-					if r.activeCount() == 0 {
-						r.run.Status = ledger.RunPausedQuota
-						_ = r.store.SaveRun(r.run)
-						r.progress("governor stop: run %s paused (quota)", r.run.RunID)
-						return r.outcome(ExitOK, "quota-stop", false), nil
-					}
-					allowDispatch = false
-					r.progress("governor stop: no new dispatch; waiting on %d active slot(s)", r.activeCount())
-				}
-			case quota.LevelDrain:
-				allowDispatch = false
-				r.progress("governor drain: no new dispatch; finishing %d active slot(s)", r.activeCount())
-			case quota.LevelWarn:
-				r.progress("governor warn: usage past %.0f%% of the window ceiling", quota.WarnFraction*100)
-			}
-		}
-
-		width := r.width
-		if !r.opts.Manual && calibrated && !advisory {
-			if scaled := quota.ScaleSlots(usage, width); scaled < width {
-				width = scaled
-			}
-		}
-
-		// Per-run budget ceiling: once cumulative run cost reaches the cap, stop
-		// starting new agents; any active slots still finish.
-		budgetHit := false
-		if r.opts.BudgetUSD > 0 {
-			if spent := r.runCostUSD(); spent >= r.opts.BudgetUSD {
-				budgetHit = true
-				if allowDispatch {
-					r.progress("run budget reached: $%.2f spent >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
-				}
-				allowDispatch = false
-			}
-		}
+		allowDispatch := gate.allowDispatch
+		level, calibrated, usage, budgetHit := gate.level, gate.calibrated, gate.usage, gate.budgetHit
+		width := gate.width
 
 		// Frontier scan + wave build.
 		issues, err := r.adapter.Ready(ctx, beads.ReadyOpts{Parent: r.opts.Parent})
@@ -143,7 +204,7 @@ func (r *runner) loop(ctx context.Context) (Outcome, error) {
 
 		// Preflight (loop mode only, calibrated + enforcing governor only).
 		est := r.waveEstimate(w.Items)
-		if allowDispatch && !r.opts.NoPreflight && !r.opts.Manual && calibrated && !advisory && len(w.Items) > 0 {
+		if allowDispatch && !r.opts.NoPreflight && !r.opts.Manual && calibrated && !gate.advisory && len(w.Items) > 0 {
 			if ok, reason := quota.Preflight(usage, est, r.quotaCfg); !ok {
 				allowDispatch = false
 				r.progress("preflight refused wave: %s", reason)
@@ -198,7 +259,8 @@ func (r *runner) loop(ctx context.Context) (Outcome, error) {
 					break
 				}
 				r.issues[it.Issue.ID] = it.Issue
-				r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1})
+				fp := it.Footprint
+				r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp})
 			}
 		}
 
@@ -308,9 +370,16 @@ func (r *runner) windowNote(calibrated bool, u quota.Usage, est float64) string 
 
 // activeFootprints derives sched.BuildWave's in-flight footprint set from the
 // currently non-terminal slots (koryph-2im.1, design L2). Each slot's
-// footprint is recomputed from the bead's current labels rather than trusted
-// from dispatch time: slot-persisted footprints are a later bead (design L2
-// footprint persistence), so today this always recomputes.
+// footprint prefers the value persisted at dispatch time (koryph-2im.3,
+// design L2 footprint persistence: ledger.Slot.Footprint) and only falls back
+// to recomputing from the bead's current labels when nothing was persisted
+// (a slot dispatched before koryph-2im.3, or one whose ledger predates the
+// field — Slot.Footprint unmarshals to nil there, additive-compatible).
+// Preferring the persisted value is what makes in-flight gating EXACT rather
+// than approximate: a relabel after dispatch (or a requeue that refreshes
+// r.issues from bd) must not retroactively change what a LIVE slot is
+// understood to conflict with — the slot's footprint is fixed at the moment
+// it was admitted, exactly like the RW lock it stands in for.
 //
 // r.issueFor already implements the fallback chain the design calls for
 // (in-memory wave item → adapter.Show → a synthetic id-only issue with no
@@ -332,6 +401,10 @@ func (r *runner) activeFootprints(ctx context.Context, activeIDs map[string]bool
 	for id := range activeIDs {
 		sl := r.run.Slots[id]
 		if sl == nil {
+			continue
+		}
+		if sl.Footprint != nil {
+			out[id] = *sl.Footprint
 			continue
 		}
 		iss := r.issueFor(ctx, sl)
@@ -376,6 +449,16 @@ type dispatchReq struct {
 	mergeRequeues     int
 	rateLimitRequeues int
 	note              string
+	// footprint is the RW conflict footprint to persist on the ledger slot
+	// (koryph-2im.3, design L2 footprint persistence): the batch item's
+	// computed sched.Footprint on a fresh dispatch, or the prior slot's
+	// already-persisted footprint carried forward on a requeue (see
+	// requeueSlot/requeueRateLimited) — never recomputed here, so a relabel
+	// mid-run cannot retroactively change what a live/resumed slot conflicts
+	// with. nil (e.g. a synthetic/legacy path) leaves the new slot's
+	// Footprint nil too, and activeFootprints falls back to its
+	// recompute-from-labels chain exactly as before this bead.
+	footprint *sched.Footprint
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -506,6 +589,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		DispatchedAt:      now,
 		Note:              q.note,
 		RateLimitRequeues: q.rateLimitRequeues,
+		Footprint:         q.footprint,
 	}
 	_ = r.store.SetSlot(r.run, sl)
 	r.dispatched++

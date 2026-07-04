@@ -20,6 +20,8 @@
 //   - FinalizeRun marks a run terminal (fixes the stale-"running" bug).
 package ledger
 
+import "github.com/koryph/koryph/internal/sched"
+
 // Slot statuses (superset of the bash engine's, kept wire-compatible).
 const (
 	SlotQueued       = "queued"
@@ -123,6 +125,18 @@ type Slot struct {
 	// Slot decoded from a ledger that predates this field unmarshals it to
 	// zero, which behaves exactly like "none spent yet."
 	RateLimitRequeues int `json:"rate_limit_requeues,omitempty"`
+
+	// Footprint is the RW conflict footprint computed at dispatch time
+	// (koryph-2im.3, docs/designs/2026-07-scheduler-throughput.md L2 footprint
+	// persistence). runner.activeFootprints prefers this persisted value over
+	// recomputing from the bead's current labels — exact in-flight gating
+	// across requeues (threaded forward, see engine.dispatchReq.footprint),
+	// resume adoption, and label edits mid-run (a relabel after dispatch must
+	// not retroactively change what a LIVE slot is understood to conflict
+	// with). Additive: a Slot decoded from a ledger that predates this field
+	// unmarshals it to nil, which falls back to the pre-koryph-2im.3
+	// recompute-from-labels chain exactly as before.
+	Footprint *sched.Footprint `json:"footprint,omitempty"`
 }
 
 // PlanState tracks structured-plan progress inside a manifest.

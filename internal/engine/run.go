@@ -94,6 +94,12 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	if opts.StuckSec <= 0 {
 		opts.StuckSec = defaultStuckSec
 	}
+	switch opts.DispatchMode {
+	case "", "wave", "rolling":
+	default:
+		return Outcome{Code: ExitUsage}, fmt.Errorf(
+			"engine: --dispatch-mode must be wave|rolling, got %q", opts.DispatchMode)
+	}
 
 	reg := registry.NewStore()
 	rec, err := reg.Get(opts.ProjectID)
@@ -365,6 +371,22 @@ func (r *runner) pollInterval() time.Duration {
 		return time.Duration(r.cfg.PollSeconds) * time.Second
 	}
 	return time.Duration(defaultPollSec) * time.Second
+}
+
+// dispatchMode resolves the effective dispatch loop (koryph-2im.3, design L1).
+// Precedence, highest first: Options.DispatchMode (the --dispatch-mode run
+// flag) > the project config's dispatch_mode > "wave". Both inputs are
+// validated (Run's own switch; project.Config.Validate) before this ever
+// runs, so any non-empty value seen here is guaranteed to be "wave" or
+// "rolling".
+func (r *runner) dispatchMode() string {
+	if r.opts.DispatchMode != "" {
+		return r.opts.DispatchMode
+	}
+	if r.cfg != nil && r.cfg.DispatchMode != "" {
+		return r.cfg.DispatchMode
+	}
+	return "wave"
 }
 
 // staggerDelay is the pause between dispatches: env override, else project

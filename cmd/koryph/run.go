@@ -34,6 +34,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	allowUnvalidated := fs.Bool("allow-unvalidated", false, "permit runs on non-validated projects")
 	manual := fs.Bool("manual", false, "single manual dispatch semantics (quota-exempt)")
 	noBillingGuard := fs.Bool("no-billing-guard", false, "disable quota throttling for this run (usage still measured; billing stays subscription)")
+	dispatchMode := fs.String("dispatch-mode", "", "dispatch mode: wave|rolling (default: project config, else wave)")
 	setUsage(fs, stdout, "execute one engine run over a project", "--project ID [flags]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
@@ -59,6 +60,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		AllowAPISpend:    *allowAPISpend,
 		AllowUnvalidated: *allowUnvalidated,
 		NoBillingGuard:   *noBillingGuard,
+		DispatchMode:     *dispatchMode,
 		Out:              stdout,
 	}
 	outcome, err := engine.Run(context.Background(), opts)
