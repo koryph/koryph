@@ -1223,6 +1223,7 @@ interactive terminal cockpit (threads, queue, events)
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--project` | string |  | project id (default: all registered projects) |
+| `--read-only` | bool |  | disable write actions (nudge, drain) — safe for shared/observer sessions |
 
 
 ---

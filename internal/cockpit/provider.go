@@ -19,6 +19,11 @@ type Provider interface {
 
 	// ProjectID returns the project this provider is bound to.
 	ProjectID() string
+
+	// RepoRoot returns the absolute path to the project's repository root.
+	// Used by the TUI to execute actions (nudge, drain) on behalf of the
+	// active project without importing the full CLI path.
+	RepoRoot() string
 }
 
 // DetailProvider is an optional extension of Provider. When a Provider also

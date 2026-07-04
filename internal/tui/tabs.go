@@ -47,9 +47,11 @@ type TabDef struct {
 	// Order controls left-to-right tab position. Lower values appear first;
 	// ties preserve insertion order (sort.SliceStable).
 	Order int
-	// New is the factory that constructs a fresh TabModel for the given Theme.
+	// New is the factory that constructs a fresh TabModel.
+	// theme is the active color theme; readOnly disables write actions
+	// (nudge, drain). Tabs that have no actions may ignore readOnly.
 	// It is called exactly once per App initialisation.
-	New func(Theme) TabModel
+	New func(theme Theme, readOnly bool) TabModel
 }
 
 // tabRegistry is the ordered list of registered tab definitions.

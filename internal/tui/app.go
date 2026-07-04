@@ -20,6 +20,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -29,6 +30,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/koryph/koryph/internal/cockpit"
+	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/paths"
 )
 
 const (
@@ -59,6 +62,22 @@ type detailReadyMsg struct{ snap cockpit.BeadDetailSnapshot }
 // tab that was active before the detail panel was opened.
 type detailBackMsg struct{}
 
+// nudgeRequestMsg is sent by a tab (events) to request a nudge operation.
+// The App handles it and routes to the active project's ledger.
+type nudgeRequestMsg struct {
+	BeadID  string
+	Message string
+}
+
+// drainRequestMsg is sent by a tab (events) to request a drain on the active project.
+type drainRequestMsg struct{}
+
+// actionResultMsg carries the result of a nudge or drain operation.
+type actionResultMsg struct {
+	Err error
+	Msg string
+}
+
 // App is the root Bubble Tea model for the koryph terminal cockpit.
 type App struct {
 	// providers is the list of cockpit providers, one per project. The active
@@ -72,6 +91,9 @@ type App struct {
 	// tabs holds the live tab sub-models, one per registered tab definition,
 	// in the same order as tabRegistry (sorted by TabDef.Order).
 	tabs []TabModel
+
+	// readOnly disables write actions (nudge, drain) — set by --read-only flag.
+	readOnly bool
 
 	// UI components.
 	help      help.Model
@@ -104,8 +126,8 @@ type App struct {
 // NewApp creates and initialises the App model.
 //
 // providers must contain at least one Provider. The first provider is the
-// initially active project.
-func NewApp(providers []cockpit.Provider) *App {
+// initially active project. readOnly disables write actions (nudge, drain).
+func NewApp(providers []cockpit.Provider, readOnly bool) *App {
 	if len(providers) == 0 {
 		panic("tui.NewApp: at least one provider is required")
 	}
@@ -116,7 +138,7 @@ func NewApp(providers []cockpit.Provider) *App {
 	// Build tab models from the registry (already sorted by Order).
 	tabs := make([]TabModel, len(tabRegistry))
 	for i, def := range tabRegistry {
-		tabs[i] = def.New(theme)
+		tabs[i] = def.New(theme, readOnly)
 	}
 
 	// Find the detail tab index.
@@ -132,6 +154,7 @@ func NewApp(providers []cockpit.Provider) *App {
 		providers:    providers,
 		activeTab:    0,
 		tabs:         tabs,
+		readOnly:     readOnly,
 		help:         h,
 		keys:         DefaultKeyMap(),
 		theme:        theme,
@@ -256,6 +279,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Return to the tab that was active before the detail panel was opened.
 		a.activeTab = a.prevTabIdx
 		a.resizeTabs()
+
+	case nudgeRequestMsg:
+		cmds = append(cmds, a.doNudge(msg.BeadID, msg.Message))
+
+	case drainRequestMsg:
+		cmds = append(cmds, a.doDrain())
+
+	case actionResultMsg:
+		if msg.Err != nil {
+			a.lastError = msg.Err.Error()
+		} else {
+			a.lastError = msg.Msg
+		}
+		// Also route to the active tab so it can update its in-tab result display.
+		var cmd tea.Cmd
+		a, cmd = a.updateActiveTab(msg)
+		cmds = append(cmds, cmd)
 	}
 
 	return a, tea.Batch(cmds...)
@@ -385,6 +425,64 @@ func (a App) renderStatusBar() string {
 	}
 	line := a.theme.StatusBar.Width(a.width).Render(left + strings.Repeat(" ", gap) + right)
 	return "\n" + line
+}
+
+// doNudge returns a Cmd that appends text to a bead's INBOX.md, mirroring
+// cmdNudge's live-bead path (koryph-o72). If the bead is not dispatched, the
+// result message instructs the operator to use koryph nudge from the CLI.
+func (a App) doNudge(beadID, text string) tea.Cmd {
+	repoRoot := a.providers[a.projectIdx].RepoRoot()
+	runID := a.snap.RunID
+	return func() tea.Msg {
+		if runID == "" {
+			return actionResultMsg{Err: fmt.Errorf("nudge: no active run for this project")}
+		}
+		// Check whether the bead has a live slot in the snapshot.
+		var dispatched bool
+		for _, sl := range a.snap.Slots {
+			if sl.PhaseID == beadID || sl.BeadID == beadID {
+				dispatched = true
+				break
+			}
+		}
+		if !dispatched {
+			return actionResultMsg{
+				Msg: fmt.Sprintf("nudge: %s not dispatched — use 'koryph nudge' to reach queued beads", beadID),
+			}
+		}
+		phaseDir := paths.KoryphRoot(repoRoot) + "/" + runID + "/" + beadID
+		if err := os.MkdirAll(phaseDir, 0o755); err != nil {
+			return actionResultMsg{Err: fmt.Errorf("nudge: mkdir: %w", err)}
+		}
+		entry := fmt.Sprintf("\n---\n[%s] operator (tui):\n%s\n",
+			time.Now().UTC().Format(time.RFC3339), text)
+		f, err := os.OpenFile(phaseDir+"/INBOX.md",
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return actionResultMsg{Err: fmt.Errorf("nudge: open INBOX: %w", err)}
+		}
+		if _, werr := f.WriteString(entry); werr != nil {
+			f.Close()
+			return actionResultMsg{Err: fmt.Errorf("nudge: write: %w", werr)}
+		}
+		if cerr := f.Close(); cerr != nil {
+			return actionResultMsg{Err: fmt.Errorf("nudge: close: %w", cerr)}
+		}
+		return actionResultMsg{Msg: fmt.Sprintf("nudged %s", beadID)}
+	}
+}
+
+// doDrain returns a Cmd that writes the drain sentinel for the active project,
+// mirroring cmdDrain's requestDrain path (koryph-57v.1).
+func (a App) doDrain() tea.Cmd {
+	repoRoot := a.providers[a.projectIdx].RepoRoot()
+	projectID := a.providers[a.projectIdx].ProjectID()
+	return func() tea.Msg {
+		if err := ledger.NewStore(repoRoot).RequestDrain(); err != nil {
+			return actionResultMsg{Err: fmt.Errorf("drain: %w", err)}
+		}
+		return actionResultMsg{Msg: fmt.Sprintf("drain requested for %s", projectID)}
+	}
 }
 
 // doRefresh returns a Cmd that reads a fresh snapshot from the active provider.

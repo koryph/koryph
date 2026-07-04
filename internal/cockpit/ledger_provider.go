@@ -50,6 +50,9 @@ type LedgerProvider struct {
 	// queue cache — refreshed at queueTTL cadence.
 	queueCache QueueSnapshot
 	queueAt    time.Time
+
+	// events — live events feed collector (koryph-9af.5).
+	events *eventCollector
 }
 
 // NewLedgerProvider returns a LedgerProvider for the project at repoRoot.
@@ -64,11 +67,15 @@ func NewLedgerProvider(projectID, repoRoot, accountProfile string) *LedgerProvid
 		gs:             govern.NewStore(),
 		bd:             beads.New(repoRoot),
 		graph:          NewGraphProvider(repoRoot, 0), // 0 → package default graphTTL
+		events:         newEventCollector(),
 	}
 }
 
 // ProjectID implements Provider.
 func (p *LedgerProvider) ProjectID() string { return p.projectID }
+
+// RepoRoot implements Provider.
+func (p *LedgerProvider) RepoRoot() string { return p.repoRoot }
 
 // Refresh implements Provider. It reads the latest ledger run, all active
 // slots, and the governor snapshot.
@@ -127,6 +134,11 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 		p.queueAt = snap.CapturedAt
 	}
 	snap.Queue = p.queueCache
+
+	// --- events (koryph-9af.5) --------------------------------------------------
+	// Collect is called on every tick — it is cheap (diff + audit tail).
+	p.events.Collect(snap)
+	snap.Events = p.events.Snapshot()
 
 	return snap, nil
 }

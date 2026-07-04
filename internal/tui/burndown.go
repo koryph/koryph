@@ -30,7 +30,7 @@ func init() {
 	registerTab(TabDef{
 		Name:  "Burndown",
 		Order: 1,
-		New:   func(theme Theme) TabModel { return newBurndownModel(theme) },
+		New:   func(theme Theme, _ bool) TabModel { return newBurndownModel(theme) },
 	})
 }
 

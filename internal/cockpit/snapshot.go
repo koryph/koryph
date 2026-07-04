@@ -184,6 +184,11 @@ type Snapshot struct {
 	// Consumed read-only by the Queue tab; never written by tab code.
 	Queue QueueSnapshot
 
+	// Events is the live events feed for this project (koryph-9af.5).
+	// Populated by LedgerProvider from ledger state transitions and the
+	// machine-wide audit log. The zero value (empty slice) is safe.
+	Events EventsSnapshot
+
 	// CapturedAt is when this snapshot was assembled.
 	CapturedAt time.Time
 }
@@ -284,4 +289,33 @@ type EstimatorRow struct {
 	// Base is the uncalibrated base cost (PerTierUSD * SizeMultiplier) —
 	// the fallback estimate before calibration data accumulates.
 	Base float64
+}
+
+// TUIEvent is one entry in the live events feed (Events tab, koryph-9af.5).
+// It is a display-ready value type: no pointers, no methods.
+type TUIEvent struct {
+	// Time is when the event occurred (or was observed).
+	Time time.Time
+
+	// Kind classifies the event for filtering and coloring.
+	// Values: "dispatch", "merge", "requeue", "drain", "resize",
+	// "nudge", "cap-change", "review", "patrol".
+	Kind string
+
+	// Level is the severity: "info", "warn", "error".
+	Level string
+
+	// BeadID is the bead or phase identifier, empty for project-level events.
+	BeadID string
+
+	// Message is the human-readable one-line summary.
+	Message string
+}
+
+// EventsSnapshot is the events tab's view-model — a bounded ring of TUIEvents.
+// The zero value is safe; consumers check len(Events) > 0.
+type EventsSnapshot struct {
+	// Events holds the most recent events in ascending time order (oldest first,
+	// newest last). The ring is bounded to eventsRingMax entries.
+	Events []TUIEvent
 }

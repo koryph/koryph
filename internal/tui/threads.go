@@ -19,7 +19,7 @@ func init() {
 	registerTab(TabDef{
 		Name:  "Threads",
 		Order: 0,
-		New:   func(theme Theme) TabModel { return newThreadsModel(theme) },
+		New:   func(theme Theme, _ bool) TabModel { return newThreadsModel(theme) },
 	})
 }
 

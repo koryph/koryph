@@ -31,8 +31,9 @@ func init() {
 func cmdTUI(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("tui", stderr)
 	projectID := fs.String("project", "", "project id (default: all registered projects)")
+	readOnly := fs.Bool("read-only", false, "disable write actions (nudge, drain) — safe for shared/observer sessions")
 	setUsage(fs, stdout, "interactive terminal cockpit — threads, queue, events, efficiency",
-		"[--project ID]")
+		"[--project ID] [--read-only]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -68,7 +69,7 @@ func cmdTUI(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	app := tui.NewApp(providers)
+	app := tui.NewApp(providers, *readOnly)
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

@@ -16,6 +16,7 @@ import (
 type stubProvider struct{ id string }
 
 func (p *stubProvider) ProjectID() string                  { return p.id }
+func (p *stubProvider) RepoRoot() string                   { return "/tmp/stub-" + p.id }
 func (p *stubProvider) Refresh() (cockpit.Snapshot, error) { return cockpit.Snapshot{}, nil }
 
 // --- minimal TabModel for registry tests ------------------------------------
@@ -41,9 +42,9 @@ func TestTabRegistryOrder(t *testing.T) {
 	tabRegistry = nil
 	t.Cleanup(func() { tabRegistry = saved })
 
-	registerTab(TabDef{Name: "C", Order: 2, New: func(Theme) TabModel { return &stubTab{name: "C"} }})
-	registerTab(TabDef{Name: "A", Order: 0, New: func(Theme) TabModel { return &stubTab{name: "A"} }})
-	registerTab(TabDef{Name: "B", Order: 1, New: func(Theme) TabModel { return &stubTab{name: "B"} }})
+	registerTab(TabDef{Name: "C", Order: 2, New: func(Theme, bool) TabModel { return &stubTab{name: "C"} }})
+	registerTab(TabDef{Name: "A", Order: 0, New: func(Theme, bool) TabModel { return &stubTab{name: "A"} }})
+	registerTab(TabDef{Name: "B", Order: 1, New: func(Theme, bool) TabModel { return &stubTab{name: "B"} }})
 
 	want := []string{"A", "B", "C"}
 	for i, def := range tabRegistry {
@@ -84,12 +85,12 @@ func TestNewAppBuildsFromRegistry(t *testing.T) {
 		registerTab(TabDef{
 			Name:  n,
 			Order: len(tabRegistry),
-			New:   func(theme Theme) TabModel { built = append(built, n); return &stubTab{name: n} },
+			New:   func(theme Theme, _ bool) TabModel { built = append(built, n); return &stubTab{name: n} },
 		})
 	}
 
 	p := &stubProvider{id: "test"}
-	app := NewApp([]cockpit.Provider{p})
+	app := NewApp([]cockpit.Provider{p}, false)
 
 	if len(app.tabs) != 2 {
 		t.Fatalf("len(app.tabs) = %d, want 2", len(app.tabs))

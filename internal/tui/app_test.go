@@ -24,6 +24,7 @@ type staticProvider struct {
 }
 
 func (p *staticProvider) ProjectID() string { return p.id }
+func (p *staticProvider) RepoRoot() string  { return "/tmp/test-" + p.id }
 func (p *staticProvider) Refresh() (cockpit.Snapshot, error) {
 	if p.err != nil {
 		return cockpit.Snapshot{}, p.err
@@ -91,7 +92,7 @@ func waitFor(t *testing.T, tm *teatest.TestModel, condition func([]byte) bool) {
 // TestAppQuit verifies q exits cleanly and the final output contains the header.
 func TestAppQuit(t *testing.T) {
 	p := &staticProvider{id: "proj-1", snap: newTestSnap()}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 
@@ -108,7 +109,7 @@ func TestAppQuit(t *testing.T) {
 // TestAppRendersHeader verifies the header renders with the project name and run info.
 func TestAppRendersHeader(t *testing.T) {
 	p := &staticProvider{id: "proj-1", snap: newTestSnap()}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -124,7 +125,7 @@ func TestAppRendersHeader(t *testing.T) {
 // is below 80×24.
 func TestAppMinSize(t *testing.T) {
 	p := &staticProvider{id: "proj-1", snap: newTestSnap()}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(60, 20))
 	defer func() { _ = tm.Quit() }()
@@ -168,7 +169,7 @@ func TestAppBurndownTab(t *testing.T) {
 	}
 
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -245,7 +246,7 @@ func TestAppQueueTab(t *testing.T) {
 // TestAppHelp verifies the help overlay renders on "?".
 func TestAppHelp(t *testing.T) {
 	p := &staticProvider{id: "proj-1", snap: newTestSnap()}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
