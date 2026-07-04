@@ -16,16 +16,23 @@ import (
 // other unknown (and with itself), serializing them (koryph-2im.1).
 const TokenUnknown = "domain:unknown"
 
-// FootprintFor derives an issue's RW conflict footprint. Precedence
-// (backward compatible with the pre-L4 write-only grammar):
-//  1. fp:read:<token> labels — read tokens (NEW, koryph-2im.1);
-//  2. fp:<token> labels of any other suffix — write tokens, used as-is
-//     ("fp:" stripped) — existing labels keep their existing (write) meaning;
-//     fp:* labels of either flavor win outright over area:* (unchanged
-//     precedence: a bead with any fp:* label ignores its area:* labels);
-//  3. else area:* labels resolved through cfg.AreaMap — write tokens
-//     (unchanged);
-//  4. else the catch-all TokenUnknown, as a write.
+// FootprintFor derives an issue's RW conflict footprint. Labels COMPOSE
+// (design L4, "mixed labels compose" — fixed by koryph-2im, found during the
+// rolling-dispatch burn-in when fp:read-labeled beads silently dropped their
+// area write tokens and co-ran with writers of the same area):
+//   - every area:* label contributes its cfg.AreaMap write tokens;
+//   - every fp:read:<token> label adds a read token;
+//   - every other fp:<token> label adds a write token ("fp:" stripped —
+//     existing labels keep their existing write meaning);
+//   - only when ALL of the above yield nothing does the catch-all
+//     TokenUnknown apply, as a write.
+//
+// Composition can only widen a footprint relative to the old
+// fp-suppresses-area precedence, so it never introduces a false-parallel
+// dispatch — it only removes them. A bead that previously used fp:* to
+// NARROW an over-broad area should drop the area:* label instead; that is
+// the one authoring pattern this change costs (parallelism only, never
+// correctness).
 //
 // A token declared in both sets collapses to write-only: a write already
 // excludes readers, so keeping it in Reads too would just be misleading.
@@ -33,19 +40,16 @@ const TokenUnknown = "domain:unknown"
 func FootprintFor(issue beads.Issue, cfg *project.Config) Footprint {
 	var reads, writes []string
 
-	if fps := issue.LabelValues("fp:"); len(fps) > 0 {
-		for _, v := range fps {
-			if tok, ok := strings.CutPrefix(v, "read:"); ok {
-				reads = append(reads, tok)
-			} else {
-				writes = append(writes, v)
-			}
+	for _, area := range issue.LabelValues("area:") {
+		if mapped, ok := lookupArea(cfg, area); ok {
+			writes = append(writes, mapped...)
 		}
-	} else {
-		for _, area := range issue.LabelValues("area:") {
-			if mapped, ok := lookupArea(cfg, area); ok {
-				writes = append(writes, mapped...)
-			}
+	}
+	for _, v := range issue.LabelValues("fp:") {
+		if tok, ok := strings.CutPrefix(v, "read:"); ok {
+			reads = append(reads, tok)
+		} else {
+			writes = append(writes, v)
 		}
 	}
 

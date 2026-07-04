@@ -4,11 +4,12 @@
 // Package sched builds conflict-free waves from a project's ready frontier.
 //
 // Implementation contract (footprint.go, wave.go, bdsource.go):
-//   - FootprintFor(issue, cfg) Footprint — precedence: explicit fp:read:*
-//     labels → reads; explicit fp:* labels (any other suffix) → writes;
-//     cfg.AreaMap via area:* labels → writes; else the catch-all
-//     "domain:unknown" write token (conflicts with everything, serializing
-//     unknowns).
+//   - FootprintFor(issue, cfg) Footprint — labels COMPOSE: area:* labels
+//     contribute their cfg.AreaMap write tokens AND fp:read:*/fp:* labels
+//     add read/write tokens on top; only a bead with no resolvable labels
+//     at all gets the catch-all "domain:unknown" write token (conflicts
+//     with everything, serializing unknowns). To narrow an over-broad
+//     area, drop the area label — fp:* no longer suppresses it.
 //   - Conflicts(a, b) bool — RW conflict: true iff some token is shared AND
 //     at least one side holds it as a write (koryph-2im.1). Two readers of
 //     the same token co-run; only a writer excludes.

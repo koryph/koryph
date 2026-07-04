@@ -36,7 +36,7 @@ func TestFootprintFor(t *testing.T) {
 		wantWrites []string
 	}{
 		{"fp labels used as-is, sorted (writes)", []string{"fp:go:api", "fp:app:web"}, nil, []string{"app:web", "go:api"}},
-		{"fp wins over area", []string{"fp:go:api", "area:web"}, nil, []string{"go:api"}},
+		{"fp and area compose (writes union)", []string{"fp:go:api", "area:web"}, nil, []string{"app:web", "go:api"}},
 		{"area map fallback", []string{"area:api"}, nil, []string{"db:schema", "go:api"}},
 		{"multiple areas merge+sort", []string{"area:api", "area:web"}, nil, []string{"app:web", "db:schema", "go:api"}},
 		{"unmapped area -> unknown", []string{"area:mystery"}, nil, []string{TokenUnknown}},
@@ -45,7 +45,8 @@ func TestFootprintFor(t *testing.T) {
 		{"fp:read: labels are reads, not writes", []string{"fp:read:go:engine"}, []string{"go:engine"}, nil},
 		{"mixed read+write labels", []string{"fp:read:go:engine", "fp:docs"}, []string{"go:engine"}, []string{"docs"}},
 		{"read+write of the same token collapses to write-only", []string{"fp:read:x", "fp:x"}, nil, []string{"x"}},
-		{"fp:read: wins over area same as plain fp:", []string{"fp:read:go:engine", "area:web"}, []string{"go:engine"}, nil},
+		{"fp:read: composes with area writes (the burn-in bug: the area write must survive)", []string{"fp:read:go:engine", "area:web"}, []string{"go:engine"}, []string{"app:web"}},
+		{"reads of one package + writes of another via area", []string{"fp:read:go:engine", "area:api"}, []string{"go:engine"}, []string{"db:schema", "go:api"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
