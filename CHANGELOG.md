@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/koryph/koryph/compare/v0.4.0...v0.5.0) (2026-07-04)
+
+
+### Features
+
+* **ci:** branch-protection rulesets as code + ensure script ([b3e85b5](https://github.com/koryph/koryph/commit/b3e85b5c761aacc372a79adb4c038932c35278c4))
+* **ci:** repo administrative settings as code + make repo-check/repo-apply ([17ec817](https://github.com/koryph/koryph/commit/17ec817ee0af293a3df6aee90b02a51e69dfcb9b))
+* **cli:** add koryph release setup command ([962d0a7](https://github.com/koryph/koryph/commit/962d0a79af55e8d5f9e83cca39101a6849d2ff0d))
+* **doctor:** add release-infra per-project checks ([e586dc2](https://github.com/koryph/koryph/commit/e586dc25b302f424a79843e1eee054f3294dce14))
+* **project:** add release block to koryph.project.json schema ([031b848](https://github.com/koryph/koryph/commit/031b848bd7c2c82d3f5cb955b2fbcf92fe3388d1))
+* **release:** add internal/release package with embedded templates ([b49d152](https://github.com/koryph/koryph/commit/b49d152f2bd34573c34ec73c089339dd21f92b69))
+* **scripts:** provision-release-bot.sh — App Manifest bootstrap + zero-click repo attach ([9186734](https://github.com/koryph/koryph/commit/9186734a10b46e26954842a101680fc0da2cfea6))
+
+
+### Bug Fixes
+
+* **release:** grant contents:write to the slsa caller job ([b37cf21](https://github.com/koryph/koryph/commit/b37cf21590333b09b4f19fe133a92b4d13d6a13a))
+* **release:** move tag+release ownership to GoReleaser, draft until complete ([901003c](https://github.com/koryph/koryph/commit/901003ce5395c25ec7e067fc82f11ac04ce419d5))
+
 ## [0.4.0](https://github.com/koryph/koryph/compare/v0.3.0...v0.4.0) (2026-07-04)
 
 
