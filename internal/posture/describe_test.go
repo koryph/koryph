@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/posture"
 )
 
@@ -68,7 +69,7 @@ func TestDescribeSource_SettingsOnly_NoLive(t *testing.T) {
 		"vulnerability_alerts": true,
 	}, nil)
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestDescribeSource_RepoFlagsHaveRationale(t *testing.T) {
 		},
 	}, nil)
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestDescribeSource_SecurityAndAnalysisHaveRationale(t *testing.T) {
 		},
 	}, nil)
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestDescribeSource_VulnerabilityAlerts(t *testing.T) {
 		"vulnerability_alerts": enabled,
 	}, nil)
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestDescribeSource_ProfileDescriptionsOverrideBuiltin(t *testing.T) {
 		},
 	}, nil)
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestDescribeSource_ExtraDescsOverrideAll(t *testing.T) {
 		},
 	}, nil)
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", extra)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", extra)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestDescribeSource_RulesetEntry_BasicFields(t *testing.T) {
 		},
 	})
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestDescribeSource_RulesetEntry_BuiltinRuleRationale(t *testing.T) {
 		},
 	})
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestDescribeSource_RulesetEntry_RationaleFromFile(t *testing.T) {
 		},
 	})
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestDescribeSource_RulesetEntry_RuleDescriptionsFromFile(t *testing.T) {
 		},
 	})
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestDescribeSource_RulesetEntry_PullRequestParamsSummary(t *testing.T) {
 		},
 	})
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -408,11 +409,11 @@ case "$args" in
   "api repos/acme/r/rulesets/1") echo '` + string(liveResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 
 	var out bytes.Buffer
 	// Source WITH metadata should produce no drift against live WITHOUT metadata.
-	drift, err := posture.CheckRulesets(context.Background(), ghBin, "acme/r", srcWith, &out)
+	drift, err := posture.CheckRulesets(context.Background(), "acme/r", srcWith, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -422,7 +423,7 @@ esac`
 
 	out.Reset()
 	// Source WITHOUT metadata — baseline check still passes.
-	drift, err = posture.CheckRulesets(context.Background(), ghBin, "acme/r", srcWithout, &out)
+	drift, err = posture.CheckRulesets(context.Background(), "acme/r", srcWithout, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -586,7 +587,7 @@ func TestDescribeSource_BuiltinProfile_HasAllSettings(t *testing.T) {
 	}
 	defer cleanup()
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("DescribeSource: %v", err)
 	}
@@ -625,7 +626,7 @@ func TestDescribeSource_BuiltinProfile_AllRulesHaveRationale(t *testing.T) {
 	}
 	defer cleanup()
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("DescribeSource: %v", err)
 	}
@@ -649,7 +650,7 @@ func TestDescribeSource_BuiltinProfile_PrintRoundTrip(t *testing.T) {
 	}
 	defer cleanup()
 
-	desc, err := posture.DescribeSource(context.Background(), "gh", src, "", nil)
+	desc, err := posture.DescribeSource(context.Background(), nil, nil, src, "", nil)
 	if err != nil {
 		t.Fatalf("DescribeSource: %v", err)
 	}

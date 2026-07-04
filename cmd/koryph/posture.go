@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/koryph/koryph/internal/engine"
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/posture"
 	"github.com/koryph/koryph/internal/project"
@@ -208,6 +209,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 
 	ctx := context.Background()
 	ghBin := posture.GHBin()
+	ghProv := ghpkg.New()
 
 	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
 	if err != nil {
@@ -250,7 +252,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 			return
 		}
 		snapshotCaptured = true
-		snapPath, serr := posture.CaptureSnapshot(ctx, ghBin, repoSlug, cwd, "profile:"+profileName)
+		snapPath, serr := posture.CaptureSnapshot(ctx, ghProv.Repo(), ghProv.Protection(), repoSlug, cwd, "profile:"+profileName)
 		if serr != nil {
 			fmt.Fprintf(stderr, "warning: could not capture pre-change snapshot: %v\n", serr)
 			return
@@ -267,7 +269,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 		if apply {
 			// Diff first.
 			fmt.Fprintln(stdout, "--- rulesets diff ---")
-			d, err2 := posture.CheckRulesets(ctx, ghBin, repoSlug, rulesetSrc, stdout)
+			d, err2 := posture.CheckRulesets(ctx, repoSlug, rulesetSrc, stdout, ghProv.Protection())
 			if err2 != nil {
 				return fail(stderr, err2)
 			}
@@ -275,12 +277,12 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 				drift = true
 				snapshotOnce()
 				fmt.Fprintln(stdout, "--- applying rulesets ---")
-				if err2 := posture.ApplyRulesets(ctx, ghBin, repoSlug, rulesetSrc, stdout); err2 != nil {
+				if err2 := posture.ApplyRulesets(ctx, repoSlug, rulesetSrc, stdout, ghProv.Protection()); err2 != nil {
 					return fail(stderr, err2)
 				}
 			}
 		} else {
-			d, err2 := posture.CheckRulesets(ctx, ghBin, repoSlug, rulesetSrc, stdout)
+			d, err2 := posture.CheckRulesets(ctx, repoSlug, rulesetSrc, stdout, ghProv.Protection())
 			if err2 != nil {
 				return fail(stderr, err2)
 			}
@@ -298,7 +300,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 	if _, err2 := settingsSrc.RepoSettingsFile(); err2 == nil {
 		if apply {
 			fmt.Fprintln(stdout, "--- settings diff ---")
-			d, err2 := posture.CheckSettings(ctx, ghBin, repoSlug, settingsSrc, stdout)
+			d, err2 := posture.CheckSettings(ctx, repoSlug, settingsSrc, stdout, ghProv.Repo())
 			if err2 != nil {
 				return fail(stderr, err2)
 			}
@@ -306,12 +308,12 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 				drift = true
 				snapshotOnce()
 				fmt.Fprintln(stdout, "--- applying settings ---")
-				if err2 := posture.ApplySettings(ctx, ghBin, repoSlug, settingsSrc, stdout); err2 != nil {
+				if err2 := posture.ApplySettings(ctx, repoSlug, settingsSrc, stdout, ghProv.Repo()); err2 != nil {
 					return fail(stderr, err2)
 				}
 			}
 		} else {
-			d, err2 := posture.CheckSettings(ctx, ghBin, repoSlug, settingsSrc, stdout)
+			d, err2 := posture.CheckSettings(ctx, repoSlug, settingsSrc, stdout, ghProv.Repo())
 			if err2 != nil {
 				return fail(stderr, err2)
 			}
@@ -328,7 +330,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 		if _, err2 := profileSrc.OrgRulesetsDir(); err2 == nil {
 			if apply {
 				fmt.Fprintln(stdout, "--- org rulesets diff ---")
-				d, err2 := posture.CheckOrgRulesets(ctx, ghBin, *org, profileSrc, stdout)
+				d, err2 := posture.CheckOrgRulesets(ctx, *org, profileSrc, stdout, ghProv.Protection())
 				if err2 != nil {
 					return fail(stderr, err2)
 				}
@@ -336,12 +338,12 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 					drift = true
 					snapshotOnce()
 					fmt.Fprintln(stdout, "--- applying org rulesets ---")
-					if err2 := posture.ApplyOrgRulesets(ctx, ghBin, *org, profileSrc, stdout); err2 != nil {
+					if err2 := posture.ApplyOrgRulesets(ctx, *org, profileSrc, stdout, ghProv.Protection()); err2 != nil {
 						return fail(stderr, err2)
 					}
 				}
 			} else {
-				d, err2 := posture.CheckOrgRulesets(ctx, ghBin, *org, profileSrc, stdout)
+				d, err2 := posture.CheckOrgRulesets(ctx, *org, profileSrc, stdout, ghProv.Protection())
 				if err2 != nil {
 					return fail(stderr, err2)
 				}
@@ -436,6 +438,7 @@ func cmdPostureDescribe(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	ghBin := posture.GHBin()
+	ghProv := ghpkg.New()
 	home := paths.KoryphHome()
 
 	// Load the manifest for the profile description and any manifest-level
@@ -470,7 +473,7 @@ func cmdPostureDescribe(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	desc, err := posture.DescribeSource(ctx, ghBin, profileSrc, repoSlug, manifest.Descriptions)
+	desc, err := posture.DescribeSource(ctx, ghProv.Repo(), ghProv.Protection(), profileSrc, repoSlug, manifest.Descriptions)
 	if err != nil {
 		return fail(stderr, err)
 	}

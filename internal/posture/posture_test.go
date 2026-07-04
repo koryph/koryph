@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/posture"
 )
 
@@ -143,11 +144,11 @@ case "$args" in
   "api repos/acme/testrepo/rulesets/42") echo '` + string(liveResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	src := rulesetSource(t, map[string]interface{}{"protect-main": want})
 
 	var out bytes.Buffer
-	drift, err := posture.CheckRulesets(context.Background(), ghBin, "acme/testrepo", src, &out)
+	drift, err := posture.CheckRulesets(context.Background(), "acme/testrepo", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -167,12 +168,12 @@ case "$args" in
   "api repos/acme/testrepo/rulesets") echo '` + string(listResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	want := map[string]interface{}{"name": "protect-main", "enforcement": "active", "target": "branch"}
 	src := rulesetSource(t, map[string]interface{}{"protect-main": want})
 
 	var out bytes.Buffer
-	drift, err := posture.CheckRulesets(context.Background(), ghBin, "acme/testrepo", src, &out)
+	drift, err := posture.CheckRulesets(context.Background(), "acme/testrepo", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,11 +207,11 @@ case "$args" in
   "api repos/acme/testrepo/rulesets/99") echo '` + string(liveResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	src := rulesetSource(t, map[string]interface{}{"protect-main": want})
 
 	var out bytes.Buffer
-	drift, err := posture.CheckRulesets(context.Background(), ghBin, "acme/testrepo", src, &out)
+	drift, err := posture.CheckRulesets(context.Background(), "acme/testrepo", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -244,7 +245,7 @@ esac`
 	src := rulesetSource(t, map[string]interface{}{"new-rule": want})
 
 	var out bytes.Buffer
-	err := posture.ApplyRulesets(context.Background(), bin, "acme/testrepo", src, &out)
+	err := posture.ApplyRulesets(context.Background(), "acme/testrepo", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -326,10 +327,11 @@ esac`
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("KORYPH_GH_BIN", bin)
 
 	src := settingsSource(t, desired)
 	var out bytes.Buffer
-	drift, err := posture.CheckSettings(context.Background(), bin, "acme/r", src, &out)
+	drift, err := posture.CheckSettings(context.Background(), "acme/r", src, &out, ghpkg.New().Repo())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -366,10 +368,11 @@ esac`
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("KORYPH_GH_BIN", bin)
 
 	src := settingsSource(t, desired)
 	var out bytes.Buffer
-	drift, err := posture.CheckSettings(context.Background(), bin, "acme/r", src, &out)
+	drift, err := posture.CheckSettings(context.Background(), "acme/r", src, &out, ghpkg.New().Repo())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

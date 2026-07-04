@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/posture"
 )
 
@@ -100,11 +101,11 @@ case "$args" in
   "api orgs/acme-org/rulesets/77") echo '` + string(liveResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	src := orgRulesetSource(t, map[string]interface{}{"org-protect-main": want})
 
 	var out bytes.Buffer
-	drift, err := posture.CheckOrgRulesets(context.Background(), ghBin, "acme-org", src, &out)
+	drift, err := posture.CheckOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,12 +124,12 @@ case "$args" in
   "api orgs/acme-org/rulesets") echo '` + string(listResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	want := map[string]interface{}{"name": "org-protect-main", "enforcement": "active", "target": "branch"}
 	src := orgRulesetSource(t, map[string]interface{}{"org-protect-main": want})
 
 	var out bytes.Buffer
-	drift, err := posture.CheckOrgRulesets(context.Background(), ghBin, "acme-org", src, &out)
+	drift, err := posture.CheckOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,11 +162,11 @@ case "$args" in
   "api orgs/acme-org/rulesets/55") echo '` + string(liveResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	src := orgRulesetSource(t, map[string]interface{}{"org-protect-main": want})
 
 	var out bytes.Buffer
-	drift, err := posture.CheckOrgRulesets(context.Background(), ghBin, "acme-org", src, &out)
+	drift, err := posture.CheckOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -196,12 +197,12 @@ case "$args" in
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
 	_ = createArg
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	want := map[string]interface{}{"name": "new-org-rule", "enforcement": "active", "target": "branch"}
 	src := orgRulesetSource(t, map[string]interface{}{"new-org-rule": want})
 
 	var out bytes.Buffer
-	if err := posture.ApplyOrgRulesets(context.Background(), ghBin, "acme-org", src, &out); err != nil {
+	if err := posture.ApplyOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.String(), "CREATED") {
@@ -229,7 +230,7 @@ case "$args" in
   "api -X PUT orgs/acme-org/rulesets/88"*) echo '` + string(updatedResp) + `' ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	want := map[string]interface{}{
 		"name":        "update-org-rule",
 		"enforcement": "active",
@@ -238,7 +239,7 @@ esac`
 	src := orgRulesetSource(t, map[string]interface{}{"update-org-rule": want})
 
 	var out bytes.Buffer
-	if err := posture.ApplyOrgRulesets(context.Background(), ghBin, "acme-org", src, &out); err != nil {
+	if err := posture.ApplyOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.String(), "UPDATED") {
@@ -256,12 +257,12 @@ case "$args" in
   "api orgs/acme-org/rulesets") echo '` + permBody + `'; exit 1 ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	want := map[string]interface{}{"name": "org-rule", "enforcement": "active"}
 	src := orgRulesetSource(t, map[string]interface{}{"org-rule": want})
 
 	var out bytes.Buffer
-	_, err := posture.CheckOrgRulesets(context.Background(), ghBin, "acme-org", src, &out)
+	_, err := posture.CheckOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection())
 	if err == nil {
 		t.Fatal("expected an error for 403 permission denied")
 	}
@@ -286,12 +287,12 @@ case "$args" in
   "api orgs/acme-org/rulesets") echo '` + errBody + `'; exit 1 ;;
   *) echo "unhandled: $args" >&2; exit 1 ;;
 esac`
-	ghBin := fakeGH(t, script)
+	fakeGH(t, script)
 	want := map[string]interface{}{"name": "org-rule", "enforcement": "active"}
 	src := orgRulesetSource(t, map[string]interface{}{"org-rule": want})
 
 	var out bytes.Buffer
-	_, err := posture.CheckOrgRulesets(context.Background(), ghBin, "acme-org", src, &out)
+	_, err := posture.CheckOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection())
 	if err == nil {
 		t.Fatal("expected an error for non-zero exit")
 	}
@@ -311,10 +312,10 @@ func TestCheckOrgRulesets_EmptyDir(t *testing.T) {
 
 	// gh should not be called at all (no files → nothing to compare); pass a
 	// gh that fails on any call to detect accidental invocations.
-	ghBin := fakeGH(t, `echo "unexpected gh call: $*" >&2; exit 1`)
+	fakeGH(t, `echo "unexpected gh call: $*" >&2; exit 1`)
 
 	var out bytes.Buffer
-	drift, err := posture.CheckOrgRulesets(context.Background(), ghBin, "acme-org", src, &out)
+	drift, err := posture.CheckOrgRulesets(context.Background(), "acme-org", src, &out, ghpkg.New().Protection())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

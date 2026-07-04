@@ -10,33 +10,35 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/koryph/koryph/internal/forge"
 )
 
-// CheckRulesets compares each desired ruleset in src against the live GitHub
-// rulesets for repo.  Output is written to w in the same style as the
-// former ensure-rulesets.sh: "OK <name>", "MISSING <name>", or "DRIFT <name>"
-// with an indented diff.
+// CheckRulesets compares each desired ruleset in src against the live
+// rulesets for repo as returned by prot.  Output is written to w in the same
+// style as the former ensure-rulesets.sh: "OK <name>", "MISSING <name>", or
+// "DRIFT <name>" with an indented diff.
 //
 // Returns (true, nil) when drift is detected and (false, nil) when everything
 // matches.  An error return means a hard failure (API or filesystem).
-func CheckRulesets(ctx context.Context, ghBin, repo string, src Source, w io.Writer) (bool, error) {
-	return applyRulesets(ctx, ghBin, repo, src, w, false)
+func CheckRulesets(ctx context.Context, repo string, src Source, w io.Writer, prot forge.ProtectionService) (bool, error) {
+	return applyRulesets(ctx, repo, src, w, prot, false)
 }
 
 // ApplyRulesets creates or updates each desired ruleset in src on the live
-// GitHub repository repo, printing CREATED / UPDATED / OK for each.
+// repository repo via prot, printing CREATED / UPDATED / OK for each.
 //
 // It never deletes rulesets it does not know about (same rule as the former
 // ensure-rulesets.sh).
-func ApplyRulesets(ctx context.Context, ghBin, repo string, src Source, w io.Writer) error {
-	_, err := applyRulesets(ctx, ghBin, repo, src, w, true)
+func ApplyRulesets(ctx context.Context, repo string, src Source, w io.Writer, prot forge.ProtectionService) error {
+	_, err := applyRulesets(ctx, repo, src, w, prot, true)
 	return err
 }
 
 // applyRulesets is the shared implementation for CheckRulesets and
 // ApplyRulesets.  When apply is false it performs a dry-run check; when true
-// it creates/updates rulesets on GitHub.
-func applyRulesets(ctx context.Context, ghBin, repo string, src Source, w io.Writer, apply bool) (bool, error) {
+// it creates/updates rulesets via the forge ProtectionService.
+func applyRulesets(ctx context.Context, repo string, src Source, w io.Writer, prot forge.ProtectionService, apply bool) (bool, error) {
 	dir, err := src.RulesetsDir()
 	if err != nil {
 		return false, err
@@ -48,15 +50,15 @@ func applyRulesets(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 	}
 
 	// Fetch the live ruleset list once so we can do name → id lookups.
-	liveList, err := fetchRulesetList(ctx, ghBin, repo)
+	liveList, err := prot.List(ctx, repo)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("posture: list rulesets: %w", err)
 	}
 
 	// Build name → id map.
-	nameToID := make(map[string]int64, len(liveList))
+	nameToID := make(map[string]string, len(liveList))
 	for _, r := range liveList {
-		nameToID[r.name] = r.id
+		nameToID[r.Name] = r.ID
 	}
 
 	drift := false
@@ -81,36 +83,27 @@ func applyRulesets(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 
 		liveID, exists := nameToID[name]
 		if !exists {
-			// Ruleset is missing on GitHub.
+			// Ruleset is missing on the forge.
 			if !apply {
 				fmt.Fprintf(w, "MISSING  %s (no live ruleset)\n", name)
 				drift = true
 				continue
 			}
-			// apply: POST to create.
-			endpoint := fmt.Sprintf("repos/%s/rulesets", repo)
-			_, code, err := ghRun(ctx, ghBin, []string{"api", "-X", "POST", endpoint}, wantRaw)
-			if err != nil {
+			// apply: create via the forge service.
+			if _, err := prot.Create(ctx, repo, &forge.Ruleset{Name: name, Raw: wantRaw}); err != nil {
 				return false, fmt.Errorf("posture: create ruleset %s: %w", name, err)
-			}
-			if code != 0 {
-				return false, fmt.Errorf("posture: create ruleset %s: gh exited %d", name, code)
 			}
 			fmt.Fprintf(w, "CREATED  %s\n", name)
 			continue
 		}
 
 		// Ruleset exists — fetch full live state and compare.
-		endpoint := fmt.Sprintf("repos/%s/rulesets/%d", repo, liveID)
-		liveRaw, code, err := ghRun(ctx, ghBin, []string{"api", endpoint}, nil)
+		liveRS, err := prot.Get(ctx, repo, liveID)
 		if err != nil {
 			return false, fmt.Errorf("posture: fetch ruleset %s: %w", name, err)
 		}
-		if code != 0 {
-			return false, fmt.Errorf("posture: fetch ruleset %s: gh exited %d", name, code)
-		}
 
-		liveNorm, err := normalizeRuleset(liveRaw)
+		liveNorm, err := normalizeRuleset(liveRS.Raw)
 		if err != nil {
 			return false, fmt.Errorf("posture: normalize live ruleset %s: %w", name, err)
 		}
@@ -130,50 +123,12 @@ func applyRulesets(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 			drift = true
 			continue
 		}
-		// apply: PUT to update.
-		putEndpoint := fmt.Sprintf("repos/%s/rulesets/%d", repo, liveID)
-		_, code, err = ghRun(ctx, ghBin, []string{"api", "-X", "PUT", putEndpoint}, wantRaw)
-		if err != nil {
+		// apply: update via the forge service.
+		if err := prot.Update(ctx, repo, &forge.Ruleset{ID: liveID, Name: name, Raw: wantRaw}); err != nil {
 			return false, fmt.Errorf("posture: update ruleset %s: %w", name, err)
-		}
-		if code != 0 {
-			return false, fmt.Errorf("posture: update ruleset %s: gh exited %d", name, code)
 		}
 		fmt.Fprintf(w, "UPDATED  %s\n", name)
 	}
 
 	return drift, nil
-}
-
-// rulesetRef is the minimal fields needed from the list endpoint.
-type rulesetRef struct {
-	name string
-	id   int64
-}
-
-// fetchRulesetList calls GET /repos/{owner}/{repo}/rulesets and returns the
-// slice of (name, id) pairs.
-func fetchRulesetList(ctx context.Context, ghBin, repo string) ([]rulesetRef, error) {
-	endpoint := fmt.Sprintf("repos/%s/rulesets", repo)
-	raw, code, err := ghRun(ctx, ghBin, []string{"api", endpoint}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("posture: list rulesets: %w", err)
-	}
-	if code != 0 {
-		return nil, fmt.Errorf("posture: list rulesets: gh exited %d", code)
-	}
-
-	var items []struct {
-		ID   int64  `json:"id"`
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, fmt.Errorf("posture: parse ruleset list: %w", err)
-	}
-
-	out := make([]rulesetRef, len(items))
-	for i, it := range items {
-		out[i] = rulesetRef{name: it.Name, id: it.ID}
-	}
-	return out, nil
 }

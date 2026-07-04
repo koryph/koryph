@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/koryph/koryph/internal/forge"
 )
 
 // snapshotsDirName is the directory under <repo-root>/.koryph/ that holds
@@ -140,7 +142,8 @@ func EnsureGitignored(root string) error {
 // It also ensures ".koryph/snapshots/" is in root/.gitignore.
 //
 // Returns the path of the written snapshot file.
-func CaptureSnapshot(ctx context.Context, ghBin, repo, root, kind string) (string, error) {
+func CaptureSnapshot(ctx context.Context, repoSvc forge.RepoService, prot forge.ProtectionService, repo, root, kind string) (string, error) {
+	owner, repoName := splitOwnerRepo(repo)
 	now := time.Now().UTC()
 	snap := Snapshot{
 		CapturedAt: now.Format(time.RFC3339),
@@ -153,14 +156,10 @@ func CaptureSnapshot(ctx context.Context, ghBin, repo, root, kind string) (strin
 		snap.IAC = kind
 	}
 
-	// Fetch live repo metadata once.
-	repoEndpoint := fmt.Sprintf("repos/%s", repo)
-	liveRepoRaw, code, err := ghRun(ctx, ghBin, []string{"api", repoEndpoint}, nil)
+	// Fetch live repo metadata once via the forge service.
+	liveRepoRaw, err := repoSvc.GetRaw(ctx, owner, repoName)
 	if err != nil {
 		return "", fmt.Errorf("posture snapshot: fetch repo: %w", err)
-	}
-	if code != 0 {
-		return "", fmt.Errorf("posture snapshot: fetch repo: gh exited %d", code)
 	}
 	var liveRepoFull map[string]json.RawMessage
 	if err := json.Unmarshal(liveRepoRaw, &liveRepoFull); err != nil {
@@ -182,46 +181,32 @@ func CaptureSnapshot(ctx context.Context, ghBin, repo, root, kind string) (strin
 	snap.Sections.SecurityAndAnalysis = secAndAnalysis
 
 	// Section 3: vulnerability alerts.
-	vulnEndpoint := fmt.Sprintf("repos/%s/vulnerability-alerts", repo)
-	_, vulnCode, err := ghRun(ctx, ghBin, []string{"api", vulnEndpoint}, nil)
+	liveVuln, err := repoSvc.VulnAlerts(ctx, owner, repoName)
 	if err != nil {
 		return "", fmt.Errorf("posture snapshot: check vuln alerts: %w", err)
 	}
-	liveVuln := vulnCode == 0 // 204 = enabled; 404 = disabled
 	snap.Sections.VulnerabilityAlerts = &liveVuln
 
 	// Section 4: actions workflow permissions.
-	actionsEndpoint := fmt.Sprintf("repos/%s/actions/permissions/workflow", repo)
-	liveActRaw, code, err := ghRun(ctx, ghBin, []string{"api", actionsEndpoint}, nil)
+	liveActRaw, err := repoSvc.ActionsWorkflow(ctx, owner, repoName)
 	if err != nil {
 		return "", fmt.Errorf("posture snapshot: fetch actions perms: %w", err)
-	}
-	if code != 0 {
-		return "", fmt.Errorf("posture snapshot: fetch actions perms: gh exited %d", code)
 	}
 	snap.Sections.ActionsWorkflowPermissions = liveActRaw
 
 	// Section 5: rulesets — fetch each live ruleset by name and normalize.
-	liveList, err := fetchRulesetList(ctx, ghBin, repo)
+	liveList, err := prot.List(ctx, repo)
 	if err != nil {
 		return "", fmt.Errorf("posture snapshot: list rulesets: %w", err)
 	}
 	if len(liveList) > 0 {
 		snap.Sections.Rulesets = make(map[string]json.RawMessage, len(liveList))
 		for _, ref := range liveList {
-			rsEndpoint := fmt.Sprintf("repos/%s/rulesets/%d", repo, ref.id)
-			rsRaw, code, err := ghRun(ctx, ghBin, []string{"api", rsEndpoint}, nil)
+			norm, err := normalizeRuleset(ref.Raw)
 			if err != nil {
-				return "", fmt.Errorf("posture snapshot: fetch ruleset %q: %w", ref.name, err)
+				return "", fmt.Errorf("posture snapshot: normalize ruleset %q: %w", ref.Name, err)
 			}
-			if code != 0 {
-				return "", fmt.Errorf("posture snapshot: fetch ruleset %q: gh exited %d", ref.name, code)
-			}
-			norm, err := normalizeRuleset(rsRaw)
-			if err != nil {
-				return "", fmt.Errorf("posture snapshot: normalize ruleset %q: %w", ref.name, err)
-			}
-			snap.Sections.Rulesets[ref.name] = norm
+			snap.Sections.Rulesets[ref.Name] = norm
 		}
 	}
 

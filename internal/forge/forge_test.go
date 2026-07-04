@@ -5,6 +5,7 @@ package forge_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -154,6 +155,24 @@ func (s *stubRepoSvc) Get(_ context.Context, _, _ string) (*forge.RepoSettings, 
 	return nil, forge.ErrUnsupported
 }
 func (s *stubRepoSvc) Update(_ context.Context, _, _ string, _ *forge.RepoSettings) error {
+	return forge.ErrUnsupported
+}
+func (s *stubRepoSvc) GetRaw(_ context.Context, _, _ string) (json.RawMessage, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s *stubRepoSvc) PatchRaw(_ context.Context, _, _ string, _ json.RawMessage) error {
+	return forge.ErrUnsupported
+}
+func (s *stubRepoSvc) VulnAlerts(_ context.Context, _, _ string) (bool, error) {
+	return false, forge.ErrUnsupported
+}
+func (s *stubRepoSvc) SetVulnAlerts(_ context.Context, _, _ string, _ bool) error {
+	return forge.ErrUnsupported
+}
+func (s *stubRepoSvc) ActionsWorkflow(_ context.Context, _, _ string) (json.RawMessage, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s *stubRepoSvc) SetActionsWorkflow(_ context.Context, _, _ string, _ json.RawMessage) error {
 	return forge.ErrUnsupported
 }
 

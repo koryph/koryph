@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/koryph/koryph/internal/forge"
 )
 
 // repoSettingsFile is the structure of .github/repo-settings.json.
@@ -27,23 +29,23 @@ type repoSettingsFile struct {
 }
 
 // CheckSettings compares each managed section of the desired-state file
-// against the live GitHub repository settings for repo.  Informational
+// against the live repository settings for repo via repoSvc.  Informational
 // "unmanaged" items are printed as INFO lines and never cause drift.
 //
 // Returns (true, nil) on drift, (false, nil) when everything matches.
-func CheckSettings(ctx context.Context, ghBin, repo string, src Source, w io.Writer) (bool, error) {
-	return applySettings(ctx, ghBin, repo, src, w, false)
+func CheckSettings(ctx context.Context, repo string, src Source, w io.Writer, repoSvc forge.RepoService) (bool, error) {
+	return applySettings(ctx, repo, src, w, repoSvc, false)
 }
 
 // ApplySettings patches each managed section of the desired-state file to
-// match the live GitHub repository settings for repo.
-func ApplySettings(ctx context.Context, ghBin, repo string, src Source, w io.Writer) error {
-	_, err := applySettings(ctx, ghBin, repo, src, w, true)
+// match the live repository settings for repo via repoSvc.
+func ApplySettings(ctx context.Context, repo string, src Source, w io.Writer, repoSvc forge.RepoService) error {
+	_, err := applySettings(ctx, repo, src, w, repoSvc, true)
 	return err
 }
 
 // applySettings is the shared implementation for CheckSettings / ApplySettings.
-func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Writer, apply bool) (bool, error) {
+func applySettings(ctx context.Context, repo string, src Source, w io.Writer, repoSvc forge.RepoService, apply bool) (bool, error) {
 	settingsPath, err := src.RepoSettingsFile()
 	if err != nil {
 		return false, err
@@ -58,14 +60,13 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 		return false, fmt.Errorf("posture: parse settings file: %w", err)
 	}
 
-	// Fetch the full live repo record once.
-	repoEndpoint := fmt.Sprintf("repos/%s", repo)
-	liveRepRaw, code, err := ghRun(ctx, ghBin, []string{"api", repoEndpoint}, nil)
+	// Split repo slug into owner/name for the forge service.
+	owner, repoName := splitOwnerRepo(repo)
+
+	// Fetch the full live repo record once via the forge service.
+	liveRepRaw, err := repoSvc.GetRaw(ctx, owner, repoName)
 	if err != nil {
 		return false, fmt.Errorf("posture: fetch repo: %w", err)
-	}
-	if code != 0 {
-		return false, fmt.Errorf("posture: fetch repo: gh exited %d", code)
 	}
 	var liveRepoFull map[string]json.RawMessage
 	if err := json.Unmarshal(liveRepRaw, &liveRepoFull); err != nil {
@@ -91,13 +92,8 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 				if err != nil {
 					return false, err
 				}
-				// The PATCH body is the repo flags object directly (no wrapper key).
-				_, code, err := ghRun(ctx, ghBin, []string{"api", "-X", "PATCH", repoEndpoint}, payload)
-				if err != nil {
+				if err := repoSvc.PatchRaw(ctx, owner, repoName, payload); err != nil {
 					return false, fmt.Errorf("posture: patch repo flags: %w", err)
-				}
-				if code != 0 {
-					return false, fmt.Errorf("posture: patch repo flags: gh exited %d", code)
 				}
 				fmt.Fprintln(w, "UPDATED  repo flags")
 			}
@@ -117,17 +113,12 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 		if d {
 			drift = true
 			if apply {
-				// Wrap in the nested security_and_analysis structure GitHub expects.
 				payload, err := buildSecurityPayload(desired.SecurityAndAnalysis)
 				if err != nil {
 					return false, err
 				}
-				_, code, err := ghRun(ctx, ghBin, []string{"api", "-X", "PATCH", repoEndpoint}, payload)
-				if err != nil {
+				if err := repoSvc.PatchRaw(ctx, owner, repoName, payload); err != nil {
 					return false, fmt.Errorf("posture: patch security & analysis: %w", err)
-				}
-				if code != 0 {
-					return false, fmt.Errorf("posture: patch security & analysis: gh exited %d", code)
 				}
 				fmt.Fprintln(w, "UPDATED  security & analysis")
 			}
@@ -137,12 +128,10 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 	// --- section 3: vulnerability alerts ----------------------------------
 	if desired.VulnerabilityAlerts != nil {
 		wantVuln := *desired.VulnerabilityAlerts
-		vulnEndpoint := fmt.Sprintf("repos/%s/vulnerability-alerts", repo)
-		_, vulnCode, err := ghRun(ctx, ghBin, []string{"api", vulnEndpoint}, nil)
+		liveVuln, err := repoSvc.VulnAlerts(ctx, owner, repoName)
 		if err != nil {
 			return false, fmt.Errorf("posture: check vuln alerts: %w", err)
 		}
-		liveVuln := (vulnCode == 0) // 204 = enabled; 404 = disabled
 
 		liveVulnJSON, _ := json.Marshal(map[string]bool{"enabled": liveVuln})
 		wantVulnJSON, _ := json.Marshal(map[string]bool{"enabled": wantVuln})
@@ -154,18 +143,8 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 		if d {
 			drift = true
 			if apply {
-				var method string
-				if wantVuln {
-					method = "PUT"
-				} else {
-					method = "DELETE"
-				}
-				_, code, err := ghRun(ctx, ghBin, []string{"api", "-X", method, vulnEndpoint}, nil)
-				if err != nil {
+				if err := repoSvc.SetVulnAlerts(ctx, owner, repoName, wantVuln); err != nil {
 					return false, fmt.Errorf("posture: set vuln alerts: %w", err)
-				}
-				if code != 0 {
-					return false, fmt.Errorf("posture: set vuln alerts: gh exited %d", code)
 				}
 				fmt.Fprintln(w, "UPDATED  vulnerability alerts")
 			}
@@ -174,13 +153,9 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 
 	// --- section 4: actions workflow permissions --------------------------
 	if desired.ActionsWorkflow != nil {
-		actionsEndpoint := fmt.Sprintf("repos/%s/actions/permissions/workflow", repo)
-		liveActRaw, code, err := ghRun(ctx, ghBin, []string{"api", actionsEndpoint}, nil)
+		liveActRaw, err := repoSvc.ActionsWorkflow(ctx, owner, repoName)
 		if err != nil {
 			return false, fmt.Errorf("posture: fetch actions perms: %w", err)
-		}
-		if code != 0 {
-			return false, fmt.Errorf("posture: fetch actions perms: gh exited %d", code)
 		}
 
 		liveActNorm, err := jsonSortKeys(liveActRaw)
@@ -199,12 +174,8 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 		if d {
 			drift = true
 			if apply {
-				_, code, err := ghRun(ctx, ghBin, []string{"api", "-X", "PUT", actionsEndpoint}, desired.ActionsWorkflow)
-				if err != nil {
+				if err := repoSvc.SetActionsWorkflow(ctx, owner, repoName, desired.ActionsWorkflow); err != nil {
 					return false, fmt.Errorf("posture: set actions perms: %w", err)
-				}
-				if code != 0 {
-					return false, fmt.Errorf("posture: set actions perms: gh exited %d", code)
 				}
 				fmt.Fprintln(w, "UPDATED  actions workflow permissions")
 			}
@@ -217,6 +188,17 @@ func applySettings(ctx context.Context, ghBin, repo string, src Source, w io.Wri
 	}
 
 	return drift, nil
+}
+
+// splitOwnerRepo splits an "owner/repo" slug into its two parts.
+// If there is no "/" the whole string is returned as owner with repo = "".
+func splitOwnerRepo(ownerRepo string) (owner, repo string) {
+	for i, c := range ownerRepo {
+		if c == '/' {
+			return ownerRepo[:i], ownerRepo[i+1:]
+		}
+	}
+	return ownerRepo, ""
 }
 
 // sectionCheck compares live and want JSON byte slices (both already

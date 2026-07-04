@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/koryph/koryph/internal/forge"
 )
 
 // SettingEntry describes one managed setting key inside a profile or IaC source.
@@ -147,14 +149,14 @@ var builtinRuleRationale = map[string]string{
 
 // DescribeSource builds a Description for the given Source.
 //
-// When liveRepo is non-empty, it fetches the live settings from GitHub via
-// ghBin to populate LiveValue/WouldChange on each SettingEntry and LiveState
-// on each RulesetEntry.  Pass an empty string to produce a profile-only
-// description without any live comparison.
+// When liveRepo is non-empty, it fetches the live settings via repoSvc and
+// prot to populate LiveValue/WouldChange on each SettingEntry and LiveState
+// on each RulesetEntry.  Pass an empty liveRepo (and nil services) to produce
+// a profile-only description without any live comparison.
 //
 // extraDescs may override the built-in rationale for any setting key; pass nil
 // to use built-in rationale only.
-func DescribeSource(ctx context.Context, ghBin string, src Source, liveRepo string, extraDescs map[string]string) (*Description, error) {
+func DescribeSource(ctx context.Context, repoSvc forge.RepoService, prot forge.ProtectionService, src Source, liveRepo string, extraDescs map[string]string) (*Description, error) {
 	desc := &Description{}
 
 	// --- repo settings -------------------------------------------------------
@@ -177,7 +179,7 @@ func DescribeSource(ctx context.Context, ghBin string, src Source, liveRepo stri
 		var liveVuln bool
 		if liveRepo != "" {
 			var ferr error
-			liveRepoMap, liveActRaw, liveVuln, ferr = fetchLiveForDescribe(ctx, ghBin, liveRepo)
+			liveRepoMap, liveActRaw, liveVuln, ferr = fetchLiveForDescribe(ctx, repoSvc, liveRepo)
 			if ferr != nil {
 				return nil, ferr
 			}
@@ -330,7 +332,7 @@ func DescribeSource(ctx context.Context, ghBin string, src Source, liveRepo stri
 		var liveStates map[string]string
 		if liveRepo != "" {
 			var ferr error
-			liveStates, ferr = describeRulesetStates(ctx, ghBin, liveRepo, dir)
+			liveStates, ferr = describeRulesetStates(ctx, prot, liveRepo, dir)
 			if ferr != nil {
 				return nil, ferr
 			}
@@ -535,14 +537,12 @@ func ruleParamsSummary(ruleType string, params json.RawMessage) string {
 
 // fetchLiveForDescribe fetches the live data required for describe's live comparison.
 // Returns (repoMap, actionsRaw, vulnEnabled, error).
-func fetchLiveForDescribe(ctx context.Context, ghBin, repo string) (map[string]json.RawMessage, []byte, bool, error) {
-	repoEndpoint := fmt.Sprintf("repos/%s", repo)
-	liveRepRaw, code, err := ghRun(ctx, ghBin, []string{"api", repoEndpoint}, nil)
+func fetchLiveForDescribe(ctx context.Context, repoSvc forge.RepoService, repo string) (map[string]json.RawMessage, []byte, bool, error) {
+	owner, repoName := splitOwnerRepo(repo)
+
+	liveRepRaw, err := repoSvc.GetRaw(ctx, owner, repoName)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("posture: fetch repo for describe: %w", err)
-	}
-	if code != 0 {
-		return nil, nil, false, fmt.Errorf("posture: fetch repo for describe: gh exited %d", code)
 	}
 	var repoMap map[string]json.RawMessage
 	if err := json.Unmarshal(liveRepRaw, &repoMap); err != nil {
@@ -564,42 +564,36 @@ func fetchLiveForDescribe(ctx context.Context, ghBin, repo string) (map[string]j
 	}
 
 	// Actions workflow permissions.
-	actEndpoint := fmt.Sprintf("repos/%s/actions/permissions/workflow", repo)
-	actRaw, code, err := ghRun(ctx, ghBin, []string{"api", actEndpoint}, nil)
+	actRaw, err := repoSvc.ActionsWorkflow(ctx, owner, repoName)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("posture: fetch actions perms for describe: %w", err)
-	}
-	if code != 0 {
 		actRaw = nil // treat as unknown; won't block describe
 	}
 
 	// Vulnerability alerts.
-	vulnEndpoint := fmt.Sprintf("repos/%s/vulnerability-alerts", repo)
-	_, vulnCode, err := ghRun(ctx, ghBin, []string{"api", vulnEndpoint}, nil)
+	vulnEnabled, err := repoSvc.VulnAlerts(ctx, owner, repoName)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("posture: check vuln alerts for describe: %w", err)
 	}
-	vulnEnabled := (vulnCode == 0) // 204 = enabled; 404 = disabled
 
 	return repoMap, actRaw, vulnEnabled, nil
 }
 
 // describeRulesetStates returns a map of ruleset-name → "ok"|"missing"|"drift"
-// by comparing the desired rulesets in dir against the live GitHub state.
+// by comparing the desired rulesets in dir against the live forge state.
 // It reuses normalizeRuleset for the comparison (same as check/apply).
-func describeRulesetStates(ctx context.Context, ghBin, repo, dir string) (map[string]string, error) {
+func describeRulesetStates(ctx context.Context, prot forge.ProtectionService, repo, dir string) (map[string]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("posture: read rulesets dir for describe: %w", err)
 	}
 
-	liveList, err := fetchRulesetList(ctx, ghBin, repo)
+	liveList, err := prot.List(ctx, repo)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("posture: list rulesets for describe: %w", err)
 	}
-	nameToID := make(map[string]int64, len(liveList))
+	nameToID := make(map[string]string, len(liveList))
 	for _, r := range liveList {
-		nameToID[r.name] = r.id
+		nameToID[r.Name] = r.ID
 	}
 
 	states := make(map[string]string)
@@ -626,14 +620,13 @@ func describeRulesetStates(ctx context.Context, ghBin, repo, dir string) (map[st
 			continue
 		}
 
-		endpoint := fmt.Sprintf("repos/%s/rulesets/%d", repo, liveID)
-		liveRaw, code, err := ghRun(ctx, ghBin, []string{"api", endpoint}, nil)
-		if err != nil || code != 0 {
+		liveRS, err := prot.Get(ctx, repo, liveID)
+		if err != nil {
 			states[name] = "drift" // can't fetch → conservative
 			continue
 		}
 
-		liveNorm, err := normalizeRuleset(liveRaw)
+		liveNorm, err := normalizeRuleset(liveRS.Raw)
 		if err != nil {
 			states[name] = "drift"
 			continue

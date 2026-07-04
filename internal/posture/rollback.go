@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/koryph/koryph/internal/forge"
 )
 
 // Rollback finds the target snapshot (latest, or by timestamp prefix), shows
@@ -25,7 +27,7 @@ import (
 // more specific.
 //
 // Returns the path of the snapshot that was applied, or an error.
-func Rollback(ctx context.Context, ghBin, repo, root, to string, stdout, stderr io.Writer) (string, error) {
+func Rollback(ctx context.Context, repoSvc forge.RepoService, prot forge.ProtectionService, repo, root, to string, stdout, stderr io.Writer) (string, error) {
 	all, err := ListSnapshots(root)
 	if err != nil {
 		return "", err
@@ -69,7 +71,7 @@ func Rollback(ctx context.Context, ghBin, repo, root, to string, stdout, stderr 
 
 	if _, err2 := src.RulesetsDir(); err2 == nil {
 		fmt.Fprintln(stdout, "--- rulesets ---")
-		d, err2 := CheckRulesets(ctx, ghBin, repo, src, stdout)
+		d, err2 := CheckRulesets(ctx, repo, src, stdout, prot)
 		if err2 != nil {
 			return "", fmt.Errorf("posture rollback: check rulesets: %w", err2)
 		}
@@ -80,7 +82,7 @@ func Rollback(ctx context.Context, ghBin, repo, root, to string, stdout, stderr 
 
 	if _, err2 := src.RepoSettingsFile(); err2 == nil {
 		fmt.Fprintln(stdout, "--- settings ---")
-		d, err2 := CheckSettings(ctx, ghBin, repo, src, stdout)
+		d, err2 := CheckSettings(ctx, repo, src, stdout, repoSvc)
 		if err2 != nil {
 			return "", fmt.Errorf("posture rollback: check settings: %w", err2)
 		}
@@ -98,12 +100,12 @@ func Rollback(ctx context.Context, ghBin, repo, root, to string, stdout, stderr 
 	fmt.Fprintln(stdout, "--- applying snapshot ---")
 
 	if _, err2 := src.RulesetsDir(); err2 == nil {
-		if err2 := ApplyRulesets(ctx, ghBin, repo, src, stdout); err2 != nil {
+		if err2 := ApplyRulesets(ctx, repo, src, stdout, prot); err2 != nil {
 			return "", fmt.Errorf("posture rollback: apply rulesets: %w", err2)
 		}
 	}
 	if _, err2 := src.RepoSettingsFile(); err2 == nil {
-		if err2 := ApplySettings(ctx, ghBin, repo, src, stdout); err2 != nil {
+		if err2 := ApplySettings(ctx, repo, src, stdout, repoSvc); err2 != nil {
 			return "", fmt.Errorf("posture rollback: apply settings: %w", err2)
 		}
 	}

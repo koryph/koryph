@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"strings"
 
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/posture"
 	"github.com/koryph/koryph/internal/project"
@@ -91,6 +92,7 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 	home := paths.KoryphHome()
 	ghBin := posture.GHBin()
 	ctx := context.Background()
+	ghProv := ghpkg.New()
 
 	repoSlug, err := posture.DetectRepo(ctx, ghBin)
 	if err != nil {
@@ -126,7 +128,7 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 		rulesetSrc = localSrc
 	}
 	if _, err := rulesetSrc.RulesetsDir(); err == nil {
-		d, err := posture.CheckRulesets(ctx, ghBin, repoSlug, rulesetSrc, &out)
+		d, err := posture.CheckRulesets(ctx, repoSlug, rulesetSrc, &out, ghProv.Protection())
 		if err != nil {
 			// Degrade gracefully on gh errors.
 			return Finding{
@@ -146,7 +148,7 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 		settingsSrc = localSrc
 	}
 	if _, err := settingsSrc.RepoSettingsFile(); err == nil {
-		d, err := posture.CheckSettings(ctx, ghBin, repoSlug, settingsSrc, &out)
+		d, err := posture.CheckSettings(ctx, repoSlug, settingsSrc, &out, ghProv.Repo())
 		if err != nil {
 			return Finding{
 				Check:   checkNamePostureDrift,
@@ -223,7 +225,7 @@ func checkOrgPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Con
 
 	// Real check via gh CLI.
 	home := paths.KoryphHome()
-	ghBin := posture.GHBin()
+	ghProv := ghpkg.New()
 	ctx := context.Background()
 
 	profileSrc, cleanup, err := posture.RenderProfile(cfg.Posture.Profile, cfg.Posture.Parameters, home)
@@ -246,7 +248,7 @@ func checkOrgPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Con
 	}
 
 	var out bytes.Buffer
-	d, err := posture.CheckOrgRulesets(ctx, ghBin, orgName, profileSrc, &out)
+	d, err := posture.CheckOrgRulesets(ctx, orgName, profileSrc, &out, ghProv.Protection())
 	if err != nil {
 		// Degrade gracefully — permission errors and gh errors are not fatal.
 		return Finding{

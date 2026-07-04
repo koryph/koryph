@@ -16,6 +16,7 @@ import (
 
 	"github.com/koryph/koryph/internal/commands"
 	"github.com/koryph/koryph/internal/engine"
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/onboard"
 	"github.com/koryph/koryph/internal/paths"
@@ -414,6 +415,7 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 		profileSrc, cleanup, renderErr := posture.RenderProfile(offer, nil, home)
 		if renderErr == nil {
 			defer cleanup()
+			ghProv := ghpkg.New()
 			var diffBuf bytes.Buffer
 			hasRulesets, hasSettings := posture.EjectCheck(root)
 			localSrc := posture.LocalSource{Root: root}
@@ -423,7 +425,7 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 				rulesetSrc = localSrc
 			}
 			if _, err := rulesetSrc.RulesetsDir(); err == nil {
-				_, _ = posture.CheckRulesets(ctx, ghBin, repoSlug, rulesetSrc, &diffBuf)
+				_, _ = posture.CheckRulesets(ctx, repoSlug, rulesetSrc, &diffBuf, ghProv.Protection())
 			}
 
 			var settingsSrc posture.Source = profileSrc
@@ -431,7 +433,7 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 				settingsSrc = localSrc
 			}
 			if _, err := settingsSrc.RepoSettingsFile(); err == nil {
-				_, _ = posture.CheckSettings(ctx, ghBin, repoSlug, settingsSrc, &diffBuf)
+				_, _ = posture.CheckSettings(ctx, repoSlug, settingsSrc, &diffBuf, ghProv.Repo())
 			}
 
 			if diffBuf.Len() > 0 {
@@ -480,6 +482,7 @@ func applyPostureProfile(ctx context.Context, root, ghBin, home, profileName str
 	}
 	defer cleanup()
 
+	ghProv := ghpkg.New()
 	hasRulesets, hasSettings := posture.EjectCheck(root)
 	localSrc := posture.LocalSource{Root: root}
 
@@ -492,13 +495,13 @@ func applyPostureProfile(ctx context.Context, root, ghBin, home, profileName str
 	}
 	if _, err := rulesetSrc.RulesetsDir(); err == nil {
 		fmt.Fprintln(w, "--- rulesets diff ---")
-		d, err := posture.CheckRulesets(ctx, ghBin, repoSlug, rulesetSrc, w)
+		d, err := posture.CheckRulesets(ctx, repoSlug, rulesetSrc, w, ghProv.Protection())
 		if err != nil {
 			fmt.Fprintf(w, "koryph: posture: ruleset check: %v\n", err)
 			applyErr = true
 		} else if d {
 			fmt.Fprintln(w, "--- applying rulesets ---")
-			if err := posture.ApplyRulesets(ctx, ghBin, repoSlug, rulesetSrc, w); err != nil {
+			if err := posture.ApplyRulesets(ctx, repoSlug, rulesetSrc, w, ghProv.Protection()); err != nil {
 				fmt.Fprintf(w, "koryph: posture: apply rulesets: %v\n", err)
 				applyErr = true
 			}
@@ -512,13 +515,13 @@ func applyPostureProfile(ctx context.Context, root, ghBin, home, profileName str
 	}
 	if _, err := settingsSrc.RepoSettingsFile(); err == nil {
 		fmt.Fprintln(w, "--- settings diff ---")
-		d, err := posture.CheckSettings(ctx, ghBin, repoSlug, settingsSrc, w)
+		d, err := posture.CheckSettings(ctx, repoSlug, settingsSrc, w, ghProv.Repo())
 		if err != nil {
 			fmt.Fprintf(w, "koryph: posture: settings check: %v\n", err)
 			applyErr = true
 		} else if d {
 			fmt.Fprintln(w, "--- applying settings ---")
-			if err := posture.ApplySettings(ctx, ghBin, repoSlug, settingsSrc, w); err != nil {
+			if err := posture.ApplySettings(ctx, repoSlug, settingsSrc, w, ghProv.Repo()); err != nil {
 				fmt.Fprintf(w, "koryph: posture: apply settings: %v\n", err)
 				applyErr = true
 			}

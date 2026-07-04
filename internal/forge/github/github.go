@@ -12,11 +12,10 @@
 //   - [forge.BotService]     — GitHub App manifest exchange, installation tokens,
 //     and secret wiring
 //
-// Services stubbed (returning [forge.ErrUnsupported]) — implemented in
-// later extraction beads (F2a/F2c):
-//   - [forge.RepoService]       — koryph-fv3.2 (hygiene)
-//   - [forge.ProtectionService] — koryph-fv3.2 (rulesets)
-//   - [forge.SecretsService]    — koryph-fv3.2 (org/repo secrets)
+// Services implemented in this bead (F2a — hygiene behind the forge seam):
+//   - [forge.RepoService]       — gh-backed settings (repo flags, security, vuln alerts, actions)
+//   - [forge.ProtectionService] — gh-backed rulesets (repo-level and org-level)
+//   - [forge.SecretsService]    — gh-backed secrets (repo and org)
 //
 // # Project-specific configuration
 //
@@ -30,8 +29,6 @@
 package github
 
 import (
-	"context"
-
 	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/project"
 )
@@ -88,18 +85,22 @@ func (p *Provider) Capabilities() forge.Capabilities {
 	}
 }
 
-// Repo returns a stub; implemented in koryph-fv3.2.
-func (p *Provider) Repo() forge.RepoService { return &stubRepoSvc{} }
+// Repo returns the [forge.RepoService] backed by the gh CLI — repository
+// settings, security features, vulnerability alerts, and actions workflow
+// permissions.
+func (p *Provider) Repo() forge.RepoService { return &githubRepoSvc{} }
 
-// Protection returns a stub; implemented in koryph-fv3.2.
-func (p *Provider) Protection() forge.ProtectionService { return &stubProtectionSvc{} }
+// Protection returns the [forge.ProtectionService] backed by the gh CLI —
+// repository-level and org-level rulesets.
+func (p *Provider) Protection() forge.ProtectionService { return &githubProtectionSvc{} }
 
 // PRs returns a [forge.PRService] backed by the gh CLI using explicit
 // --repo owner/repo so it can be called from any working directory.
 func (p *Provider) PRs() forge.PRService { return &githubPRSvc{} }
 
-// Secrets returns a stub; implemented in koryph-fv3.2.
-func (p *Provider) Secrets() forge.SecretsService { return &stubSecretsSvc{} }
+// Secrets returns the [forge.SecretsService] backed by the gh CLI — repository
+// and org-level CI secrets.
+func (p *Provider) Secrets() forge.SecretsService { return &githubSecretsSvc{} }
 
 // Releases returns a [forge.ReleaseService] backed by the gh CLI using the
 // draft-until-complete strategy (CreateDraft → UploadAsset(s) → Publish).
@@ -112,55 +113,6 @@ func (p *Provider) CI() forge.CIService { return &githubCISvc{rc: p.rc} }
 // Bot returns a [forge.BotService] backed by the GitHub App API.
 func (p *Provider) Bot() forge.BotService { return &githubBotSvc{} }
 
-// ---------- stubs for not-yet-implemented services ----------------------------
+// ---------- compile-time interface guard ------------------------------------
 
-type stubRepoSvc struct{}
-
-func (s *stubRepoSvc) Get(_ context.Context, _, _ string) (*forge.RepoSettings, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubRepoSvc) Update(_ context.Context, _, _ string, _ *forge.RepoSettings) error {
-	return forge.ErrUnsupported
-}
-
-type stubProtectionSvc struct{}
-
-func (s *stubProtectionSvc) List(_ context.Context, _ string) ([]forge.Ruleset, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Get(_ context.Context, _, _ string) (*forge.Ruleset, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Create(_ context.Context, _ string, _ *forge.Ruleset) (*forge.Ruleset, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Update(_ context.Context, _ string, _ *forge.Ruleset) error {
-	return forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Delete(_ context.Context, _, _ string) error {
-	return forge.ErrUnsupported
-}
-
-type stubSecretsSvc struct{}
-
-func (s *stubSecretsSvc) ListRepo(_ context.Context, _, _ string) ([]string, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubSecretsSvc) ListOrg(_ context.Context, _ string) ([]string, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubSecretsSvc) SetRepo(_ context.Context, _, _, _, _ string) error {
-	return forge.ErrUnsupported
-}
-func (s *stubSecretsSvc) SetOrg(_ context.Context, _, _, _ string, _ []string) error {
-	return forge.ErrUnsupported
-}
-
-// ---------- compile-time interface guards ------------------------------------
-
-var (
-	_ forge.Forge             = (*Provider)(nil)
-	_ forge.RepoService       = (*stubRepoSvc)(nil)
-	_ forge.ProtectionService = (*stubProtectionSvc)(nil)
-	_ forge.SecretsService    = (*stubSecretsSvc)(nil)
-)
+var _ forge.Forge = (*Provider)(nil)

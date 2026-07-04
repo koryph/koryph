@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/koryph/koryph/internal/engine"
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/posture"
 )
 
@@ -97,6 +98,7 @@ func cmdRepoDescribe(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	ghBin := posture.GHBin()
+	ghProv := ghpkg.New()
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -113,7 +115,7 @@ func cmdRepoDescribe(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	desc, err := posture.DescribeSource(ctx, ghBin, src, repoSlug, nil)
+	desc, err := posture.DescribeSource(ctx, ghProv.Repo(), ghProv.Protection(), src, repoSlug, nil)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -147,6 +149,7 @@ func cmdRepoCheck(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	ghBin := posture.GHBin()
+	ghProv := ghpkg.New()
 
 	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
 	if err != nil {
@@ -159,7 +162,7 @@ func cmdRepoCheck(args []string, stdout, stderr io.Writer) int {
 	// --- rulesets -----------------------------------------------------------
 	if dir, err := src.RulesetsDir(); err == nil {
 		_ = dir // just checking existence; CheckRulesets reads it
-		d, err := posture.CheckRulesets(ctx, ghBin, repoSlug, src, stdout)
+		d, err := posture.CheckRulesets(ctx, repoSlug, src, stdout, ghProv.Protection())
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -171,7 +174,7 @@ func cmdRepoCheck(args []string, stdout, stderr io.Writer) int {
 	// --- repo settings ------------------------------------------------------
 	if f, err := src.RepoSettingsFile(); err == nil {
 		_ = f
-		d, err := posture.CheckSettings(ctx, ghBin, repoSlug, src, stdout)
+		d, err := posture.CheckSettings(ctx, repoSlug, src, stdout, ghProv.Repo())
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -208,6 +211,7 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	ghBin := posture.GHBin()
+	ghProv := ghpkg.New()
 
 	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
 	if err != nil {
@@ -225,7 +229,7 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 	driftSettings := false
 
 	if _, err2 := src.RulesetsDir(); err2 == nil {
-		d, err2 := posture.CheckRulesets(ctx, ghBin, repoSlug, src, stdout)
+		d, err2 := posture.CheckRulesets(ctx, repoSlug, src, stdout, ghProv.Protection())
 		if err2 != nil {
 			return fail(stderr, err2)
 		}
@@ -233,7 +237,7 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if _, err2 := src.RepoSettingsFile(); err2 == nil {
-		d, err2 := posture.CheckSettings(ctx, ghBin, repoSlug, src, stdout)
+		d, err2 := posture.CheckSettings(ctx, repoSlug, src, stdout, ghProv.Repo())
 		if err2 != nil {
 			return fail(stderr, err2)
 		}
@@ -247,7 +251,7 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// --- capture pre-change snapshot --------------------------------------
-	snapPath, err := posture.CaptureSnapshot(ctx, ghBin, repoSlug, cwd, "iac")
+	snapPath, err := posture.CaptureSnapshot(ctx, ghProv.Repo(), ghProv.Protection(), repoSlug, cwd, "iac")
 	if err != nil {
 		// Non-fatal: warn but proceed with apply.
 		fmt.Fprintf(stderr, "warning: could not capture pre-change snapshot: %v\n", err)
@@ -257,13 +261,13 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 
 	// --- apply -------------------------------------------------------------
 	if driftRulesets {
-		if err := posture.ApplyRulesets(ctx, ghBin, repoSlug, src, stdout); err != nil {
+		if err := posture.ApplyRulesets(ctx, repoSlug, src, stdout, ghProv.Protection()); err != nil {
 			return fail(stderr, err)
 		}
 	}
 
 	if driftSettings {
-		if err := posture.ApplySettings(ctx, ghBin, repoSlug, src, stdout); err != nil {
+		if err := posture.ApplySettings(ctx, repoSlug, src, stdout, ghProv.Repo()); err != nil {
 			return fail(stderr, err)
 		}
 	}
@@ -289,6 +293,7 @@ func cmdRepoRollback(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	ghBin := posture.GHBin()
+	ghProv := ghpkg.New()
 
 	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
 	if err != nil {
@@ -300,7 +305,7 @@ func cmdRepoRollback(args []string, stdout, stderr io.Writer) int {
 		cwd = "."
 	}
 
-	if _, err := posture.Rollback(ctx, ghBin, repoSlug, cwd, *to, stdout, stderr); err != nil {
+	if _, err := posture.Rollback(ctx, ghProv.Repo(), ghProv.Protection(), repoSlug, cwd, *to, stdout, stderr); err != nil {
 		return fail(stderr, err)
 	}
 	return 0

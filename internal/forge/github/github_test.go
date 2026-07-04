@@ -50,25 +50,24 @@ func TestGitHubCapabilities(t *testing.T) {
 	check("VulnerabilityAlerts", caps.VulnerabilityAlerts)
 }
 
-// ---------- stub services return ErrUnsupported --------------------------------
+// ---------- F2a services are real (implemented in koryph-fv3.2) ---------------
 
-func TestStubServicesReturnErrUnsupported(t *testing.T) {
+// TestF2aServicesAreNotStubs confirms that Repo, Protection, and Secrets no
+// longer return ErrUnsupported after the fv3.2 extraction.  They call the gh
+// CLI, so a live gh call may fail (401/404); we only care that they don't
+// return ErrUnsupported.
+func TestF2aServicesAreNotStubs(t *testing.T) {
 	ctx := t.Context()
 	p := githubforge.New()
 
-	// Repo — still a stub (koryph-fv3.2)
-	if _, err := p.Repo().Get(ctx, "owner", "repo"); !errors.Is(err, forge.ErrUnsupported) {
-		t.Errorf("Repo().Get: want ErrUnsupported, got %v", err)
+	if _, err := p.Repo().Get(ctx, "owner", "repo"); errors.Is(err, forge.ErrUnsupported) {
+		t.Error("Repo().Get: still returns ErrUnsupported; fv3.2 should have wired this up")
 	}
-
-	// Protection — still a stub (koryph-fv3.2)
-	if _, err := p.Protection().List(ctx, "owner/repo"); !errors.Is(err, forge.ErrUnsupported) {
-		t.Errorf("Protection().List: want ErrUnsupported, got %v", err)
+	if _, err := p.Protection().List(ctx, "owner/repo"); errors.Is(err, forge.ErrUnsupported) {
+		t.Error("Protection().List: still returns ErrUnsupported; fv3.2 should have wired this up")
 	}
-
-	// Secrets — still a stub (koryph-fv3.2)
-	if _, err := p.Secrets().ListRepo(ctx, "owner", "repo"); !errors.Is(err, forge.ErrUnsupported) {
-		t.Errorf("Secrets().ListRepo: want ErrUnsupported, got %v", err)
+	if _, err := p.Secrets().ListRepo(ctx, "owner", "repo"); errors.Is(err, forge.ErrUnsupported) {
+		t.Error("Secrets().ListRepo: still returns ErrUnsupported; fv3.2 should have wired this up")
 	}
 }
 

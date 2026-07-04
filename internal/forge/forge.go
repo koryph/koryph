@@ -39,6 +39,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 )
@@ -100,6 +101,13 @@ type RepoSettings struct {
 	// ActionsWorkflowApprovals mirrors can_approve_pull_request_reviews on
 	// GitHub; on other forges it controls the equivalent bot-approval toggle.
 	ActionsWorkflowApprovals bool `json:"actions_workflow_approvals"`
+
+	// RawFull is the full provider-native JSON response from the repository
+	// metadata endpoint, populated by [RepoService.GetRaw].  It is excluded
+	// from JSON encoding (provider-internal use only).  Callers that need
+	// fine-grained per-field access — such as the posture normalization path —
+	// unmarshal directly from this field.
+	RawFull json.RawMessage `json:"-"`
 }
 
 // Ruleset is a branch-protection ruleset or equivalent protective policy.
@@ -208,6 +216,36 @@ type RepoService interface {
 	// Update applies settings to the repository. Only the fields present in
 	// settings are changed; callers should Get first and modify selectively.
 	Update(ctx context.Context, owner, repo string, settings *RepoSettings) error
+
+	// GetRaw fetches the full provider-native repository JSON.  The returned
+	// bytes are the raw API response; callers unmarshal them as needed.
+	// Providers that do not support raw access return (nil, [ErrUnsupported]).
+	GetRaw(ctx context.Context, owner, repo string) (json.RawMessage, error)
+
+	// PatchRaw applies a raw JSON PATCH to the primary repository metadata
+	// endpoint.  This is the low-level path used by the posture package for
+	// behavior-identical settings extraction; future callers should prefer
+	// [Update].  Providers that do not support raw patching return
+	// [ErrUnsupported].
+	PatchRaw(ctx context.Context, owner, repo string, payload json.RawMessage) error
+
+	// VulnAlerts reports whether dependency-vulnerability scanning (Dependabot
+	// on GitHub, or the forge-equivalent) is currently enabled.  Returns
+	// (false, [ErrUnsupported]) on providers that lack this feature.
+	VulnAlerts(ctx context.Context, owner, repo string) (bool, error)
+
+	// SetVulnAlerts enables or disables dependency-vulnerability scanning.
+	// Returns [ErrUnsupported] on providers that lack this feature.
+	SetVulnAlerts(ctx context.Context, owner, repo string, enabled bool) error
+
+	// ActionsWorkflow returns the raw JSON of CI workflow permissions (GitHub
+	// Actions workflow-permission settings or the forge equivalent).  Returns
+	// (nil, [ErrUnsupported]) on providers that lack this feature.
+	ActionsWorkflow(ctx context.Context, owner, repo string) (json.RawMessage, error)
+
+	// SetActionsWorkflow applies raw JSON CI workflow permissions.  Returns
+	// [ErrUnsupported] on providers that lack this feature.
+	SetActionsWorkflow(ctx context.Context, owner, repo string, payload json.RawMessage) error
 }
 
 // ProtectionService manages branch-protection policies (rulesets, protected

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/posture"
 )
 
@@ -147,9 +148,9 @@ exit 1
 
 func TestCaptureSnapshot_WritesFile(t *testing.T) {
 	root := t.TempDir()
-	ghBin := buildFakeGHForSnapshot(t)
+	buildFakeGHForSnapshot(t)
 
-	path, err := posture.CaptureSnapshot(t.Context(), ghBin, "owner/repo", root, "iac")
+	path, err := posture.CaptureSnapshot(t.Context(), ghpkg.New().Repo(), ghpkg.New().Protection(), "owner/repo", root, "iac")
 	if err != nil {
 		t.Fatalf("CaptureSnapshot: %v", err)
 	}
@@ -199,9 +200,9 @@ func TestCaptureSnapshot_WritesFile(t *testing.T) {
 
 func TestCaptureSnapshot_Profile_Kind(t *testing.T) {
 	root := t.TempDir()
-	ghBin := buildFakeGHForSnapshot(t)
+	buildFakeGHForSnapshot(t)
 
-	path, err := posture.CaptureSnapshot(t.Context(), ghBin, "owner/repo", root, "profile:oss-solo-maintainer")
+	path, err := posture.CaptureSnapshot(t.Context(), ghpkg.New().Repo(), ghpkg.New().Protection(), "owner/repo", root, "profile:oss-solo-maintainer")
 	if err != nil {
 		t.Fatalf("CaptureSnapshot: %v", err)
 	}
@@ -225,9 +226,9 @@ func TestCaptureSnapshot_Profile_Kind(t *testing.T) {
 
 func TestCaptureSnapshot_EnsuresGitignore(t *testing.T) {
 	root := t.TempDir()
-	ghBin := buildFakeGHForSnapshot(t)
+	buildFakeGHForSnapshot(t)
 
-	if _, err := posture.CaptureSnapshot(t.Context(), ghBin, "owner/repo", root, "iac"); err != nil {
+	if _, err := posture.CaptureSnapshot(t.Context(), ghpkg.New().Repo(), ghpkg.New().Protection(), "owner/repo", root, "iac"); err != nil {
 		t.Fatalf("CaptureSnapshot: %v", err)
 	}
 
@@ -242,9 +243,9 @@ func TestCaptureSnapshot_EnsuresGitignore(t *testing.T) {
 
 func TestCaptureSnapshot_FilenameFormat(t *testing.T) {
 	root := t.TempDir()
-	ghBin := buildFakeGHForSnapshot(t)
+	buildFakeGHForSnapshot(t)
 
-	path, err := posture.CaptureSnapshot(t.Context(), ghBin, "owner/repo", root, "iac")
+	path, err := posture.CaptureSnapshot(t.Context(), ghpkg.New().Repo(), ghpkg.New().Protection(), "owner/repo", root, "iac")
 	if err != nil {
 		t.Fatalf("CaptureSnapshot: %v", err)
 	}
@@ -387,9 +388,9 @@ func TestListSnapshots_MissingDirReturnsNil(t *testing.T) {
 
 func TestCaptureSnapshot_TimestampParseable(t *testing.T) {
 	root := t.TempDir()
-	ghBin := buildFakeGHForSnapshot(t)
+	buildFakeGHForSnapshot(t)
 
-	path, err := posture.CaptureSnapshot(t.Context(), ghBin, "owner/repo", root, "iac")
+	path, err := posture.CaptureSnapshot(t.Context(), ghpkg.New().Repo(), ghpkg.New().Protection(), "owner/repo", root, "iac")
 	if err != nil {
 		t.Fatalf("CaptureSnapshot: %v", err)
 	}
@@ -414,12 +415,12 @@ func TestCaptureSnapshot_TimestampParseable(t *testing.T) {
 func TestRollback_NoSnapshots(t *testing.T) {
 	root := t.TempDir()
 	// Fake gh never gets called — should fail before that.
-	ghBin := fakeGH(t, `#!/bin/sh
+	fakeGH(t, `#!/bin/sh
 echo "unexpected" >&2; exit 1
 `)
 	// Need a repo slug to filter by. We expect an error before any gh calls.
 	var out, errOut strings.Builder
-	_, err := posture.Rollback(t.Context(), ghBin, "owner/repo", root, "latest", &out, &errOut)
+	_, err := posture.Rollback(t.Context(), ghpkg.New().Repo(), ghpkg.New().Protection(), "owner/repo", root, "latest", &out, &errOut)
 	if err == nil {
 		t.Fatal("expected error for no snapshots, got nil")
 	}
@@ -459,11 +460,11 @@ func TestRollback_AmbiguousPrefix(t *testing.T) {
 		}
 	}
 
-	ghBin := fakeGH(t, `#!/bin/sh
+	fakeGH(t, `#!/bin/sh
 echo "unexpected" >&2; exit 1
 `)
 	var out, errOut strings.Builder
-	_, err := posture.Rollback(t.Context(), ghBin, "owner/repo", root, "2026-07-04T10", &out, &errOut)
+	_, err := posture.Rollback(t.Context(), ghpkg.New().Repo(), ghpkg.New().Protection(), "owner/repo", root, "2026-07-04T10", &out, &errOut)
 	if err == nil {
 		t.Fatal("expected error for ambiguous prefix, got nil")
 	}
