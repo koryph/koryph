@@ -114,15 +114,24 @@ branch-protection rulesets and repo settings live as committed JSON under
 live repo against the committed IaC, then apply:
 
 ```sh
-make repo-check    # exit 1 on drift between live GitHub settings and .github IaC
-make repo-apply    # apply rulesets + repo settings to the live repo
+koryph repo check     # exit 1 on drift between live GitHub settings and .github IaC
+koryph repo apply     # apply rulesets + repo settings to the live repo
 ```
 
-> **Scope today:** these are per-repo make targets driving this repo's own
-> `.github/` IaC. Named, reusable **posture profiles** that apply the same
-> discipline across many repos (`koryph posture apply …`) are designed but not
-> yet shipped — software-factory design §3.2. For now, copy the `.github/`
-> IaC pattern into each repo you own.
+For repos without their own committed IaC, named **posture profiles** apply
+the same discipline anywhere — the built-in `oss-solo-maintainer` profile
+carries a 1-approval + signed-commits + secret-scanning baseline:
+
+```sh
+koryph posture list                                  # built-ins + ~/.koryph/postures
+koryph posture diff  oss-solo-maintainer --repo O/R  # see what would change
+koryph posture apply oss-solo-maintainer --repo O/R  # diff-first, then apply
+```
+
+Repo-local `.github/` IaC, when present, always overrides the profile — an
+ejected repo stays sovereign. A project can pin its profile in the `posture`
+block of `koryph.project.json`; `koryph doctor` then reports drift. See
+[Posture profiles](postures.md).
 
 `koryph doctor --project myproject` reports configuration drift as part of the
 same hygiene story.
@@ -199,7 +208,7 @@ see [The release bot](release-bot.md) for the three replication models
 | Build | Register | `koryph project add`, `koryph validate` |
 | Build | Plan | `/koryph-plan`, `/koryph-import`, `/koryph-issue` |
 | Build | Run | `koryph run --project … [--review --auto-merge]` |
-| Protect | Hygiene | `make repo-check`, `make repo-apply`, `koryph doctor` |
+| Protect | Hygiene | `koryph repo check` / `apply`, `koryph posture apply`, `koryph doctor` |
 | Protect | Signing | `koryph signing setup / enable / status` |
 | Ship | Release | `koryph release setup --project … --mode …` |
 | Ship | Bot | `koryph bot create / attach / check` |
