@@ -1,0 +1,11 @@
+# Allowed SPDX license identifiers for Go module dependencies.
+# Managed by koryph posture (fragment: license-allowlist).
+# One SPDX expression per line; blank lines and comments (#) are ignored.
+Apache-2.0
+MIT
+BSD-2-Clause
+BSD-3-Clause
+ISC
+MPL-2.0
+CC0-1.0
+Unlicense

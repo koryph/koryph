@@ -25,6 +25,11 @@ type Manifest struct {
 	Name        string                     `json:"name"`
 	Description string                     `json:"description"`
 	Parameters  map[string]ParamDescriptor `json:"parameters,omitempty"`
+	// RecommendedFragments lists the fragment names (from builtin/fragments/)
+	// that this profile suggests as opt-in scanner fragments. Projects declare
+	// their chosen fragments in koryph.project.json posture.fragments; listing
+	// them here is informational — they are never auto-installed.
+	RecommendedFragments []string `json:"recommended_fragments,omitempty"`
 }
 
 // ParamDescriptor describes one profile parameter.

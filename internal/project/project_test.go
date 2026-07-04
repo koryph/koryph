@@ -90,6 +90,7 @@ func fullConfig() *Config {
 		Posture: &PostureConfig{
 			Profile:    "oss-solo-maintainer",
 			Parameters: map[string]string{"required_checks": "pre-commit,make gate"},
+			Fragments:  []string{"gitleaks", "govulncheck"},
 		},
 	}
 }

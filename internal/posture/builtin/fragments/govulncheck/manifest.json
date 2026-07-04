@@ -1,0 +1,7 @@
+{
+  "name": "govulncheck",
+  "description": "Go vulnerability scanning via govulncheck: CI workflow that reports known vulnerabilities in Go module dependencies. The scanner's own exit code is the gate — no result parsing is needed.",
+  "installed_files": [
+    ".github/workflows/govulncheck.yml"
+  ]
+}

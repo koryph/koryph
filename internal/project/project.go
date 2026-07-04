@@ -201,6 +201,14 @@ type PostureConfig struct {
 	// {"required_checks": "pre-commit,make gate"}.  Omit or set to {} to
 	// use the profile's defaults for all parameters.
 	Parameters map[string]string `json:"parameters,omitempty"`
+	// Fragments lists the security-scanner fragment names this project has
+	// opted into (design §3.3).  Each name must match a built-in fragment
+	// (see `koryph posture list --fragments`).  Opted-in fragments are:
+	//   - installed into the project by `koryph posture apply`
+	//   - drift-checked by `koryph doctor --project`
+	// A profile's manifest.json may list recommended_fragments (informational
+	// only — listing them here is what opts the project in).
+	Fragments []string `json:"fragments,omitempty"`
 }
 
 // Config is the per-project adapter.

@@ -19,6 +19,7 @@ import (
 	"github.com/koryph/koryph/internal/commands"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/posture"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/signing"
@@ -90,6 +91,13 @@ type ProjectOptions struct {
 	// nil means: call the real posture check functions via the gh CLI.
 	// Inject a fake in tests to avoid gh network calls.
 	PostureDriftCheck func(repoRoot string, cfg *project.PostureConfig) (bool, error)
+
+	// FragmentDriftCheck returns the fragment drift for the given fragments.
+	// Return (nil, nil) when no drift, (drifts, nil) on drift, and (_, err) on
+	// failure (doctor degrades gracefully on error).
+	// nil means: call posture.CheckFragmentDrift against the real filesystem.
+	// Inject a fake in tests to avoid touching the working tree.
+	FragmentDriftCheck func(repoRoot string, fragments []string) ([]posture.FragmentDrift, error)
 }
 
 func (o *ProjectOptions) home() string {
@@ -221,6 +229,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.addAll(checkAssetDrift(opts, repoRoot))
 	r.addAll(checkReleaseInfra(opts, repoRoot, cfg))
 	r.add(checkPostureDrift(opts, repoRoot, cfg))
+	r.addAll(checkFragmentDrift(opts, repoRoot, cfg))
 
 	for _, f := range r.Findings {
 		if f.Fixed {

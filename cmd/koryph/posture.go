@@ -14,6 +14,7 @@ import (
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/posture"
+	"github.com/koryph/koryph/internal/project"
 )
 
 // cmdPosture dispatches the posture sub-verbs.
@@ -21,6 +22,7 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "posture", "apply a named desired-state profile to a GitHub repo", []subVerb{
 			{"list", "list built-in and user-defined profiles"},
+			{"list --fragments", "list built-in security-scanner fragments"},
 			{"check <profile> [--repo owner/name] [--param k=v]...", "diff live GitHub state against profile (exit 1 on drift)"},
 			{"diff <profile> [--repo owner/name] [--param k=v]...", "show drift between live state and profile (always exit 0)"},
 			{"apply <profile> [--repo owner/name] [--param k=v]...", "show diff then apply profile to live GitHub repo"},
@@ -42,12 +44,17 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// cmdPostureList lists built-in and user profiles.
+// cmdPostureList lists built-in and user profiles, or fragments with --fragments.
 func cmdPostureList(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("posture list", stderr)
-	setUsage(fs, stdout, "list built-in and user-defined posture profiles", "")
+	fragments := fs.Bool("fragments", false, "list built-in security-scanner fragments instead of profiles")
+	setUsage(fs, stdout, "list built-in and user-defined posture profiles (or --fragments for scanner fragments)", "")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
+	}
+
+	if *fragments {
+		return cmdPostureListFragments(stdout, stderr)
 	}
 
 	home := paths.KoryphHome()
@@ -68,13 +75,39 @@ func cmdPostureList(args []string, stdout, stderr io.Writer) int {
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSOURCE\tDESCRIPTION")
+	fmt.Fprintln(tw, "NAME\tSOURCE\tDESCRIPTION\tRECOMMENDS")
 	for _, p := range all {
 		desc := p.Manifest.Description
-		if len(desc) > 70 {
-			desc = desc[:67] + "..."
+		if len(desc) > 60 {
+			desc = desc[:57] + "..."
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", p.Name, p.Source, desc)
+		recommends := strings.Join(p.Manifest.RecommendedFragments, ", ")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.Name, p.Source, desc, recommends)
+	}
+	tw.Flush()
+	return 0
+}
+
+// cmdPostureListFragments lists the built-in security-scanner fragments.
+func cmdPostureListFragments(stdout, stderr io.Writer) int {
+	frags, err := posture.ListFragments()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(frags) == 0 {
+		fmt.Fprintln(stdout, "No fragments found.")
+		return 0
+	}
+
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tDESCRIPTION\tINSTALLS")
+	for _, f := range frags {
+		desc := f.Manifest.Description
+		if len(desc) > 55 {
+			desc = desc[:52] + "..."
+		}
+		installs := strings.Join(f.Manifest.InstalledFiles, ", ")
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, desc, installs)
 	}
 	tw.Flush()
 	return 0
@@ -105,11 +138,12 @@ func cmdPostureApply(args []string, stdout, stderr io.Writer) int {
 func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, apply, alwaysExit0 bool) int {
 	fs := newFlagSet(cmdName, stderr)
 	repo := fs.String("repo", "", "repository in owner/name form (default: detected from git remote via gh)")
+	force := fs.Bool("force", false, "with apply: overwrite stale fragment files (default: only install missing fragments)")
 	var rawParams multiFlag
 	fs.Var(&rawParams, "param", "profile parameter as key=value (repeatable, e.g. --param required_checks=\"pre-commit,make gate\")")
 	setUsage(fs, stdout,
 		cmdName+" — compare or apply a named posture profile",
-		"<profile> [--repo owner/name] [--param k=v]...")
+		"<profile> [--repo owner/name] [--param k=v]... [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -220,10 +254,54 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 		}
 	}
 
+	// ---- security-scanner fragments -------------------------------------
+	// Fragments are opted into per-project via koryph.project.json
+	// posture.fragments. When no project config is found the fragment section
+	// is skipped gracefully (not every invocation is inside a koryph project).
+	if frags := loadProjectFragments(cwd, profileName); len(frags) > 0 {
+		if apply {
+			fmt.Fprintln(stdout, "--- fragments diff ---")
+			d, err2 := posture.CheckFragments(cwd, frags, stdout)
+			if err2 != nil {
+				return fail(stderr, err2)
+			}
+			if d {
+				drift = true
+				fmt.Fprintln(stdout, "--- applying fragments ---")
+				if _, err2 := posture.ApplyFragments(cwd, frags, *force, stdout); err2 != nil {
+					return fail(stderr, err2)
+				}
+			}
+		} else {
+			d, err2 := posture.CheckFragments(cwd, frags, stdout)
+			if err2 != nil {
+				return fail(stderr, err2)
+			}
+			if d {
+				drift = true
+			}
+		}
+	}
+
 	if drift && !apply && !alwaysExit0 {
 		return engine.ExitFatal // exit 1 for `check`
 	}
 	return 0
+}
+
+// loadProjectFragments reads the opted-in fragment list from koryph.project.json
+// in root. Returns nil (no fragments, no error) when no project config is present
+// or no fragments are declared. The profile name is informational only (used for
+// logging in future; not needed for the lookup itself).
+func loadProjectFragments(root, _ string) []string {
+	cfg, err := project.Load(root)
+	if err != nil {
+		return nil // no project config — fragments silently skipped
+	}
+	if cfg.Posture == nil || len(cfg.Posture.Fragments) == 0 {
+		return nil
+	}
+	return cfg.Posture.Fragments
 }
 
 // parseParams converts raw "key=value" strings into a map.

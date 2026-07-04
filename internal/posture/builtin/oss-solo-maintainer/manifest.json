@@ -6,5 +6,6 @@
       "description": "Comma-separated required CI check names added to the pr-checks ruleset (e.g. 'pre-commit,make gate').  Omit to skip the required_status_checks rule.",
       "default": ""
     }
-  }
+  },
+  "recommended_fragments": ["gitleaks", "govulncheck"]
 }

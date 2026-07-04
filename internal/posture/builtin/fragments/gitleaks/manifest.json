@@ -1,0 +1,7 @@
+{
+  "name": "gitleaks",
+  "description": "Secret scanning via gitleaks: CI workflow that fails on detected secrets. Add 'gitleaks protect --staged' to your pre-commit config to also block commits locally.",
+  "installed_files": [
+    ".github/workflows/gitleaks.yml"
+  ]
+}

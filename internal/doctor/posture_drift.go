@@ -3,24 +3,30 @@
 
 package doctor
 
-// posture_drift.go — checkPostureDrift: doctor check that flags hygiene drift
-// between a project's live GitHub repo and its declared posture profile.
+// posture_drift.go — checkPostureDrift + checkFragmentDrift: doctor checks that
+// flag hygiene drift between a project's live GitHub repo / installed files and
+// its declared posture profile / opted-in scanner fragments.
 //
-// The check is skipped (LevelOK) when koryph.project.json has no posture block.
-// When a posture block is present, the check renders the named profile and runs
-// the same drift detection used by `koryph posture check`, then reports:
+// checkPostureDrift:
+//   - skipped (LevelOK) when koryph.project.json has no posture block.
+//   - renders the named profile and runs the same drift detection as
+//     `koryph posture check`, then reports LevelOK or LevelWarn.
+//   - degrades gracefully (LevelOK + note) when gh is unavailable.
 //
-//   - LevelOK   — live repo matches the profile
-//   - LevelWarn — drift detected; message includes the exact apply command
-//   - LevelOK   — gh is unavailable / no admin access (graceful degrade)
+// checkFragmentDrift (design §3.3):
+//   - skipped (LevelOK) when posture.fragments is empty.
+//   - compares installed fragment files against embedded versions via SHA-256.
+//   - reports missing or stale files as LevelWarn with a remediation command.
+//   - no gh network calls required — fragment files live in the project tree.
 //
-// The injectable PostureDriftCheck field on ProjectOptions lets tests bypass the
-// real gh network calls.
+// The injectable PostureDriftCheck field on ProjectOptions lets tests bypass
+// the real gh network calls for checkPostureDrift.
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/posture"
@@ -158,4 +164,86 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 		Level:   LevelOK,
 		Message: fmt.Sprintf("profile %q: no drift detected", cfg.Posture.Profile),
 	}
+}
+
+// checkNameFragmentDrift is the check name used for fragment-drift findings.
+const checkNameFragmentDrift = "fragment-drift"
+
+// checkFragmentDrift checks that every security-scanner fragment declared in
+// cfg.Posture.Fragments is present and up-to-date in repoRoot.
+//
+// Unlike checkPostureDrift this check requires no gh network calls — fragment
+// files live entirely in the project working tree.
+//
+// Returns one Finding per opted-in fragment:
+//   - LevelOK   — all files for the fragment are installed and current
+//   - LevelWarn — one or more files are missing or stale
+//
+// The check is skipped (returns nil) when no fragments are opted in.
+func checkFragmentDrift(opts ProjectOptions, repoRoot string, cfg *project.Config) []Finding {
+	if cfg == nil || cfg.Posture == nil || len(cfg.Posture.Fragments) == 0 {
+		return nil // no fragments declared — check not applicable
+	}
+
+	// Use injectable check when provided (test seam).
+	if opts.FragmentDriftCheck != nil {
+		drifts, err := opts.FragmentDriftCheck(repoRoot, cfg.Posture.Fragments)
+		if err != nil {
+			return []Finding{{
+				Check:   checkNameFragmentDrift,
+				Level:   LevelOK,
+				Message: fmt.Sprintf("fragment drift check skipped: %v", err),
+			}}
+		}
+		return fragmentDriftFindings(cfg, drifts)
+	}
+
+	// Real check: delegate to posture.CheckFragmentDrift.
+	result, err := posture.CheckFragmentDrift(repoRoot, cfg.Posture.Fragments)
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameFragmentDrift,
+			Level:   LevelOK,
+			Message: fmt.Sprintf("fragment drift check skipped: %v", err),
+		}}
+	}
+	return fragmentDriftFindings(cfg, result.Drifts)
+}
+
+// fragmentDriftFindings converts []posture.FragmentDrift into doctor Findings.
+func fragmentDriftFindings(cfg *project.Config, drifts []posture.FragmentDrift) []Finding {
+	if len(drifts) == 0 {
+		return []Finding{{
+			Check:   checkNameFragmentDrift,
+			Level:   LevelOK,
+			Message: "all fragments up to date",
+		}}
+	}
+	applyCmd := cfg.Posture.PostureApplyCmd()
+	var findings []Finding
+	for _, d := range drifts {
+		if !d.HasDrift {
+			findings = append(findings, Finding{
+				Check:   checkNameFragmentDrift,
+				Level:   LevelOK,
+				Message: fmt.Sprintf("fragment %q: all files installed", d.Fragment),
+			})
+			continue
+		}
+		// Enumerate the missing/stale files for a precise message.
+		var missingStale []string
+		for _, f := range d.Files {
+			if f.Status != "ok" {
+				missingStale = append(missingStale, fmt.Sprintf("%s(%s)", f.Path, f.Status))
+			}
+		}
+		msg := fmt.Sprintf("fragment %q: drift in %s (run `%s --force` to reinstall)",
+			d.Fragment, strings.Join(missingStale, ", "), applyCmd)
+		findings = append(findings, Finding{
+			Check:   checkNameFragmentDrift,
+			Level:   LevelWarn,
+			Message: msg,
+		})
+	}
+	return findings
 }

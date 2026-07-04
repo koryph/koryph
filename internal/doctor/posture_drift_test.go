@@ -4,12 +4,15 @@
 package doctor
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/posture"
 	"github.com/koryph/koryph/internal/project"
 )
 
@@ -175,5 +178,179 @@ func TestPostureDrift_Validate(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(root, project.ConfigFileName), data, 0o644)
 	if _, err := project.Load(root); err == nil {
 		t.Error("empty posture.profile should fail Validate")
+	}
+}
+
+// --- fragment-drift ----------------------------------------------------------
+
+// TestFragmentDrift_NoFragments verifies the check is skipped when no fragments
+// are opted into the posture config.
+func TestFragmentDrift_NoFragments(t *testing.T) {
+	// Posture block with profile but no fragments.
+	postureCfg := &project.PostureConfig{Profile: "oss-solo-maintainer"}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// checkFragmentDrift returns nil when no fragments → no findings with that check name.
+	for _, f := range r.Findings {
+		if f.Check == checkNameFragmentDrift {
+			t.Errorf("expected no fragment-drift findings when no fragments declared; got %+v", f)
+		}
+	}
+}
+
+// TestFragmentDrift_NilPosture verifies the check is skipped when no posture
+// block at all.
+func TestFragmentDrift_NilPosture(t *testing.T) {
+	root := fabricateProject(t)
+	opts := projectOpts(root)
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range r.Findings {
+		if f.Check == checkNameFragmentDrift {
+			t.Errorf("expected no fragment-drift findings when posture=nil; got %+v", f)
+		}
+	}
+}
+
+// TestFragmentDrift_NoDrift verifies OK when injected FragmentDriftCheck
+// reports no drift (all installed).
+func TestFragmentDrift_NoDrift(t *testing.T) {
+	postureCfg := &project.PostureConfig{
+		Profile:   "oss-solo-maintainer",
+		Fragments: []string{"gitleaks"},
+	}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+	opts.FragmentDriftCheck = func(_ string, _ []string) ([]posture.FragmentDrift, error) {
+		return []posture.FragmentDrift{{
+			Fragment: "gitleaks",
+			Files:    []posture.FragmentFileStatus{{Path: ".github/workflows/gitleaks.yml", Status: "ok"}},
+			HasDrift: false,
+		}}, nil
+	}
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All fragment findings should be OK.
+	for _, f := range r.Findings {
+		if f.Check == checkNameFragmentDrift && f.Level != LevelOK {
+			t.Errorf("fragment-drift: want OK, got %s: %s", f.Level, f.Message)
+		}
+	}
+}
+
+// TestFragmentDrift_DriftDetected verifies WARN when injected check reports missing files.
+func TestFragmentDrift_DriftDetected(t *testing.T) {
+	postureCfg := &project.PostureConfig{
+		Profile:   "oss-solo-maintainer",
+		Fragments: []string{"gitleaks"},
+	}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+	opts.FragmentDriftCheck = func(_ string, _ []string) ([]posture.FragmentDrift, error) {
+		return []posture.FragmentDrift{{
+			Fragment: "gitleaks",
+			Files: []posture.FragmentFileStatus{
+				{Path: ".github/workflows/gitleaks.yml", Status: "missing"},
+			},
+			HasDrift: true,
+		}}, nil
+	}
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range r.Findings {
+		if f.Check == checkNameFragmentDrift && f.Level == LevelWarn {
+			found = true
+			if !strings.Contains(f.Message, "gitleaks") {
+				t.Errorf("fragment-drift WARN message should mention fragment name; got: %s", f.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected at least one fragment-drift WARN finding")
+	}
+}
+
+// TestFragmentDrift_CheckError verifies graceful degrade when FragmentDriftCheck fails.
+func TestFragmentDrift_CheckError(t *testing.T) {
+	postureCfg := &project.PostureConfig{
+		Profile:   "oss-solo-maintainer",
+		Fragments: []string{"gitleaks"},
+	}
+	root := fabricateProjectWithPosture(t, postureCfg)
+	opts := projectOpts(root)
+	opts.PostureDriftCheck = func(_ string, _ *project.PostureConfig) (bool, error) { return false, nil }
+	opts.FragmentDriftCheck = func(_ string, _ []string) ([]posture.FragmentDrift, error) {
+		return nil, fmt.Errorf("unexpected error")
+	}
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range r.Findings {
+		if f.Check == checkNameFragmentDrift && f.Level != LevelOK {
+			t.Errorf("fragment-drift: expected OK (graceful degrade on error), got %s: %s", f.Level, f.Message)
+		}
+	}
+}
+
+// TestFragmentDrift_RealFS verifies the check against the real filesystem
+// using posture.ApplyFragments to install first.
+func TestFragmentDrift_RealFS(t *testing.T) {
+	root := fabricateProject(t)
+	// Opt in to gitleaks fragment.
+	cfg, err := project.Load(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Posture = &project.PostureConfig{
+		Profile:   "oss-solo-maintainer",
+		Fragments: []string{"gitleaks"},
+	}
+	if err := cfg.Save(root); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	// Before install: should detect drift.
+	findings := checkFragmentDrift(ProjectOptions{}, root, cfg)
+	warnFound := false
+	for _, f := range findings {
+		if f.Level == LevelWarn {
+			warnFound = true
+		}
+	}
+	if !warnFound {
+		t.Errorf("expected WARN before fragment install; got %+v", findings)
+	}
+
+	// Install fragments.
+	if _, err := posture.ApplyFragments(root, []string{"gitleaks"}, false, &bytes.Buffer{}); err != nil {
+		t.Fatalf("ApplyFragments: %v", err)
+	}
+
+	// After install: should be OK.
+	findings = checkFragmentDrift(ProjectOptions{}, root, cfg)
+	for _, f := range findings {
+		if f.Level != LevelOK {
+			t.Errorf("expected OK after install; got %s: %s", f.Level, f.Message)
+		}
 	}
 }

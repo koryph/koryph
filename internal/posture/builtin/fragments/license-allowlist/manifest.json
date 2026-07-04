@@ -1,0 +1,8 @@
+{
+  "name": "license-allowlist",
+  "description": "Dependency license allowlist: CI workflow using go-licenses to verify all Go module dependencies carry an approved SPDX license. Allowed licenses are listed in scripts/allowed-licenses.txt.",
+  "installed_files": [
+    ".github/workflows/license-check.yml",
+    "scripts/allowed-licenses.txt"
+  ]
+}

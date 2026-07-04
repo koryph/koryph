@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+#
+# govulncheck — Go vulnerability scanning CI job (managed by koryph posture; do not edit manually).
+# Installed by: koryph posture apply <profile> (fragment: govulncheck)
+# To update: re-run koryph posture apply or koryph doctor --project --fix --force
+name: govulncheck
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 8 * * 1'  # weekly on Mondays
+jobs:
+  govulncheck:
+    name: vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1
