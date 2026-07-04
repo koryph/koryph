@@ -60,6 +60,9 @@ var commandTable = []command{
 	{name: "land", summary: "land an engine-opened PR fast-forward-only", run: cmdLand},
 	{name: "review-pr", summary: "analyze another author's PR", run: cmdReviewPR},
 	{name: "pr-sync", summary: "reconcile pr-opened beads against live PR state", run: cmdPRSync},
+	{name: "release", summary: "configure and operate the project release pipeline", run: cmdRelease, subs: []command{
+		{name: "setup", summary: "render and install release workflow + release-please config", run: cmdReleaseSetup},
+	}},
 	{name: "signing", summary: "configure and operate vault-backed commit signing", run: cmdSigning, subs: []command{
 		{name: "setup", summary: "write the signing policy into the adapter", run: cmdSigningSetup},
 		{name: "enable", summary: "load the key + apply repo git config", run: cmdSigningEnable},

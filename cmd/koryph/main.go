@@ -124,6 +124,12 @@ OPERATE
                         verify branch commit signatures against the default branch (exit 1 on any bad)
   sign blob --project ID <path>
                         cosign sign-blob an artifact via the vault key (writes <path>.sig)
+  release setup --project ID [--mode goreleaser|commands] [--version V] [--bot]
+                        render and install the caller release workflow, release-please-config.json,
+                        and .release-please-manifest.json into the project; --mode selects the
+                        build toolchain (goreleaser = mode A, commands = mode B) when the
+                        project has no release block; --bot also runs provision-release-bot.sh;
+                        prints remaining HUMAN steps after install
 
 OBSERVE
   board [--json]        one-line-per-project run overview
