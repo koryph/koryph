@@ -459,6 +459,11 @@
       "minimum": 0,
       "description": "PollSeconds overrides the engine's slot poll tick for this project\n(default 10 when zero/omitted). KORYPH_POLL_SEC and an explicit\nprogrammatic Options.PollSec caller override still take precedence over\nthis value (see engine.runner.pollInterval; koryph-2im.2)."
     },
+    "health_interval_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "HealthIntervalSeconds sets how often the engine's in-loop health patrol\nfires for this project (default 600 = 10 minutes when zero/omitted).\nKORYPH_HEALTH_INTERVAL_SEC env and Options.HealthIntervalSec take\nprecedence (koryph-gus)."
+    },
     "dispatch_mode": {
       "type": "string",
       "enum": [

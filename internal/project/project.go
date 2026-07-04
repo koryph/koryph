@@ -331,6 +331,12 @@ type Config struct {
 	// this value (see engine.runner.pollInterval; koryph-2im.2).
 	PollSeconds int `json:"poll_seconds,omitempty" jsonschema:"minimum=0"`
 
+	// HealthIntervalSeconds sets how often the engine's in-loop health patrol
+	// fires for this project (default 600 = 10 minutes when zero/omitted).
+	// KORYPH_HEALTH_INTERVAL_SEC env and Options.HealthIntervalSec take
+	// precedence (koryph-gus).
+	HealthIntervalSeconds int `json:"health_interval_seconds,omitempty" jsonschema:"minimum=0"`
+
 	// DispatchMode selects the engine's dispatch loop (koryph-2im.3,
 	// docs/designs/2026-07-scheduler-throughput.md L1): "wave" (also
 	// when empty) dispatches a fixed-width batch and blocks until every slot

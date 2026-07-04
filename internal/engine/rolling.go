@@ -48,6 +48,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		if ctx.Err() != nil {
 			return r.interrupted()
 		}
+		r.patrolIfDue(ctx)
 
 		gate := r.governorGate(ctx)
 		if gate.paused {

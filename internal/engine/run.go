@@ -85,6 +85,12 @@ type runner struct {
 	govWarned  bool
 	issues     map[string]beads.Issue
 
+	// Health patrol state (koryph-gus).
+	lastPatrolAt   time.Time
+	patrolSeen     map[string]time.Time // finding key → last logged; throttles repeat findings
+	lastQuotaLevel quota.Level          // cached from the most recent governorGate call
+	lastQuotaUsage quota.Usage          // cached from the most recent governorGate call
+
 	// reportedSkips dedups structural-skip warnings so each non-dispatchable
 	// ready bead is surfaced once per run, not every wave (koryph-6g2.1).
 	reportedSkips map[string]bool

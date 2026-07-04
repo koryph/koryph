@@ -86,6 +86,11 @@ type Options struct {
 	NoBillingGuard bool
 	PollSec        int // default 10; project config poll_seconds and KORYPH_POLL_SEC env can also set it (koryph-2im.2)
 	StuckSec       int // default 900
+	// HealthIntervalSec sets how often the in-loop health patrol fires
+	// (default 600 = 10m; KORYPH_HEALTH_INTERVAL_SEC env and project config
+	// health_interval_seconds also participate — see runner.healthInterval;
+	// koryph-gus).
+	HealthIntervalSec int
 	// DispatchMode selects the dispatch loop: "rolling" (default,
 	// koryph-2im.8) or "wave"
 	// (koryph-2im.3). Precedence: this flag, when non-empty, wins over the

@@ -70,6 +70,11 @@ type Run struct {
 	Wave          int              `json:"wave"`
 	Source        string           `json:"source"` // bd|markdown
 	Slots         map[string]*Slot `json:"slots"`
+
+	// PatrolEvents is the chronological history of periodic in-loop health
+	// patrol runs for this run. Appended by the engine's health patrol
+	// (koryph-gus); absent in older ledgers.
+	PatrolEvents []PatrolEvent `json:"patrol_events,omitempty"`
 }
 
 // Slot is one dispatched work item within a run.
@@ -153,6 +158,21 @@ type Slot struct {
 	// unmarshals it to nil, which falls back to the pre-koryph-2im.3
 	// recompute-from-labels chain exactly as before.
 	Footprint *sched.Footprint `json:"footprint,omitempty"`
+}
+
+// PatrolFinding is one in-loop health check result from a periodic patrol run.
+type PatrolFinding struct {
+	Check   string `json:"check"`
+	Level   string `json:"level"` // "ok" | "warn"
+	Message string `json:"message"`
+	Fixed   bool   `json:"fixed,omitempty"`
+}
+
+// PatrolEvent records one complete health patrol run in the run ledger so
+// post-mortems have full health history alongside slot events.
+type PatrolEvent struct {
+	At       string          `json:"at"`
+	Findings []PatrolFinding `json:"findings,omitempty"`
 }
 
 // PlanState tracks structured-plan progress inside a manifest.

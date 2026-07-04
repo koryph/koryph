@@ -72,6 +72,7 @@ func fullConfig() *Config {
 		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 6,
 		PollSeconds:            5,
+		HealthIntervalSeconds:  120,
 		DispatchMode:           "rolling",
 		DefaultRuntime:         "claude",
 		Runtimes: map[string]RuntimeConfig{

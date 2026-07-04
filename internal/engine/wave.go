@@ -95,6 +95,11 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 		r.billing, r.apiKey = r.billingFor(level)
 	}
 
+	// Cache for the health patrol (koryph-gus): patrol uses these rather than
+	// re-running the quota snapshot every patrol cycle.
+	r.lastQuotaLevel = level
+	r.lastQuotaUsage = usage
+
 	g := govGate{allowDispatch: true, level: level, calibrated: calibrated, advisory: advisory, usage: usage}
 
 	if !r.opts.Manual && !advisory {
@@ -188,6 +193,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		if ctx.Err() != nil {
 			return r.interrupted()
 		}
+		r.patrolIfDue(ctx)
 		r.run.Wave++
 		_ = r.store.SaveRun(r.run)
 
