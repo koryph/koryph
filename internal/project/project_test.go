@@ -93,6 +93,7 @@ func fullConfig() *Config {
 			Fragments:  []string{"gitleaks", "govulncheck"},
 			Org:        "acme-org",
 		},
+		Forge: "github",
 	}
 }
 
@@ -397,6 +398,39 @@ func TestConfig_VaultValidation(t *testing.T) {
 				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestConfig_ForgeValidation(t *testing.T) {
+	valid := []string{"", "github", "gitlab"}
+	for _, v := range valid {
+		c := Default("proj")
+		c.Forge = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("Forge=%q: unexpected error: %v", v, err)
+		}
+	}
+	invalid := []string{"bitbucket", "gitea", "github.com", "GITHUB"}
+	for _, v := range invalid {
+		c := Default("proj")
+		c.Forge = v
+		if err := c.Validate(); err == nil {
+			t.Errorf("Forge=%q: expected validation error, got nil", v)
+		}
+	}
+}
+
+func TestConfig_ResolvedForge(t *testing.T) {
+	cases := []struct{ forge, want string }{
+		{"", "github"},
+		{"github", "github"},
+		{"gitlab", "gitlab"},
+	}
+	for _, tc := range cases {
+		c := &Config{Forge: tc.forge}
+		if got := c.ResolvedForge(); got != tc.want {
+			t.Errorf("ResolvedForge(forge=%q) = %q, want %q", tc.forge, got, tc.want)
+		}
 	}
 }
 

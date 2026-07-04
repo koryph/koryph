@@ -371,6 +371,17 @@ type Config struct {
 	// `koryph new` command (koryph-om7, HELD).  Nil means no profile is
 	// declared and the drift check is silently skipped.
 	Posture *PostureConfig `json:"posture,omitempty"`
+
+	// Forge names the git forge provider for this project. Supported values:
+	// "github" (default, also when empty — full back-compat; existing projects
+	// without this field continue to behave as GitHub projects) and "gitlab".
+	// Remote-URL sniffing may suggest a value during `koryph onboard`, but the
+	// operator always makes the final selection.
+	//
+	// This field is the single source of truth for which internal/forge
+	// provider is active; the registry record inherits it at
+	// onboard/add time.
+	Forge string `json:"forge,omitempty" jsonschema:"enum=github,enum=gitlab"`
 }
 
 // Default returns a conservative baseline config.
@@ -474,6 +485,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validatePosture(c.Posture); err != nil {
+		return err
+	}
+	if err := validateForge(c.Forge); err != nil {
 		return err
 	}
 	return nil
@@ -617,6 +631,26 @@ func validatePosture(p *PostureConfig) error {
 		return fmt.Errorf("posture.profile is required when posture block is present")
 	}
 	return nil
+}
+
+// validateForge enforces the forge field contract: empty means "github" (full
+// back-compat); any non-empty value must be a recognised provider name.
+func validateForge(name string) error {
+	switch name {
+	case "", "github", "gitlab":
+		return nil
+	default:
+		return fmt.Errorf("forge must be github|gitlab (or empty for default github), got %q", name)
+	}
+}
+
+// ResolvedForge returns the effective forge provider name for the config:
+// the Forge field when non-empty, otherwise the default "github".
+func (c *Config) ResolvedForge() string {
+	if c.Forge != "" {
+		return c.Forge
+	}
+	return "github"
 }
 
 // validatePipeline enforces the post-implement stage contract: every stage has

@@ -485,6 +485,14 @@
     "posture": {
       "$ref": "#/$defs/PostureConfig",
       "description": "Posture, when non-nil, declares the desired-state posture profile for\nthis project's GitHub repository. koryph doctor --project reports any\ndrift between the live repo and the named profile as WARN, with the\nexact koryph posture apply command to remediate.\n\nManaged by `koryph project add` (interactive offer) and the future\n`koryph new` command (koryph-om7, HELD).  Nil means no profile is\ndeclared and the drift check is silently skipped."
+    },
+    "forge": {
+      "type": "string",
+      "enum": [
+        "github",
+        "gitlab"
+      ],
+      "description": "Forge names the git forge provider for this project. Supported values:\n\"github\" (default, also when empty — full back-compat; existing projects\nwithout this field continue to behave as GitHub projects) and \"gitlab\".\nRemote-URL sniffing may suggest a value during `koryph onboard`, but the\noperator always makes the final selection.\n\nThis field is the single source of truth for which internal/forge\nprovider is active; the registry record inherits it at\nonboard/add time."
     }
   },
   "additionalProperties": false,

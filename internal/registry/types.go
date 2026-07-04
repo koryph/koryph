@@ -48,6 +48,12 @@ type Record struct {
 	DoltMode         string `json:"dolt_mode,omitempty"`
 	DoltRemoteRef    string `json:"dolt_remote_ref,omitempty"`
 
+	// Forge is the resolved forge provider name for this project ("github",
+	// "gitlab"). Populated from koryph.project.json at onboard/add time.
+	// An absent field (empty string) means "github" — all records written
+	// before this field was introduced default to GitHub behavior.
+	Forge string `json:"forge,omitempty"`
+
 	// Koryph
 	EngineVersion   string `json:"koryph_engine_version,omitempty"`
 	MigrationStatus string `json:"migration_status"`

@@ -238,6 +238,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.add(checkPostureDrift(opts, repoRoot, cfg))
 	r.add(checkOrgPostureDrift(opts, repoRoot, cfg))
 	r.addAll(checkFragmentDrift(opts, repoRoot, cfg))
+	r.add(checkForge(cfg))
 
 	for _, f := range r.Findings {
 		if f.Fixed {
