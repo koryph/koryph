@@ -121,11 +121,12 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 		if r.activeCount() == 0 {
 			return nil
 		}
+		timerFired, err := r.waitTick(ctx, wake, interval)
+		if err != nil {
+			return err
+		}
 		probeProgress := false
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
+		if timerFired {
 			tick++
 			// Split probe cost (L3): the git rev-list progress probe is the
 			// pricier subprocess, so it runs on the first timer tick and every
@@ -133,23 +134,47 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 			// the churn at a 10s tick. Liveness/stuck detection below is
 			// unaffected; it runs on every pass regardless.
 			probeProgress = progressProbeDue(tick)
-		case <-wake:
-			// Signal wake: liveness is the point, so skip the progress probe —
-			// the timer's own cadence keeps commit counts fresh regardless.
 		}
-		for _, id := range r.activePhaseIDs() {
-			sl := r.run.Slots[id]
-			if sl == nil || ledger.Terminal(sl.Status) {
-				continue
-			}
-			r.pollSlot(ctx, sl, probeProgress)
-		}
-		// Flush this tick's batched live-slot progress in one write. Terminal
-		// transitions (completeSlot) already persisted immediately; this only
-		// commits the cheap commit-count / heartbeat refresh, which resume
-		// recomputes from git anyway — so batching it costs no crash safety.
-		_ = r.store.SaveRun(r.run)
+		r.pollPass(ctx, probeProgress)
 	}
+}
+
+// waitTick blocks until the poll timer fires, a wake hint arrives on wake, or
+// ctx is cancelled — the single wait primitive shared by pollUntilIdle (wave
+// mode's drain-to-idle poll) and rollingLoop's one-tick-per-iteration refill
+// wait (koryph-2im.3, extracted from the pre-koryph-2im.3 pollUntilIdle body
+// so the two loops cannot drift on wake semantics). timerFired reports which
+// branch fired: true for the timer (progress-probe cadence applies), false
+// for a signal wake (liveness only — see pollUntilIdle's probeProgress
+// comment) or for a coalesced wake the caller need not distinguish further.
+// A ctx cancellation returns ctx.Err() and the caller propagates it so
+// interrupted() can checkpoint.
+func (r *runner) waitTick(ctx context.Context, wake <-chan os.Signal, interval time.Duration) (timerFired bool, err error) {
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(interval):
+		return true, nil
+	case <-wake:
+		return false, nil
+	}
+}
+
+// pollPass is one sweep over the run's active slots (koryph-2im.3, extracted
+// from pollUntilIdle's per-tick body): refresh liveness/progress for each
+// non-terminal slot, then flush this pass's batched progress in one write.
+// Terminal transitions (completeSlot) already persisted immediately; this
+// only commits the cheap commit-count/heartbeat refresh, which resume
+// recomputes from git anyway — so batching it costs no crash safety.
+func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
+	for _, id := range r.activePhaseIDs() {
+		sl := r.run.Slots[id]
+		if sl == nil || ledger.Terminal(sl.Status) {
+			continue
+		}
+		r.pollSlot(ctx, sl, probeProgress)
+	}
+	_ = r.store.SaveRun(r.run)
 }
 
 // progressProbeDue reports whether a timer-driven poll pass should run the
