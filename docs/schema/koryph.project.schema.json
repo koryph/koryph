@@ -204,9 +204,11 @@
             "protonpass",
             "onepassword",
             "file",
+            "encrypted-file",
+            "keychain",
             "command"
           ],
-          "description": "Provider names the vault backend: protonpass|onepassword|file|command."
+          "description": "Provider names the vault backend. Built-in no-vault providers:\n  encrypted-file  pure-Go age-encrypted file (all platforms)\n  keychain        macOS Keychain via security(1) (darwin only)\n  file            plaintext file path (legacy; WARN posture)"
         },
         "key_ref": {
           "type": "string",

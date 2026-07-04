@@ -18,6 +18,7 @@ package signing
 
 import (
 	"fmt"
+	"runtime"
 )
 
 // Signing modes.
@@ -30,7 +31,9 @@ const (
 const (
 	ProviderProtonPass        = "protonpass"         // Proton Pass CLI (pass-cli)
 	ProviderOnePassword       = "onepassword"        // 1Password CLI (op)
-	ProviderFile              = "file"               // KeyRef is a filesystem path
+	ProviderFile              = "file"               // KeyRef is a filesystem path (plaintext)
+	ProviderEncryptedFile     = "encrypted-file"     // KeyRef is an age-encrypted file path (pure Go, all platforms)
+	ProviderKeychain          = "keychain"           // macOS Keychain (darwin only; built-in via security(1))
 	ProviderCommand           = "command"            // user-supplied argv template in vault.json
 	ProviderAWSSecretsManager = "aws_secretsmanager" // AWS Secrets Manager CLI (aws)
 	ProviderAzureKeyVault     = "azure_keyvault"     // Azure Key Vault CLI (az)
@@ -39,6 +42,15 @@ const (
 	ProviderOpenBao           = "openbao"            // OpenBao CLI (bao)
 	ProviderHashiCorpVault    = "vault"              // HashiCorp Vault CLI (vault)
 )
+
+// VaultProviders is the set of all recognized provider names. Used by
+// validators and the default-resolution ladder.
+var VaultProviders = []string{
+	ProviderProtonPass, ProviderOnePassword, ProviderFile, ProviderEncryptedFile,
+	ProviderKeychain, ProviderCommand,
+	ProviderAWSSecretsManager, ProviderAzureKeyVault, ProviderGCPSecretManager,
+	ProviderKeePassXC, ProviderOpenBao, ProviderHashiCorpVault,
+}
 
 // Config is the per-project signing policy, stored as the "signing" block of
 // koryph.project.json.
@@ -51,8 +63,11 @@ type Config struct {
 	// Mode is "ssh" (default when empty) or "gitsign".
 	Mode string `json:"mode,omitempty" jsonschema:"enum=ssh,enum=gitsign"`
 
-	// Provider names the vault backend: protonpass|onepassword|file|command.
-	Provider string `json:"provider,omitempty" jsonschema:"enum=protonpass,enum=onepassword,enum=file,enum=command"`
+	// Provider names the vault backend. Built-in no-vault providers:
+	//   encrypted-file  pure-Go age-encrypted file (all platforms)
+	//   keychain        macOS Keychain via security(1) (darwin only)
+	//   file            plaintext file path (legacy; WARN posture)
+	Provider string `json:"provider,omitempty" jsonschema:"enum=protonpass,enum=onepassword,enum=file,enum=encrypted-file,enum=keychain,enum=command"`
 
 	// KeyRef is the provider-specific reference for the signing key: a
 	// pass:// URI (protonpass), an op:// reference (onepassword), a file
@@ -78,6 +93,34 @@ type Config struct {
 	Artifacts bool `json:"artifacts,omitempty"`
 }
 
+// IsVaultBacked reports whether provider is a password-manager / cloud vault
+// (as opposed to a local no-vault provider like file, keychain, or
+// encrypted-file). Vault-backed providers receive the highest posture rating.
+func IsVaultBacked(provider string) bool {
+	switch provider {
+	case ProviderProtonPass, ProviderOnePassword,
+		ProviderAWSSecretsManager, ProviderAzureKeyVault, ProviderGCPSecretManager,
+		ProviderKeePassXC, ProviderOpenBao, ProviderHashiCorpVault, ProviderCommand:
+		return true
+	}
+	return false
+}
+
+// ResolveDefaultProvider returns the best provider for new key storage when
+// none is configured. The ladder is:
+//
+//	darwin: keychain > encrypted-file
+//	other:  encrypted-file
+//
+// The plaintext file provider is never returned here — it is only valid when
+// the operator explicitly configures it (back-compat for existing configs).
+func ResolveDefaultProvider() string {
+	if runtime.GOOS == "darwin" {
+		return ProviderKeychain
+	}
+	return ProviderEncryptedFile
+}
+
 // EffectiveMode resolves the mode, defaulting to ssh.
 func (c *Config) EffectiveMode() string {
 	if c.Mode == "" {
@@ -94,11 +137,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("mode must be ssh|gitsign, got %q", c.Mode)
 	}
 	switch c.Provider {
-	case "", ProviderProtonPass, ProviderOnePassword, ProviderFile, ProviderCommand,
+	case "", ProviderProtonPass, ProviderOnePassword, ProviderFile, ProviderEncryptedFile,
+		ProviderKeychain, ProviderCommand,
 		ProviderAWSSecretsManager, ProviderAzureKeyVault, ProviderGCPSecretManager,
 		ProviderKeePassXC, ProviderOpenBao, ProviderHashiCorpVault:
 	default:
-		return fmt.Errorf("provider must be protonpass|onepassword|file|command|aws_secretsmanager|azure_keyvault|gcp_secretmanager|keepassxc|openbao|vault, got %q", c.Provider)
+		return fmt.Errorf("provider must be protonpass|onepassword|file|encrypted-file|keychain|command|aws_secretsmanager|azure_keyvault|gcp_secretmanager|keepassxc|openbao|vault, got %q", c.Provider)
+	}
+	if c.Provider == ProviderKeychain && runtime.GOOS != "darwin" {
+		return fmt.Errorf("provider keychain is only supported on macOS (darwin); use encrypted-file on this platform")
 	}
 	if c.Required && c.Identity == "" {
 		return fmt.Errorf("identity is required when signing is required")
@@ -107,7 +154,8 @@ func (c *Config) Validate() error {
 		if c.Provider == "" {
 			return fmt.Errorf("provider is required for mode ssh")
 		}
-		if (c.Provider == ProviderOnePassword || c.Provider == ProviderFile) && c.KeyRef == "" {
+		if (c.Provider == ProviderOnePassword || c.Provider == ProviderFile ||
+			c.Provider == ProviderEncryptedFile || c.Provider == ProviderKeychain) && c.KeyRef == "" {
 			return fmt.Errorf("key_ref is required for provider %s", c.Provider)
 		}
 		if c.Required && c.PublicKey == "" {

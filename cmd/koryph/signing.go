@@ -26,7 +26,8 @@ func cmdSigning(args []string, stdout, stderr io.Writer) int {
 		parentHelp(stdout, "signing", "configure and operate vault-backed commit signing", []subVerb{
 			{"setup --project ID --provider P --identity EMAIL [flags]", "write the signing policy into the project adapter"},
 			{"enable --project ID", "load the key into the SSH agent + apply repo git config"},
-			{"status --project ID", "mode/provider/agent-ready/repo-config summary"},
+			{"keygen --project ID [--provider P] [--key-ref PATH]", "generate + store a signing key (no-vault path; requires passphrase)"},
+			{"status --project ID", "mode/provider/agent-ready/repo-config/posture summary"},
 			{"verify --project ID --branch BR", "verify branch commit signatures (exit 1 on any bad)"},
 		})
 		return 0
@@ -37,6 +38,8 @@ func cmdSigning(args []string, stdout, stderr io.Writer) int {
 		return cmdSigningSetup(rest, stdout, stderr)
 	case "enable":
 		return cmdSigningEnable(rest, stdout, stderr)
+	case "keygen":
+		return cmdSigningKeygen(rest, stdout, stderr)
 	case "status":
 		return cmdSigningStatus(rest, stdout, stderr)
 	case "verify":
@@ -300,6 +303,9 @@ type signingStatusJSON struct {
 	KeySource           string            `json:"key_source"`
 	Identity            string            `json:"identity"`
 	Artifacts           bool              `json:"artifacts"`
+	PostureSummary      string            `json:"posture_summary"`
+	PostureNote         string            `json:"posture_note,omitempty"`
+	PostureWarn         bool              `json:"posture_warn,omitempty"`
 	PubkeyFP            string            `json:"pubkey_fp,omitempty"`
 	AgentReady          *bool             `json:"agent_ready,omitempty"`
 	Repo                signing.RepoState `json:"repo"`
@@ -361,6 +367,8 @@ func buildSigningStatusJSON(ctx context.Context, rec *registry.Record, sc *signi
 		}
 	}
 
+	posture := signing.ClassifyPosture(sc)
+
 	out := signingStatusJSON{
 		ProjectID:           rec.ProjectID,
 		Required:            sc.Required,
@@ -369,6 +377,9 @@ func buildSigningStatusJSON(ctx context.Context, rec *registry.Record, sc *signi
 		KeySource:           signingKeySource(sc),
 		Identity:            sc.Identity,
 		Artifacts:           sc.Artifacts,
+		PostureSummary:      posture.Summary,
+		PostureNote:         posture.Note,
+		PostureWarn:         posture.Level == signing.PosturePlaintext && sc.Provider != "",
 		Repo:                st,
 		AllowedSignersPath:  allowedPath,
 		AllowedSignersState: allowedState,
@@ -395,6 +406,18 @@ func printSigningStatus(ctx context.Context, w io.Writer, rec *registry.Record, 
 	fmt.Fprintf(w, "key source:      %s\n", signingKeySource(sc))
 	fmt.Fprintf(w, "identity:        %s\n", orDash(sc.Identity))
 	fmt.Fprintf(w, "artifacts:       %v\n", sc.Artifacts)
+
+	// Posture ladder.
+	posture := signing.ClassifyPosture(sc)
+	postureLabel := "ok"
+	if posture.Level == signing.PosturePlaintext && sc.Provider != "" {
+		postureLabel = "WARN"
+	}
+	fmt.Fprintf(w, "posture:         %s (%s)\n", postureLabel, posture.Summary)
+	if posture.Note != "" {
+		fmt.Fprintf(w, "posture note:    %s\n", posture.Note)
+	}
+
 	if sc.EffectiveMode() == signing.ModeSSH {
 		fp := "(no public key)"
 		if sc.PublicKey != "" {

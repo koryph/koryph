@@ -21,6 +21,7 @@ import (
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/signing"
 	"github.com/koryph/koryph/internal/worktree"
 )
 
@@ -296,7 +297,14 @@ func checkHooksWiring(repoRoot string) []Finding {
 	return findings
 }
 
-// checkSigning validates the project's signing configuration sanity.
+// checkSigning validates the project's signing configuration sanity and
+// classifies the key posture using the posture ladder:
+//
+//	vault provider  → OK
+//	keychain        → OK
+//	encrypted-file / passphrase-protected OpenSSH key → OK with info note
+//	plaintext file  → WARN + migration hint
+//
 // Note: project.Load already runs signing.Config.Validate(), so by the time
 // this runs the config shape is guaranteed valid. This check focuses on
 // incomplete-setup states that are valid per Validate() but will fail at
@@ -319,12 +327,38 @@ func checkSigning(cfg *project.Config) []Finding {
 	if sc.Required {
 		prefix = "required; "
 	}
-	return []Finding{{
-		Check: checkNameSigning,
-		Level: LevelOK,
-		Message: fmt.Sprintf("%smode=%s provider=%s identity=%s",
-			prefix, sc.EffectiveMode(), sc.Provider, sc.Identity),
+
+	// Posture ladder check.
+	posture := signing.ClassifyPosture(sc)
+	base := fmt.Sprintf("%smode=%s provider=%s identity=%s",
+		prefix, sc.EffectiveMode(), sc.Provider, sc.Identity)
+
+	findings := []Finding{{
+		Check:   checkNameSigning,
+		Level:   LevelOK,
+		Message: base,
 	}}
+
+	switch posture.Level {
+	case signing.PostureVault, signing.PostureKeychain:
+		// OK — no additional note needed.
+	case signing.PosturePassphraseProtected:
+		findings = append(findings, Finding{
+			Check:   checkNameSigning,
+			Level:   LevelOK,
+			Message: "signing posture: " + posture.Summary + " — " + posture.Note,
+		})
+	case signing.PosturePlaintext:
+		if sc.Provider != "" {
+			findings = append(findings, Finding{
+				Check:   checkNameSigning,
+				Level:   LevelWarn,
+				Message: "signing posture: " + posture.Note,
+			})
+		}
+	}
+
+	return findings
 }
 
 // checkProtectedPaths validates the project's protected_paths list for sanity.

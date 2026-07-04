@@ -196,7 +196,7 @@ func TestConfigValidate(t *testing.T) {
 	}{
 		{"empty ok (not required, defaults to ssh but nothing enforced without provider)", Config{Mode: ModeGitsign}, true},
 		{"bad mode", Config{Mode: "pgp"}, false},
-		{"bad provider", Config{Mode: ModeGitsign, Provider: "keychain"}, false},
+		{"bad provider", Config{Mode: ModeGitsign, Provider: "not-a-provider"}, false},
 		{"required needs identity", Config{Required: true, Mode: ModeGitsign}, false},
 		{"ssh needs provider", Config{Mode: ModeSSH}, false},
 		{"file needs key_ref", Config{Mode: ModeSSH, Provider: ProviderFile}, false},

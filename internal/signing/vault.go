@@ -44,6 +44,12 @@ type ProviderTemplates struct {
 	// passphrases, or any other secret material.
 	Fetch []string `json:"fetch,omitempty"`
 
+	// Store writes a secret to the provider. The secret is passed via stdin
+	// to avoid process-listing leaks; {ref} tokens are substituted with the
+	// item reference. Built-in providers (keychain, encrypted-file) override
+	// this with native Go code and ignore the template.
+	Store []string `json:"store,omitempty"`
+
 	// AgentLoad loads the provider's SSH keys into the system SSH agent
 	// (e.g. `pass-cli ssh-agent load`). Empty = no native agent integration:
 	// EnsureAgent falls back to Fetch piped to `ssh-add -`.
@@ -269,7 +275,8 @@ func FetchSecret(ctx context.Context, provider, ref string) ([]byte, error) {
 // Callers that do not already hold a *VaultConfig should use FetchSecret
 // instead, which loads vault config automatically.
 func (v *VaultConfig) Fetch(ctx context.Context, provider, ref string) ([]byte, error) {
-	if provider == ProviderFile {
+	switch provider {
+	case ProviderFile:
 		if ref == "" {
 			return nil, fmt.Errorf("signing: provider file needs a key_ref path")
 		}
@@ -278,6 +285,12 @@ func (v *VaultConfig) Fetch(ctx context.Context, provider, ref string) ([]byte, 
 			return nil, fmt.Errorf("signing: %w", err)
 		}
 		return data, nil
+
+	case ProviderEncryptedFile:
+		return FetchEncryptedFile(ref)
+
+	case ProviderKeychain:
+		return FetchKeychain(ref)
 	}
 
 	pt, ok := v.Providers[provider]
@@ -302,4 +315,57 @@ func (v *VaultConfig) Fetch(ctx context.Context, provider, ref string) ([]byte, 
 		return nil, fmt.Errorf("signing: provider %q returned an empty secret for ref %q", provider, ref)
 	}
 	return []byte(res.Stdout), nil
+}
+
+// StoreSecret stores a secret value with the named provider at the given ref.
+// This is the primary entry point for callers that need to persist a new key.
+// For built-in providers (keychain, encrypted-file) the secret is written
+// natively in Go. For CLI-backed providers the Store template is used with the
+// secret on stdin to avoid process-listing leaks.
+func StoreSecret(ctx context.Context, provider, ref string, secret []byte, passphrase string) error {
+	v, err := LoadVault()
+	if err != nil {
+		return err
+	}
+	return v.Store(ctx, provider, ref, secret, passphrase)
+}
+
+// Store writes a secret for a provider. passphrase is consumed by the
+// encrypted-file provider; it is ignored for CLI-backed providers.
+func (v *VaultConfig) Store(ctx context.Context, provider, ref string, secret []byte, passphrase string) error {
+	switch provider {
+	case ProviderEncryptedFile:
+		return StoreEncryptedFile(ref, secret, passphrase)
+
+	case ProviderKeychain:
+		return StoreKeychain(ref, secret)
+
+	case ProviderFile:
+		if ref == "" {
+			return fmt.Errorf("signing: provider file needs a key_ref path")
+		}
+		if err := os.WriteFile(ref, secret, 0o600); err != nil {
+			return fmt.Errorf("signing: %w", err)
+		}
+		return nil
+	}
+
+	// Generic CLI-backed store: pass the secret on stdin.
+	pt, ok := v.Providers[provider]
+	if !ok || len(pt.Store) == 0 {
+		return fmt.Errorf("signing: provider %q has no store template — cannot store key via this provider", provider)
+	}
+	argv := ExpandArgv(pt.Store, ref)
+	res, err := execx.Run(ctx, execx.Cmd{
+		Name: argv[0], Args: argv[1:],
+		Stdin:   string(secret),
+		Timeout: fetchTimeout,
+	})
+	if err != nil {
+		return fmt.Errorf("signing: store via %s: %w", argv[0], err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("signing: %s exited %d: %s", argv[0], res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+	return nil
 }
