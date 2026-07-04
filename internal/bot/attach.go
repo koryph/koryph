@@ -55,6 +55,9 @@ type installation struct {
 	Account struct {
 		Login string `json:"login"`
 	} `json:"account"`
+	// RepositorySelection is "all" when the app can access every repo in the
+	// account, or "selected" when access is limited to an explicit list.
+	RepositorySelection string `json:"repository_selection"`
 }
 
 // Attach implements 'koryph bot attach'. It is idempotent on all steps.
@@ -106,13 +109,19 @@ func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult
 	fmt.Fprintf(out, "  ✓ installation %d covers %q\n", iid, owner)
 
 	// Step 3: resolve repo ID and add to installation.
-	rid, repoAdded, err := addRepoToInstallation(ctx, opts.Repo, iid, ghBin)
+	// addRepoToInstallation detects a 403 (OAuth scope insufficient for the
+	// /user/installations family) and returns skipped=true in that case — the
+	// warning + remediations are printed inside the helper.
+	rid, repoAdded, skipped403, err := addRepoToInstallation(ctx, opts.Repo, iid, ghBin, opts.Name, out)
 	if err != nil {
 		return nil, fmt.Errorf("bot attach: %w", err)
 	}
-	if repoAdded {
+	switch {
+	case skipped403:
+		// Warning + remediations already printed by addRepoToInstallation.
+	case repoAdded:
 		fmt.Fprintf(out, "  ✓ %s added to installation %d\n", opts.Repo, iid)
-	} else {
+	default:
 		fmt.Fprintf(out, "  ✓ %s already in installation %d\n", opts.Repo, iid)
 	}
 
@@ -182,16 +191,21 @@ func resolveInstallation(ctx context.Context, jwt, owner string) (int64, error) 
 
 // addRepoToInstallation resolves the GitHub repository numeric ID, checks
 // whether it is already included in the installation, and adds it if not.
-// Returns (repoID, wasAdded, err).
-func addRepoToInstallation(_ context.Context, ownerRepo string, iid int64, ghBin string) (int64, bool, error) {
+// Returns (repoID, wasAdded, skipped403, err).
+//
+// skipped403 is true when the PUT request returned HTTP 403 (the caller's
+// OAuth token lacks the read:user scope required by the /user/installations
+// family). In that case the warning and two remediations are written to out
+// and the function returns nil — Attach continues with secrets and toggle.
+func addRepoToInstallation(_ context.Context, ownerRepo string, iid int64, ghBin, botName string, out io.Writer) (int64, bool, bool, error) {
 	// Resolve repo ID.
 	ridOut, err := runGHBin(ghBin, "api", "/repos/"+ownerRepo, "--jq", ".id")
 	if err != nil {
-		return 0, false, fmt.Errorf("resolve repo ID for %s: %w", ownerRepo, err)
+		return 0, false, false, fmt.Errorf("resolve repo ID for %s: %w", ownerRepo, err)
 	}
 	var rid int64
 	if _, err := fmt.Sscanf(strings.TrimSpace(ridOut), "%d", &rid); err != nil || rid == 0 {
-		return 0, false, fmt.Errorf("parse repo ID %q: %w", strings.TrimSpace(ridOut), err)
+		return 0, false, false, fmt.Errorf("parse repo ID %q: %w", strings.TrimSpace(ridOut), err)
 	}
 
 	// Check whether the repo is already in the installation.
@@ -201,16 +215,31 @@ func addRepoToInstallation(_ context.Context, ownerRepo string, iid int64, ghBin
 	var existing int64
 	fmt.Sscanf(strings.TrimSpace(alreadyOut), "%d", &existing) //nolint:errcheck
 	if existing == rid {
-		return rid, false, nil // already present — idempotent
+		return rid, false, false, nil // already present — idempotent
 	}
 
 	// Add the repo to the installation.
-	_, err = runGHBin(ghBin, "api", "-X", "PUT",
+	putCmd := exec.Command(ghBin, "api", "-X", "PUT", //nolint:gosec
 		fmt.Sprintf("/user/installations/%d/repositories/%d", iid, rid))
-	if err != nil {
-		return 0, false, fmt.Errorf("add %s to installation %d: %w", ownerRepo, iid, err)
+	putOut, putErr := putCmd.CombinedOutput()
+	if putErr != nil {
+		if ghOutputIs403(putOut) {
+			// The /user/installations family requires the read:user OAuth scope,
+			// which gh's default token may not have. Print remediations and
+			// continue — secrets and toggle can still be configured.
+			fmt.Fprintf(out, "  ⚠ cannot add %s to installation %d (HTTP 403 — OAuth token lacks read:user scope)\n",
+				ownerRepo, iid)
+			fmt.Fprintf(out, "    Remediation 1: gh auth refresh -h github.com -s read:user\n")
+			fmt.Fprintf(out, "                   then retry: koryph bot attach --name %s --repo %s\n",
+				botName, ownerRepo)
+			fmt.Fprintf(out, "    Remediation 2: org Settings → GitHub Apps → configure %s → Repository access\n",
+				botName)
+			return rid, false, true, nil // skipped — not a fatal error
+		}
+		return 0, false, false, fmt.Errorf("add %s to installation %d: %w\n%s",
+			ownerRepo, iid, putErr, strings.TrimSpace(string(putOut)))
 	}
-	return rid, true, nil
+	return rid, true, false, nil
 }
 
 // setSecrets writes RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY either
@@ -313,13 +342,22 @@ func splitOwnerRepo(s string) (owner, repo string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// runGHBin runs the gh CLI with the given args and returns combined output.
+// runGHBin runs the gh CLI with the given args and returns stdout.
+// On error, stderr is included in the returned error message.
 func runGHBin(bin string, args ...string) (string, error) {
 	cmd := exec.Command(bin, args...) //nolint:gosec
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		combined, _ := cmd.CombinedOutput()
-		return "", fmt.Errorf("gh %s: %w\n%s", strings.Join(args, " "), err, string(combined))
+		return "", fmt.Errorf("gh %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// ghOutputIs403 reports whether the combined output of a gh command indicates
+// an HTTP 403 response from the GitHub API.
+func ghOutputIs403(out []byte) bool {
+	s := string(out)
+	return strings.Contains(s, "HTTP 403") ||
+		strings.Contains(s, "status 403") ||
+		strings.Contains(s, " 403 ")
 }

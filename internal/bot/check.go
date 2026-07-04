@@ -5,6 +5,7 @@ package bot
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,10 +57,13 @@ type CheckOptions struct {
 // Validators in order:
 //  1. jwt-valid       — PEM parses; JWT minted; GET /app confirms app_id match
 //  2. installation-exists — GET /app/installations lists ≥ 1 installation
-//  3. installation-covers — installation covers the target repo (if --repo set)
-//  4. secrets-present — RELEASE_BOT_APP_ID + RELEASE_BOT_PRIVATE_KEY present (if --repo)
+//  3. installation-covers — installation covers the target repo (if --repo set);
+//     when repository_selection=selected, verifies via installation token
+//  4. secrets-present — RELEASE_BOT_APP_ID + RELEASE_BOT_PRIVATE_KEY present
+//     at repo OR org level (if --repo); 403 on org check degrades to warn
 //  5. toggle-on       — Actions can_approve_pull_request_reviews enabled (if --repo)
-//  6. caller-workflow — .github/workflows/release.yml present in repo (if --repo)
+//  6. caller-workflow — any .github/workflows/*.yml calls release-train.yml
+//     (local ./ or koryph/koryph@ reference); message names what it looked for
 func Check(ctx context.Context, cfg *Config, opts CheckOptions) ([]CheckFinding, error) {
 	ghBin := opts.GHBin
 	if ghBin == "" {
@@ -93,8 +97,8 @@ func Check(ctx context.Context, cfg *Config, opts CheckOptions) ([]CheckFinding,
 		return findings, fmt.Errorf("bot check: %w", err)
 	}
 
-	// 3. Installation covers the target owner.
-	findings = append(findings, checkInstallationCovers(installs, owner, opts))
+	// 3. Installation covers the target repo (owner-match + repo-selection check).
+	findings = append(findings, checkInstallationCovers(ctx, jwt, installs, owner, opts))
 
 	// 4. Secrets present (best-effort; degrade gracefully on gh errors).
 	findings = append(findings, checkSecrets(opts.Repo, ghBin, opts.Name)...)
@@ -264,16 +268,29 @@ func checkInstallations(ctx context.Context, jwt string) ([]installation, CheckF
 	}
 }
 
-// checkInstallationCovers verifies that one of the installations covers owner.
-func checkInstallationCovers(installs []installation, owner string, opts CheckOptions) CheckFinding {
+// checkInstallationCovers verifies that one of the installations covers the
+// target repo.
+//
+//   - repository_selection == "all" (or empty): any repo under the owner is
+//     covered; return OK immediately.
+//   - repository_selection == "selected": mint an installation token and list
+//     the repos the installation can actually access to give a real verdict.
+func checkInstallationCovers(ctx context.Context, jwt string, installs []installation, owner string, opts CheckOptions) CheckFinding {
 	for _, i := range installs {
-		if strings.EqualFold(i.Account.Login, owner) {
+		if !strings.EqualFold(i.Account.Login, owner) {
+			continue
+		}
+		// Owner matches. Inspect repository_selection.
+		sel := strings.ToLower(i.RepositorySelection)
+		if sel == "" || sel == "all" {
 			return CheckFinding{
 				Check:   "installation-covers",
 				Level:   CheckOK,
-				Message: fmt.Sprintf("installation %d covers %q", i.ID, owner),
+				Message: fmt.Sprintf("installation %d covers %q (all repositories)", i.ID, owner),
 			}
 		}
+		// "selected" — must verify that the specific repo is in the covered list.
+		return checkInstallationCoversRepo(ctx, jwt, i.ID, owner, opts)
 	}
 	return CheckFinding{
 		Check:   "installation-covers",
@@ -284,13 +301,191 @@ func checkInstallationCovers(installs []installation, owner string, opts CheckOp
 	}
 }
 
-// checkSecrets checks that RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY
-// are present in the repo's Actions secrets. Degrades to warn on gh errors.
-func checkSecrets(ownerRepo, ghBin, botName string) []CheckFinding {
-	out, err := exec.Command(ghBin, "secret", "list", //nolint:gosec
-		"--repo", ownerRepo, "--jq", ".[].name").Output()
+// checkInstallationCoversRepo checks that a specific repo is accessible under
+// the installation when repository_selection is "selected". It mints a
+// short-lived installation token and lists the repos it covers.
+func checkInstallationCoversRepo(ctx context.Context, jwt string, iid int64, owner string, opts CheckOptions) CheckFinding {
+	instToken, err := mintInstallationToken(ctx, jwt, iid)
 	if err != nil {
-		// Likely missing admin access or gh not authenticated — warn but don't fail.
+		// Degrade gracefully — we know the owner matches, just can't verify repo.
+		return CheckFinding{
+			Check: "installation-covers",
+			Level: CheckWarn,
+			Message: fmt.Sprintf(
+				"installation %d covers %q (repository_selection=selected; "+
+					"cannot verify %s is in covered list: %v)",
+				iid, owner, opts.Repo, err),
+		}
+	}
+
+	covered, err := listInstallationRepos(ctx, instToken)
+	if err != nil {
+		return CheckFinding{
+			Check: "installation-covers",
+			Level: CheckWarn,
+			Message: fmt.Sprintf(
+				"installation %d covers %q (repository_selection=selected; "+
+					"cannot list covered repos: %v)",
+				iid, owner, err),
+		}
+	}
+
+	for _, r := range covered {
+		if strings.EqualFold(r, opts.Repo) {
+			return CheckFinding{
+				Check:   "installation-covers",
+				Level:   CheckOK,
+				Message: fmt.Sprintf("installation %d covers %s (repository_selection=selected)", iid, opts.Repo),
+			}
+		}
+	}
+	return CheckFinding{
+		Check: "installation-covers",
+		Level: CheckFail,
+		Message: fmt.Sprintf(
+			"installation %d covers %q (selected) but %s is not in the covered repository list",
+			iid, owner, opts.Repo),
+		Remediation: fmt.Sprintf("koryph bot attach --name %s --repo %s   # adds the repo to the installation",
+			opts.Name, opts.Repo),
+	}
+}
+
+// mintInstallationToken calls POST /app/installations/{id}/access_tokens with
+// the app JWT and returns the short-lived installation token.
+func mintInstallationToken(ctx context.Context, jwt string, iid int64) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", iid)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
+	if err != nil {
+		return "", fmt.Errorf("build token request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("POST /app/installations/%d/access_tokens: %w", iid, err)
+	}
+	defer resp.Body.Close()
+	body := make([]byte, 1<<16)
+	n, _ := resp.Body.Read(body)
+	body = body[:n]
+
+	if resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("POST /app/installations/%d/access_tokens returned HTTP %d",
+			iid, resp.StatusCode)
+	}
+	var tok struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &tok); err != nil || tok.Token == "" {
+		return "", fmt.Errorf("parse installation token response: %w", err)
+	}
+	return tok.Token, nil
+}
+
+// listInstallationRepos calls GET /installation/repositories with an
+// installation token and returns the full_name of every accessible repo.
+func listInstallationRepos(ctx context.Context, instToken string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.github.com/installation/repositories", http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("build repos request: %w", err)
+	}
+	req.Header.Set("Authorization", "token "+instToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET /installation/repositories: %w", err)
+	}
+	defer resp.Body.Close()
+	body := make([]byte, 1<<20)
+	n, _ := resp.Body.Read(body)
+	body = body[:n]
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /installation/repositories returned HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		Repositories []struct {
+			FullName string `json:"full_name"`
+		} `json:"repositories"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse repos response: %w", err)
+	}
+	names := make([]string, 0, len(result.Repositories))
+	for _, r := range result.Repositories {
+		names = append(names, r.FullName)
+	}
+	return names, nil
+}
+
+// checkSecrets checks that RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY
+// are present in the repo's Actions secrets OR the org's Actions secrets.
+//
+// Search order: repo-level secrets first, then org-level secrets for any that
+// are still absent (e.g. provisioned via 'koryph bot attach --org-secrets').
+// A 403 on the org-level check (which requires read:org / org-admin scope) is
+// tolerated: the finding degrades to WARN naming the exact permission needed.
+func checkSecrets(ownerRepo, ghBin, botName string) []CheckFinding {
+	owner, _, splitErr := splitOwnerRepo(ownerRepo)
+	if splitErr != nil {
+		// Defensive only — caller already validated.
+		return []CheckFinding{{
+			Check:   "secrets-present",
+			Level:   CheckWarn,
+			Message: fmt.Sprintf("internal: splitOwnerRepo: %v", splitErr),
+		}}
+	}
+
+	const (
+		keyAppID  = "RELEASE_BOT_APP_ID"
+		keyAppKey = "RELEASE_BOT_PRIVATE_KEY"
+	)
+	required := []string{keyAppID, keyAppKey}
+
+	// --- Repo-level secrets ---
+	names := make(map[string]bool)
+	repoOut, repoErr := exec.Command(ghBin, "secret", "list", //nolint:gosec
+		"--repo", ownerRepo, "--jq", ".[].name").Output()
+	if repoErr == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(repoOut)), "\n") {
+			if l := strings.TrimSpace(line); l != "" {
+				names[l] = true
+			}
+		}
+	}
+
+	// --- Org-level secrets (checked when any required secret is missing) ---
+	orgForbidden := false
+	orgForbiddenMsg := ""
+	if !names[keyAppID] || !names[keyAppKey] {
+		orgCmd := exec.Command(ghBin, "api", //nolint:gosec
+			"/orgs/"+owner+"/actions/secrets",
+			"--jq", ".secrets[].name")
+		orgOut, orgErr := orgCmd.CombinedOutput()
+		if orgErr == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(orgOut)), "\n") {
+				if l := strings.TrimSpace(line); l != "" {
+					names[l] = true
+				}
+			}
+		} else if ghOutputIs403(orgOut) {
+			orgForbidden = true
+			orgForbiddenMsg = "org-level check skipped (HTTP 403 — " +
+				"requires read:org scope or org-admin role; " +
+				"run: gh auth refresh -h github.com -s read:org)"
+		}
+		// Other org errors: silently skip (best-effort; repo result still used).
+	}
+
+	// Cannot read repo secrets at all — warn and bail.
+	if repoErr != nil && len(names) == 0 {
 		return []CheckFinding{{
 			Check:   "secrets-present",
 			Level:   CheckWarn,
@@ -298,22 +493,22 @@ func checkSecrets(ownerRepo, ghBin, botName string) []CheckFinding {
 		}}
 	}
 
-	names := make(map[string]bool)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if l := strings.TrimSpace(line); l != "" {
-			names[l] = true
-		}
-	}
-
 	var findings []CheckFinding
-	for _, want := range []string{"RELEASE_BOT_APP_ID", "RELEASE_BOT_PRIVATE_KEY"} {
-		if names[want] {
+	for _, want := range required {
+		switch {
+		case names[want]:
 			findings = append(findings, CheckFinding{
 				Check:   "secrets-present",
 				Level:   CheckOK,
 				Message: fmt.Sprintf("%s: %s present", ownerRepo, want),
 			})
-		} else {
+		case orgForbidden:
+			findings = append(findings, CheckFinding{
+				Check:   "secrets-present",
+				Level:   CheckWarn,
+				Message: fmt.Sprintf("%s: %s not found at repo level; %s", ownerRepo, want, orgForbiddenMsg),
+			})
+		default:
 			findings = append(findings, CheckFinding{
 				Check:       "secrets-present",
 				Level:       CheckFail,
@@ -352,24 +547,106 @@ func checkActionsToggle(ownerRepo, ghBin, botName string) CheckFinding {
 	}
 }
 
-// checkCallerWorkflow checks that .github/workflows/release.yml exists in the
-// repository. Uses gh api to avoid requiring a local clone.
+// checkCallerWorkflow verifies that at least one workflow file in
+// .github/workflows/ contains a 'uses:' reference to release-train.yml
+// (via the local ./ form or a koryph/koryph@ cross-repo reference).
+//
+// This intentionally does NOT hardcode a specific file name: release-please,
+// semantic-release, and other callers use different filenames. The check
+// passes as long as any workflow in the directory delegates to release-train.yml.
 func checkCallerWorkflow(_ context.Context, _ *Config, ownerRepo, ghBin string) CheckFinding {
-	_, err := exec.Command(ghBin, "api", //nolint:gosec
-		"/repos/"+ownerRepo+"/contents/.github/workflows/release.yml",
-		"--jq", ".path").Output()
+	const lookingFor = "uses: referencing release-train.yml (./ or koryph/koryph@ prefix)"
+
+	// List workflow files in .github/workflows/.
+	listOut, err := exec.Command(ghBin, "api", //nolint:gosec
+		"/repos/"+ownerRepo+"/contents/.github/workflows",
+		"--jq", `[.[] | select(.type == "file") | .name] | .[]`,
+	).Output()
 	if err != nil {
 		return CheckFinding{
-			Check:   "caller-workflow",
-			Level:   CheckWarn,
-			Message: fmt.Sprintf("%s: .github/workflows/release.yml not found or not accessible (run `koryph release setup` if release infra is not yet configured)", ownerRepo),
+			Check: "caller-workflow",
+			Level: CheckWarn,
+			Message: fmt.Sprintf("%s: cannot list .github/workflows (%v); "+
+				"looked for %s", ownerRepo, err, lookingFor),
 		}
 	}
-	return CheckFinding{
-		Check:   "caller-workflow",
-		Level:   CheckOK,
-		Message: fmt.Sprintf("%s: .github/workflows/release.yml present", ownerRepo),
+
+	names := splitLines(string(listOut))
+	if len(names) == 0 {
+		return CheckFinding{
+			Check: "caller-workflow",
+			Level: CheckWarn,
+			Message: fmt.Sprintf("%s: no workflow files found in .github/workflows "+
+				"(run `koryph release setup`); looked for %s", ownerRepo, lookingFor),
+		}
 	}
+
+	// Fetch content of each .yml/.yaml file and scan for a release-train.yml reference.
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		b64Out, err := exec.Command(ghBin, "api", //nolint:gosec
+			"/repos/"+ownerRepo+"/contents/.github/workflows/"+name,
+			"--jq", ".content",
+		).Output()
+		if err != nil {
+			continue // skip inaccessible or deleted file
+		}
+		// GitHub returns the file content as base64 with embedded newlines.
+		b64 := strings.ReplaceAll(strings.TrimSpace(string(b64Out)), "\n", "")
+		decoded, decErr := base64.StdEncoding.DecodeString(b64)
+		if decErr != nil {
+			continue
+		}
+		if containsReleaseTrain(string(decoded)) {
+			return CheckFinding{
+				Check: "caller-workflow",
+				Level: CheckOK,
+				Message: fmt.Sprintf("%s: %s calls release-train.yml "+
+					"(looked for %s)", ownerRepo, name, lookingFor),
+			}
+		}
+	}
+
+	return CheckFinding{
+		Check: "caller-workflow",
+		Level: CheckWarn,
+		Message: fmt.Sprintf("%s: no workflow found that calls release-train.yml "+
+			"(run `koryph release setup` if release infra is not yet configured); "+
+			"looked for %s", ownerRepo, lookingFor),
+	}
+}
+
+// containsReleaseTrain reports whether the workflow YAML content contains a
+// uses: line that references release-train.yml via the local ./ form or a
+// koryph/koryph@ cross-repo reference.
+func containsReleaseTrain(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "uses:") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "uses:"))
+		// Local form:       uses: ./.github/workflows/release-train.yml
+		// Cross-repo form:  uses: koryph/koryph/.github/workflows/release-train.yml@v1
+		if strings.HasSuffix(val, "release-train.yml") ||
+			strings.Contains(val, "release-train.yml@") {
+			return true
+		}
+	}
+	return false
+}
+
+// splitLines splits a newline-delimited string into non-empty trimmed lines.
+func splitLines(s string) []string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			lines = append(lines, t)
+		}
+	}
+	return lines
 }
 
 // CredentialFinding is a lightweight offline-only finding for use by
