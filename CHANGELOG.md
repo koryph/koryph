@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.6.0](https://github.com/koryph/koryph/compare/v0.5.0...v0.6.0) (2026-07-04)
+
+
+### Features
+
+* **bot:** vault-backed key storage retrofit — pointer credentials, ResolveKey, typed VaultErr ([959b9fe](https://github.com/koryph/koryph/commit/959b9fe773f51153ef96405f3a17163f037afc5b))
+* **ci:** extract release pipeline into reusable release-train.yml ([d19a0e5](https://github.com/koryph/koryph/commit/d19a0e5d44b77c20aa1eb4584391ca0314b48215))
+* **cli:** koryph bot attach/list/check + doctor bot-credentials check ([dc4ab56](https://github.com/koryph/koryph/commit/dc4ab56efde8b68dd3bcf88908ef11a4ade9cc28))
+* **cli:** koryph bot create/install — GitHub App manifest flow ([fb71686](https://github.com/koryph/koryph/commit/fb71686a009ef8d750c28f8fc4124765954d0766))
+* **cli:** koryph release kick + bot-less rung-2 fallback ([5396332](https://github.com/koryph/koryph/commit/5396332ba2c760f532c6096de5ad2166315b7f68))
+* **docs:** migrate the book from mkdocs-material to zensical ([81e7889](https://github.com/koryph/koryph/commit/81e7889b7acc0853701ae8f9ea2375f6f8d1fdaf))
+* **onboard:** emit AGENTS.md + capability-gate installers per runtime ([eef6f6f](https://github.com/koryph/koryph/commit/eef6f6fad179992a3603a1bab894ca6a4bb6f96b))
+* **ops:** rebase-only PR branch updates + retire the update-branch button ([6989258](https://github.com/koryph/koryph/commit/69892584b0264584854d65f7e98943c21c32ac6b))
+* **posture:** add koryph repo check|apply — port shell scripts to Go ([f361d72](https://github.com/koryph/koryph/commit/f361d722c797239ab84fd3d506c6e116aee866f1))
+* **posture:** default-profile wiring — project posture block, doctor drift, project add offer ([661f6e0](https://github.com/koryph/koryph/commit/661f6e0cf23186b5493ea040247385de2ce60ae1))
+* **posture:** manage repo description + homepage as IaC ([109316e](https://github.com/koryph/koryph/commit/109316ee44a70a206fb5f612d63976ba59239c54))
+* **posture:** named profiles + posture check|apply|diff|list + oss-solo-maintainer builtin ([eac2663](https://github.com/koryph/koryph/commit/eac2663b995c44e9d3b0d3810bde3e79c73191e8))
+* **posture:** org-level ruleset check/apply (design §3.2) ([d92e6ec](https://github.com/koryph/koryph/commit/d92e6ec4cd8afbfd6d28e39064112173f40c0a5b))
+* **posture:** security-scanner fragments — gitleaks, govulncheck, license-allowlist ([9b0a886](https://github.com/koryph/koryph/commit/9b0a8869dba50e0edb043ac902ad13b71eb6605b))
+* **promptc:** fold operator bd-notes into an OPERATOR NOTES prompt section ([9505355](https://github.com/koryph/koryph/commit/95053558731c71050ce60ff937726d7be2651099))
+* **signing:** no-vault fallback ladder — keychain, encrypted-file, keygen ([199620d](https://github.com/koryph/koryph/commit/199620d2c13681de71983d1bb69c86e744c951f0))
+* **signing:** project + global vault defaults — provider and container as config ([e5325d1](https://github.com/koryph/koryph/commit/e5325d1f2ea293c3d4c052d8c324a4f080e82a80))
+
+
+### Bug Fixes
+
+* **build:** per-checkout golangci-lint cache — stop cross-worktree poisoning ([feb49cc](https://github.com/koryph/koryph/commit/feb49cc5bd07d01dcb956862c5465a22b4b7343a))
+* **ci:** skip merge commits in the conventional+DCO PR check ([5c05a9c](https://github.com/koryph/koryph/commit/5c05a9c71499bcad16f0a0997bfd13b19ebd0695))
+* **cli:** make nudge deliver reliably to a not-yet-dispatched bead ([a8902c7](https://github.com/koryph/koryph/commit/a8902c7ec737fdac7fbafbaf62dd73280e8d561c))
+* **release:** flip the Release PR autorelease label at publish ([fd590d7](https://github.com/koryph/koryph/commit/fd590d7bcf5ae9d47f8c9842ca8c990a7d832589))
+* **release:** grant actions:read to release-train callers ([e0c9ef3](https://github.com/koryph/koryph/commit/e0c9ef382fcc69109927fc7cbeee5f3ad91a2834))
+* **signing:** resolve four review findings from koryph-fr3.6 ([ab08633](https://github.com/koryph/koryph/commit/ab086331173f8146eca7d3c87ebbcc0f21cf4a39))
+
 ## [0.5.0](https://github.com/koryph/koryph/compare/v0.4.0...v0.5.0) (2026-07-04)
 
 
