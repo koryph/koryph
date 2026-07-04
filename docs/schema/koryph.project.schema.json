@@ -261,6 +261,35 @@
         "required"
       ],
       "description": "Config is the per-project signing policy, stored as the \"signing\" block of koryph.project.json."
+    },
+    "SigningVaultDefaults": {
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": [
+            "protonpass",
+            "onepassword",
+            "file",
+            "encrypted-file",
+            "keychain",
+            "command",
+            "aws_secretsmanager",
+            "azure_keyvault",
+            "gcp_secretmanager",
+            "keepassxc",
+            "openbao",
+            "vault"
+          ],
+          "description": "Provider names the vault backend. Must be one of the recognized\nsigning.Provider* constants when non-empty."
+        },
+        "container": {
+          "type": "string",
+          "description": "Container is the provider-native grouping:\n  protonpass       vault name (e.g. \"Engineering\")\n  onepassword      vault (e.g. \"Personal\")\n  file / encrypted-file  directory under which key files are stored\n  aws_secretsmanager     secret path prefix\n  keepassxc              KeePassXC database path / group\n  HashiCorp / OpenBao    KV mount path\nEmpty means \"use the provider's default\"; not all providers have a\nmeaningful container concept."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "VaultDefaults is the vault block shared by koryph.project.json and the global ~/.koryph/config.json."
     }
   },
   "properties": {
@@ -397,6 +426,10 @@
       "maximum": 3,
       "minimum": 0,
       "description": "RiskTierDefault is the recovery tier (0-3) for beads without rt:*."
+    },
+    "vault": {
+      "$ref": "#/$defs/SigningVaultDefaults",
+      "description": "Vault sets the project-level default vault provider and container\n(provider-native grouping: Proton Pass vault name, 1Password vault, file\ndirectory, etc.). Commands that store or fetch secrets use this block when\nno explicit flags are supplied. Falls back to the global\n~/.koryph/config.json vault block when absent.\nManaged by `koryph signing setup` (sets provider/container on first run)."
     },
     "signing": {
       "$ref": "#/$defs/SigningConfig",

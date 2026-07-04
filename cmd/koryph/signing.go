@@ -133,6 +133,25 @@ func cmdSigningSetup(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
+	// When --provider is omitted, walk the resolution ladder to fill it in:
+	// project vault block > project signing block (legacy) > global config.
+	// This lets operators set their vault once (in koryph.project.json or
+	// ~/.koryph/config.json) and omit --provider on every signing setup run.
+	if *provider == "" {
+		d, rerr := signing.ResolveVaultDefaults(rec.Root)
+		if rerr != nil {
+			return fail(stderr, fmt.Errorf("signing setup: resolving vault defaults: %w", rerr))
+		}
+		if d.Provider != "" {
+			*provider = d.Provider
+			// Propagate container as the default vault name for public-key
+			// resolution when --vault-name was also omitted.
+			if *vaultName == "" && d.Container != "" {
+				*vaultName = d.Container
+			}
+		}
+	}
+
 	// Resolve the SSH public key.
 	resolvedPub, resolvedVaultName, resolvedItemTitle := "", "", ""
 	switch {

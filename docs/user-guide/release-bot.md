@@ -42,6 +42,40 @@ and has **no webhook** — it is a narrow-scope, no-inbound-listener identity.
 
 ---
 
+## Configure your vault once
+
+`koryph bot create` stores the App's private key in a vault. To avoid
+passing `--vault-provider` on every invocation, configure a default in
+`~/.koryph/config.json` (machine-wide) or `koryph.project.json` (per project):
+
+**Machine-wide** (`~/.koryph/config.json`):
+```json
+{
+  "vault": {
+    "provider":  "protonpass",
+    "container": "Engineering"
+  }
+}
+```
+
+**Per-project** (`koryph.project.json`):
+```json
+{
+  "vault": {
+    "provider":  "onepassword",
+    "container": "Personal"
+  }
+}
+```
+
+With either block in place, `koryph bot create` picks up the provider
+automatically and you can skip `--vault-provider`.
+
+See [Commit & Artifact Signing — Configure your vault once](signing.md#configure-your-vault-once)
+for the full resolution order and per-provider `container` semantics.
+
+---
+
 ## Prerequisites
 
 - **`koryph`** installed (`brew install koryph/tap/koryph` or from source).

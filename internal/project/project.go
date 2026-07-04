@@ -294,6 +294,14 @@ type Config struct {
 	// RiskTierDefault is the recovery tier (0-3) for beads without rt:*.
 	RiskTierDefault int `json:"risk_tier_default" jsonschema:"minimum=0,maximum=3"`
 
+	// Vault sets the project-level default vault provider and container
+	// (provider-native grouping: Proton Pass vault name, 1Password vault, file
+	// directory, etc.). Commands that store or fetch secrets use this block when
+	// no explicit flags are supplied. Falls back to the global
+	// ~/.koryph/config.json vault block when absent.
+	// Managed by `koryph signing setup` (sets provider/container on first run).
+	Vault *signing.VaultDefaults `json:"vault,omitempty"`
+
 	// Signing is the vault-backed commit/artifact signing policy
 	// (nil = signing not configured; managed by `koryph signing setup`).
 	Signing *signing.Config `json:"signing,omitempty"`
@@ -429,6 +437,11 @@ func (c *Config) Validate() error {
 		}
 	default:
 		return fmt.Errorf("commit_style must be conventional|custom|none, got %q", c.CommitStyle)
+	}
+	if c.Vault != nil {
+		if err := c.Vault.Validate(); err != nil {
+			return fmt.Errorf("vault: %w", err)
+		}
 	}
 	if c.Signing != nil {
 		if err := c.Signing.Validate(); err != nil {

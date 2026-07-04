@@ -40,6 +40,70 @@ it immediately — use the `ssh-add` fallback (`agent_load: []`) in that case.
 
 ---
 
+## Configure your vault once
+
+Instead of passing `--provider` and `--vault-name` flags to every
+`koryph signing setup` run, configure defaults in one place and skip the
+flags entirely on subsequent calls.
+
+### Project-level default (recommended for teams)
+
+Add a `vault` block to `koryph.project.json`:
+
+```json
+{
+  "vault": {
+    "provider":  "protonpass",
+    "container": "Engineering"
+  }
+}
+```
+
+`container` is the provider-native grouping — a Proton Pass vault name,
+1Password vault, file directory, KeePassXC database/group path, or
+HashiCorp/OpenBao KV mount. It acts as the default `--vault-name` for
+public-key resolution and the default storage location for new keys.
+
+With this block in place you can run:
+
+```sh
+koryph signing setup \
+  --project koryph \
+  --key-ref "pass://SHARE/ITEM" \
+  --identity you@example.com
+```
+
+and `--provider protonpass` + `--vault-name Engineering` are filled in
+automatically.
+
+### Machine-level default (per operator)
+
+Add a `vault` block to `~/.koryph/config.json` to set a default for all
+projects that have no project-level vault block:
+
+```json
+{
+  "vault": {
+    "provider":  "onepassword",
+    "container": "Personal"
+  }
+}
+```
+
+### Resolution order
+
+Every command that stores or fetches a secret walks this ladder (first
+non-empty wins):
+
+1. **Explicit flag** (`--provider` / `--vault-provider`)
+2. **`vault` block** in `koryph.project.json`
+3. **`signing` block** in `koryph.project.json` — `provider` + `vault_name`
+   (legacy proxy; keeps existing projects working without migration)
+4. **`vault` block** in `~/.koryph/config.json`
+5. OS-appropriate default (`keychain` on macOS, `encrypted-file` elsewhere)
+
+---
+
 ## The signing block (`koryph.project.json`)
 
 ```json

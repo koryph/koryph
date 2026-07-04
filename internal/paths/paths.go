@@ -63,6 +63,11 @@ func SlotsDir() string { return filepath.Join(KoryphHome(), "slots") }
 // DemandDir holds per-project demand heartbeats for fair-share allocation.
 func DemandDir() string { return filepath.Join(SlotsDir(), "demand") }
 
+// GlobalConfig is the machine-wide operator config file (~/.koryph/config.json).
+// It carries per-operator defaults (e.g. vault provider and container) that
+// apply across all projects when no project-level vault block is configured.
+func GlobalConfig() string { return filepath.Join(KoryphHome(), "config.json") }
+
 // GovernorConfig is the machine-wide concurrency governor config file.
 func GovernorConfig() string { return filepath.Join(KoryphHome(), "governor.json") }
 

@@ -54,6 +54,10 @@ func fullConfig() *Config {
 		MergePolicy:     "auto",
 		MergeMethod:     "squash",
 		RiskTierDefault: 3,
+		Vault: &signing.VaultDefaults{
+			Provider:  signing.ProviderOnePassword,
+			Container: "Engineering",
+		},
 		Signing: &signing.Config{
 			Required:  true,
 			Mode:      signing.ModeSSH,
@@ -361,6 +365,34 @@ func TestConfig_LandMethodError(t *testing.T) {
 				t.Errorf("LandMethodError() = %v, want nil", err)
 			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
 				t.Errorf("LandMethodError() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfig_VaultValidation verifies that an invalid vault.provider is caught
+// at Validate time and that a missing vault block is always valid.
+func TestConfig_VaultValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		vault   *signing.VaultDefaults
+		wantErr string
+	}{
+		{"nil vault block is fine", nil, ""},
+		{"valid provider", &signing.VaultDefaults{Provider: signing.ProviderProtonPass, Container: "Eng"}, ""},
+		{"empty provider is fine", &signing.VaultDefaults{Container: "Eng"}, ""},
+		{"unknown provider is rejected", &signing.VaultDefaults{Provider: "no-such"}, "vault.provider"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default("proj")
+			c.Vault = tc.vault
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
 	}

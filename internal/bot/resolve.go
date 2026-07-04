@@ -5,10 +5,7 @@ package bot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/koryph/koryph/internal/signing"
@@ -38,47 +35,22 @@ func ResolveKey(ctx context.Context, cfg *Config) (string, error) {
 	return string(raw), nil
 }
 
-// resolveVaultDefaults reads the project's signing block (koryph.project.json)
-// to derive a default vault provider and key reference for bot key storage.
-// This lets `koryph bot create` (when no --vault-provider flag is given)
-// default to the same provider the project already uses for commit signing.
+// resolveVaultDefaults returns the best vault provider and container for bot
+// key storage when no explicit --vault-provider flag is given.
 //
-// Precedence ladder in callers:
+// It delegates to signing.ResolveVaultDefaults, which walks the full
+// precedence ladder:
 //
-//	explicit --vault-provider flag > project signing.provider > signing.ResolveDefaultProvider()
+//	explicit flag > project vault block > project signing block (legacy) > global config
 //
-// Returns ("", "", nil) when projectRoot is empty, the project file is absent,
-// or the signing block is not configured. The empty-provider case is not an
-// error: callers fall through to the OS-appropriate default.
-func resolveVaultDefaults(projectRoot string) (provider, keyRef string, err error) {
-	if projectRoot == "" {
-		return "", "", nil
-	}
-	cfgPath := filepath.Join(projectRoot, "koryph.project.json")
-	data, err := os.ReadFile(cfgPath)
-	if os.IsNotExist(err) {
-		return "", "", nil
-	}
+// Returns ("", "", nil) when nothing is configured; callers fall through to
+// signing.ResolveDefaultProvider().
+func resolveVaultDefaults(projectRoot string) (provider, container string, err error) {
+	d, err := signing.ResolveVaultDefaults(projectRoot)
 	if err != nil {
-		// Unreadable project file — not a fatal error; fall through to defaults.
-		return "", "", nil
+		return "", "", err
 	}
-
-	// Minimal parse: we only need the signing.provider and signing.key_ref
-	// fields; a full project.Load would pull in unrelated config dependencies.
-	var min struct {
-		Signing *struct {
-			Provider string `json:"provider"`
-			KeyRef   string `json:"key_ref"`
-		} `json:"signing,omitempty"`
-	}
-	if err := json.Unmarshal(data, &min); err != nil {
-		return "", "", nil // malformed project file — safe to ignore here
-	}
-	if min.Signing == nil || min.Signing.Provider == "" {
-		return "", "", nil
-	}
-	return min.Signing.Provider, min.Signing.KeyRef, nil
+	return d.Provider, d.Container, nil
 }
 
 // classifyVaultErr inspects the error from signing.FetchSecret and returns a

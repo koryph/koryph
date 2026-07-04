@@ -88,23 +88,23 @@ func TestResolveKey_FileProvider_Missing(t *testing.T) {
 // --- resolveVaultDefaults tests ---------------------------------------------
 
 func TestResolveVaultDefaults_NoProjectRoot(t *testing.T) {
-	provider, keyRef, err := resolveVaultDefaults("")
+	provider, container, err := resolveVaultDefaults("")
 	if err != nil {
 		t.Fatalf("resolveVaultDefaults empty root: %v", err)
 	}
-	if provider != "" || keyRef != "" {
-		t.Errorf("expected empty results for no project root, got provider=%q keyRef=%q", provider, keyRef)
+	if provider != "" || container != "" {
+		t.Errorf("expected empty results for no project root, got provider=%q container=%q", provider, container)
 	}
 }
 
 func TestResolveVaultDefaults_NoProjectFile(t *testing.T) {
 	tmp := t.TempDir()
-	provider, keyRef, err := resolveVaultDefaults(tmp)
+	provider, container, err := resolveVaultDefaults(tmp)
 	if err != nil {
 		t.Fatalf("resolveVaultDefaults no project file: %v", err)
 	}
-	if provider != "" || keyRef != "" {
-		t.Errorf("expected empty results for missing project file, got provider=%q keyRef=%q", provider, keyRef)
+	if provider != "" || container != "" {
+		t.Errorf("expected empty results for missing project file, got provider=%q container=%q", provider, container)
 	}
 }
 
@@ -113,30 +113,77 @@ func TestResolveVaultDefaults_NoSigningBlock(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, "koryph.project.json"), []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	provider, keyRef, err := resolveVaultDefaults(tmp)
+	provider, container, err := resolveVaultDefaults(tmp)
 	if err != nil {
 		t.Fatalf("resolveVaultDefaults no signing: %v", err)
 	}
-	if provider != "" || keyRef != "" {
-		t.Errorf("expected empty results for no signing block, got provider=%q keyRef=%q", provider, keyRef)
+	if provider != "" || container != "" {
+		t.Errorf("expected empty results for no signing block, got provider=%q container=%q", provider, container)
 	}
 }
 
-func TestResolveVaultDefaults_WithSigningBlock(t *testing.T) {
+// TestResolveVaultDefaults_ProjectVaultBlock verifies the new top-priority
+// path: an explicit vault block in koryph.project.json wins over the signing
+// block legacy proxy.
+func TestResolveVaultDefaults_ProjectVaultBlock(t *testing.T) {
+	tmp := t.TempDir()
+	// vault block wins even when a signing block is also present.
+	content := `{"vault":{"provider":"onepassword","container":"Engineering"},"signing":{"provider":"protonpass","key_ref":"pass://abc/123"}}`
+	if err := os.WriteFile(filepath.Join(tmp, "koryph.project.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider, container, err := resolveVaultDefaults(tmp)
+	if err != nil {
+		t.Fatalf("resolveVaultDefaults project vault block: %v", err)
+	}
+	if provider != "onepassword" {
+		t.Errorf("expected provider=onepassword (vault block wins), got %q", provider)
+	}
+	if container != "Engineering" {
+		t.Errorf("expected container=Engineering, got %q", container)
+	}
+}
+
+// TestResolveVaultDefaults_SigningBlockLegacyProxy verifies that the signing
+// block's provider + vault_name act as the legacy proxy when no vault block is
+// present. key_ref is NOT returned as container (vault_name is).
+func TestResolveVaultDefaults_SigningBlockLegacyProxy(t *testing.T) {
+	tmp := t.TempDir()
+	content := `{"signing":{"provider":"protonpass","key_ref":"pass://abc/123","vault_name":"MyVault"}}`
+	if err := os.WriteFile(filepath.Join(tmp, "koryph.project.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider, container, err := resolveVaultDefaults(tmp)
+	if err != nil {
+		t.Fatalf("resolveVaultDefaults signing legacy proxy: %v", err)
+	}
+	if provider != "protonpass" {
+		t.Errorf("expected provider=protonpass, got %q", provider)
+	}
+	// container comes from vault_name, not key_ref.
+	if container != "MyVault" {
+		t.Errorf("expected container=MyVault (signing.vault_name), got %q", container)
+	}
+}
+
+// TestResolveVaultDefaults_SigningBlockNoVaultName verifies that a signing block
+// without vault_name results in an empty container (key_ref is not container).
+func TestResolveVaultDefaults_SigningBlockNoVaultName(t *testing.T) {
 	tmp := t.TempDir()
 	content := `{"signing":{"provider":"protonpass","key_ref":"pass://abc/123"}}`
 	if err := os.WriteFile(filepath.Join(tmp, "koryph.project.json"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	provider, keyRef, err := resolveVaultDefaults(tmp)
+	provider, container, err := resolveVaultDefaults(tmp)
 	if err != nil {
-		t.Fatalf("resolveVaultDefaults with signing: %v", err)
+		t.Fatalf("resolveVaultDefaults signing no vault_name: %v", err)
 	}
 	if provider != "protonpass" {
 		t.Errorf("expected provider=protonpass, got %q", provider)
 	}
-	if keyRef != "pass://abc/123" {
-		t.Errorf("expected key_ref=pass://abc/123, got %q", keyRef)
+	// No vault_name → empty container; key_ref is NOT returned here.
+	if container != "" {
+		t.Errorf("expected empty container when vault_name absent, got %q", container)
 	}
 }
 
@@ -146,12 +193,12 @@ func TestResolveVaultDefaults_MalformedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Malformed JSON returns empty strings (no error) — safe fallback.
-	provider, keyRef, err := resolveVaultDefaults(tmp)
+	provider, container, err := resolveVaultDefaults(tmp)
 	if err != nil {
 		t.Fatalf("resolveVaultDefaults malformed JSON should not error: %v", err)
 	}
-	if provider != "" || keyRef != "" {
-		t.Errorf("expected empty for malformed JSON, got provider=%q keyRef=%q", provider, keyRef)
+	if provider != "" || container != "" {
+		t.Errorf("expected empty for malformed JSON, got provider=%q container=%q", provider, container)
 	}
 }
 

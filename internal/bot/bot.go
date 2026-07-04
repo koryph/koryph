@@ -356,7 +356,8 @@ func storeKeyAfterCreate(ctx context.Context, cfg *Config, opts CreateOptions, o
 		return nil
 	}
 
-	// Resolve provider from: explicit flag > project signing block > OS default.
+	// Resolve provider from: explicit flag > project vault block > project
+	// signing block (legacy) > global config > OS default.
 	provider := opts.VaultProvider
 	if provider == "" {
 		projProvider, _, _ := resolveVaultDefaults(opts.ProjectRoot)
