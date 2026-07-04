@@ -9,7 +9,7 @@
 
 ## The idea
 
-Repository security lives in dozens of settings scattered across a GitHub UI:
+Repository security lives in dozens of settings scattered across a forge's UI:
 branch-protection rules, required checks, signed-commit enforcement, scanner
 toggles, Actions permissions. Click-configured, they drift — nobody remembers
 the exact state, no two repos match, and a regression is invisible until it

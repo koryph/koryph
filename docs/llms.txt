@@ -54,13 +54,17 @@ step 2 (account profile name, account email).
    koryph project add <repo-root> --account <profile> --identity <email>
    ```
 
-3. **Complete `koryph.project.json`.** Two fields matter most and cannot be
+3. **Complete `koryph.project.json`.** Three fields matter most and cannot be
    guessed by koryph:
    - `gate`: the project's REAL build/test/lint commands — this is the merge
      gate; agents' work only lands when these pass.
    - `area_map`: directory-prefix → area-token map that powers footprint
      scheduling (parallel agents without merge conflicts). Map each top-level
      source directory to a short token (`"src/api": "api"`).
+   - `forge`: the hosted git service — `github` (default) or `gitlab`. Omit
+     for GitHub; set `"forge": "gitlab"` for GitLab projects. koryph sniffs the
+     git remote to suggest a value but never overrides this field. See the
+     Choosing-a-forge chapter for the capability table and GitLab token flow.
 
 4. **Optional hardening** (recommended for repos that ship):
    - `koryph signing enable --project <id>` — SSH commit signing, key served
@@ -104,6 +108,7 @@ step 2 (account profile name, account email).
 - [Quickstart](https://github.com/koryph/koryph/blob/main/docs/user-guide/quickstart.md): register a project and run a first wave end-to-end.
 - [Zero to shipped](https://github.com/koryph/koryph/blob/main/docs/user-guide/zero-to-shipped.md): the full journey across the three pillars (Build/Protect/Ship) with today's shipped commands.
 - [Projects & accounts](https://github.com/koryph/koryph/blob/main/docs/user-guide/projects-and-accounts.md): the `~/.koryph` registry, per-project account isolation, identity verification.
+- [Choosing a forge](https://github.com/koryph/koryph/blob/main/docs/user-guide/forges.md): the `forge` field + remote sniffing, GitHub vs GitLab capability table, GitLab setup end-to-end (token flow, CI variables, release pipeline, supply-chain gap).
 - [Running waves](https://github.com/koryph/koryph/blob/main/docs/user-guide/running-waves.md): the wave loop (scan → batch → preflight → dispatch → poll → review → merge), `--once`/`--only`/`--budget`.
 - [Billing & quota](https://github.com/koryph/koryph/blob/main/docs/user-guide/billing-and-quota.md): subscription-first dispatch, the quota governor, throttling, calibration.
 - [Signing](https://github.com/koryph/koryph/blob/main/docs/user-guide/signing.md): SSH commit signing via vault providers (Proton Pass, KeePassXC, 1Password, …).

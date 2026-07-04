@@ -184,8 +184,10 @@ release locks a complete, immutable asset set.
 
 ## Stage 7 — Provision the release bot (Ship)
 
-The release bot is a GitHub App whose vault-backed key lets the release train
-push tags and manage releases without a human PAT. Create it once per account:
+The release bot is a vault-backed identity that lets the release train push
+tags and manage releases without a human PAT. On GitHub it is a **GitHub App**;
+on GitLab it is a **project access token** (see [Choosing a forge](forges.md)).
+The commands below show the GitHub App flow. Create it once per account:
 
 ```sh
 koryph bot create --name mylogin-release-bot

@@ -78,8 +78,8 @@ flowing — with graceful fallbacks when you can't install one.
 | | Scanner fragments | Opt-in gitleaks, vulnerability scanning, and license-allowlist presets |
 | **Ship** | Release train | release-please + GoReleaser (or your own build commands) behind one contract that works for any language |
 | | Supply chain | SBOM (SPDX), cosign keyless signatures, SLSA Build L3 provenance, immutable draft-until-complete releases — [verifiable by anyone](user-guide/supply-chain.md) |
-| | Release bot | A GitHub App provisioned in one browser click (`koryph bot create`), key in your vault, so Release PRs trigger checks unaided |
-| | Docs publishing | Zensical/MkDocs book to GitHub Pages on every docs push, custom domain and HTTPS included |
+| | Release bot | A vault-backed bot identity provisioned in one browser click (`koryph bot create`) — a GitHub App or a GitLab access token, [chosen per project](user-guide/forges.md) — so Release PRs/MRs trigger checks unaided |
+| | Docs publishing | Zensical/MkDocs book published to your forge's Pages (GitHub Pages, GitLab Pages) on every docs push, custom domain and HTTPS included |
 | **Operate** | Live cockpit | `koryph board`, `roster`, and a VS Code extension with a tree view and quota status bar |
 | | Everything in the binary | Provisioning, hygiene, validation, releases — a brew-style install is the complete product; scripts are shims |
 

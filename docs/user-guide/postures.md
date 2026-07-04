@@ -3,14 +3,21 @@
 
 # Posture Profiles
 
-A **posture profile** is a named bundle of desired-state files — branch-protection
-rulesets and repository settings — that you can apply to any GitHub repository
-with a single command. Profiles generalise the `koryph repo check|apply` workflow:
-instead of writing `.github/` IaC files yourself, you pick a profile and pass
-parameters.
+A **posture profile** is a named bundle of desired-state security intents —
+branch protection, required checks, signed-commit enforcement, and repository
+settings — that you can apply to any repository with a single command. Profiles
+generalise the `koryph repo check|apply` workflow: instead of writing
+forge-native IaC files yourself, you pick a profile and pass parameters.
 
 Koryph ships one built-in profile: **`oss-solo-maintainer`**. You can also
 create custom profiles in `~/.koryph/postures/<name>/`.
+
+!!! note "Forge coverage"
+    Posture profiles are **forge-neutral intents**. On **GitHub** (the
+    reference forge) they compile to rulesets + repository-settings JSON under
+    `.github/`; on **GitLab** they compile to protected branches, push rules,
+    and approval rules. This chapter's examples show the GitHub compilation.
+    See [Choosing a forge](forges.md) for the per-forge capability table.
 
 ---
 

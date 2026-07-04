@@ -3,13 +3,20 @@
 
 # Release Bot: GitHub App provisioning
 
-The koryph release pipeline uses a **GitHub App** (the "release bot") to open
-and update Release PRs. This document explains why an App is required, how to
-perform the one-time setup, and how to replicate it across projects and
-organisations.
+The koryph release pipeline uses a bot identity (the "release bot") to open and
+update Release PRs. On **GitHub** — the reference forge, and the subject of this
+chapter — that identity is a **GitHub App**. This document explains why an App
+is required, how to perform the one-time setup, and how to replicate it across
+projects and organisations.
 
 All provisioning is done with the **`koryph bot`** command family — no repo
 clone, no Python, and no separate scripts required.
+
+!!! note "On GitLab"
+    GitLab has no App identity. `koryph bot create --forge gitlab` runs a
+    guided **project/group access-token** flow instead, and validates token
+    scope and expiry. See [Choosing a forge](forges.md#gitlab-setup-end-to-end)
+    for the GitLab equivalent of every step below.
 
 ---
 

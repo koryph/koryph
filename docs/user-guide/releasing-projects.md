@@ -15,6 +15,14 @@ projects they own. For koryph's own release internals (the reusable
 the first-release validation checklist), see
 [Releasing & versioning](../developer-guide/releasing.md).
 
+!!! note "Forge coverage"
+    The pipeline contract is forge-neutral, but the rendered assets differ by
+    forge. On **GitHub** (the reference forge, and what this chapter shows)
+    `koryph release setup` renders a GitHub Actions caller workflow driven by
+    release-please. On **GitLab** it renders a `.gitlab-ci.yml` that computes
+    versions from conventional commits directly and uses the assemble-then-create
+    release strategy. See [Choosing a forge](forges.md#gitlab-setup-end-to-end).
+
 ---
 
 ## How the release lifecycle works

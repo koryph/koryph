@@ -22,8 +22,9 @@ to your project. It shapes how work is dispatched and verified, never what the
 work is.
 
 **Ejectability.** Everything koryph produces is standard, inspectable material:
-an ordinary git repo, GitHub-native settings, plain workflow YAML, standard
-release assets. Delete koryph and nothing breaks. You lose the factory, not the
+an ordinary git repo, forge-native settings (GitHub rulesets or GitLab
+protected branches), plain pipeline YAML, standard release assets. Delete
+koryph and nothing breaks. You lose the factory, not the
 product.
 
 A third, operational rule follows the same spirit — **binary-first**:

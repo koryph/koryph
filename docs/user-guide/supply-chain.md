@@ -6,7 +6,7 @@
 Every koryph release ships more than binaries: a checksum manifest, a
 keyless cosign signature over that manifest, a SLSA provenance attestation,
 and a per-archive SPDX software bill of materials (SBOM). Together they let
-you prove — without trusting anything but GitHub's OIDC issuer and the
+you prove — without trusting anything but the forge's OIDC issuer and the
 public [Rekor](https://docs.sigstore.dev/logging/overview/) transparency
 log — that a download came from this repository's release workflow and
 matches exactly what it built.
@@ -14,6 +14,15 @@ matches exactly what it built.
 This chapter walks through consuming those assets after downloading a
 release. For how they're produced, see
 [Releasing & versioning](../developer-guide/releasing.md).
+
+!!! note "Forge coverage"
+    Koryph releases are built on **GitHub** (the reference forge), so the OIDC
+    issuer is `token.actions.githubusercontent.com` and full **SLSA Build L3**
+    provenance is available via the SLSA GitHub Generator. On **GitLab**, cosign
+    keyless signing works against the GitLab CI OIDC issuer, but the SLSA
+    generator is GitHub-specific — provenance is reduced to cosign authenticity
+    plus (on GitLab 16.1+) artifact attestations. See
+    [Choosing a forge](forges.md#capability-differences) for the honest gap.
 
 ## What's on the release page
 
