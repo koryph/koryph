@@ -148,7 +148,11 @@ jobs:
     permissions:
       actions: read # generator needs to detect the GitHub Actions run environment
       id-token: write # sigstore keyless OIDC provenance signing
-      contents: read # no release upload here — the release is still a draft
+      # contents: write even though upload-assets is false — the generator's
+      # internal jobs DECLARE contents: write (upload gating is runtime
+      # logic), and a reusable workflow requesting more than the caller
+      # grants is a startup_failure, not a runtime skip (koryph-q35.5).
+      contents: write
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: "${{ needs.tag-and-build.outputs.checksums-hash }}"
