@@ -94,9 +94,16 @@ orgs you don't own), and one private bot per owned org.
   `github.com/settings/apps/new` (or `/organizations/ORG/settings/apps/new`)
   with the manifest form pre-posted, catch the redirect after the ONE
   confirmation click, exchange the code via `POST
-  /app-manifests/{code}/conversions`, store credentials at
-  `~/.koryph/bots/<name>.json` (0600). Prints the exact install URL and
-  next steps. `--public` sets the manifest's `public: true` (guest-org
+  /app-manifests/{code}/conversions`. The private key goes into the
+  **vault layer** (the same provider mechanism that serves the SSH signing
+  key — protonpass/onepassword/file/command, `internal/signing`'s
+  templates); `~/.koryph/bots/<name>.json` (0600) holds only a pointer
+  `{name, app_id, slug, owner, public, provider, key_ref}`. Plaintext PEM
+  on disk is the no-vault fallback only, loudly warned and doctor-nagged.
+  Keys resolve at use time (`ResolveKey`), the serve-on-demand model
+  signing already uses. (Actions secrets still receive an operational PEM
+  copy at attach — inherent to `create-github-app-token`; the vault
+  protects the master copy.) Prints the exact install URL and next steps. `--public` sets the manifest's `public: true` (guest-org
   scenario); default private.
 - `koryph bot install --name N` — prints/opens the installation page
   (installation is inherently a web click); explains the repo-admin
