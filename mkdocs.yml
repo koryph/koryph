@@ -26,7 +26,17 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
 nav:
   - Home: index.md
-  - Concepts: concepts/index.md
+  - Concepts:
+      - Overview: concepts/index.md
+      - "Work: beads and the ready-graph": concepts/beads.md
+      - "Parallelism: footprints": concepts/footprints.md
+      - "Time: rolling dispatch": concepts/rolling-dispatch.md
+      - "Safety: worktrees and the green gate": concepts/worktrees.md
+      - "Money: governors and quota": concepts/governors.md
+      - "People: accounts and personas": concepts/accounts.md
+      - "Hygiene: postures and vaults": concepts/postures.md
+      - "Shipping: the release train": concepts/release-train.md
+      - "The fence: ejectability": concepts/ejectability.md
   - User guide:
       - Installation: user-guide/installation.md
       - Quickstart: user-guide/quickstart.md

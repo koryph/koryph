@@ -21,6 +21,8 @@ feeds the scheduler. Planning skills (`/koryph-plan`, `/koryph-import`,
 `/koryph-replan`) exist to turn designs and prompts into beads shaped
 correctly for dispatch — typed, scoped, footprinted, and dependency-linked.
 
+→ **[Work: beads and the ready-graph](beads.md)**
+
 ## Parallelism: footprints
 
 Two agents editing the same file produce a merge conflict; the fix is to know
@@ -33,6 +35,8 @@ scheduler only dispatches mutually conflict-free work, which is what makes
 into a catch-all token that conflicts with everything — honest labeling is
 what buys parallelism.
 
+→ **[Parallelism: footprints](footprints.md)**
+
 ## Time: rolling dispatch
 
 The naive way to run a fleet is in waves: dispatch N tasks, wait for all N to
@@ -42,6 +46,8 @@ finishes and merges, the scheduler immediately re-scans the ready-graph and
 fills the free slot with the next conflict-free bead. New work becomes
 eligible mid-flight (dependencies resolve, footprints free up), so the fleet
 stays saturated without ever violating footprint safety.
+
+→ **[Time: rolling dispatch](rolling-dispatch.md)**
 
 ## Safety: worktrees, protected paths, and the green gate
 
@@ -54,6 +60,8 @@ branch fast-forwards onto `main`. Two hard lines exist regardless of gate
 results: **protected paths** (CI workflows, hooks, policy files — merges
 touching them are refused and a human lands them deliberately) and signed
 commits.
+
+→ **[Safety: worktrees, protected paths, and the green gate](worktrees.md)**
 
 ## Money: governors, quota, and subscription-first
 
@@ -68,6 +76,8 @@ koryph calibrates observed spend against your plan's windows and can throttle
 or pause dispatch as a window fills. The result is a fleet that runs at the
 edge of what your subscription allows and never past it.
 
+→ **[Money: governors, quota, and subscription-first](governors.md)**
+
 ## People: accounts, identity, and personas
 
 Every project pins the **account** its agents run under, and identity is
@@ -78,6 +88,8 @@ needs (implementer, reviewer, architect, …) and carry a **model tier**
 runtime maps tiers to its own models. That is what keeps koryph
 runtime-neutral: Claude Code today, other agent CLIs through the same
 adapter seam.
+
+→ **[People: accounts, identity, and personas](accounts.md)**
 
 ## Hygiene: postures and vaults
 
@@ -91,6 +103,8 @@ file — fetched on demand, never plaintext by default. A key protected by a
 passphrase on disk is treated as what it is: the same posture as a normal
 `~/.ssh` key, worth an informational note, not an alarm.
 
+→ **[Hygiene: postures and vaults](postures.md)**
+
 ## Shipping: the release train and the supply chain
 
 A release should be an outcome, not a project. Conventional commits
@@ -103,6 +117,8 @@ lock a complete set. A one-click **release bot** keeps Release-PR checks
 flowing; documented fallbacks cover the no-bot case. Anyone can verify what
 you shipped — see [Verifying a release](../user-guide/supply-chain.md).
 
+→ **[Shipping: the release train and the supply chain](release-train.md)**
+
 ## The fence: ejectability and the opinionation boundary
 
 Two principles bound everything above. The **opinionation boundary**: koryph
@@ -114,3 +130,5 @@ workflows, standard release assets. Delete koryph and nothing breaks; you
 lose the factory, not the product. A third, operational principle follows the
 same spirit: **capabilities live in the binary** — one installed `koryph` is
 the complete product, with no repo clone or script kit required.
+
+→ **[The fence: ejectability and the opinionation boundary](ejectability.md)**
