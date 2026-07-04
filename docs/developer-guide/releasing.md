@@ -53,7 +53,12 @@ sequenceDiagram
     Note over Repo: publication — immutability now locks the asset set
 ```
 
-All four jobs live in one workflow file: `.github/workflows/release-please.yml`.
+All four jobs live in one reusable workflow, `.github/workflows/
+release-train.yml`, which koryph's own `.github/workflows/release-please.yml`
+calls via `workflow_call` (see "Reusable release-train workflow" below). The
+job names, ordering, and behavior described in this doc are unchanged by that
+extraction — this is the same pipeline validated on v0.4.0/v0.4.1/v0.5.0,
+just relocated so other koryph-managed projects can reuse it.
 
 ### Why one workflow, not two
 
@@ -326,13 +331,151 @@ or download a prebuilt binary from its releases page):
 slsa-verifier verify-artifact checksums.txt \
   --provenance-path checksums.txt.intoto.jsonl \
   --source-uri github.com/koryph/koryph \
-  --source-tag v0.4.0   # the release tag being verified
+  --source-branch main   # NOT --source-tag — see note below
 ```
+
+**Verified against the real v0.5.0 release, not assumed:** `--source-tag
+v0.5.0` **fails** (`invalid ref: ''`). This pipeline tags-and-builds from a
+`push: branches: [main]` trigger (`tag-and-build` creates the tag itself,
+mid-run — see above), so the SLSA generator's `invocation.configSource.uri`
+in the actual provenance is `git+https://github.com/koryph/koryph@refs/heads/main`,
+never a tag ref — confirmed by decoding the real
+`checksums.txt.intoto.jsonl` DSSE payload from the koryph/koryph v0.5.0
+release. `--source-branch main` is the form that matches how this
+provenance is actually anchored. (The cosign certificate's SAN has the same
+shape for the same reason: `https://github.com/koryph/koryph/.github/
+workflows/release-please.yml@refs/heads/main` — confirmed against the same
+release's `checksums.txt.sigstore.json` certificate. Extracting
+`.github/workflows/release-please.yml` into a thin caller of
+`release-train.yml` — see "Reusable release-train workflow" below — does
+**not** change this SAN: the identity recorded is always the *caller*
+workflow's path, and `release-please.yml` keeps its filename across the
+extraction specifically to avoid moving that identity out from under
+already-published releases.)
 
 A `PASSED: Verified SLSA provenance` result proves `checksums.txt` (and, by
 the `sha256sum -c` chain above, every binary it lists) was built by this
 repository's GitHub Actions workflow at the claimed tag — Build Level 3,
 non-forgeable provenance, not just a keyless signature.
+
+## Reusable release-train workflow
+
+(koryph-0vf.3) The four jobs above live in `.github/workflows/
+release-train.yml`, a `workflow_call` reusable workflow, rather than
+directly in `release-please.yml`. This lets any koryph-managed project opt
+into the same release infrastructure regardless of language or build tool
+(see `docs/designs/2026-07-release-train.md` for the design). koryph's own
+`.github/workflows/release-please.yml` is the first caller and is
+byte-behavior-identical to the pipeline validated on v0.5.0 — it just
+forwards koryph's values into the reusable workflow's inputs:
+
+```yaml
+jobs:
+  release:
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/release-train.yml
+    with:
+      release_type: "go"
+      extra_files: "internal/version/version.go"
+      artifacts_dir: "dist"
+      build_mode: "goreleaser"
+      goreleaser_version: "~> v2.16"
+      sbom: true
+      provenance: true
+      go_version: "1.26"
+      gate_command: "make version-check TAG=$RELEASE_TAG && make gate"
+    secrets: inherit
+```
+
+koryph's caller uses the **same-repository local path form**
+(`./.github/workflows/release-train.yml`, no `@{ref}`) rather than
+`koryph/koryph/...@main`: per GitHub's reusing-workflows documentation, the
+local-path form pins the callee to the caller's own commit — the right
+choice for the repo that *is* `koryph/koryph`. Consumer projects installed
+via `koryph release setup` use the cross-repo form,
+`koryph/koryph/.github/workflows/release-train.yml@main`, instead (see
+`internal/release/caller-workflow.yml.tmpl` and
+`docs/user-guide/release.md`).
+
+### The two build modes
+
+- **Mode B, `build_mode: goreleaser`** (koryph's own mode) — GoReleaser owns
+  the draft release and asset upload via `release.draft: true` in
+  `.goreleaser.yaml`; the train contributes detection, tagging, the
+  optional gate, provenance, and the final publish.
+- **Mode A, `build_mode: commands`** — the generic contract for any other
+  language or tool: `build_commands` (a newline-separated list) runs at the
+  release tag with the only obligation of filling `artifacts_dir`; the
+  train then generates `checksums.txt` if absent, creates the draft release
+  itself with `gh release create --draft --generate-notes`, uploads
+  `artifacts_dir/*`, optionally attaches per-artifact syft SBOMs
+  (`sbom: true`), and publishes last. An empty `build_commands` is a valid
+  "simple" release with no artifacts at all — tag and changelog only.
+
+Both modes preserve the v0.4.0 post-mortem invariant this whole document is
+about: nothing publishes until every asset is attached.
+
+### Optional generic pre-tag gate
+
+`gate_command` and `go_version` generalize this pipeline's original
+"verify the version constant, then run the green gate" steps (see
+`tag-and-build` above) without hardcoding Go, `make`, or any other toolchain
+into the reusable workflow itself: `go_version` (if non-empty) runs
+`actions/setup-go` before the gate; `gate_command` (if non-empty) is an
+arbitrary shell command run once, before the release tag is created, with
+`$RELEASE_VERSION` and `$RELEASE_TAG` exported for it to use. Both are
+no-ops by default, so a project that has no analogous pre-tag check (or
+whose CI already gates merges to `main`) can simply omit them.
+
+### Bot token fallback
+
+`release-train.yml` declares two **optional** `workflow_call` secrets,
+`RELEASE_BOT_APP_ID` and `RELEASE_BOT_PRIVATE_KEY` (`required: false` —
+verified valid syntax against GitHub's `on.workflow_call.secrets` reference
+during implementation). When both are present, the `release-please` job
+mints a short-lived GitHub App installation token via
+`actions/create-github-app-token` and passes it as `release-please-action`'s
+`token:` input, so bot-authored Release PRs trigger checks normally and
+remain approvable by the operator (see `docs/user-guide/release-bot.md` for
+why a PAT can't do this — the author-can't-approve-their-own-PR trap).
+**Fallback:** when either secret is absent, the step is skipped and
+`token:` falls through to `github.token` — exactly `release-please-action`'s
+own default — so projects without the bot still work, they just inherit the
+close/reopen limitation on the Release PR's checks. Provisioning the bot and
+attaching it to a repository is `scripts/provision-release-bot.sh`
+(koryph-q35.4-equivalent; see `docs/user-guide/release-bot.md`), unrelated
+to and unaffected by this extraction.
+
+### Nested reusable call and permissions
+
+`slsa-provenance`'s call into
+`slsa-framework/slsa-github-generator/.github/workflows/
+generator_generic_slsa3.yml@v2.1.0` is itself a reusable-workflow call
+happening *inside* `release-train.yml`, which is already a reusable
+workflow being called by `release-please.yml` — three levels deep
+(caller → release-train.yml → the SLSA generator). **Verified, not
+assumed:** GitHub permits up to 10 levels of chained reusable workflows (the
+top-level caller plus nine levels of reusable workflows), so this nesting is
+well within bounds. Every caller of `release-train.yml` must still grant
+permissions that are a **superset** of what its jobs declare — `contents:
+write`, `pull-requests: write`, `id-token: write` — or the run fails at
+`startup_failure` before any job executes (the koryph-q35.5 lesson this
+document's SLSA section already covers for the generator's own nested call).
+
+### Validating the extraction
+
+`actionlint` and `goreleaser check` catch syntax and config errors, but
+**cannot** exercise `workflow_call` wiring, the local-path reference, or the
+bot-token fallback at runtime — those only run for real on GitHub. Add this
+item to the checklist below: **verify the extracted train reproduces the
+v0.5.0-validated behavior on the next real release** (tag created once,
+GoReleaser draft with all assets, provenance attached, published last, in
+that order) — the extraction is a refactor of *where* the pipeline lives,
+not a change to what it's supposed to do, so the existing checklist items
+remain the source of truth for what "working" means.
 
 ## First-release checklist (validate before relying on this pipeline)
 
@@ -416,7 +559,18 @@ repo:
       `checksums.txt.intoto.jsonl`) attached — no second, no leftover draft.
 - [ ] **`slsa-verifier verify-artifact` passes end-to-end** against
       `checksums.txt` and its downloaded `checksums.txt.intoto.jsonl` from
-      the real published release, using the command above.
+      the real published release, using the command above (`--source-branch
+      main`, not `--source-tag`).
+- [ ] **Verify the extracted train reproduces the v0.5.0-validated behavior
+      on the next real release.** koryph-0vf.3 relocated all four jobs into
+      `.github/workflows/release-train.yml` and made `release-please.yml` a
+      thin `workflow_call` caller. `actionlint` and `goreleaser check` only
+      confirm the YAML is well-formed; confirm on a real release that the
+      full ordering above (detect → optional gate → tag → GoReleaser draft →
+      provenance workflow-artifact → attach → publish) still holds
+      end-to-end through the reusable workflow, and that a run with no
+      `RELEASE_BOT_APP_ID`/`RELEASE_BOT_PRIVATE_KEY` secrets configured
+      still falls back to `github.token` without erroring.
 - [ ] Only after all of the above hold: consider this pipeline load-bearing
       rather than aspirational, and stop treating draft-release behavior as
       a documented-but-unverified assumption.
