@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/cockpit"
 	"github.com/koryph/koryph/internal/tui"
 )
@@ -185,6 +186,56 @@ func TestAppBurndownTab(t *testing.T) {
 		s := string(bts)
 		return strings.Contains(s, "Burndown") &&
 			strings.Contains(s, "Backlog")
+	})
+}
+
+// TestAppQueueTab verifies the Queue tab renders with the section header
+// when a QueueSnapshot is populated.
+func TestAppQueueTab(t *testing.T) {
+	now := time.Now()
+	snap := newTestSnap()
+	snap.Queue = cockpit.QueueSnapshot{
+		Roots: []cockpit.QueueNode{
+			{
+				Issue: beads.Issue{ID: "e1", Title: "Build TUI cockpit", IssueType: "epic", Status: "open"},
+				State: cockpit.QueueStateContainer,
+				Children: []cockpit.QueueNode{
+					{
+						Issue: beads.Issue{ID: "t1", Title: "Add widget support", IssueType: "task", Status: "open"},
+						State: cockpit.QueueStateRunning,
+					},
+					{
+						Issue:  beads.Issue{ID: "t2", Title: "Queue view", IssueType: "task", Status: "open"},
+						State:  cockpit.QueueStateDepBlocked,
+						Reason: "on t1",
+					},
+				},
+			},
+			{
+				Issue: beads.Issue{ID: "t3", Title: "Standalone ready task", IssueType: "task", Status: "open"},
+				State: cockpit.QueueStateReady,
+			},
+		},
+		NodeCount:  4,
+		ComputedAt: now,
+	}
+
+	p := &staticProvider{id: "proj-1", snap: snap}
+	app := tui.NewApp([]cockpit.Provider{p})
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
+	defer func() { _ = tm.Quit() }()
+
+	// Navigate to the Queue tab (tab twice: Threads → Burndown → Queue).
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Threads")
+	})
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+
+	waitFor(t, tm, func(bts []byte) bool {
+		s := string(bts)
+		return strings.Contains(s, "Queue")
 	})
 }
 

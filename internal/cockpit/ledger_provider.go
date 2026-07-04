@@ -14,6 +14,7 @@ import (
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/sched"
 )
 
 // agentStatus matches the shape that koryph dispatch seeds and agents rewrite
@@ -45,6 +46,10 @@ type LedgerProvider struct {
 
 	// graph — shared dependency graph snapshot; refreshed at graphTTL cadence.
 	graph *GraphProvider
+
+	// queue cache — refreshed at queueTTL cadence.
+	queueCache QueueSnapshot
+	queueAt    time.Time
 }
 
 // NewLedgerProvider returns a LedgerProvider for the project at repoRoot.
@@ -115,6 +120,13 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 
 	// --- graph (cached) ---------------------------------------------------------
 	snap.Graph = p.graph.Refresh(context.Background(), snap.CapturedAt)
+
+	// --- queue (cached) ---------------------------------------------------------
+	if snap.CapturedAt.Sub(p.queueAt) >= queueTTL {
+		p.queueCache = p.refreshQueue(context.Background(), snap)
+		p.queueAt = snap.CapturedAt
+	}
+	snap.Queue = p.queueCache
 
 	return snap, nil
 }
@@ -304,6 +316,60 @@ func titleFor(sl *ledger.Slot) string {
 		return sl.BeadID // TUI may enrich later with bd title cache
 	}
 	return sl.PhaseID
+}
+
+// refreshQueue builds a fresh QueueSnapshot. It calls bd list and bd ready
+// then cross-references with the current running slots and dep graph.
+// Soft-fails when bd is absent (returns a zero snapshot).
+func (p *LedgerProvider) refreshQueue(ctx context.Context, snap Snapshot) QueueSnapshot {
+	if !p.bd.Available() {
+		return QueueSnapshot{ComputedAt: snap.CapturedAt}
+	}
+
+	// All open issues.
+	allIssues, err := p.bd.List(ctx)
+	if err != nil {
+		return QueueSnapshot{ComputedAt: snap.CapturedAt}
+	}
+
+	// Ready frontier.
+	readyList, _ := p.bd.Ready(ctx, beads.ReadyOpts{})
+	readyIDs := make(map[string]bool, len(readyList))
+	for _, iss := range readyList {
+		readyIDs[iss.ID] = true
+	}
+
+	// Build issue lookup for footprint computation.
+	byID := make(map[string]beads.Issue, len(allIssues))
+	for _, iss := range allIssues {
+		byID[iss.ID] = iss
+	}
+
+	// Running IDs and footprints from current slots.
+	runningIDs := make(map[string]bool, len(snap.Slots))
+	runningFPs := make(map[string]sched.Footprint, len(snap.Slots))
+	for _, sl := range snap.Slots {
+		if sl.Stage != "running" && sl.Stage != "dispatching" {
+			continue
+		}
+		id := sl.BeadID
+		if id == "" {
+			id = sl.PhaseID
+		}
+		runningIDs[id] = true
+		if iss, ok := byID[id]; ok {
+			runningFPs[id] = sched.FootprintFor(iss, nil)
+		}
+	}
+
+	return computeQueue(queueInput{
+		allIssues:  allIssues,
+		readyIDs:   readyIDs,
+		runningIDs: runningIDs,
+		runningFPs: runningFPs,
+		graph:      snap.Graph,
+		now:        snap.CapturedAt,
+	})
 }
 
 // readAgentStatus reads the agent's status.json file.

@@ -179,6 +179,11 @@ type Snapshot struct {
 	// Zero value (BeadID == "") means no bead is focused.
 	Detail BeadDetailSnapshot
 
+	// Queue holds the hierarchical work-queue snapshot (koryph-9af.2).
+	// Populated by LedgerProvider at queueTTL cadence; zero when bd is absent.
+	// Consumed read-only by the Queue tab; never written by tab code.
+	Queue QueueSnapshot
+
 	// CapturedAt is when this snapshot was assembled.
 	CapturedAt time.Time
 }
