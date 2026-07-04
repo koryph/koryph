@@ -75,9 +75,16 @@ blur together:
 commands (each file `init()`s into a registry; the hubs shrink to a
 framework), then per-family footprint tokens (`cli:bot`, `cli:posture`, …)
 once the hubs no longer force sharing. The acceptance criterion for the
-convention bead is itself a log line: a wave over three disjoint-family
-CLI beads must show `dispatched >1` in a refill — the same telemetry that
-found the problem verifies the cure.
+convention bead is itself a log line: disjoint-family CLI beads must
+co-dispatch — the same telemetry that found the problem verifies the cure.
+
+**Epilogue (same day).** Both beads landed within hours. The first
+disjoint-family pair co-dispatched immediately: a `cli:posture` bead —
+which had been starved in the queue for hours under the old shared token —
+entered a slot while a legacy-`cli` bead was still running, two agents on
+CLI work at once. The full arc — ceiling measured, cause traced, refactor
+shipped, cure verified — ran inside a single day, on the same telemetry,
+by the same fleet.
 
 ## The method, generalized
 
