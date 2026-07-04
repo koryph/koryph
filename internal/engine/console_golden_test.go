@@ -70,14 +70,20 @@ func goldenConsoleOutput(t *testing.T) string {
 		t.Fatalf("Run: %v", err)
 	}
 	raw := out.String()
-	// Normalize and collect non-empty lines.
+	// Normalize and collect non-empty lines. Health-patrol lines are emitted by
+	// the in-loop health checker (a separate subsystem); they contain non-
+	// deterministic file paths and are not part of the dispatch-flow golden.
 	var lines []string
 	sc := bufio.NewScanner(strings.NewReader(raw))
 	for sc.Scan() {
 		line := normalizeConsole(sc.Text())
-		if strings.TrimSpace(line) != "" {
-			lines = append(lines, line)
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		if strings.HasPrefix(line, "health patrol") {
+			continue
+		}
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
