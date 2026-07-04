@@ -35,7 +35,11 @@ jobs:
           base="$BASE_SHA"
           head="$HEAD_SHA"
           bad=0
-          for c in $(git rev-list "$base..$head"); do
+          # --no-merges: merge commits are minted server-side (the Update
+          # branch button, GitHub web merges) so they never pass through
+          # local hooks, cannot carry a DCO sign-off, and are discarded by
+          # this repo's squash-only merge policy anyway.
+          for c in $(git rev-list --no-merges "$base..$head"); do
             # Bot commits (dependabot) are trusted and cannot DCO sign-off.
             [ "$(git log -1 --format='%an' "$c")" = "dependabot[bot]" ] && continue
             msg=$(git log -1 --format=%B "$c")
