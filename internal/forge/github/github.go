@@ -6,16 +6,16 @@
 // full [forge.Forge] interface for GitHub.com.
 //
 // Services backed by real GitHub logic:
-//   - [forge.ReleaseService]  — draft-until-complete via the gh CLI
-//   - [forge.CIService]       — caller-workflow rendering (internal/release templates)
-//   - [forge.BotService]      — GitHub App manifest exchange, installation tokens,
+//   - [forge.PRService]      — koryph-fv3.3: list/create/approve/labels/merge/checks/close-reopen via gh CLI
+//   - [forge.ReleaseService] — draft-until-complete via the gh CLI
+//   - [forge.CIService]      — caller-workflow rendering (internal/release templates)
+//   - [forge.BotService]     — GitHub App manifest exchange, installation tokens,
 //     and secret wiring
 //
 // Services stubbed (returning [forge.ErrUnsupported]) — implemented in
 // later extraction beads (F2a/F2c):
 //   - [forge.RepoService]       — koryph-fv3.2 (hygiene)
 //   - [forge.ProtectionService] — koryph-fv3.2 (rulesets)
-//   - [forge.PRService]         — koryph-fv3.3 (PR operations)
 //   - [forge.SecretsService]    — koryph-fv3.2 (org/repo secrets)
 //
 // # Project-specific configuration
@@ -94,8 +94,9 @@ func (p *Provider) Repo() forge.RepoService { return &stubRepoSvc{} }
 // Protection returns a stub; implemented in koryph-fv3.2.
 func (p *Provider) Protection() forge.ProtectionService { return &stubProtectionSvc{} }
 
-// PRs returns a stub; implemented in koryph-fv3.3.
-func (p *Provider) PRs() forge.PRService { return &stubPRSvc{} }
+// PRs returns a [forge.PRService] backed by the gh CLI using explicit
+// --repo owner/repo so it can be called from any working directory.
+func (p *Provider) PRs() forge.PRService { return &githubPRSvc{} }
 
 // Secrets returns a stub; implemented in koryph-fv3.2.
 func (p *Provider) Secrets() forge.SecretsService { return &stubSecretsSvc{} }
@@ -140,26 +141,6 @@ func (s *stubProtectionSvc) Delete(_ context.Context, _, _ string) error {
 	return forge.ErrUnsupported
 }
 
-type stubPRSvc struct{}
-
-func (s *stubPRSvc) List(_ context.Context, _, _ string, _ forge.ListPROptions) ([]forge.PR, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Get(_ context.Context, _, _ string, _ int) (*forge.PR, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Create(_ context.Context, _, _, _, _, _, _ string) (*forge.PR, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Close(_ context.Context, _, _ string, _ int) error  { return forge.ErrUnsupported }
-func (s *stubPRSvc) Reopen(_ context.Context, _, _ string, _ int) error { return forge.ErrUnsupported }
-func (s *stubPRSvc) ListChecks(_ context.Context, _, _ string, _ int) ([]forge.CheckRun, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Merge(_ context.Context, _, _ string, _ int, _ forge.MergeOptions) error {
-	return forge.ErrUnsupported
-}
-
 type stubSecretsSvc struct{}
 
 func (s *stubSecretsSvc) ListRepo(_ context.Context, _, _ string) ([]string, error) {
@@ -175,13 +156,11 @@ func (s *stubSecretsSvc) SetOrg(_ context.Context, _, _, _ string, _ []string) e
 	return forge.ErrUnsupported
 }
 
-// ---------- unused interface method stubs required for compilation -----------
+// ---------- compile-time interface guards ------------------------------------
 
-// Compile-time interface guards.
 var (
 	_ forge.Forge             = (*Provider)(nil)
 	_ forge.RepoService       = (*stubRepoSvc)(nil)
 	_ forge.ProtectionService = (*stubProtectionSvc)(nil)
-	_ forge.PRService         = (*stubPRSvc)(nil)
 	_ forge.SecretsService    = (*stubSecretsSvc)(nil)
 )

@@ -56,24 +56,30 @@ func TestStubServicesReturnErrUnsupported(t *testing.T) {
 	ctx := t.Context()
 	p := githubforge.New()
 
-	// Repo
+	// Repo — still a stub (koryph-fv3.2)
 	if _, err := p.Repo().Get(ctx, "owner", "repo"); !errors.Is(err, forge.ErrUnsupported) {
 		t.Errorf("Repo().Get: want ErrUnsupported, got %v", err)
 	}
 
-	// Protection
+	// Protection — still a stub (koryph-fv3.2)
 	if _, err := p.Protection().List(ctx, "owner/repo"); !errors.Is(err, forge.ErrUnsupported) {
 		t.Errorf("Protection().List: want ErrUnsupported, got %v", err)
 	}
 
-	// PRs
-	if _, err := p.PRs().List(ctx, "owner", "repo", forge.ListPROptions{}); !errors.Is(err, forge.ErrUnsupported) {
-		t.Errorf("PRs().List: want ErrUnsupported, got %v", err)
-	}
-
-	// Secrets
+	// Secrets — still a stub (koryph-fv3.2)
 	if _, err := p.Secrets().ListRepo(ctx, "owner", "repo"); !errors.Is(err, forge.ErrUnsupported) {
 		t.Errorf("Secrets().ListRepo: want ErrUnsupported, got %v", err)
+	}
+}
+
+// ---------- PRService is real (not a stub) ------------------------------------
+
+// TestPRServiceNotNil confirms PRs() returns a real implementation (not the
+// stub that returned ErrUnsupported) after koryph-fv3.3 extraction.
+func TestPRServiceNotNil(t *testing.T) {
+	p := githubforge.New()
+	if svc := p.PRs(); svc == nil {
+		t.Fatal("PRs() returned nil")
 	}
 }
 

@@ -128,6 +128,14 @@ type PR struct {
 	State string `json:"state"`
 	// Labels is the set of label names attached to this PR.
 	Labels []string `json:"labels,omitempty"`
+	// HeadBranch is the source branch name.
+	HeadBranch string `json:"head_branch,omitempty"`
+	// HeadSHA is the head commit SHA of the PR's source branch.
+	HeadSHA string `json:"head_sha,omitempty"`
+	// Author is the login or username of the PR author.
+	Author string `json:"author,omitempty"`
+	// Draft indicates that the PR is in draft / work-in-progress state.
+	Draft bool `json:"draft,omitempty"`
 }
 
 // CheckRun is the status of one CI check run on a PR.
@@ -247,7 +255,24 @@ type PRService interface {
 
 	// Merge lands the PR. The PR must already satisfy all required checks;
 	// the provider returns an error if the PR is not mergeable.
+	// opts.Method and opts.CommitMessage form the explicit koryph-ufy seam:
+	// callers that need to control the merge strategy (squash, rebase, merge)
+	// and commit message MUST populate these fields so the service can pass them
+	// through without re-interpreting them.
 	Merge(ctx context.Context, owner, repo string, number int, opts MergeOptions) error
+
+	// Approve registers an approving review on the PR. body is optional
+	// review comment text. The caller is responsible for ensuring the
+	// approving identity is not the PR author (forges reject self-approval).
+	Approve(ctx context.Context, owner, repo string, number int, body string) error
+
+	// AddLabels attaches one or more labels to the PR, creating them on the
+	// repository if they do not already exist. Existing labels are not removed.
+	AddLabels(ctx context.Context, owner, repo string, number int, labels []string) error
+
+	// RemoveLabels detaches the named labels from the PR. Labels that are
+	// not currently attached are silently ignored.
+	RemoveLabels(ctx context.Context, owner, repo string, number int, labels []string) error
 }
 
 // SecretsService manages repository-level and org-level CI secrets or

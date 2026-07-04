@@ -198,6 +198,15 @@ func (s *stubPRSvc) ListChecks(_ context.Context, _, _ string, _ int) ([]forge.C
 func (s *stubPRSvc) Merge(_ context.Context, _, _ string, _ int, _ forge.MergeOptions) error {
 	return forge.ErrUnsupported
 }
+func (s *stubPRSvc) Approve(_ context.Context, _, _ string, _ int, _ string) error {
+	return forge.ErrUnsupported
+}
+func (s *stubPRSvc) AddLabels(_ context.Context, _, _ string, _ int, _ []string) error {
+	return forge.ErrUnsupported
+}
+func (s *stubPRSvc) RemoveLabels(_ context.Context, _, _ string, _ int, _ []string) error {
+	return forge.ErrUnsupported
+}
 
 type stubSecretsSvc struct{}
 
