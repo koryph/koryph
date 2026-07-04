@@ -91,6 +91,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph completion bash`](#koryph-completion-bash) | print the bash completion script |
 | ↳ [`koryph completion zsh`](#koryph-completion-zsh) | print the zsh completion script |
 | ↳ [`koryph completion install`](#koryph-completion-install) | install the completion script to the standard location |
+| [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
 
 ---
 
@@ -1031,6 +1032,19 @@ install the completion script to the standard location
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--shell` | string |  | target shell: bash\|zsh (default: detect from $SHELL) |
+
+
+---
+
+## `koryph tui` { #koryph-tui }
+
+interactive terminal cockpit (threads, queue, events)
+
+**See also:** [Tui](../user-guide/tui) · [2026 07 tui cockpit](../designs/2026-07-tui-cockpit)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--project` | string |  | project id (default: all registered projects) |
 
 
 ---

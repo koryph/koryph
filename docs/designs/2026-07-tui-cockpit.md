@@ -85,13 +85,27 @@ CLI code paths (no parallel implementations).
   / real tooling for deep analysis).
 - No config editing.
 
-## 5. Open questions (decide during T1)
+## 5. Decisions (resolved during T1)
 
-- Naming: `koryph tui` vs `koryph watch` (lean `tui`; `board`/`roster`
-  stay as one-shots).
-- Bubble Tea v2 vs v1 pinning at implementation time.
-- Whether the Events tab persists scrollback across view switches
-  (likely yes, bounded ring).
+- **Naming**: `koryph tui` (confirmed; `board`/`roster` stay as one-shots).
+- **Bubble Tea version**: pinned to **v1** series (`bubbletea v1.3.10`,
+  `lipgloss v1.1.0`, `bubbles v1.0.0`) — v2 is still in preview and the
+  v1 API is stable and well-tested. Upgrade to v2 when it reaches GA.
+  The `teatest` harness is from `charmbracelet/x/exp/teatest`
+  (v0.0.0-20260629+). Pinned in `go.mod`.
+- **Refresh model**: 100 ms poll via `tea.Tick` (no file-watch in T1;
+  below the 150 ms perceived-latency floor). File-watch can be layered
+  in T5/T6 as an optimization.
+- **Events-tab scrollback**: bounded ring, persists across tab switches
+  (deferred to T5 — not implemented in T1).
+
+## 5b. T1 scope summary
+
+T1 shipped: `internal/cockpit` (Snapshot + Provider interface +
+LedgerProvider over ledger + govern), `internal/tui` (Bubble Tea app
+shell: header, tab bar, Threads tab, help overlay, project switcher,
+80×24 minimum-size guard, 100 ms poll refresh), `cmd/koryph/tui.go`
+command, teatest harness (4 tests). Docs/reference auto-generated.
 
 ## 6. Sequencing (the epic's children)
 
