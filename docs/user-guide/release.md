@@ -11,7 +11,7 @@
 | `release-please-config.json` | release-please package configuration |
 | `.release-please-manifest.json` | Initial version manifest (written once, managed by release-please thereafter) |
 
-The generated caller workflow is **EXPERIMENTAL** until `koryph/koryph`'s reusable `release-train.yml` (koryph-0vf.3) is merged. The workflow validates syntax on push but will fail at runtime until the reusable exists.
+The generated caller workflow invokes `koryph/koryph`'s reusable `.github/workflows/release-train.yml` (koryph-0vf.3) via `koryph/koryph/.github/workflows/release-train.yml@main`. koryph's own release pipeline (`.github/workflows/release-please.yml`) is the first caller and uses the same-repository local-path form instead (`./.github/workflows/release-train.yml`) — see `docs/developer-guide/releasing.md`.
 
 ## Prerequisites
 

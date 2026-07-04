@@ -14,9 +14,11 @@
 //   - .release-please-manifest.json     — initial version manifest (only when
 //     the file does not yet exist, never overwritten)
 //
-// The reusable release-train.yml workflow is koryph-0vf.3 (orchestrator,
-// .github). This caller can land first; the workflow is marked EXPERIMENTAL
-// in the generated file header until release-train.yml exists upstream.
+// The reusable release-train.yml workflow (koryph-0vf.3, .github/workflows/
+// release-train.yml) is the callee referenced by the rendered caller
+// workflow. Its `on.workflow_call.inputs` names are a contract with the
+// `with:` keys rendered by caller-workflow.yml.tmpl below — keep both in
+// lockstep.
 package release
 
 import (

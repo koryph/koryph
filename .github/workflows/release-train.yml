@@ -1,0 +1,390 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+#
+# (koryph-0vf.3) Reusable release-train workflow.
+#
+# Extracted from the koryph-q35.5-validated draft-until-complete pipeline
+# (the v0.4.1/v0.5.0 design in docs/developer-guide/releasing.md) so any
+# koryph-managed project can opt into the same release infrastructure
+# regardless of language or build tool. koryph's own
+# .github/workflows/release-please.yml is the first caller (dogfood) and
+# must see byte-identical runtime behavior to the pipeline validated on
+# v0.5.0. See docs/designs/2026-07-release-train.md for the design.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# INPUT NAMES ARE A CONTRACT: internal/release/caller-workflow.yml.tmpl (the
+# `koryph release setup` caller template) renders `with:` keys that MUST
+# match the input names declared below exactly (release_type, extra_files,
+# artifacts_dir, build_mode, goreleaser_version, build_commands, sbom,
+# provenance). If you rename an input here, update that template (and
+# internal/release/release.go's templateData) in the same change.
+# ─────────────────────────────────────────────────────────────────────────
+#
+# The release build contract (docs/designs/2026-07-release-train.md §2):
+#   MODE B (build_mode: goreleaser) — GoReleaser owns the draft release and
+#     asset upload (release.draft: true in .goreleaser.yaml); this train
+#     contributes detection/tag, provenance, and the final publish. koryph
+#     itself uses this mode.
+#   MODE A (build_mode: commands) — the generic contract. build_commands
+#     runs at the release tag; its only obligation is to fill
+#     artifacts_dir. This train then generates checksums.txt if the
+#     commands didn't, creates the DRAFT release itself, uploads
+#     artifacts_dir/*, optionally attaches per-artifact syft SBOMs, and
+#     publishes last. An empty build_commands list is a valid "simple"
+#     release with no artifacts (tag + changelog only).
+#
+# Both modes share the v0.4.0 post-mortem invariant: nothing publishes
+# until every asset is attached — publication is the pipeline's last step,
+# so immutable releases lock a complete release.
+#
+# Reusable-workflow constraints honored here (verified against GitHub's
+# docs during koryph-0vf.3 implementation, not assumed):
+#   - Optional secrets: `on.workflow_call.secrets.<id>.required: false` is
+#     valid syntax (docs/actions/using-workflows/workflow-syntax-for-
+#     github-actions#onworkflow_callsecrets); an unsupplied optional secret
+#     reads as an empty string in the called workflow, so
+#     `secrets.RELEASE_BOT_APP_ID != ''` is a valid presence check and
+#     `steps.app-token.outputs.token || github.token` is a valid fallback
+#     (GitHub Actions `||` treats '' as falsy).
+#   - The nested reusable call below (slsa-provenance -> the SLSA generic
+#     generator, itself a workflow_call workflow) is legal: GitHub permits
+#     up to 10 levels of chained reusable workflows, and this train sits at
+#     level 2 of at most 3 (caller -> release-train.yml -> generator).
+#   - A caller in the SAME repository may reference this file with the
+#     local path form `./.github/workflows/release-train.yml` (no
+#     `@{ref}`) per "using-workflows/reusing-workflows"; that pins the
+#     callee to the caller's own commit, which is exactly what koryph's own
+#     caller wants. Cross-repo callers (other koryph-managed projects) use
+#     `koryph/koryph/.github/workflows/release-train.yml@main` instead.
+#   - `secrets.GITHUB_TOKEN`/`github.token` is the automatic per-job token;
+#     it does not depend on the caller passing `secrets: inherit` — this
+#     workflow reads it via `github.token` throughout for that reason.
+#   - Caller permissions must be a superset of what this workflow's jobs
+#     declare (the koryph-q35.5 startup_failure lesson: a reusable workflow
+#     requesting more than the caller grants is a startup_failure, not a
+#     runtime skip). Callers of this workflow must grant at least:
+#     `contents: write`, `pull-requests: write`, `id-token: write`.
+name: release-train
+
+on:
+  workflow_call:
+    inputs:
+      release_type:
+        description: >-
+          release-please release-type (go, node, python, simple, ...).
+          Documentation/lockstep only: release-please-action here is
+          driven by the caller repo's own release-please-config.json /
+          .release-please-manifest.json (unchanged from the validated
+          pipeline), not by this input — release-please-action has no
+          direct `extra-files` input, only a config-file one, so the
+          config file remains the single source of truth for both fields.
+        type: string
+        required: true
+      extra_files:
+        description: >-
+          Comma-separated extra version-bearing files (documentation/
+          lockstep only — see release_type above).
+        type: string
+        default: ""
+      artifacts_dir:
+        description: "Directory build artifacts land in."
+        type: string
+        default: "dist"
+      build_mode:
+        description: "'goreleaser' (tool owns the draft release) or 'commands' (generic contract)."
+        type: string
+        required: true
+      goreleaser_version:
+        description: "GoReleaser action version constraint (build_mode: goreleaser only)."
+        type: string
+        default: "~> v2"
+      build_commands:
+        description: >-
+          Newline-separated shell commands run at the release tag
+          (build_mode: commands only). Empty means a "simple" release
+          with no artifacts (tag + changelog only).
+        type: string
+        default: ""
+      sbom:
+        description: >-
+          Generate per-artifact syft SPDX SBOMs (build_mode: commands
+          only; build_mode: goreleaser configures its own `sboms:` block
+          in .goreleaser.yaml).
+        type: boolean
+        default: false
+      provenance:
+        description: "Generate SLSA Build L3 provenance over artifacts_dir/checksums.txt."
+        type: boolean
+        default: false
+      go_version:
+        description: >-
+          Optional Go toolchain version to install before gate_command
+          runs (e.g. "1.26"). Empty skips toolchain setup. Generalizes the
+          validated pipeline's setup-go step without hardcoding Go as a
+          requirement for non-Go callers.
+        type: string
+        default: ""
+      gate_command:
+        description: >-
+          Optional shell command run once, before the release tag is
+          created (after any go_version toolchain setup). Generalizes the
+          validated pipeline's "verify engine version" + "green gate"
+          steps. $RELEASE_VERSION and $RELEASE_TAG are exported for the
+          command to use (e.g. "make version-check TAG=$RELEASE_TAG &&
+          make gate"). Empty skips this step entirely.
+        type: string
+        default: ""
+    secrets:
+      RELEASE_BOT_APP_ID:
+        description: >-
+          GitHub App ID for the release bot (optional). Falls back to
+          github.token when absent — release-please-action still opens
+          the Release PR, but bot-authored-PR check-triggering and the
+          operator-can-approve-their-own-PR property are lost; see
+          docs/user-guide/release-bot.md.
+        required: false
+      RELEASE_BOT_PRIVATE_KEY:
+        description: "GitHub App private key PEM for the release bot (optional; see RELEASE_BOT_APP_ID)."
+        required: false
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      # `secrets` is not a permitted context in a step `if:` (actionlint:
+      # "context 'secrets' is not allowed here") — compute the presence
+      # check in a job-level `env:` (where `secrets` IS permitted) and
+      # branch on the resulting `env.` value in the step `if:` instead.
+      HAS_RELEASE_BOT: ${{ secrets.RELEASE_BOT_APP_ID != '' && secrets.RELEASE_BOT_PRIVATE_KEY != '' }}
+    steps:
+      - name: Mint a release-bot installation token (optional; falls back to github.token)
+        id: app-token
+        if: env.HAS_RELEASE_BOT == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          # '' || github.token resolves to exactly release-please-action's
+          # own default (github.token) when no bot secrets are configured,
+          # so this is behavior-neutral for projects without the bot.
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+  tag-and-build:
+    name: tag-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release tag; upload draft-release assets
+      id-token: write # sigstore keyless OIDC (goreleaser mode)
+    outputs:
+      release: ${{ steps.detect.outputs.release }}
+      version: ${{ steps.detect.outputs.version }}
+      checksums-hash: ${{ steps.checksums-hash.outputs.hashes }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Detect a release-PR merge from the HEAD commit subject
+        id: detect
+        run: |
+          subject="$(git log -1 --format=%s)"
+          # Anchored at the start only (no trailing $) so it tolerates the
+          # squash-merge title's " (#N)" suffix, e.g.
+          # "chore(main): release 0.4.0 (#5)".
+          if [[ "$subject" =~ ^chore\(main\):\ release\ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            version="${BASH_REMATCH[1]}"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "detected release v$version from HEAD subject: $subject"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "not a release-PR merge commit, skipping: $subject"
+          fi
+      - name: Validate build_mode
+        if: steps.detect.outputs.release == 'true'
+        run: |
+          case "${{ inputs.build_mode }}" in
+            goreleaser|commands) ;;
+            *) echo "::error::build_mode must be 'goreleaser' or 'commands', got '${{ inputs.build_mode }}'"; exit 1 ;;
+          esac
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        if: steps.detect.outputs.release == 'true' && inputs.go_version != ''
+        with:
+          go-version: ${{ inputs.go_version }}
+      - name: Gate (optional project-supplied pre-tag check)
+        if: steps.detect.outputs.release == 'true' && inputs.gate_command != ''
+        env:
+          GATE_COMMAND: ${{ inputs.gate_command }}
+          RELEASE_VERSION: ${{ steps.detect.outputs.version }}
+          RELEASE_TAG: v${{ steps.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$GATE_COMMAND" > /tmp/gate-command.sh
+          bash /tmp/gate-command.sh
+      - name: Create and push the release tag (idempotent)
+        if: steps.detect.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.detect.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          tag="v$VERSION"
+          head_sha="$(git rev-parse HEAD)"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            existing_sha="$(git rev-parse "$tag^{commit}")"
+            if [ "$existing_sha" != "$head_sha" ]; then
+              echo "::error::tag $tag already exists at $existing_sha, not HEAD ($head_sha)"
+              exit 1
+            fi
+            echo "$tag already exists and points at HEAD, nothing to push"
+          else
+            git tag -a "$tag" -m "Release $tag"
+            git push origin "$tag"
+          fi
+
+      # ── MODE B: goreleaser owns the draft release ──────────────────────
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'goreleaser'
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'goreleaser'
+      - name: GoReleaser (creates the DRAFT release + uploads all assets)
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'goreleaser'
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: ${{ inputs.goreleaser_version }}
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COSIGN_YES: "true"
+
+      # ── MODE A: generic contract — commands fill artifacts_dir ─────────
+      - name: Run build_commands (mode A)
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'commands'
+        env:
+          BUILD_COMMANDS: ${{ inputs.build_commands }}
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS_DIR"
+          if [ -z "${BUILD_COMMANDS// /}" ]; then
+            echo "build_commands is empty — simple release, no artifacts to build"
+          else
+            { echo "set -euo pipefail"; printf '%s\n' "$BUILD_COMMANDS"; } > /tmp/build-commands.sh
+            bash /tmp/build-commands.sh
+          fi
+      - name: Generate artifacts_dir/checksums.txt if the build didn't (mode A)
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'commands'
+        env:
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS_DIR"
+          if [ ! -f "$ARTIFACTS_DIR/checksums.txt" ] && [ -n "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f 2>/dev/null)" ]; then
+            ( cd "$ARTIFACTS_DIR" && sha256sum -- * > checksums.txt )
+          fi
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'commands' && inputs.sbom
+      - name: Generate per-artifact SBOMs (mode A)
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'commands' && inputs.sbom
+        env:
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        run: |
+          set -euo pipefail
+          for f in "$ARTIFACTS_DIR"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              checksums.txt|*.sbom.spdx.json) continue ;;
+            esac
+            syft "$f" -o "spdx-json=$ARTIFACTS_DIR/$base.sbom.spdx.json"
+          done
+      - name: Create the DRAFT release and upload artifacts (mode A)
+        if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'commands'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.detect.outputs.version }}
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=("$ARTIFACTS_DIR"/*)
+          gh release create "$TAG" \
+            --draft --generate-notes --repo "${{ github.repository }}" \
+            "${files[@]}"
+
+      - name: Export artifacts_dir/checksums.txt hash for SLSA provenance
+        if: steps.detect.outputs.release == 'true'
+        id: checksums-hash
+        env:
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        run: |
+          set -euo pipefail
+          f="$ARTIFACTS_DIR/checksums.txt"
+          if [ -f "$f" ]; then
+            echo "hashes=$(sha256sum "$f" | base64 -w0)" >> "$GITHUB_OUTPUT"
+          else
+            echo "hashes=" >> "$GITHUB_OUTPUT"
+            echo "no $f produced (empty simple release) — provenance will be skipped"
+          fi
+
+  slsa-provenance:
+    name: slsa-provenance (generic generator, workflow artifact only)
+    needs: tag-and-build
+    if: >-
+      inputs.provenance &&
+      needs.tag-and-build.outputs.release == 'true' &&
+      needs.tag-and-build.outputs.checksums-hash != ''
+    permissions:
+      actions: read # generator needs to detect the GitHub Actions run environment
+      id-token: write # sigstore keyless OIDC provenance signing
+      # contents: write even though upload-assets is false — the generator's
+      # internal jobs DECLARE contents: write (upload gating is runtime
+      # logic), and a reusable workflow requesting more than the caller
+      # grants is a startup_failure, not a runtime skip (koryph-q35.5).
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.tag-and-build.outputs.checksums-hash }}"
+      # false: uploading by tag targets the *published*-release-by-tag API,
+      # which cannot see the still-draft release created above. The
+      # provenance lands only as a workflow artifact; `publish` below
+      # attaches it explicitly, before the release is published.
+      upload-assets: false
+      provenance-name: checksums.txt.intoto.jsonl
+
+  publish:
+    name: publish (attach provenance, then publish the release — last step)
+    needs: [tag-and-build, slsa-provenance]
+    # slsa-provenance is legitimately skipped when provenance is false or
+    # there were no artifacts to attest to — `needs.<job>.result` lets this
+    # job still run in that case (GitHub Actions' default `if: success()`
+    # would otherwise skip publish too, since success() treats a skipped
+    # dependency as not-successful).
+    if: >-
+      needs.tag-and-build.outputs.release == 'true' &&
+      needs.tag-and-build.result == 'success' &&
+      (needs.slsa-provenance.result == 'success' || needs.slsa-provenance.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload the provenance asset; publish the release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: v${{ needs.tag-and-build.outputs.version }}
+    steps:
+      - name: Download the SLSA provenance workflow artifact
+        if: needs.slsa-provenance.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: checksums.txt.intoto.jsonl
+      - name: Attach SLSA provenance to the still-draft release
+        if: needs.slsa-provenance.result == 'success'
+        run: gh release upload "$TAG" checksums.txt.intoto.jsonl --repo "${{ github.repository }}"
+      - name: Publish the release (immutability locks assets from here on)
+        run: gh release edit "$TAG" --draft=false --repo "${{ github.repository }}"

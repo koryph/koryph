@@ -1,50 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 The Koryph Developers
 #
-# (koryph-q35.5) Draft-until-complete release pipeline, immutable-releases
-# compatible.
+# (koryph-0vf.3) koryph's own caller into the reusable release-train.yml
+# workflow (extracted from the koryph-q35.5-validated draft-until-complete
+# pipeline; see docs/developer-guide/releasing.md and
+# docs/designs/2026-07-release-train.md). This file keeps its historical
+# name (release-please.yml) rather than renaming to release.yml: the
+# workflow's filename is part of the SLSA provenance configSource
+# entryPoint and the cosign certificate SAN for every release signed
+# before this extraction (confirmed against the real v0.5.0 release
+# artifacts: SAN "https://github.com/koryph/koryph/.github/workflows/
+# release-please.yml@refs/heads/main") — renaming it would silently change
+# the expected verification identity for consumers of past releases.
 #
-# On the first real release (v0.4.0) release-please published its GitHub
-# release immediately on tagging, and every goreleaser asset upload in the
-# same run then failed with HTTP 422 "Cannot upload assets to an immutable
-# release" — this repo has immutable releases enabled, and publication locks
-# the asset set forever. The fix: split "who manages the Release PR" from
-# "who owns the GitHub release", and make the release a DRAFT until every
-# asset (binaries, checksums, cosign bundle, SBOMs, SLSA provenance) has
-# already been uploaded.
+# INPUT LOCKSTEP: the `with:` keys below (release_type, extra_files,
+# artifacts_dir, build_mode, goreleaser_version, sbom, provenance,
+# go_version, gate_command) must match release-train.yml's `on.
+# workflow_call.inputs` names exactly. Update both sides together.
 #
-#   1. release-please (this job)     — Release PR only: version bump,
-#      CHANGELOG.md, the Engine annotation. release-please-config.json sets
-#      `skip-github-release: true`, so this job creates neither a tag nor a
-#      release for it. (release-please's own docs say it still tags
-#      internally even with that flag; `googleapis/release-please-action`'s
-#      output-population behavior under `skip-github-release` is NOT
-#      documented either way — see releasing.md — so `tag-and-build` below
-#      deliberately does not read this job's `release_created`/`tag_name`
-#      outputs and instead detects a release merge from the HEAD commit
-#      subject, which works regardless of what release-please did or didn't
-#      tag.)
-#   2. tag-and-build                 — detects a release-PR merge from the
-#      HEAD commit subject (a squash-merge title has the shape
-#      `chore(main): release X.Y.Z (#N)`); creates+pushes the annotated tag
-#      v$VERSION (idempotently — a no-op if release-please already made it,
-#      as long as it points at HEAD); then runs GoReleaser at that tag with
-#      `release.draft: true` (.goreleaser.yaml), which creates a DRAFT
-#      release and uploads binaries, checksums.txt, the cosign bundle, and
-#      per-archive SBOMs to it. Uploads to a draft are unaffected by
-#      immutable releases — only *publishing* locks the asset set.
-#   3. slsa-provenance                — slsa-framework/slsa-github-generator,
-#      `upload-assets: false` (uploading-by-tag targets the *published*
-#      release-by-tag API, which cannot see an unpublished draft — see
-#      releasing.md). The provenance lands only as a workflow artifact.
-#   4. publish                        — downloads that workflow artifact,
-#      `gh release upload` it onto the still-draft release (gh addresses
-#      releases, including drafts, by tag name), and only THEN
-#      `gh release edit --draft=false`. Publication is the deliberate last
-#      step of the whole pipeline — nothing more is ever uploaded after it.
-#
-# See docs/developer-guide/releasing.md for the full flow, the tag-detection
-# regex rationale, and the first-release checklist.
+# Uses the SAME-REPOSITORY local path form (`./.github/workflows/
+# release-train.yml`, no `@{ref}`) rather than `koryph/koryph/...@main`:
+# per GitHub's reusing-workflows docs, this form runs the callee from the
+# caller's own commit, which is what koryph (the origin of release-train.
+# yml) wants — no risk of a caller commit racing an unpublished change to
+# the reusable workflow on `main`. Consumer projects outside this repo use
+# the `koryph/koryph/.github/workflows/release-train.yml@main` form
+# instead (see internal/release/caller-workflow.yml.tmpl).
 name: release-please
 on:
   push:
@@ -52,132 +33,21 @@ on:
 permissions:
   contents: read
 jobs:
-  release-please:
-    name: release-please
-    runs-on: ubuntu-latest
+  release:
+    name: release
     permissions:
       contents: write
       pull-requests: write
-    steps:
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        id: release
-
-  tag-and-build:
-    name: tag-and-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # push the release tag; upload draft-release assets
-      id-token: write # sigstore keyless OIDC
-    outputs:
-      release: ${{ steps.detect.outputs.release }}
-      version: ${{ steps.detect.outputs.version }}
-      checksums-hash: ${{ steps.checksums-hash.outputs.hashes }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-      - name: Detect a release-PR merge from the HEAD commit subject
-        id: detect
-        run: |
-          subject="$(git log -1 --format=%s)"
-          # Anchored at the start only (no trailing $) so it tolerates the
-          # squash-merge title's " (#N)" suffix, e.g.
-          # "chore(main): release 0.4.0 (#5)".
-          if [[ "$subject" =~ ^chore\(main\):\ release\ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-            version="${BASH_REMATCH[1]}"
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "version=$version" >> "$GITHUB_OUTPUT"
-            echo "detected release v$version from HEAD subject: $subject"
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "not a release-PR merge commit, skipping: $subject"
-          fi
-      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
-        if: steps.detect.outputs.release == 'true'
-        with:
-          go-version: "1.26"
-      - name: Verify engine version matches the detected version
-        if: steps.detect.outputs.release == 'true'
-        run: make version-check TAG="v${{ steps.detect.outputs.version }}"
-      - name: Green gate
-        if: steps.detect.outputs.release == 'true'
-        run: make gate
-      - name: Create and push the release tag (idempotent)
-        if: steps.detect.outputs.release == 'true'
-        env:
-          VERSION: ${{ steps.detect.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          tag="v$VERSION"
-          head_sha="$(git rev-parse HEAD)"
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            existing_sha="$(git rev-parse "$tag^{commit}")"
-            if [ "$existing_sha" != "$head_sha" ]; then
-              echo "::error::tag $tag already exists at $existing_sha, not HEAD ($head_sha)"
-              exit 1
-            fi
-            echo "$tag already exists and points at HEAD, nothing to push"
-          else
-            git tag -a "$tag" -m "Release $tag"
-            git push origin "$tag"
-          fi
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        if: steps.detect.outputs.release == 'true'
-      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        if: steps.detect.outputs.release == 'true'
-      - name: GoReleaser (creates the DRAFT release + uploads all assets)
-        if: steps.detect.outputs.release == 'true'
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
-        with:
-          distribution: goreleaser
-          version: "~> v2.16"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COSIGN_YES: "true"
-      - name: Export dist/checksums.txt hash for SLSA provenance
-        if: steps.detect.outputs.release == 'true'
-        id: checksums-hash
-        run: echo "hashes=$(sha256sum dist/checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
-
-  slsa-provenance:
-    name: slsa-provenance (generic generator, workflow artifact only)
-    needs: tag-and-build
-    if: needs.tag-and-build.outputs.release == 'true'
-    permissions:
-      actions: read # generator needs to detect the GitHub Actions run environment
-      id-token: write # sigstore keyless OIDC provenance signing
-      # contents: write even though upload-assets is false — the generator's
-      # internal jobs DECLARE contents: write (upload gating is runtime
-      # logic), and a reusable workflow requesting more than the caller
-      # grants is a startup_failure, not a runtime skip (koryph-q35.5).
-      contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+      id-token: write
+    uses: ./.github/workflows/release-train.yml
     with:
-      base64-subjects: "${{ needs.tag-and-build.outputs.checksums-hash }}"
-      # false: uploading by tag targets the *published*-release-by-tag API,
-      # which cannot see the still-draft release GoReleaser just created.
-      # The provenance lands only as a workflow artifact; `publish` below
-      # attaches it explicitly, before the release is published.
-      upload-assets: false
-      provenance-name: checksums.txt.intoto.jsonl
-
-  publish:
-    name: publish (attach provenance, then publish the release — last step)
-    needs: [tag-and-build, slsa-provenance]
-    if: needs.tag-and-build.outputs.release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # upload the provenance asset; publish the release
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: v${{ needs.tag-and-build.outputs.version }}
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: checksums.txt.intoto.jsonl
-      - name: Attach SLSA provenance to the still-draft release
-        run: gh release upload "$TAG" checksums.txt.intoto.jsonl --repo "${{ github.repository }}"
-      - name: Publish the release (immutability locks assets from here on)
-        run: gh release edit "$TAG" --draft=false --repo "${{ github.repository }}"
+      release_type: "go"
+      extra_files: "internal/version/version.go"
+      artifacts_dir: "dist"
+      build_mode: "goreleaser"
+      goreleaser_version: "~> v2.16"
+      sbom: true
+      provenance: true
+      go_version: "1.26"
+      gate_command: "make version-check TAG=$RELEASE_TAG && make gate"
+    secrets: inherit
