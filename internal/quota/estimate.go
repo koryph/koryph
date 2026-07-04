@@ -3,7 +3,10 @@
 
 package quota
 
-import "math"
+import (
+	"log/slog"
+	"math"
+)
 
 // SizeOf buckets a work item by its description length: S (<400), M (<2000),
 // otherwise L.
@@ -138,6 +141,12 @@ func Record(cfg *Config, tier, size string, actualUSD, estimateUSD float64) {
 		cfg.Calibration[key] = actualUSD
 	}
 
+	log.Debug("quota.calibration.update",
+		slog.String("key", key),
+		slog.Float64("actual_usd", actualUSD),
+		slog.Float64("new_ewma", cfg.Calibration[key]),
+	)
+
 	// Update error statistics when both actual and a valid estimate are
 	// available — estimateUSD == 0 means "unknown"; skip gracefully.
 	if estimateUSD > 0 {
@@ -152,6 +161,14 @@ func Record(cfg *Config, tier, size string, actualUSD, estimateUSD float64) {
 			es.MAPE = 0.7*es.MAPE + 0.3*ape
 		} else {
 			cfg.ErrorStats[key] = &ErrorStat{N: 1, Bias: ratio, MAPE: ape}
+		}
+		if es, ok := cfg.ErrorStats[key]; ok {
+			log.Debug("quota.estimate.bias",
+				slog.String("key", key),
+				slog.Int("n", es.N),
+				slog.Float64("bias", es.Bias),
+				slog.Float64("mape", es.MAPE),
+			)
 		}
 	}
 }

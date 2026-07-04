@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
@@ -68,8 +70,18 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 	// SAME fail-closed check and error text as before this bead.
 	identity, err := rt.VerifyIdentity(ctx, toRuntimeProfile(s.Profile), s.ExpectedIdentity)
 	if err != nil {
+		log.Warn("dispatch.identity.failed",
+			slog.String(obs.KeyPhase, s.PhaseID),
+			slog.String(obs.KeyProject, s.ProjectID),
+			obs.Err(err),
+		)
 		return Handle{}, err
 	}
+	log.Info("dispatch.identity.verified",
+		slog.String(obs.KeyPhase, s.PhaseID),
+		slog.String(obs.KeyProject, s.ProjectID),
+		slog.String("result", "ok"),
+	)
 	if !s.Billing.Valid() {
 		return Handle{}, fmt.Errorf("dispatch %s: invalid billing mode %q (want %q or %q)", s.PhaseID, s.Billing, account.BillingSubscription, account.BillingAPIKey)
 	}
@@ -105,6 +117,14 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 	}
 
 	// 3. Seed the phase directory.
+	if len(s.EnvPassthrough) > 0 {
+		names := make([]string, len(s.EnvPassthrough))
+		copy(names, s.EnvPassthrough)
+		log.Log(context.TODO(), obs.LevelTrace, "dispatch.env.passthrough",
+			slog.String(obs.KeyPhase, s.PhaseID),
+			slog.Any("var_names", names),
+		)
+	}
 	if err := os.MkdirAll(s.PhaseDir, 0o755); err != nil {
 		return Handle{}, fmt.Errorf("dispatch %s: creating phase dir: %w", s.PhaseID, err)
 	}

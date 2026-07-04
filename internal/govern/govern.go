@@ -155,6 +155,7 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 	pool := NormalizeProvider(l.Provider)
 	l.Provider = pool // stored state never has an empty key (koryph-v8u.11)
 	granted := false
+	var grantedCap, grantedActive int
 	err := s.withLock(func() error {
 		if err := s.prune(); err != nil {
 			return err
@@ -186,6 +187,7 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 					return err
 				}
 				granted = true
+				grantedCap = c.EffectiveCap()
 				f.Pools[pool] = c
 				return fsx.WriteJSONAtomic(s.cfgPath, f) // persist the probe claim
 			}
@@ -225,6 +227,8 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 			return err
 		}
 		granted = true
+		grantedCap = c.EffectiveCap()
+		grantedActive = len(leases) + 1 // +1: the lease just written
 
 		if c.Adaptive {
 			c.LastAdmitAt = now.UTC().Format(time.RFC3339)
@@ -235,6 +239,14 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		}
 		return nil
 	})
+	if err == nil {
+		if granted {
+			logGranted(pool, l.Project, l.Bead, grantedCap, grantedActive)
+		} else {
+			// For denied: read cap outside the lock for the log (best-effort).
+			logDenied(pool, l.Project, l.Bead, s.Cap(pool), 0)
+		}
+	}
 	return granted, err
 }
 
@@ -294,7 +306,8 @@ func (s *Store) Hold(l Lease) error {
 // timeout fallback.
 func (s *Store) Release(provider, project, bead string) error {
 	pool := NormalizeProvider(provider)
-	return s.withLock(func() error {
+	breakerClosed := false
+	err := s.withLock(func() error {
 		err := os.Remove(s.leasePath(pool, project, bead))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -306,6 +319,7 @@ func (s *Store) Release(provider, project, bead string) error {
 				bead != "" && project == c.ProbeProject && bead == c.ProbeBead {
 				closeBreaker(&c, s.Now())
 				f.Pools[pool] = c
+				breakerClosed = true
 				if werr := fsx.WriteJSONAtomic(s.cfgPath, f); werr != nil {
 					return werr
 				}
@@ -313,6 +327,10 @@ func (s *Store) Release(provider, project, bead string) error {
 		}
 		return nil
 	})
+	if err == nil && breakerClosed {
+		logBreakerClosed(pool)
+	}
+	return err
 }
 
 // Prune removes dead/stale leases and demand heartbeats across ALL pools.
@@ -510,6 +528,7 @@ func (s *Store) pruneCrashedProbe() error {
 		openBreaker(&c, s.Now(), true)
 		f.Pools[pool] = c
 		changed = true
+		logCrashedProbeReopened(pool)
 	}
 	if !changed {
 		return nil

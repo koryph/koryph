@@ -458,10 +458,16 @@ func (s *Store) loadAndProbeLocked(pool string) (Config, File, error) {
 	}
 	c := f.Pools[pool] // zero Config if this pool has no entry yet
 	now := s.Now()
-	changed := resolveBreaker(&c, now)
-	if applyProbe(&c, now) {
-		changed = true
+	breakerChanged := resolveBreaker(&c, now)
+	if breakerChanged {
+		logBreakerHalfOpen(pool)
 	}
+	oldCap := c.DynamicCap
+	probeChanged := applyProbe(&c, now)
+	if probeChanged && oldCap > 0 && c.DynamicCap != oldCap {
+		logProbeAdvanced(pool, oldCap, c.DynamicCap)
+	}
+	changed := breakerChanged || probeChanged
 	f.Pools[pool] = c
 	if changed {
 		if err := fsx.WriteJSONAtomic(s.cfgPath, f); err != nil {
@@ -529,16 +535,26 @@ func (s *Store) AIMDStatus(provider string) (Config, error) {
 // pool's entry is untouched (koryph-v8u.11).
 func (s *Store) ReportRateLimit(provider, project, bead string, now time.Time) error {
 	pool := NormalizeProvider(provider)
-	return s.withLock(func() error {
+	var decreased, breakerOpened bool
+	err := s.withLock(func() error {
 		f, err := s.readFile()
 		if err != nil {
 			return err
 		}
 		c := f.Pools[pool]
-		applyRateLimit(&c, project, bead, now)
+		decreased, breakerOpened = applyRateLimit(&c, project, bead, now)
 		f.Pools[pool] = c
 		return fsx.WriteJSONAtomic(s.cfgPath, f)
 	})
+	if err == nil {
+		if decreased {
+			logCapDecreased(pool, project, bead, 0, 0)
+		}
+		if breakerOpened {
+			logBreakerOpened(pool, project, bead)
+		}
+	}
+	return err
 }
 
 // SetAdaptiveCap enables the AIMD overlay for provider's pool ("" is
