@@ -392,6 +392,64 @@ koryph tail --project myproject beads-042 -n 100   # last 100 lines
 Output includes `session.log` (human-readable progress), `stderr.log`, and the path to
 `stream.jsonl` (the raw Claude event stream, useful for cost and token breakdowns).
 
+## Drain and resize
+
+koryph gives you three levers for slowing or stopping a loop, at three different scopes.
+Pick the narrowest one that does what you need:
+
+| Command | Scope | Effect |
+|---|---|---|
+| `koryph drain` | the whole loop | stop new dispatch; let whatever is running **finish**; then exit |
+| `koryph stop <phase-id>` | one agent | SIGTERM that agent; the loop requeues or proceeds to merge as usual |
+| `koryph stop <phase-id> --force` (or `--all --force`) | one agent, or every agent | SIGKILL immediately; **uncommitted work is lost** |
+
+**drain** — request a graceful wind-down of the loop itself, without touching any running
+process:
+
+```sh
+koryph drain --project myproject
+```
+
+The engine checks for a drain request at every scheduling boundary (every wave in `wave`
+mode, every refill tick in `rolling` mode — see [Dispatch mode](#dispatch-mode-wave-vs-rolling)
+above): once seen, no new bead is dispatched, but any agent already running is left
+completely alone to finish its current attempt. The moment the last active slot lands, the
+run exits through the normal drained path with reason `operator-drain` (distinct from the
+ordinary `drained` reason, which means the frontier itself was empty) — even if more work is
+still ready, it is left for the next invocation. The request is one-shot: it consumes itself
+on that exit, so the next `koryph run` starts clean. Use `--all` to drain every registered
+project at once:
+
+```sh
+koryph drain --all
+```
+
+If nothing is currently running when the drain fires, the run exits immediately — there is
+nothing to wait for. A drain request left behind by a run that never got back around to a
+boundary (e.g. the host died) is treated as stale and cleared **at the start of the next
+run**, with a log line noting it — a leftover request can never silently prevent a fresh,
+intentional run from doing any work.
+
+**resize** — change a running loop's dispatch width without restarting it:
+
+```sh
+koryph resize --project myproject --max 5
+```
+
+Like the drain request, the override is re-read at every scheduling boundary, so it takes
+effect on the very next wave or refill tick. It is clamped to `[1, max_concurrent_slots]`
+unless you pass `--force` (useful for a deliberate short-lived burst above the project's
+normal cap). `0` is not a valid width — that is what `drain` is for. Remove the override
+and revert to the project's configured width with:
+
+```sh
+koryph resize --project myproject --clear
+```
+
+`--all` applies the same `--max`/`--clear` to every registered project. Both `drain` and
+`resize` are recorded in the central audit log (`~/.koryph/audit.jsonl`), same as other
+operator actions.
+
 ## Corpus audit: koryph plan audit
 
 Before running the loop — or after changing `area_map` in `koryph.project.json` — run the

@@ -54,6 +54,8 @@ var commandTable = []command{
 	{name: "tail", summary: "tail a phase's session.log + stderr.log", run: cmdTail},
 	{name: "nudge", summary: "append an operator note to a phase INBOX", run: cmdNudge},
 	{name: "stop", summary: "stop an agent (or every agent with --all)", run: cmdStop},
+	{name: "drain", summary: "gracefully wind down a run: finish active slots, dispatch nothing new", run: cmdDrain},
+	{name: "resize", summary: "live width override for a running loop", run: cmdResize},
 	{name: "merge", summary: "land a finished agent branch", run: cmdMerge},
 	{name: "land", summary: "land an engine-opened PR fast-forward-only", run: cmdLand},
 	{name: "review-pr", summary: "analyze another author's PR", run: cmdReviewPR},

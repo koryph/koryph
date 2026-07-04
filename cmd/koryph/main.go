@@ -130,6 +130,14 @@ OBSERVE / OPERATE
   stop --project ID <phase-id> [--force] | stop --all [--force]
                         stop an agent (or every agent, --all) — SIGTERM, or
                         SIGKILL with --force (uncommitted work is lost)
+  drain --project ID | --all
+                        graceful loop wind-down: stop new dispatch, let active
+                        slots finish, exit drained (operator-drain); consumes
+                        its own one-shot request so the next run starts clean
+  resize (--project ID | --all) (--max N [--force] | --clear)
+                        live wave-width override, re-read by the loop at every
+                        boundary (no restart); clamped to max_concurrent_slots
+                        unless --force; --clear removes the override
   merge --project ID <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]
                         land a finished agent branch on the default branch
   land --project ID <bead> [--method ff|squash] [--reason R]
