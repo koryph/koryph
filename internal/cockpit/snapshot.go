@@ -32,6 +32,51 @@ package cockpit
 
 import "time"
 
+// AttemptRecord captures the outcome of one dispatch attempt for a bead,
+// assembled from the run ledger for the bead detail panel.
+type AttemptRecord struct {
+	Attempt      int
+	Status       string
+	RequeueCause string // "gate", "merge", "ratelimit", "manual", or ""
+	CostUSD      float64
+	Elapsed      time.Duration
+	Model        string
+	Branch       string
+	Worktree     string
+	DispatchedAt time.Time
+}
+
+// BeadDetailSnapshot is a point-in-time view of one bead's full detail.
+// Zero value (BeadID == "") means no bead is focused.
+type BeadDetailSnapshot struct {
+	BeadID      string
+	Title       string
+	Description string
+	Acceptance  string // acceptance criteria section
+	Labels      []string
+	Notes       string
+	Status      string
+	Priority    int
+	IssueType   string
+	ParentID    string
+
+	// Dependency graph.
+	Deps        []string // issue IDs this bead depends on
+	ReverseDeps []string // issue IDs that depend on this bead
+
+	// Slot-derived fields.
+	Branch      string
+	Worktree    string
+	CostUSD     float64
+	EstimateUSD float64
+	LogPath     string // path to agent session log for 't' tail
+
+	// AttemptHistory is chronological, most-recent last.
+	AttemptHistory []AttemptRecord
+
+	ComputedAt time.Time
+}
+
 // SlotSnapshot is a point-in-time view of one running/recent ledger slot.
 // All fields are display-ready strings or zero values when unknown.
 type SlotSnapshot struct {
@@ -129,6 +174,10 @@ type Snapshot struct {
 	// Efficiency holds the efficiency + calibration dashboard data (koryph-9af.4).
 	// Populated by LedgerProvider at efficiencyTTL cadence; zero when unavailable.
 	Efficiency EfficiencySnapshot
+
+	// Detail holds the full detail for the currently-focused bead (koryph-9af.3).
+	// Zero value (BeadID == "") means no bead is focused.
+	Detail BeadDetailSnapshot
 
 	// CapturedAt is when this snapshot was assembled.
 	CapturedAt time.Time

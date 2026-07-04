@@ -318,3 +318,102 @@ func readAgentStatus(path string) (agentStatus, error) {
 	}
 	return as, nil
 }
+
+// BeadDetail assembles a BeadDetailSnapshot for beadID using the live ledger
+// slot (if any) and the beads adapter. It soft-fails on every data source so
+// that a partially-populated detail is always returned rather than an error.
+func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time.Time) BeadDetailSnapshot {
+	d := BeadDetailSnapshot{
+		BeadID:     beadID,
+		ComputedAt: now,
+	}
+
+	// --- beads metadata -------------------------------------------------------
+	if issue, err := p.bd.Show(ctx, beadID); err == nil {
+		d.Title = issue.Title
+		d.Description = issue.Description
+		d.Notes = issue.Notes
+		d.Status = issue.Status
+		d.Priority = issue.Priority
+		d.IssueType = issue.IssueType
+		d.Labels = issue.Labels
+		d.ParentID = issue.ParentID
+	}
+
+	// --- graph deps -----------------------------------------------------------
+	// Graph is refreshed by the graph provider; we read it from the run ledger's
+	// cached graph provider if available.
+	gSnap := p.graph.Refresh(ctx, now)
+	if deps, ok := gSnap.Deps[beadID]; ok {
+		d.Deps = deps
+	}
+	// Reverse deps: find all nodes that list beadID as a dependency.
+	for nodeID, nodeDeps := range gSnap.Deps {
+		for _, dep := range nodeDeps {
+			if dep == beadID {
+				d.ReverseDeps = append(d.ReverseDeps, nodeID)
+				break
+			}
+		}
+	}
+
+	// --- slot-derived fields --------------------------------------------------
+	run, err := p.ls.LoadLatest()
+	if err != nil {
+		return d
+	}
+	for _, sl := range run.Slots {
+		if sl == nil || sl.BeadID != beadID {
+			continue
+		}
+		d.Branch = sl.Branch
+		d.Worktree = sl.Worktree
+		d.CostUSD = sl.CostUSD
+		d.EstimateUSD = sl.EstimateUSD
+		d.LogPath = sl.LogPath
+
+		// Build one AttemptRecord per attempt (we have summary counts only,
+		// so synthesise a single record from the current slot state).
+		rec := AttemptRecord{
+			Attempt:  sl.Attempts,
+			Status:   sl.Status,
+			CostUSD:  sl.CostUSD,
+			Model:    sl.Model,
+			Branch:   sl.Branch,
+			Worktree: sl.Worktree,
+		}
+		rec.RequeueCause = buildRequeueCause(sl)
+		if sl.DispatchedAt != "" {
+			if t, err2 := time.Parse(time.RFC3339, sl.DispatchedAt); err2 == nil {
+				rec.DispatchedAt = t
+				rec.Elapsed = elapsed(now, t)
+			}
+		}
+		d.AttemptHistory = append(d.AttemptHistory, rec)
+		break // one slot per beadID in current run
+	}
+
+	return d
+}
+
+// buildRequeueCause returns the most-recent requeue cause label for a slot.
+func buildRequeueCause(sl *ledger.Slot) string {
+	switch {
+	case sl.GateRequeues > 0:
+		return "gate"
+	case sl.MergeRequeues > 0:
+		return "merge"
+	case sl.RateLimitRequeues > 0:
+		return "ratelimit"
+	default:
+		return ""
+	}
+}
+
+// elapsed returns the duration between start and now, or 0 if start is zero.
+func elapsed(now, start time.Time) time.Duration {
+	if start.IsZero() {
+		return 0
+	}
+	return now.Sub(start)
+}

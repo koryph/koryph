@@ -56,6 +56,15 @@ func (m *threadsModel) Init() tea.Cmd { return nil }
 // Update implements TabModel.
 func (m *threadsModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	var cmd tea.Cmd
+	// Intercept Enter to open the detail panel for the selected row's bead.
+	if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEnter {
+		if idx := m.table.Cursor(); idx >= 0 && idx < len(m.snap.Slots) {
+			beadID := m.snap.Slots[idx].BeadID
+			if beadID != "" {
+				return m, func() tea.Msg { return showDetailMsg{beadID: beadID} }
+			}
+		}
+	}
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }

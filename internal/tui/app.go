@@ -48,6 +48,12 @@ type snapshotMsg cockpit.Snapshot
 // errMsg carries a non-fatal refresh error.
 type errMsg struct{ err error }
 
+// showDetailMsg tells the App to switch to the Detail tab and focus beadID.
+type showDetailMsg struct{ beadID string }
+
+// detailReadyMsg delivers a freshly-assembled BeadDetailSnapshot.
+type detailReadyMsg struct{ snap cockpit.BeadDetailSnapshot }
+
 // App is the root Bubble Tea model for the koryph terminal cockpit.
 type App struct {
 	// providers is the list of cockpit providers, one per project. The active
@@ -75,6 +81,10 @@ type App struct {
 	// terminal dimensions.
 	width  int
 	height int
+
+	// detailTabIdx is the index of the Detail tab in tabs (set in NewApp).
+	// -1 means no Detail tab is registered.
+	detailTabIdx int
 }
 
 // NewApp creates and initialises the App model.
@@ -95,15 +105,25 @@ func NewApp(providers []cockpit.Provider) *App {
 		tabs[i] = def.New(theme)
 	}
 
+	// Find the detail tab index.
+	detailIdx := -1
+	for i, def := range tabRegistry {
+		if def.Name == "Detail" {
+			detailIdx = i
+			break
+		}
+	}
+
 	a := &App{
-		providers: providers,
-		activeTab: 0,
-		tabs:      tabs,
-		help:      h,
-		keys:      DefaultKeyMap(),
-		theme:     theme,
-		width:     minWidth,
-		height:    minHeight,
+		providers:    providers,
+		activeTab:    0,
+		tabs:         tabs,
+		help:         h,
+		keys:         DefaultKeyMap(),
+		theme:        theme,
+		width:        minWidth,
+		height:       minHeight,
+		detailTabIdx: detailIdx,
 	}
 	return a
 }
@@ -173,6 +193,35 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		a.lastError = msg.err.Error()
+
+	case showDetailMsg:
+		// Switch to the Detail tab and push the beadID into it.
+		if a.detailTabIdx >= 0 {
+			a.activeTab = a.detailTabIdx
+			a.resizeTabs()
+			if setter, ok := a.tabs[a.detailTabIdx].(interface {
+				SetBead(string)
+			}); ok {
+				setter.SetBead(msg.beadID)
+			}
+			// If the current snapshot already has detail for this bead, push it now.
+			if a.snap.Detail.BeadID == msg.beadID {
+				if dr, ok := a.tabs[a.detailTabIdx].(interface {
+					SetDetail(cockpit.BeadDetailSnapshot)
+				}); ok {
+					dr.SetDetail(a.snap.Detail)
+				}
+			}
+		}
+
+	case detailReadyMsg:
+		if a.detailTabIdx >= 0 {
+			if dr, ok := a.tabs[a.detailTabIdx].(interface {
+				SetDetail(cockpit.BeadDetailSnapshot)
+			}); ok {
+				dr.SetDetail(msg.snap)
+			}
+		}
 	}
 
 	return a, tea.Batch(cmds...)
