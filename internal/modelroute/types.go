@@ -30,6 +30,15 @@
 // default, so a project or run that never opts in (RepoRoot == "") keeps
 // today's exact behavior.
 //
+// Runtime selection (koryph-v8u.3): every resolution runs under one runtime
+// (Req.Runtime — "" means "claude"), which namespaces two things that used to
+// be Claude-only globals: the stage-default table (step 6 above) and the
+// tier->model ModelMap the persona-tier step (step 4 above) resolves through.
+// Resolve fails closed on an unregistered/tableless runtime rather than ever
+// substituting claude's — see ResolveRuntimeName for how a bead's
+// `runtime:<name>` label and a project's `default_runtime` produce this
+// value ahead of Resolve.
+//
 // Implementation contract (route.go, persona.go):
 //   - Resolve(Req) (Resolution, error) — applies precedence + policy; error
 //     when the resolved tier is not in AllowedModels (fail closed).
@@ -81,11 +90,23 @@ type Req struct {
 	// (koryph-v8u.10 item 4): RepoRoot locates .claude/agents/<persona>.md
 	// for a PersonaMeta lookup, and ModelMap is the project's sparse
 	// tier->model override (internal/project.Config.ModelMap) layered onto
-	// runtime.ClaudeModelMap. RepoRoot == "" disables this step entirely
-	// (every existing caller/test that omits it keeps today's label/run-
-	// default/stage-default-only behavior unchanged).
+	// the resolved runtime's ModelMap (see Runtime below; hardcoded to
+	// runtime.ClaudeModelMap before koryph-v8u.3). RepoRoot == "" disables
+	// this step entirely (every existing caller/test that omits it keeps
+	// today's label/run-default/stage-default-only behavior unchanged).
 	RepoRoot string
 	ModelMap map[string]string
+
+	// Runtime is the resolved runtime name (koryph-v8u.3) this dispatch runs
+	// under: "claude", or another name registered in runtime.Default. Empty
+	// means "claude" — every existing caller that predates runtime selection
+	// omits this field and gets byte-for-byte the same resolution as before
+	// (claude's stage-default table and ModelMap). Resolve validates the name
+	// up front and fails closed on anything else unregistered; it never
+	// silently substitutes claude. See ResolveRuntimeName for the bead-label/
+	// project-default precedence that normally produces this value before a
+	// caller builds a Req.
+	Runtime string
 }
 
 // Resolution is the outcome.

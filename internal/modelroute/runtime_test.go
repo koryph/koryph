@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 The Koryph Developers
+
+package modelroute
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/runtimetest"
+)
+
+// TestResolveRuntimeNamePrecedence exercises koryph-v8u.3's runtime:<name>
+// label grammar: bead label > project default_runtime > "claude".
+func TestResolveRuntimeNamePrecedence(t *testing.T) {
+	cases := []struct {
+		name           string
+		labels         []string
+		defaultRuntime string
+		wantName       string
+		wantRationale  string
+	}{
+		{
+			name:          "no label, no default -> claude",
+			wantName:      "claude",
+			wantRationale: "default",
+		},
+		{
+			name:           "project default_runtime used absent a label",
+			defaultRuntime: "codex",
+			wantName:       "codex",
+			wantRationale:  "project default_runtime codex",
+		},
+		{
+			name:           "bead label wins over project default",
+			labels:         []string{"runtime:cursor"},
+			defaultRuntime: "codex",
+			wantName:       "cursor",
+			wantRationale:  "label runtime:cursor",
+		},
+		{
+			name:     "bead label wins with no project default",
+			labels:   []string{"fp:core", "runtime:grok"},
+			wantName: "grok",
+		},
+		{
+			name:     "an empty runtime: label value is ignored",
+			labels:   []string{"runtime:"},
+			wantName: "claude",
+		},
+		{
+			name:     "unrelated labels are ignored",
+			labels:   []string{"fp:core", "model:sonnet"},
+			wantName: "claude",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name, rationale := ResolveRuntimeName(tc.labels, tc.defaultRuntime)
+			if name != tc.wantName {
+				t.Errorf("name = %q, want %q", name, tc.wantName)
+			}
+			if tc.wantRationale != "" && rationale != tc.wantRationale {
+				t.Errorf("rationale = %q, want %q", rationale, tc.wantRationale)
+			}
+		})
+	}
+}
+
+// TestResolveClaudeRuntimeParity proves an explicit Runtime: "claude" resolves
+// byte-for-byte identically to leaving Runtime unset — the compatibility
+// contract every pre-koryph-v8u.3 caller depends on.
+func TestResolveClaudeRuntimeParity(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "koryph-implementer", `---
+name: koryph-implementer
+tier: light
+---
+`)
+	base := Req{Stage: StageImplement, RepoRoot: root}
+	withClaude := base
+	withClaude.Runtime = "claude"
+
+	got1, err1 := Resolve(base)
+	if err1 != nil {
+		t.Fatalf("Resolve(base) error = %v", err1)
+	}
+	got2, err2 := Resolve(withClaude)
+	if err2 != nil {
+		t.Fatalf("Resolve(withClaude) error = %v", err2)
+	}
+	if got1 != got2 {
+		t.Errorf("Resolve(Runtime unset) = %+v, Resolve(Runtime=claude) = %+v; want identical", got1, got2)
+	}
+}
+
+// TestResolveStubRuntimeModelMapRouting proves the persona-tier step
+// (koryph-v8u.10, runtime-namespaced by koryph-v8u.3) resolves through the
+// SELECTED runtime's own ModelMap, not claude's — the mechanism a future
+// non-claude runtime adapter plugs into. The stub is registered into the
+// real process-wide runtime.Default registry under a name unique to this
+// test (Registry.Register is append-only with no Unregister, see its doc,
+// so a shared/reused name would collide across a re-run within the same test
+// binary).
+//
+// The stub deliberately maps "light" to "opus" — the OPPOSITE of claude's own
+// tier light -> haiku (runtime.ClaudeModelMap) — so a pass here can only mean
+// the stub's own map was consulted, not claude's. (The tier vocabulary's
+// final validity check, validTier/AllowedModels, stays claude-shaped per this
+// bead's scope — "Fable allowlist guard stays claude-side" — so the stub's
+// mapped value must itself be one of haiku/sonnet/opus/fable; a real
+// non-claude adapter's own concrete model ids are out of scope here.)
+func TestResolveStubRuntimeModelMapRouting(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "koryph-implementer", `---
+name: koryph-implementer
+tier: light
+---
+`)
+
+	const name = "modelroute-test-stub-modelmap"
+	stub := runtimetest.Stub{StubName: name, Models: runtime.ModelMap{runtime.TierLight: TierOpus}}
+	if err := runtime.Default.Register(stub); err != nil {
+		t.Fatalf("Register(%s): %v", name, err)
+	}
+
+	got, err := Resolve(Req{
+		Stage:    StageImplement,
+		RepoRoot: root,
+		Runtime:  name,
+	})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.Model != TierOpus {
+		t.Errorf("Model = %q, want opus (via the stub runtime's own ModelMap, not claude's haiku)", got.Model)
+	}
+	if !strings.Contains(got.Rationale, "tier light -> opus") {
+		t.Errorf("Rationale = %q, want it to name the stub-mapped model", got.Rationale)
+	}
+}
+
+// TestResolveUnknownRuntimeFailsClosed proves an unregistered runtime name
+// errors at Resolve regardless of which precedence step would otherwise have
+// won (koryph-v8u.3: never silently substitute claude).
+func TestResolveUnknownRuntimeFailsClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		req  Req
+	}{
+		{
+			name: "unknown runtime with an explicit --model set",
+			req:  Req{Stage: StageImplement, ExplicitModel: TierOpus, Runtime: "totally-unregistered-runtime"},
+		},
+		{
+			name: "unknown runtime falling through to stage default",
+			req:  Req{Stage: StageImplement, Runtime: "totally-unregistered-runtime"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Resolve(tc.req)
+			if err == nil {
+				t.Fatalf("expected an error for an unregistered runtime, got nil")
+			}
+			if !strings.Contains(err.Error(), "unknown runtime") {
+				t.Errorf("error = %q, want it to name the unknown runtime", err.Error())
+			}
+		})
+	}
+}
