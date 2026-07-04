@@ -96,22 +96,13 @@ func (r *runner) releaseGlobalSlot(beadID string) {
 // reportRateLimit informs the machine-wide governor of a rate-limit/overload
 // signal from a dead agent's stream (koryph-2im.4): every engine on the host
 // shares the same AIMD backoff state, so a rate limit observed by any one of
-// them halves the cap for all of them. Fails open like every other governor
-// helper — a stuck governor must never wedge completion handling.
-//
-// KNOWN GAP (koryph-2im.11): this reports r.opts.ProjectID with bead="" —
-// the caller (poll.go's requeueRateLimited) has the dying slot's real bead id
-// (sl.PhaseID) in scope but poll.go was out of bounds for this change (a
-// parallel agent owns the engine loop). Ideally this signature becomes
-// reportRateLimit(beadID string) and the one call site passes sl.PhaseID —
-// see internal/govern/aimd.go's applyRateLimit doc comment for how the
-// project-only fallback stays conservative (spurious re-open, never spurious
-// close) in the meantime; burst-scaled-decrease distinct-slot counting is
-// what's left under-precise (project-level rather than per-bead) until that
-// one-line change lands.
-func (r *runner) reportRateLimit() {
+// them halves the cap for all of them. The bead id makes burst detection
+// count distinct slots and lets half-open probe reports match exactly
+// (koryph-2im.11). Fails open like every other governor helper — a stuck
+// governor must never wedge completion handling.
+func (r *runner) reportRateLimit(beadID string) {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.ReportRateLimit(r.opts.ProjectID, "", time.Now())
+	_ = r.gov.ReportRateLimit(r.opts.ProjectID, beadID, time.Now())
 }

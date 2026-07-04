@@ -296,7 +296,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 // the independent RateLimitRequeues budget. I5 holds: this never touches a
 // running agent, only gates the NEXT dispatch's admission via the governor.
 func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
-	r.reportRateLimit()
+	r.reportRateLimit(sl.PhaseID)
 
 	if sl.RateLimitRequeues >= rateLimitedRequeueBudget {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
