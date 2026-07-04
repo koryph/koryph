@@ -171,6 +171,25 @@ koryph review-pr --project <id> <pr> --approve --body "Looks good"
 koryph review-pr --project <id> --all    # analyze every open PR
 ```
 
+### Update a PR branch — always REBASE, never the merge button
+
+When asked to update/refresh a PR branch against its base ("update the
+branch", "bring the PR up to date"), NEVER use GitHub's Update-branch
+button semantics (REST `update-branch`, or the button's default): those
+mint a server-side merge commit with a non-conventional, unsigned-off
+subject. Always rebase via GraphQL — commit messages, DCO sign-offs, and
+conventional subjects survive verbatim:
+
+```sh
+gh api graphql -f query='mutation($id: ID!) {
+  updatePullRequestBranch(input: {pullRequestId: $id, updateMethod: REBASE}) {
+    pullRequest { number }
+  }
+}' -f id=$(gh pr view <n> --repo <owner/repo> --json id -q .id)
+```
+
+(The REST endpoint only supports merge — GraphQL is the only rebase path.)
+
 ---
 
 ## DRAIN — finish in-flight work, then stop
