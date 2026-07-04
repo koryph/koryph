@@ -30,6 +30,7 @@ sequenceDiagram
     participant RP as release-please
     participant Repo as main branch
     participant GR as GoReleaser (same run)
+    participant SLSA as provenance job (same run)
     Dev->>Repo: merge PRs (Conventional Commits)
     Repo->>RP: push to main
     RP->>RP: compute next version from commits
@@ -40,9 +41,11 @@ sequenceDiagram
     RP-->>GR: release_created=true, tag_name=v<Engine>
     GR->>Repo: checkout tag_name, fetch-depth 0
     GR->>Repo: build, sign, SBOM, attach assets to the release
+    GR-->>SLSA: checksums-hash (base64 sha256 of dist/checksums.txt)
+    SLSA->>Repo: attach checksums.txt.intoto.jsonl to the release
 ```
 
-Both jobs live in one workflow file: `.github/workflows/release-please.yml`.
+All three jobs live in one workflow file: `.github/workflows/release-please.yml`.
 
 ### Why one workflow, not two
 
@@ -128,7 +131,9 @@ commits; release-please's own commits are covered separately below.
    `release_created`) checks out that tag and publishes build artifacts —
    binaries, `checksums.txt`, a cosign `--bundle` signature, and per-archive
    SPDX SBOMs — onto the release release-please just created.
-6. Nothing left to do. Verify the release looks right on the Releases page.
+6. Still in the same run, the `provenance` job attaches a SLSA Build L3
+   attestation (`checksums.txt.intoto.jsonl`) covering `checksums.txt`.
+7. Nothing left to do. Verify the release looks right on the Releases page.
 
 `make release-snapshot` still works locally for a dry run — it forces
 `GORELEASER_CURRENT_TAG` unset, so the version-alignment `before:` hook is
@@ -187,6 +192,48 @@ Every release archive gets a companion SPDX SBOM,
 run (`sboms:` in `.goreleaser.yaml`). `make sbom` produces the equivalent
 locally (module-wide, not per-archive) for ad hoc scanning outside a release.
 
+### SLSA Build L3 provenance
+
+A third job in `.github/workflows/release-please.yml`, `provenance`, calls
+[`slsa-framework/slsa-github-generator`](https://github.com/slsa-framework/slsa-github-generator)'s
+**generic** generator (`generator_generic_slsa3.yml`, pinned to `@v2.1.0` —
+reusable workflows from this repo must be referenced by tag, not a commit
+SHA, per its own documented requirement) as a reusable workflow. It runs
+after `goreleaser`, consuming a base64-encoded sha256 hash of
+`dist/checksums.txt` that the `goreleaser` job exports as a job output
+(`checksums-hash`). Because this whole pipeline is triggered by a push to
+`main` rather than a tag push, the generator is pointed at the release via
+`upload-tag-name: ${{ needs.release-please.outputs.tag_name }}` instead of
+relying on `github.ref` — the documented mechanism for uploading to a
+release from a non-tag-triggered run. The generic builder does not build
+anything itself; it only attests to the digest it is given, so it composes
+cleanly with GoReleaser (the Go-native SLSA builder, by contrast, replaces
+the build step and cannot be used here).
+
+The provenance attestation is uploaded to the release as
+`checksums.txt.intoto.jsonl`. Since `checksums.txt` already carries the
+sha256 of every binary and archive in the release, attesting to that one
+file's provenance extends to the rest of the release's assets by the same
+"checksum match" chain the cosign verification above relies on.
+
+To verify a release artifact's provenance with
+[`slsa-verifier`](https://github.com/slsa-framework/slsa-verifier)
+(`go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@v2.7.1`,
+or download a prebuilt binary from its releases page):
+
+```sh
+# Download checksums.txt and checksums.txt.intoto.jsonl from the release first.
+slsa-verifier verify-artifact checksums.txt \
+  --provenance-path checksums.txt.intoto.jsonl \
+  --source-uri github.com/koryph/koryph \
+  --source-tag v0.4.0   # the release tag being verified
+```
+
+A `PASSED: Verified SLSA provenance` result proves `checksums.txt` (and, by
+the `sha256sum -c` chain above, every binary it lists) was built by this
+repository's GitHub Actions workflow at the claimed tag — Build Level 3,
+non-forgeable provenance, not just a keyless signature.
+
 ## First-release checklist (validate before relying on this pipeline)
 
 The Actions run itself cannot be exercised locally — `goreleaser check` and
@@ -235,6 +282,15 @@ this repo:
       all attached.
 - [ ] **cosign verification works end-to-end** using the commands above
       against a real published artifact (Rekor entry included).
+- [ ] **The `provenance` job runs and attaches `checksums.txt.intoto.jsonl`
+      to the same release.** Confirm it is not skipped, that
+      `needs.goreleaser.outputs.checksums-hash` was non-empty going in (i.e.
+      the `dist/checksums.txt` hash step actually ran before it), and that
+      `upload-tag-name` correctly targeted release-please's tag from this
+      push-triggered (not tag-triggered) run.
+- [ ] **`slsa-verifier verify-artifact` passes end-to-end** against
+      `checksums.txt` and its downloaded `checksums.txt.intoto.jsonl` from a
+      real published release, using the command above.
 - [ ] Only after all of the above hold: consider the manual `release.yml`
       flow fully retired (it already is, in this change — this checklist is
       what makes that removal safe rather than aspirational).

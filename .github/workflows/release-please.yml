@@ -17,6 +17,14 @@
 # run (GoReleaser >=2.16 immutable-release requirement) and there is only one
 # release-writer at a time.
 #
+# A THIRD JOB, `provenance`, calls slsa-framework/slsa-github-generator's
+# generic reusable workflow to attach SLSA Build L3 provenance covering
+# dist/checksums.txt (the goreleaser job exports its base64-encoded sha256
+# hash as a job output for this). It has to run in this same workflow run
+# for the same immutable-release reason as GoReleaser, and it targets the
+# release via `upload-tag-name` (not `github.ref`) because this workflow is
+# push-to-main-triggered, not tag-triggered.
+#
 # See docs/developer-guide/releasing.md for the full flow and the
 # first-release checklist (this pipeline replaces the old tag-triggered
 # release.yml, retired in the same change that added this file).
@@ -48,6 +56,8 @@ jobs:
     permissions:
       contents: write # upload release artifacts
       id-token: write # sigstore keyless OIDC
+    outputs:
+      checksums-hash: ${{ steps.checksums-hash.outputs.hashes }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -70,3 +80,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COSIGN_YES: "true"
+      - name: Export dist/checksums.txt hash for SLSA provenance
+        id: checksums-hash
+        run: echo "hashes=$(sha256sum dist/checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    name: slsa-provenance (generic generator, same workflow run)
+    needs: [release-please, goreleaser]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      actions: read # generator needs to detect the GitHub Actions run environment
+      id-token: write # sigstore keyless OIDC provenance signing
+      contents: write # upload provenance to the release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.goreleaser.outputs.checksums-hash }}"
+      upload-assets: true
+      upload-tag-name: ${{ needs.release-please.outputs.tag_name }}
+      provenance-name: checksums.txt.intoto.jsonl
