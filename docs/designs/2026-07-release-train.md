@@ -98,8 +98,15 @@ orgs you don't own), and one private bot per owned org.
   **vault layer** (the same provider mechanism that serves the SSH signing
   key — protonpass/onepassword/file/command, `internal/signing`'s
   templates); `~/.koryph/bots/<name>.json` (0600) holds only a pointer
-  `{name, app_id, slug, owner, public, provider, key_ref}`. Plaintext PEM
-  on disk is the no-vault fallback only, loudly warned and doctor-nagged.
+  `{name, app_id, slug, owner, public, provider, key_ref}`. No vault is not
+  a blocker: the fallback ladder is keychain (macOS Keychain via the
+  `security` provider) > encrypted-file (native passphrase encryption,
+  age/scrypt, passphrase required) > plaintext `file` only on explicit
+  `--plaintext`. Tone rule: an encrypted-at-rest key is the same posture as
+  a passphrase-protected `~/.ssh` key — info note, not a scare warning;
+  doctor WARNs only on truly unencrypted key material. (Providers ship in
+  koryph-fr3.6; the SSH signing analog is `ssh-keygen` with a required
+  passphrase + `ssh-add --apple-use-keychain` on darwin.)
   Keys resolve at use time (`ResolveKey`), the serve-on-demand model
   signing already uses. (Actions secrets still receive an operational PEM
   copy at attach — inherent to `create-github-app-token`; the vault
