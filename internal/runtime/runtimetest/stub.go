@@ -39,6 +39,17 @@ type Stub struct {
 	Version string
 	// AuthErr is returned verbatim by AuthCheck (nil means "authenticated").
 	AuthErr error
+	// VerifyErr, when non-nil, is returned verbatim by VerifyIdentity (koryph
+	// -v8u.5) — the knob a test uses to simulate a failing fail-closed
+	// identity gate (e.g. "not logged in", "identity mismatch") independently
+	// of AuthErr, mirroring how claude's VerifyIdentity/AuthCheck are two
+	// distinct real checks (see runtime.Runtime.VerifyIdentity's doc).
+	VerifyErr error
+	// VerifiedGot is the identity VerifyIdentity returns on success (when
+	// VerifyErr is nil); "" defaults to echoing back the caller's expected
+	// identity, so a test that only cares about the fail-closed path need not
+	// set this.
+	VerifiedGot string
 	// Caps is returned verbatim by Capabilities.
 	Caps runtime.Capabilities
 	// Instruction is returned by InstructionFile; defaults to "AGENTS.md"
@@ -74,6 +85,17 @@ func (s Stub) Detect(_ context.Context) (bool, string) {
 // AuthCheck implements runtime.Runtime.
 func (s Stub) AuthCheck(_ context.Context, _ runtime.Profile) error {
 	return s.AuthErr
+}
+
+// VerifyIdentity implements runtime.Runtime (koryph-v8u.5).
+func (s Stub) VerifyIdentity(_ context.Context, _ runtime.Profile, expected string) (string, error) {
+	if s.VerifyErr != nil {
+		return "", s.VerifyErr
+	}
+	if s.VerifiedGot != "" {
+		return s.VerifiedGot, nil
+	}
+	return expected, nil
 }
 
 // Capabilities implements runtime.Runtime.

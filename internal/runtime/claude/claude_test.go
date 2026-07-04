@@ -4,6 +4,9 @@
 package claude
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -178,7 +181,11 @@ func TestCommandEnvPersonalProfileOmitsConfigDir(t *testing.T) {
 }
 
 // TestCapabilitiesAllTrueExceptSandbox pins the capability matrix so a future
-// change to this adapter must consciously edit this test.
+// change to this adapter must consciously edit this test. UsageSource was
+// added true (koryph-v8u.5): claude has a real ccusage/transcript usage
+// source, so the governor's fail-closed enforcement stays unaffected by the
+// new capability-gated advisory path (which is for a future runtime without
+// one).
 func TestCapabilitiesAllTrueExceptSandbox(t *testing.T) {
 	got := (Claude{}).Capabilities()
 	want := runtime.Capabilities{
@@ -190,6 +197,7 @@ func TestCapabilitiesAllTrueExceptSandbox(t *testing.T) {
 		BudgetFlag:  true,
 		Sandbox:     false,
 		ModelSelect: true,
+		UsageSource: true,
 	}
 	if got != want {
 		t.Errorf("Capabilities() = %+v, want %+v", got, want)
@@ -221,5 +229,104 @@ func TestDefaultRegistryHasClaude(t *testing.T) {
 	}
 	if rt.Name() != "claude" {
 		t.Errorf("registered runtime Name() = %q, want claude", rt.Name())
+	}
+}
+
+// writeClaudeConfig writes a minimal .claude.json fixture and returns a
+// runtime.Profile pointing ConfigDir at it (koryph-v8u.5's VerifyIdentity
+// tests mirror internal/account's own TestVerify/TestVerifyExpected fixture
+// shape, just through the Runtime seam).
+func writeClaudeConfig(t *testing.T, email string) runtime.Profile {
+	t.Helper()
+	dir := t.TempDir()
+	body := `{"oauthAccount":{"emailAddress":"` + email + `","organizationName":"Test Org"}}`
+	if err := os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return runtime.Profile{Name: "work", ConfigDir: dir}
+}
+
+// TestVerifyIdentity proves VerifyIdentity is a real, fail-closed identity
+// gate reachable through the Runtime seam (koryph-v8u.5) — not a stub that
+// always succeeds — by exercising every account.VerifyExpected failure shape
+// (mismatch, missing file, empty expected) through Claude{}.VerifyIdentity
+// instead of calling account directly, plus the success path returning the
+// confirmed identity.
+func TestVerifyIdentity(t *testing.T) {
+	ctx := context.Background()
+	rt := Claude{}
+
+	t.Run("match, case-insensitive", func(t *testing.T) {
+		p := writeClaudeConfig(t, "Owner@Example.Com")
+		got, err := rt.VerifyIdentity(ctx, p, "owner@example.com")
+		if err != nil {
+			t.Fatalf("VerifyIdentity: %v", err)
+		}
+		if got != "Owner@Example.Com" {
+			t.Errorf("got = %q, want the logged-in email verbatim", got)
+		}
+	})
+
+	t.Run("mismatch fails closed", func(t *testing.T) {
+		p := writeClaudeConfig(t, "owner@example.com")
+		if _, err := rt.VerifyIdentity(ctx, p, "someone-else@example.com"); err == nil {
+			t.Fatal("VerifyIdentity succeeded on mismatched identity; must fail closed")
+		} else if !strings.Contains(err.Error(), "account mismatch") {
+			t.Errorf("err = %v, want account mismatch", err)
+		}
+	})
+
+	t.Run("missing config fails closed", func(t *testing.T) {
+		p := runtime.Profile{Name: "work", ConfigDir: filepath.Join(t.TempDir(), "nope")}
+		if _, err := rt.VerifyIdentity(ctx, p, "owner@example.com"); err == nil {
+			t.Fatal("VerifyIdentity succeeded on a missing config dir; must fail closed")
+		}
+	})
+
+	t.Run("empty expected fails closed", func(t *testing.T) {
+		p := writeClaudeConfig(t, "owner@example.com")
+		if _, err := rt.VerifyIdentity(ctx, p, ""); err == nil {
+			t.Fatal("VerifyIdentity succeeded with an empty expected identity; must fail closed")
+		}
+	})
+}
+
+// TestCommandEnvAllowlistAndSigningSocket proves the koryph-3vp.2 env
+// allowlist and scoped SSH_AUTH_SOCK survive through the Runtime.Command path
+// unweakened (koryph-v8u.5's compatibility requirement): a polluted parent
+// process env leaks nothing except an explicitly declared EnvPassthrough
+// var, and only the koryph-managed signing socket (never the operator's
+// ambient one) is injected.
+func TestCommandEnvAllowlistAndSigningSocket(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_should_not_leak_through_command")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/operator-ambient-agent.sock")
+	t.Setenv("KORYPH_ALLOWED_VAR", "forwarded-by-prefix")
+	t.Setenv("MY_PROJECT_VAR", "forwarded-by-passthrough")
+
+	spec := goldenSpec()
+	spec.SSHAuthSock = "/koryph/signing/agent.sock"
+	spec.EnvPassthrough = []string{"MY_PROJECT_VAR"}
+
+	rt := Claude{Bin: "claude"}
+	_, env, err := rt.Command(spec)
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	joined := strings.Join(env, "\n")
+
+	if strings.Contains(joined, "ghp_should_not_leak_through_command") {
+		t.Errorf("GH_TOKEN leaked through Command's env:\n%s", joined)
+	}
+	if strings.Contains(joined, "/tmp/operator-ambient-agent.sock") {
+		t.Errorf("operator's ambient SSH_AUTH_SOCK leaked through Command's env:\n%s", joined)
+	}
+	if !strings.Contains(joined, "SSH_AUTH_SOCK=/koryph/signing/agent.sock") {
+		t.Errorf("scoped signing socket missing from Command's env:\n%s", joined)
+	}
+	if !strings.Contains(joined, "KORYPH_ALLOWED_VAR=forwarded-by-prefix") {
+		t.Errorf("KORYPH_ prefix passthrough missing from Command's env:\n%s", joined)
+	}
+	if !strings.Contains(joined, "MY_PROJECT_VAR=forwarded-by-passthrough") {
+		t.Errorf("registry EnvPassthrough entry missing from Command's env:\n%s", joined)
 	}
 }

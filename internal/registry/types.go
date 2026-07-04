@@ -93,8 +93,65 @@ type Record struct {
 	// default so no secret leaks without an explicit opt-in.
 	EnvPassthrough []string `json:"env_passthrough,omitempty"`
 
+	// RuntimeAccounts holds PER-RUNTIME account profiles, keyed by
+	// runtime.Runtime.Name() (koryph-v8u.5): a project that dispatches
+	// through more than one agent runtime can give each its own config-dir/
+	// identity/env, instead of every runtime sharing the flat
+	// AccountProfile/ClaudeConfigDir/ExpectedIdentity/EnvPassthrough fields
+	// above. Additive JSON — nil/absent on every record written before this
+	// bead — so it is PURELY OPT-IN; AccountFor's fallback is what makes an
+	// absent entry (or an absent map entirely) behave exactly as those flat
+	// fields already did. This is deliberately separate from project
+	// config's default_runtime/runtimes block (koryph-v8u.3's territory,
+	// runtime SELECTION) — this map only carries the account/identity data
+	// for a runtime once one is selected.
+	RuntimeAccounts map[string]RuntimeAccount `json:"runtime_accounts,omitempty"`
+
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+// RuntimeAccount is one runtime's account-scoped identity/env configuration
+// (koryph-v8u.5) — the runtime-scoped counterpart of Record's flat
+// AccountProfile/ClaudeConfigDir/ExpectedIdentity/EnvPassthrough fields. See
+// Record.RuntimeAccounts and AccountFor for how a missing entry falls back to
+// those flat fields.
+type RuntimeAccount struct {
+	// ConfigDir is this runtime's config directory for the profile (e.g.
+	// CLAUDE_CONFIG_DIR for claude, CODEX_HOME for a future codex adapter);
+	// "" means the runtime's own default/personal account.
+	ConfigDir string `json:"config_dir,omitempty"`
+	// ExpectedIdentity is the login identity that MUST match at dispatch
+	// (fail closed via runtime.Runtime.VerifyIdentity) — e.g. claude's
+	// oauthAccount.emailAddress.
+	ExpectedIdentity string `json:"expected_identity,omitempty"`
+	// APIKeyEnvVar names the env var holding this runtime's API key (never
+	// the key itself) — the per-runtime counterpart of Record.APIKeyEnvVar,
+	// for a runtime whose billing/auth genuinely differs from claude's.
+	APIKeyEnvVar string `json:"api_key_env_var,omitempty"`
+	// EnvPassthrough overrides Record.EnvPassthrough for this runtime only;
+	// nil means "use Record.EnvPassthrough" (see AccountFor).
+	EnvPassthrough []string `json:"env_passthrough,omitempty"`
+}
+
+// AccountFor resolves the effective account profile for the named runtime
+// (koryph-v8u.5): an explicit RuntimeAccounts[name] entry wins; otherwise —
+// including for every record written before this bead, which has no
+// RuntimeAccounts block at all — the flat AccountProfile/ClaudeConfigDir/
+// ExpectedIdentity/EnvPassthrough fields are synthesized as a RuntimeAccount.
+// This is what makes RuntimeAccounts fully additive: "claude" (today's only
+// real runtime) resolves identically whether or not a project has ever
+// touched runtime_accounts.
+func (r *Record) AccountFor(name string) RuntimeAccount {
+	if ra, ok := r.RuntimeAccounts[name]; ok {
+		return ra
+	}
+	return RuntimeAccount{
+		ConfigDir:        r.ClaudeConfigDir,
+		ExpectedIdentity: r.ExpectedIdentity,
+		APIKeyEnvVar:     r.APIKeyEnvVar,
+		EnvPassthrough:   r.EnvPassthrough,
+	}
 }
 
 // Event is one append-only audit entry (audit.jsonl).

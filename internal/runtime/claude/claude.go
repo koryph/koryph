@@ -89,21 +89,42 @@ func (c Claude) Detect(ctx context.Context) (present bool, version string) {
 // exactly as account.Verify does today — the same fail-closed,
 // no-quota-spent check internal/account already performs, just reachable
 // through the Runtime seam. It intentionally does NOT compare against an
-// expected identity (unlike account.VerifyExpected): Runtime.AuthCheck's
-// signature carries only a Profile, not an expected-identity string, so
-// dispatch-time identity enforcement stays on account.VerifyExpected
-// (internal/dispatch/cli.go still calls it directly) — AuthCheck is the
-// cheaper, registry-facing "is anyone logged in here" probe (koryph doctor,
-// onboarding), not a drop-in replacement for dispatch's fail-closed gate.
+// expected identity (unlike VerifyIdentity/account.VerifyExpected):
+// Runtime.AuthCheck's signature carries only a Profile, not an
+// expected-identity string, so dispatch-time identity enforcement uses
+// VerifyIdentity (koryph-v8u.5; internal/dispatch, internal/stage, and
+// internal/onboard all call it) — AuthCheck stays the cheaper,
+// registry-facing "is anyone logged in here" probe (koryph doctor), not a
+// drop-in replacement for the fail-closed dispatch gate.
 func (c Claude) AuthCheck(ctx context.Context, profile runtime.Profile) error {
 	_, err := account.Verify(ctx, toAccountProfile(profile))
 	return err
 }
 
+// VerifyIdentity implements runtime.Runtime (koryph-v8u.5) by delegating,
+// unchanged, to account.VerifyExpected — the SAME fail-closed identity-plus-
+// billing gate internal/dispatch, internal/stage, internal/onboard, and the
+// engine's run-level check used to call directly. Moving those call sites
+// onto this seam is exactly what koryph-v8u.5 does; this method holds no new
+// logic of its own, only the account.Profile/account.BillingMode conversion
+// every other Claude method here already performs.
+func (c Claude) VerifyIdentity(ctx context.Context, profile runtime.Profile, expected string) (string, error) {
+	id, err := account.VerifyExpected(ctx, toAccountProfile(profile), expected)
+	if err != nil {
+		return "", err
+	}
+	return id.Email, nil
+}
+
 // Capabilities implements runtime.Runtime. Every flag Claude's CLI actually
 // supports today is true; Sandbox is false because Claude has no filesystem/
 // network sandbox flag of its own (worktree isolation stands in — see the
-// epic's design doc).
+// epic's design doc). UsageSource is true: Claude has a real, fail-closed
+// usage-measurement source (ccusage / local *.jsonl transcripts, see
+// internal/quota), so the governor's existing warn/drain/stop enforcement
+// stays fully in force for this runtime (koryph-v8u.5) — the
+// advisory-when-no-usage-source path this flag gates is for a FUTURE runtime
+// without one, never for claude.
 func (c Claude) Capabilities() runtime.Capabilities {
 	return runtime.Capabilities{
 		JSONStream:  true,
@@ -114,6 +135,7 @@ func (c Claude) Capabilities() runtime.Capabilities {
 		BudgetFlag:  true,
 		Sandbox:     false,
 		ModelSelect: true,
+		UsageSource: true,
 	}
 }
 

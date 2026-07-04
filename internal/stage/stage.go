@@ -15,6 +15,7 @@ import (
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
 )
 
@@ -47,8 +48,12 @@ func Run(ctx context.Context, o Opts) Result {
 	}
 
 	// Identity fail-closed, BEFORE any exec — belt-and-braces with the
-	// implementer dispatch that already verified this profile.
-	if _, err := account.VerifyExpected(ctx, o.Profile, o.ExpectedIdentity); err != nil {
+	// implementer dispatch that already verified this profile. Reached
+	// through the runtime seam (koryph-v8u.5): claude's VerifyIdentity
+	// delegates to account.VerifyExpected, unchanged — see
+	// runtime.Runtime.VerifyIdentity's doc.
+	rt := claude.New(bin)
+	if _, err := rt.VerifyIdentity(ctx, runtime.Profile{Name: o.Profile.Name, ConfigDir: o.Profile.ConfigDir}, o.ExpectedIdentity); err != nil {
 		return Result{Note: "identity: " + err.Error()}
 	}
 	if !o.Billing.Valid() {

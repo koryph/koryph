@@ -62,6 +62,32 @@ type Runtime interface {
 	// shape) is an error, never a silent pass.
 	AuthCheck(ctx context.Context, profile Profile) error
 
+	// VerifyIdentity is AuthCheck's stronger sibling: it confirms the profile
+	// is authenticated AND that its logged-in identity matches expected,
+	// case-insensitively (koryph-v8u.5). This is the fail-closed,
+	// BEFORE-any-state-is-touched dispatch gate — internal/dispatch,
+	// internal/stage, internal/onboard, and the engine's run-level check all
+	// call this instead of reaching into internal/account directly (as they
+	// did before this bead). got is the confirmed identity on success (e.g.
+	// the oauthAccount email); any error — unreadable/missing config,
+	// unparseable shape, an empty expected identity, or a mismatch — is
+	// non-nil and fail-closed, mirroring AuthCheck's own contract. A caller
+	// that only needs "is anyone logged in" without an expected identity to
+	// compare against should use AuthCheck instead.
+	//
+	// Per-adapter shape (only claude is implemented as of this bead; the rest
+	// are documented here so a future adapter has a stated contract to meet):
+	//   - claude: reads Profile.ConfigDir's .claude.json, compares
+	//     oauthAccount.emailAddress case-insensitively against expected (see
+	//     internal/account.VerifyExpected, which this delegates to).
+	//   - codex (future, koryph-v8u.6): CODEX_HOME/auth.json's account
+	//     identity, once that adapter exists.
+	//   - a pure API-key runtime (future): "verified" reduces to "the
+	//     configured key env var is non-empty and non-placeholder"; expected
+	//     may name the env var itself rather than an email, since there is no
+	//     login identity to compare.
+	VerifyIdentity(ctx context.Context, profile Profile, expected string) (got string, err error)
+
 	// Capabilities reports which optional CLI features this runtime
 	// supports, so the engine can gate spec fields and behavior generically
 	// (see Capabilities' own doc). The returned value is treated as static
@@ -73,15 +99,35 @@ type Runtime interface {
 	// Command translates a runtime-neutral DispatchSpec into this runtime's
 	// concrete argv and env, for the caller to exec (or embed in an
 	// inspectable launch.sh, as internal/dispatch/cli.go does today). argv
-	// is the full command line INCLUDING argv[0] (the binary name/path);
-	// env is a set of "KEY=VALUE" strings to be layered onto (not replacing)
-	// the process's base environment — see AccountEnv for the
-	// account/profile-scoped subset of env. Command returns an error when
-	// the spec requests a capability this runtime does not support (e.g.
-	// ResumeSessionID set but Capabilities().Resume is false) rather than
-	// silently dropping the field — callers should gate unsupported fields
-	// before calling Command when a soft degrade is preferred over a hard
-	// error.
+	// is the full command line INCLUDING argv[0] (the binary name/path).
+	//
+	// env is the COMPLETE child environment — never a fragment layered onto
+	// the caller's own process env, and never the ambient environment plus
+	// additions. This is a security contract, not merely a claude
+	// implementation detail (koryph-3vp.2, generalized to every adapter by
+	// koryph-v8u.5): a dispatched agent runs untrusted bead text under a
+	// permissive/full-auto flag, so it must inherit ONLY an explicit
+	// ALLOWLIST of credential-free vars (PATH/HOME/locale/koryph contract
+	// vars/the registry's declared EnvPassthrough escape hatch — never a
+	// blanket forward of the operator's shell), with account/billing/signing
+	// values injected explicitly on top: the resolved account's config-dir
+	// selector (see AccountEnv), the API key ONLY when DispatchSpec.Billing
+	// is BillingAPIKey, and DispatchSpec.SSHAuthSock (the koryph-managed,
+	// signing-key-only scoped socket) as SSH_AUTH_SOCK — the operator's own
+	// ambient SSH_AUTH_SOCK (and whatever other keys it holds) must never
+	// reach the agent. Every Runtime.Command implementation — not just
+	// claude's — must build env this way; internal/account.ChildEnv is
+	// claude's concrete implementation of this contract (which the claude
+	// adapter delegates to), and a future adapter without an
+	// internal/account-shaped config is expected to reimplement the same
+	// allowlist-plus-explicit-injection shape for its own env vars, not fall
+	// back to inheriting the ambient environment.
+	//
+	// Command returns an error when the spec requests a capability this
+	// runtime does not support (e.g. ResumeSessionID set but
+	// Capabilities().Resume is false) rather than silently dropping the
+	// field — callers should gate unsupported fields before calling Command
+	// when a soft degrade is preferred over a hard error.
 	Command(spec DispatchSpec) (argv []string, env []string, err error)
 
 	// ParseEvents adapts this runtime's native streaming output format
@@ -193,4 +239,17 @@ type Capabilities struct {
 	// ModelSelect: the runtime accepts an explicit model/tier selector
 	// (DispatchSpec.Model, e.g. Claude's --model).
 	ModelSelect bool `json:"model_select"`
+	// UsageSource: the runtime has a usage-measurement source koryph can read
+	// fail-closed (Claude: the ccusage CLI / local *.jsonl transcripts — see
+	// internal/quota) — the smallest honest capability the governor gates on
+	// (koryph-v8u.5). true keeps internal/quota's existing fail-closed warn/
+	// drain/stop enforcement (unchanged by this bead) in force; false forces
+	// the governor's billing-guard throttling to ADVISORY for this runtime —
+	// measured on a best-effort basis if some local signal exists, but NEVER
+	// blocking dispatch — until a real per-runtime usage source lands. A
+	// future adapter without a usage source (expected for most non-claude
+	// runtimes, initially) MUST leave this false rather than report a
+	// "source" that silently always reads $0 and would otherwise let the
+	// governor falsely enforce against an unmeasured account.
+	UsageSource bool `json:"usage_source"`
 }

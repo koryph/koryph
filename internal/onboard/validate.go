@@ -10,14 +10,24 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/claude"
 	"github.com/koryph/koryph/internal/sched"
 )
+
+// resolvedRuntimeName is the runtime onboarding's account-identity check
+// resolves to today. Real per-project runtime SELECTION (bead
+// `runtime:<name>` label, project default_runtime/runtimes block) is
+// koryph-v8u.3's job — until it lands, "claude" is every project's only
+// supported runtime, so registry.Record.AccountFor(resolvedRuntimeName)
+// always falls back to the flat AccountProfile/ClaudeConfigDir/
+// ExpectedIdentity fields already validated here (koryph-v8u.5).
+const resolvedRuntimeName = "claude"
 
 // Check levels.
 const (
@@ -64,12 +74,18 @@ func Validate(ctx context.Context, store *registry.Store, projectID string, out 
 		add("git repo", LevelError, "no .git under "+rec.Root)
 	}
 
-	// Account identity (fail closed).
-	prof := account.Profile{Name: rec.AccountProfile, ConfigDir: rec.ClaudeConfigDir}
-	if id, verr := account.VerifyExpected(ctx, prof, rec.ExpectedIdentity); verr != nil {
+	// Account identity (fail closed), through the resolved runtime adapter
+	// (koryph-v8u.5) rather than internal/account directly — see
+	// runtime.Runtime.VerifyIdentity's doc. ra.ConfigDir/ExpectedIdentity
+	// equal rec.ClaudeConfigDir/rec.ExpectedIdentity for every project today
+	// (AccountFor's flat-field fallback), so this check is unchanged
+	// end-to-end.
+	ra := rec.AccountFor(resolvedRuntimeName)
+	rtProf := runtime.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
+	if got, verr := claude.New("").VerifyIdentity(ctx, rtProf, ra.ExpectedIdentity); verr != nil {
 		add("account identity", LevelError, verr.Error())
 	} else {
-		add("account identity", LevelOK, "verified "+id.Email)
+		add("account identity", LevelOK, "verified "+got)
 	}
 
 	// bd availability + ready parse (bd work source only).

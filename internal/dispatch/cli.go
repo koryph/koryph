@@ -25,6 +25,26 @@ import (
 // generated launch.sh, detached from the koryph process.
 type CLIBackend struct {
 	ClaudeBin string // path or name of the claude binary; default "claude"
+
+	// Runtime is the resolved runtime.Runtime adapter Dispatch uses for
+	// identity verification (VerifyIdentity) and argv/env construction
+	// (Command) — koryph-v8u.5. nil (the default, and every existing call
+	// site's zero value) resolves to claude.New(ClaudeBin), preserving every
+	// pre-v8u.5 behavior byte-for-byte. Real per-project/per-bead runtime
+	// SELECTION (bead runtime:<name> label, project default_runtime) is
+	// koryph-v8u.3's job; this field exists so tests (and, eventually, that
+	// selection logic) can inject a non-claude runtime.Runtime without
+	// CLIBackend growing runtime-specific branches of its own.
+	Runtime runtime.Runtime
+}
+
+// resolvedRuntime returns b.Runtime, defaulting to the claude adapter built
+// from b.ClaudeBin. See CLIBackend.Runtime's doc for why this default exists.
+func (b CLIBackend) resolvedRuntime() runtime.Runtime {
+	if b.Runtime != nil {
+		return b.Runtime
+	}
+	return claude.New(b.ClaudeBin)
 }
 
 // statusSeed is the initial status.json contract document.
@@ -40,8 +60,13 @@ type statusSeed struct {
 // verify identity (fail closed, BEFORE any file writes), seed the phase
 // directory, build an inspectable launch.sh, and start it detached.
 func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
+	rt := b.resolvedRuntime()
+
 	// 1. Identity + billing verification — before any filesystem effect.
-	id, err := account.VerifyExpected(ctx, s.Profile, s.ExpectedIdentity)
+	// VerifyIdentity is the runtime-generic seam (koryph-v8u.5); the default
+	// claude adapter delegates to account.VerifyExpected, so this is the
+	// SAME fail-closed check and error text as before this bead.
+	identity, err := rt.VerifyIdentity(ctx, toRuntimeProfile(s.Profile), s.ExpectedIdentity)
 	if err != nil {
 		return Handle{}, err
 	}
@@ -116,7 +141,6 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 	streamPath := filepath.Join(s.PhaseDir, "stream.jsonl")
 	stderrPath := filepath.Join(s.PhaseDir, "stderr.log")
 
-	rt := claude.Claude{Bin: claudeBin}
 	argv, env, err := rt.Command(toRuntimeSpec(s))
 	if err != nil {
 		return Handle{}, fmt.Errorf("dispatch %s: building claude command: %w", s.PhaseID, err)
@@ -191,7 +215,7 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		StreamPath:       streamPath,
 		StderrPath:       stderrPath,
 		StatusPath:       statusPath,
-		VerifiedIdentity: id.Email,
+		VerifiedIdentity: identity,
 	}, nil
 }
 
@@ -199,6 +223,14 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 // single quotes in Dispatch; this is layout, not escaping.
 func sq(v string) string {
 	return "'" + v + "'"
+}
+
+// toRuntimeProfile mirrors account.Profile -> runtime.Profile field-for-field
+// (see runtime.Profile's doc) — the same conversion the claude adapter
+// performs internally, done here so Dispatch's identity check goes through
+// the resolved runtime.Runtime rather than internal/account directly.
+func toRuntimeProfile(p account.Profile) runtime.Profile {
+	return runtime.Profile{Name: p.Name, ConfigDir: p.ConfigDir}
 }
 
 // toRuntimeSpec converts a dispatch.Spec into the runtime-neutral

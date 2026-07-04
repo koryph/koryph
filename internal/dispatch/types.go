@@ -12,7 +12,8 @@
 //
 // Implementation contract (cli.go):
 //   - CLIBackend.Dispatch(ctx, Spec) (Handle, error):
-//     1. account.VerifyExpected — FAIL CLOSED on mismatch/error.
+//     1. The resolved runtime.Runtime's VerifyIdentity (koryph-v8u.5; claude
+//     delegates to account.VerifyExpected) — FAIL CLOSED on mismatch/error.
 //     2. Write prompt.md, seed status.json {state:queued,step:dispatched,
 //     pct:0}, write INBOX.md placeholder.
 //     3. Build launch.sh (inspectable artifact) exec'ing:
