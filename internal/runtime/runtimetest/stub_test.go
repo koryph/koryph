@@ -122,6 +122,35 @@ func TestStubSatisfiesRuntimeEndToEnd(t *testing.T) {
 	}
 }
 
+// TestStubModelMapRoundTrip confirms a Stub configured with a tier map
+// returns it verbatim through the runtime.Runtime interface, and that a
+// Stub with no configured map (the zero value) reports nil rather than
+// panicking or synthesizing a default (koryph-v8u.10: only the claude
+// default map — runtime.ClaudeModelMap — is hardcoded by callers today; a
+// stub adapter must not be mistaken for carrying that default).
+func TestStubModelMapRoundTrip(t *testing.T) {
+	want := runtime.ModelMap{
+		runtime.TierFrontier: "stub-big",
+		runtime.TierStandard: "stub-mid",
+		runtime.TierLight:    "stub-small",
+	}
+	s := Stub{Models: want}
+	var rt runtime.Runtime = s
+	got := rt.ModelMap()
+	if len(got) != len(want) {
+		t.Fatalf("ModelMap() = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("ModelMap()[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+
+	if got := (Stub{}).ModelMap(); got != nil {
+		t.Errorf("zero-value Stub ModelMap() = %v, want nil", got)
+	}
+}
+
 // TestStubCommandRejectsUngatedCapabilities confirms a spec field mapped to
 // a capability the runtime does NOT support is a hard error, matching
 // runtime.Runtime.Command's documented contract.

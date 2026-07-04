@@ -44,6 +44,10 @@ type Stub struct {
 	// Instruction is returned by InstructionFile; defaults to "AGENTS.md"
 	// when empty, matching the epic's cross-runtime convention.
 	Instruction string
+	// Models is returned verbatim by ModelMap (koryph-v8u.10); nil (the
+	// zero value) means "this stub declares no tier mapping", exercising
+	// the same missing-key fallback a real adapter's caller must handle.
+	Models runtime.ModelMap
 }
 
 // Name implements runtime.Runtime.
@@ -83,6 +87,11 @@ func (s Stub) InstructionFile() string {
 		return "AGENTS.md"
 	}
 	return s.Instruction
+}
+
+// ModelMap implements runtime.Runtime.
+func (s Stub) ModelMap() runtime.ModelMap {
+	return s.Models
 }
 
 // AccountEnv implements runtime.Runtime. It mirrors the shape (not the

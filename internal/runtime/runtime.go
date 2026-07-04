@@ -109,6 +109,18 @@ type Runtime interface {
 	// personal account, which may be an empty slice when the runtime needs
 	// no env to select its default account.
 	AccountEnv(profile Profile) []string
+
+	// ModelMap returns this runtime's tier -> concrete-model-id table
+	// (koryph-v8u.10 item 2, additive to the interface landed by
+	// koryph-v8u.1 — no existing method's signature changed). Keys are the
+	// runtime-agnostic tier vocabulary (TierFrontier/TierStandard/TierLight);
+	// a nil or missing-key result means the caller must fall back to the
+	// persona's legacy `model` pin. No real adapter exists yet — today's
+	// engine calls runtime.ClaudeModelMap directly (see
+	// internal/modelroute/route.go) rather than through a Registry lookup;
+	// this method exists so that wiring is a drop-in replacement once
+	// koryph-v8u.2 lands a real Claude adapter and later runtimes.
+	ModelMap() ModelMap
 }
 
 // Profile is the runtime-neutral account identity a Runtime uses to select
