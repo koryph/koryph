@@ -32,6 +32,66 @@ Building from source instead requires Go 1.21+: `go install github.com/koryph/ko
 
 A Homebrew tap is planned; until then the release tarball above is the paved road. Full prerequisites, PATH troubleshooting, and shell completions: [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md). To verify a download's checksum, cosign signature, and SLSA provenance before trusting it: [Supply-chain verification](https://github.com/koryph/koryph/blob/main/docs/user-guide/supply-chain.md).
 
+## Enable koryph in a project (agent runbook)
+
+This section is a complete, executable sequence for an AI agent asked to
+"enable koryph in this project". Execute it top to bottom; every step is
+idempotent and safe to re-run. Ask the human only for the two values in
+step 2 (account profile name, account email).
+
+1. **Preconditions.** `koryph version` works (else run the Install section
+   above); the target is a git repository; the agent runtime CLI is
+   authenticated (e.g. `claude --version`); `bd` (beads) is installed. If the
+   repo has no beads database yet, initialise it first: `bd init` in the repo
+   root (confirm with `bd stats`).
+
+2. **Register the project** (creates the machine-local registry record,
+   scaffolds `koryph.project.json` if missing, and installs the agent
+   scaffolding — `AGENTS.md`, `koryph-*` personas/commands, hooks/rules for
+   runtimes that support them; never clobbers existing files):
+
+   ```sh
+   koryph project add <repo-root> --account <profile> --identity <email>
+   ```
+
+3. **Complete `koryph.project.json`.** Two fields matter most and cannot be
+   guessed by koryph:
+   - `gate`: the project's REAL build/test/lint commands — this is the merge
+     gate; agents' work only lands when these pass.
+   - `area_map`: directory-prefix → area-token map that powers footprint
+     scheduling (parallel agents without merge conflicts). Map each top-level
+     source directory to a short token (`"src/api": "api"`).
+
+4. **Optional hardening** (recommended for repos that ship):
+   - `koryph signing enable --project <id>` — SSH commit signing, key served
+     from a vault (Proton Pass/1Password/macOS Keychain/encrypted file).
+   - `koryph posture apply oss-solo-maintainer --repo <owner>/<repo>` —
+     branch protection + repo security settings; diff-first, shows changes
+     before applying.
+   - `koryph release setup --project <id>` — the release train (versioning,
+     SBOM/signature/provenance releases).
+
+5. **Validate**: `koryph validate <id>` then `koryph doctor` — both must be
+   clean (validate reaches `validated` after the first successful run).
+
+6. **Create dispatch-shaped work.** Tasks live in beads. To be dispatched a
+   bead MUST have type `task`, `bug`, or `chore` (never `epic`/`feature`) and
+   SHOULD carry one `area:<token>` label per area it touches (tokens from
+   `area_map`; unlabeled beads serialize behind everything). Use the
+   installed `/koryph-plan` skill to decompose a design or prompt into a
+   correctly-footprinted, dependency-linked graph, or create directly:
+   `bd create "title" --type task --labels "area:api"`.
+
+7. **First run** (single pass, review + auto-merge):
+
+   ```sh
+   koryph run --project <id> --once --auto-merge --review
+   ```
+
+   Watch with `koryph board` / `koryph roster --project <id>`. Merged work
+   lands on the default branch only after review findings are addressed and
+   the gate is green.
+
 ## Operating contract (read first)
 
 - [CLAUDE.md](https://github.com/koryph/koryph/blob/main/CLAUDE.md): the koryph protocol every agent follows — beads-only task tracking, Conventional Commits + DCO + SSH-signed commits, protected paths, the green gate, and the `refactor-core` self-hosting rule.

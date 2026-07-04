@@ -44,7 +44,7 @@ sequenceDiagram
     TB->>TB: read HEAD commit subject, regex-match release version
     TB->>Repo: create + push tag v<Engine> (idempotent)
     TB->>Repo: goreleaser release --clean (release.draft: true)
-    Note over Repo: DRAFT release created; binaries, checksums,<br/>cosign bundle, SBOMs all uploaded
+    Note over Repo: DRAFT release created — binaries, checksums,<br/>cosign bundle, SBOMs all uploaded
     TB-->>SLSA: checksums-hash (base64 sha256 of dist/checksums.txt)
     SLSA->>SLSA: generate provenance (workflow artifact only)
     SLSA-->>Pub: checksums.txt.intoto.jsonl (workflow artifact)

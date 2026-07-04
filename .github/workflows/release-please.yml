@@ -43,7 +43,7 @@ jobs:
       contents: write
       pull-requests: write
       id-token: write
-      actions: read
+      actions: write # provenance job reads the run env; publish dispatches docs.yml
     uses: ./.github/workflows/release-train.yml
     with:
       release_type: "go"

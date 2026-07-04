@@ -375,6 +375,7 @@ jobs:
     permissions:
       contents: write # upload the provenance asset; publish the release
       pull-requests: write # flip the release PR's autorelease label below
+      actions: write # dispatch the docs workflow after publish (see below)
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: v${{ needs.tag-and-build.outputs.version }}
@@ -405,3 +406,14 @@ jobs:
           fi
           gh pr edit "$pr" --repo "${{ github.repository }}" --remove-label "autorelease: pending" || true
           gh pr edit "$pr" --repo "${{ github.repository }}" --add-label "autorelease: tagged"
+      # The docs site renders the repo's latest release in its header at
+      # BUILD time, so a publish leaves the published book stale. A plain
+      # `release:` trigger on the docs workflow would never fire — the
+      # publish above is done by GITHUB_TOKEN, whose events don't trigger
+      # workflows — but workflow_dispatch is one of the two documented
+      # exceptions, so dispatch it explicitly. Non-fatal: consumer projects
+      # may have no docs workflow.
+      - name: Republish the docs site (release version is baked into the build)
+        run: |
+          gh workflow run docs.yml --repo "${{ github.repository }}" \
+            || echo "no dispatchable docs.yml workflow — skipping docs republish"

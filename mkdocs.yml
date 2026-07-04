@@ -18,6 +18,7 @@ theme:
   features:
     - navigation.tabs
 markdown_extensions:
+  - attr_list
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid

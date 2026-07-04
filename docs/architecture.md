@@ -123,7 +123,7 @@ sequenceDiagram
   loop each wave until drained / quota pause
     E->>Q: governor() → level, calibrated, usage
     Q-->>E: level (OK/Warn/Drain/Stop) + ScaleSlots width
-    E->>G: RefreshDemand; EffectiveCap (static or AIMD)
+    E->>G: RefreshDemand → EffectiveCap (static or AIMD)
     E->>B: adapter.Ready(parent) → frontier
     E->>S: BuildWave(issues, max=min(width,cap), active=in-flight footprints) → items
     opt calibrated & enforcing

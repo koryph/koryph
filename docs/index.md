@@ -14,6 +14,8 @@ SaaS. Nothing to unsubscribe from.
 [**Zero to shipped**](user-guide/zero-to-shipped.md) ·
 [**Download**](https://github.com/koryph/koryph/releases/latest)
 
+[Using an AI agent? Point it at llms.txt →](llms.txt){ .md-button }
+
 ---
 
 ## Why koryph exists
