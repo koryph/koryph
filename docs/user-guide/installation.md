@@ -31,7 +31,34 @@ bd doctor           # no errors
 
 ## Install `koryph`
 
-### Option A — prebuilt binary (recommended; no Go required)
+### Option A — Homebrew (recommended; macOS and Linuxbrew)
+
+```sh
+brew install koryph/tap/koryph
+```
+
+This installs the latest release binary from the
+[koryph/homebrew-tap](https://github.com/koryph/homebrew-tap) cask. No Go
+toolchain is required. Upgrades use the standard brew workflow:
+
+```sh
+brew upgrade koryph/tap/koryph
+```
+
+> **macOS quarantine note:** koryph's binaries are built with
+> `CGO_ENABLED=0` and signed with keyless cosign (Sigstore), but are not
+> Apple-notarised. The cask's post-install hook automatically removes the
+> Gatekeeper quarantine flag so `koryph` runs without a security prompt:
+>
+> ```sh
+> # run automatically by the cask — no action needed
+> xattr -dr com.apple.quarantine /opt/homebrew/bin/koryph
+> ```
+>
+> If you install via the tarball instead (Option B), run that command
+> manually once after placing the binary on your `PATH`.
+
+### Option B — prebuilt binary (no Homebrew, no Go required)
 
 Every release ships signed binaries for macOS and Linux (amd64/arm64) with
 checksums, SBOMs, and SLSA provenance:
@@ -41,18 +68,19 @@ checksums, SBOMs, and SLSA provenance:
 curl -LO https://github.com/koryph/koryph/releases/latest/download/koryph_<version>_darwin_arm64.tar.gz
 tar -xzf koryph_<version>_darwin_arm64.tar.gz
 install -m 0755 koryph ~/.local/bin/   # or any directory on your PATH
+# macOS only — remove Gatekeeper quarantine flag
+xattr -dr com.apple.quarantine ~/.local/bin/koryph
 ```
 
 To verify the download against the release's checksums, signature, and
 provenance, see [Supply-chain verification](supply-chain.md).
 
-A Homebrew tap is planned; until then the release tarball is the paved road.
-
-### Option B — build from source (requires a Go toolchain)
+### Option C — build from source (requires a Go toolchain)
 
 ```sh
 go install github.com/koryph/koryph/cmd/koryph@latest
 ```
+
 
 This fetches the module, compiles it, and places the `koryph` binary in
 `$(go env GOPATH)/bin` (typically `~/go/bin`). Any Go **1.21 or later**

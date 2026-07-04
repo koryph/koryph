@@ -51,7 +51,13 @@ the full [zero-to-shipped journey](https://koryph.build/user-guide/zero-to-shipp
 ## Install
 
 koryph is a single static binary — no Go toolchain or runtime needed.
-Grab your platform's tarball from the
+The simplest path on macOS and Linuxbrew:
+
+```sh
+brew install koryph/tap/koryph
+```
+
+Or grab your platform's tarball from the
 [latest release](https://github.com/koryph/koryph/releases/latest)
 (signed, with checksums, SBOMs, and SLSA provenance), put `koryph` on your
 `PATH`, and run `koryph version`. Building from source works with any Go

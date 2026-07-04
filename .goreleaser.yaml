@@ -106,6 +106,53 @@ changelog:
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
 
+# Homebrew cask published to koryph/homebrew-tap on every real release.
+# Publishing is skipped (gracefully, without failing the release) when
+# HOMEBREW_TAP_GITHUB_TOKEN is absent — see the guard in skip_upload below.
+# CI wires the token via a GitHub App (actions/create-github-app-token,
+# owner=koryph, repositories=homebrew-tap) or falls back to
+# secrets.HOMEBREW_TAP_TOKEN; see the operator note in SUMMARY.md for the
+# exact ready-to-paste step YAML.
+#
+# macOS quarantine: binaries built with CGO_ENABLED=0 and signed via cosign
+# (keyless OIDC) are not Apple-notarised, so Gatekeeper quarantines them on
+# first launch. The post_install hook removes the com.apple.quarantine xattr
+# so `koryph` runs immediately after `brew install` without a security prompt.
+homebrew_casks:
+  - name: koryph
+    repository:
+      owner: koryph
+      name: homebrew-tap
+      # env() returns "" when the var is unset (unlike .Env.VAR which panics).
+      # An empty token falls back to GITHUB_TOKEN; skip_upload: true below
+      # prevents an actual push attempt when neither token is useful.
+      token: '{{ env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "chore: update koryph cask to {{ .Tag }}"
+    homepage: "https://github.com/koryph/koryph"
+    description: "Autonomous AI coding-wave orchestrator"
+    license: "Apache-2.0"
+    # Guard: skip (not fail) when HOMEBREW_TAP_GITHUB_TOKEN is absent.
+    # When the token is present, "auto" skips pre-releases and snapshots.
+    skip_upload: '{{ if eq (env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}auto{{ end }}'
+    # Shell completions: calls `koryph completion bash` / `koryph completion zsh`
+    # at install time and writes the output to Homebrew's completion dirs.
+    generate_completions_from_executable:
+      executable: koryph
+      args: ["completion"]
+      shells: [bash, zsh]
+    hooks:
+      post:
+        # Quarantine removal: unsigned macOS binaries are quarantined by
+        # Gatekeeper on first launch. Removing the xattr here means
+        # `koryph` works immediately after `brew install`.
+        install: |
+          system_command "/usr/bin/xattr",
+            args: ["-dr", "com.apple.quarantine", staged_path],
+            sudo: false
+
 release:
   github:
     owner: koryph

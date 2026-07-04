@@ -30,7 +30,7 @@ koryph version                                    # expect: koryph <version>
 
 Building from source instead requires Go 1.21+: `go install github.com/koryph/koryph/cmd/koryph@latest`.
 
-A Homebrew tap is planned; until then the release tarball above is the paved road. Full prerequisites, PATH troubleshooting, and shell completions: [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md). To verify a download's checksum, cosign signature, and SLSA provenance before trusting it: [Supply-chain verification](https://github.com/koryph/koryph/blob/main/docs/user-guide/supply-chain.md).
+On macOS and Linuxbrew the tap is the simplest path: `brew install koryph/tap/koryph` (no Go required). Full prerequisites, PATH troubleshooting, and shell completions: [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md). To verify a download's checksum, cosign signature, and SLSA provenance before trusting it: [Supply-chain verification](https://github.com/koryph/koryph/blob/main/docs/user-guide/supply-chain.md).
 
 ## Enable koryph in a project (agent runbook)
 
