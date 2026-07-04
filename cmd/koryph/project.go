@@ -24,6 +24,7 @@ func cmdProject(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "project", "onboard and manage registered projects", []subVerb{
 			{"add <root> --account P --identity EMAIL [flags]", "register a project (inspect + register + scaffold)"},
+			{"install-assets (<root> | --all-projects) [agents|commands|rules|all] [--force]", "(re)install koryph assets (agents, commands & rules; normally run by 'add')"},
 			{"list", "list managed projects (id, account, status, root)"},
 			{"show <id>|--project ID", "print one project record as JSON"},
 			{"set-account <id> --profile P --identity EMAIL --reason R", "change a project's account (audited)"},
@@ -34,6 +35,8 @@ func cmdProject(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "add":
 		return cmdProjectAdd(rest, stdout, stderr)
+	case "install-assets":
+		return cmdProjectInstallAssets(rest, stdout, stderr)
 	case "list":
 		return cmdProjectList(rest, stdout, stderr)
 	case "show":

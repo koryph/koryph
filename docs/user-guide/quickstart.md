@@ -47,11 +47,19 @@ stage's persona by name via the `stages`/`tiers` maps in
 
 Installing is idempotent and never clobbers your edits: a file that already
 exists with **identical** content is a silent no-op, and one whose content
-**differs** is left untouched with a warning. Re-run
-`koryph agents install <root> --force` or `koryph commands install <root> --force`
-to overwrite differing files on demand. The point of shipping these commands is
-that koryph semantics are enforced whether you run `koryph` yourself or an
-in-editor prompt drives it for you.
+**differs** is left untouched with a warning. To refresh or repair the assets
+later, the canonical grouped verb installs all three at once:
+
+```sh
+koryph project install-assets <root> [agents|commands|rules|all]   # default: all
+```
+
+Pass a single kind to narrow it, `--force` to overwrite differing files, or
+`--all-projects` to refresh every registered project. The per-kind verbs
+(`koryph agents install <root> --force`, `koryph commands install <root> --force`,
+`koryph rules install <root> --force`) remain as working aliases. The point of
+shipping these commands is that koryph semantics are enforced whether you run
+`koryph` yourself or an in-editor prompt drives it for you.
 
 The `koryph-*` slash commands (grouped under the `koryph-` prefix in the
 editor's command list):

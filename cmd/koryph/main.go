@@ -69,62 +69,24 @@ func usage(w io.Writer) {
 USAGE
   koryph <command> [flags]
 
-ONBOARDING
+New here? Run the top four in order: init -> project add -> validate -> run.
+
+GETTING STARTED
   init                  create ~/.koryph, verify tools on PATH, print next steps (idempotent)
   project add <root> --account <personal|work> --identity <email> [--config-dir DIR] [--id slug] [--name N] [--branch B] [--force]
                         register a project (inspect + register + scaffold adapter + install agents, commands & rules)
-  project list          list managed projects (id, account, status, root)
-  project show <id>|--project ID
-                        print one project record as JSON
-  project set-account <id>|--project ID --profile P --identity EMAIL [--config-dir DIR] --reason "..."
-                        change a project's account (audited; resets validation)
-  onboard <root> [--json]
-                        read-only inventory of a project (mode-5 report)
   validate <project-id>|--project ID
                         run the pre-dispatch gate; promotes registered->migrated on green
-  agents install (<root> | --all-projects) [--force]
-                        install fallback personas into <root>/.claude/agents (idempotent; --force overwrites differing files;
-                        --all-projects refreshes every registered project)
-  commands install (<root> | --all-projects) [--force]
-                        install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; --force overwrites;
-                        --all-projects refreshes every registered project)
-  rules install <root> [--force]
-                        install the hook scripts + merge hook/permission wiring into <root>/.claude/settings.json (additive)
-
-RUN
   run --project ID [--once] [--max N] [--parent EPIC] [--only BEAD] [--budget USD]
       [--default-model M] [--auto-merge] [--direct] [--dry-run] [--resume] [--review]
       [--allow-api-spend] [--allow-unvalidated] [--manual]
                         execute one engine run over a project (--only dispatches a
                         single bead; --budget caps cumulative run cost; --direct
                         skips PRs and merges straight to the default branch)
+
+OPERATE
   intake --project ID [--label triage] [--limit 20] [--dry-run] [--comment]
                         poll a project's labeled GitHub issues into no-dispatch planning beads
-
-OBSERVE / OPERATE
-  doctor [--project ID] [--json] [--fix] [--force]
-                        health check: layout, binaries, registry, governor, zombie leases,
-                        stale demand, quota calibration, vault providers, asset drift;
-                        --project scopes the check to one registered project (adds asset-drift
-                        and stalled-run checks); --fix installs missing assets (project mode)
-                        or removes zombies/stale-demand (global mode); --force (with --fix
-                        --project) also overwrites stale asset files; exits 0/1/2 (ok/warn/err)
-  plan audit --project ID [--json]
-                        read-only corpus conflict analysis: footprint gaps, non-dispatchable
-                        beads, dependency-unordered conflicting pairs, achievable parallel
-                        width; --json for machine-readable output (koryph-replan input)
-  board [--json]        one-line-per-project run overview
-  roster --project ID [--run ID] [--json]
-                        per-bead titled roster grouped by lifecycle: MERGED /
-                        RUNNING / QUEUED / DEFERRED (defaults to latest run)
-  governor [show]       show the machine-wide concurrency cap, active leases, and demand
-  governor set --max-global N
-                        set the machine-wide cap on concurrently running agents
-  status --project ID [--json]
-                        latest-run per-slot detail
-  tail --project ID <phase-id> [-n 40] [--follow]
-                        tail a phase's session.log + stderr.log; --follow streams
-                        new lines and surfaces INBOX nudges live (Ctrl-C to stop)
   nudge --project ID <phase-id> "text"
                         append an operator note to the phase INBOX (+ bd comment)
   stop --project ID <phase-id> [--force] | stop --all [--force]
@@ -152,31 +114,73 @@ OBSERVE / OPERATE
                         --approve/--close register your approval or close the PR
   pr-sync --project ID  reconcile pr-opened beads against live PR state: a PR merged or
                         closed by any means marks its slot merged/blocked (nothing stranded)
-
-SIGNING
   signing setup --project ID --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]
       [--public-key "ssh-ed25519 ..."] [--artifacts]
                         write the vault-backed signing policy into the project adapter
                         (protonpass + no --public-key: auto-discover via the agent)
   signing enable --project ID
                         load the key into the SSH agent + apply repo git config
-  signing status --project ID
-                        mode/provider/agent-ready/repo-config/allowed_signers summary
   signing verify --project ID --branch BR
                         verify branch commit signatures against the default branch (exit 1 on any bad)
   sign blob --project ID <path>
                         cosign sign-blob an artifact via the vault key (writes <path>.sig)
 
-BILLING / METRICS
+OBSERVE
+  board [--json]        one-line-per-project run overview
+  roster --project ID [--run ID] [--json]
+                        per-bead titled roster grouped by lifecycle: MERGED /
+                        RUNNING / QUEUED / DEFERRED (defaults to latest run)
+  status --project ID [--json]
+                        latest-run per-slot detail
+  tail --project ID <phase-id> [-n 40] [--follow]
+                        tail a phase's session.log + stderr.log; --follow streams
+                        new lines and surfaces INBOX nudges live (Ctrl-C to stop)
+  doctor [--project ID] [--json] [--fix] [--force]
+                        health check: layout, binaries, registry, governor, zombie leases,
+                        stale demand, quota calibration, vault providers, asset drift;
+                        --project scopes the check to one registered project (adds asset-drift
+                        and stalled-run checks); --fix installs missing assets (project mode)
+                        or removes zombies/stale-demand (global mode); --force (with --fix
+                        --project) also overwrites stale asset files; exits 0/1/2 (ok/warn/err)
+  plan audit --project ID [--json]
+                        read-only corpus conflict analysis: footprint gaps, non-dispatchable
+                        beads, dependency-unordered conflicting pairs, achievable parallel
+                        width; --json for machine-readable output (koryph-replan input)
+  signing status --project ID
+                        mode/provider/agent-ready/repo-config/allowed_signers summary
+  governor [show]       show the machine-wide concurrency cap, active leases, and demand
   quota [--account A] [--json]
                         per-account governor snapshot (ccusage probe may take up to 40 s)
+  metrics [--project ID] [--json]
+                        burn + reliability rollup across projects
+
+ASSETS  (installed automatically by 'project add'; use these to refresh or repair)
+  project install-assets (<root> | --all-projects) [agents|commands|rules|all] [--force]
+                        (re)install koryph assets — agents, commands & rules (default all);
+                        the canonical grouped verb for the three installers below
+  agents install (<root> | --all-projects) [--force]
+                        install fallback personas into <root>/.claude/agents (idempotent; --force overwrites differing files;
+                        --all-projects refreshes every registered project)
+  commands install (<root> | --all-projects) [--force]
+                        install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; --force overwrites;
+                        --all-projects refreshes every registered project)
+  rules install <root> [--force]
+                        install the hook scripts + merge hook/permission wiring into <root>/.claude/settings.json (additive)
+
+ADVANCED
+  onboard <root> [--json]
+                        read-only inventory of a project (mode-5 report; inspect before 'project add')
+  project list          list managed projects (id, account, status, root)
+  project show <id>|--project ID
+                        print one project record as JSON
+  project set-account <id>|--project ID --profile P --identity EMAIL [--config-dir DIR] --reason "..."
+                        change a project's account (audited; resets validation)
+  governor set --max-global N
+                        set the machine-wide cap on concurrently running agents
   quota calibrate --account A --window <5h|weekly> --observed-usd X --observed-pct Y [--plan-tier T]
                         calibrate a governor ceiling from an observed /usage reading
   batch run --key-env VAR --model TIER --input FILE.jsonl [--max-tokens N] [--cache-prefix] [--out FILE] [--yes]
                         submit a Message Batch (explicit per-token spend)
-  metrics [--project ID] [--json]
-                        burn + reliability rollup across projects
-
   version               print the engine version
 
 SHELL COMPLETION

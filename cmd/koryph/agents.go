@@ -15,7 +15,7 @@ import (
 // cmdAgents dispatches the agents sub-verbs.
 func cmdAgents(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "agents", "manage the fallback koryph personas in a project", []subVerb{
+		parentHelp(stdout, "agents", "manage the fallback koryph personas in a project (normally run by `koryph project add`)", []subVerb{
 			{"install <root> [--force]", "install fallback personas into <root>/.claude/agents"},
 			{"install --all-projects [--force]", "install fallback personas into every registered project"},
 		})
@@ -38,7 +38,8 @@ func cmdAgentsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("agents install", stderr)
 	force := fs.Bool("force", false, "overwrite existing personas whose content differs")
 	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
-	setUsage(fs, stdout, "install fallback personas into <root>/.claude/agents (idempotent)",
+	setUsage(fs, stdout,
+		"install fallback personas into <root>/.claude/agents (idempotent; normally run automatically by `koryph project add`)",
 		"(<root> | --all-projects) [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {

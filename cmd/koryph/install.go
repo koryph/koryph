@@ -11,14 +11,146 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/commands"
+	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/personas"
 	"github.com/koryph/koryph/internal/rules"
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
+// assetTargets is the canonical ordered set of koryph asset kinds that
+// `project install-assets` (and `project add`) install.
+var assetTargets = []string{"agents", "commands", "rules"}
+
+// cmdProjectInstallAssets is the canonical grouped installer: it (re)installs
+// the koryph assets — fallback personas, koryph-* slash commands, and the hook
+// scripts + settings wiring — that `project add` installs automatically. The
+// optional positional target (agents|commands|rules|all, default all) narrows
+// the set; --force overwrites differing files; --all-projects installs into
+// every registered project. The per-asset top-level verbs (agents install,
+// commands install, rules install) remain as working aliases.
+func cmdProjectInstallAssets(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("project install-assets", stderr)
+	force := fs.Bool("force", false, "overwrite existing assets whose content differs")
+	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
+	setUsage(fs, stdout,
+		"(re)install koryph assets (agents, commands & rules) — normally run automatically by `koryph project add`",
+		"(<root> | --all-projects) [agents|commands|rules|all] [--force]")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+
+	// Classify positionals: a known target keyword selects the asset set;
+	// anything else is the <root> path. A path never collides with a keyword.
+	targets := assetTargets
+	rootArg := ""
+	for _, p := range pos {
+		switch p {
+		case "all":
+			targets = assetTargets
+		case "agents", "commands", "rules":
+			targets = []string{p}
+		default:
+			if rootArg != "" {
+				return usageErr(stderr, "project install-assets: unexpected extra argument "+p)
+			}
+			rootArg = p
+		}
+	}
+
+	if *allProjects {
+		if rootArg != "" {
+			return usageErr(stderr, "project install-assets: <root> and --all-projects are mutually exclusive")
+		}
+		return installAssetsAllProjects(stdout, stderr, targets, *force)
+	}
+	if rootArg == "" {
+		return usageErr(stderr, "project install-assets: <root> is required (or use --all-projects)")
+	}
+	root, err := filepath.Abs(rootArg)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	anyFailed := false
+	for _, t := range targets {
+		if ierr := installAssetType(stdout, stderr, root, t, *force); ierr != nil {
+			fmt.Fprintf(stderr, "koryph: %s install failed: %v\n", t, ierr)
+			anyFailed = true
+		}
+	}
+	if anyFailed {
+		return engine.ExitFatal
+	}
+	return 0
+}
+
+// installAssetsAllProjects installs the selected asset targets into every
+// registered project, printing a per-project header. Best-effort: a failure in
+// one project warns and continues; the exit code is 1 if any install failed.
+func installAssetsAllProjects(stdout, stderr io.Writer, targets []string, force bool) int {
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	recs, err := store.List()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(recs) == 0 {
+		fmt.Fprintln(stdout, "no projects registered")
+		return 0
+	}
+	anyFailed := false
+	for _, rec := range recs {
+		fmt.Fprintf(stdout, "== %s ==\n", rec.ProjectID)
+		for _, t := range targets {
+			if ierr := installAssetType(stdout, stderr, rec.Root, t, force); ierr != nil {
+				fmt.Fprintf(stderr, "koryph: warning: %s: %s install failed: %v\n", rec.ProjectID, t, ierr)
+				anyFailed = true
+			}
+		}
+	}
+	if anyFailed {
+		return 1
+	}
+	return 0
+}
+
+// installAssetType installs one asset kind into root and reports it via the
+// shared installer reporters. It returns an error only on a hard failure; a
+// differing/skipped file is a warning surfaced by the reporter, not an error.
+func installAssetType(stdout, stderr io.Writer, root, target string, force bool) error {
+	switch target {
+	case "agents":
+		results, err := personas.Install(root, force)
+		if err != nil {
+			return err
+		}
+		reportInstall(stdout, stderr, "agents", results, force)
+	case "commands":
+		results, err := commands.Install(root, force)
+		if err != nil {
+			return err
+		}
+		reportInstall(stdout, stderr, "commands", results, force)
+	case "rules":
+		hookResults, settings, err := rules.Install(root, force)
+		if err != nil {
+			return err
+		}
+		reportInstall(stdout, stderr, "hooks", hookResults, force)
+		reportSettings(stdout, stderr, settings)
+	default:
+		return fmt.Errorf("unknown asset target %q", target)
+	}
+	return nil
+}
+
 // cmdCommands dispatches the commands sub-verbs.
 func cmdCommands(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "commands", "manage the koryph-* Claude slash commands in a project", []subVerb{
+		parentHelp(stdout, "commands", "manage the koryph-* Claude slash commands in a project (normally run by `koryph project add`)", []subVerb{
 			{"install <root> [--force]", "install koryph-* slash commands into <root>/.claude/commands"},
 			{"install --all-projects [--force]", "install koryph-* slash commands into every registered project"},
 		})
@@ -36,7 +168,7 @@ func cmdCommands(args []string, stdout, stderr io.Writer) int {
 // cmdRules dispatches the rules sub-verbs.
 func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "rules", "manage the koryph hook scripts + settings wiring in a project", []subVerb{
+		parentHelp(stdout, "rules", "manage the koryph hook scripts + settings wiring in a project (normally run by `koryph project add`)", []subVerb{
 			{"install <root> [--force]", "install hook scripts + merge hook/permission wiring into settings.json"},
 		})
 		return 0
@@ -54,7 +186,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 func cmdRulesInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("rules install", stderr)
 	force := fs.Bool("force", false, "overwrite differing hook scripts; rebuild an unparseable settings.json")
-	setUsage(fs, stdout, "install hook scripts + merge hook/permission wiring into <root>/.claude/settings.json", "<root> [--force]")
+	setUsage(fs, stdout, "install hook scripts + merge hook/permission wiring into <root>/.claude/settings.json (normally run automatically by `koryph project add`)", "<root> [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -122,7 +254,8 @@ func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("commands install", stderr)
 	force := fs.Bool("force", false, "overwrite existing commands whose content differs")
 	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
-	setUsage(fs, stdout, "install koryph-* Claude slash commands into <root>/.claude/commands (idempotent)",
+	setUsage(fs, stdout,
+		"install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; normally run automatically by `koryph project add`)",
 		"(<root> | --all-projects) [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
