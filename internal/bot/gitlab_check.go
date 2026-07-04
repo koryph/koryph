@@ -95,7 +95,7 @@ func checkGLTokenValid(ctx context.Context, cfg *GitLabConfig, opts CheckGitLabO
 	}
 
 	// Validate via GitLab API.
-	_, warning, err := glpkg.ValidateToken(ctx, token, defaultGLScopes, cfg.ExpiryWarnDays())
+	_, warning, err := glpkg.ValidateToken(ctx, token, cfg.Host, defaultGLScopes, cfg.ExpiryWarnDays())
 	if err != nil {
 		return "", CheckFinding{
 			Check:       "token-valid",

@@ -39,7 +39,7 @@ type GitLabAttachResult struct {
 //  2. Validate the token (scopes, expiry).
 //  3. Set CI variables on the project:
 //     - KORYPH_BOT_TOKEN        (masked, protected)
-//     - KORYPH_BOT_TOKEN_EXPIRY (masked, protected)
+//     - KORYPH_BOT_TOKEN_EXPIRY (not masked — value may be "never", protected)
 func AttachGitLab(ctx context.Context, cfg *GitLabConfig, opts GitLabAttachOptions) (*GitLabAttachResult, error) {
 	if opts.Project == "" {
 		return nil, fmt.Errorf("gitlab bot attach: --project is required")
@@ -57,7 +57,7 @@ func AttachGitLab(ctx context.Context, cfg *GitLabConfig, opts GitLabAttachOptio
 	fmt.Fprintf(out, "  token resolved (provider=%s)\n", cfg.Provider)
 
 	// Step 2: validate token via API (scopes + expiry).
-	info, warning, err := glpkg.ValidateToken(ctx, token, defaultGLScopes, ExpiryWarnDays)
+	info, warning, err := glpkg.ValidateToken(ctx, token, cfg.Host, defaultGLScopes, ExpiryWarnDays)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab bot attach: token validation: %w", err)
 	}
@@ -82,11 +82,17 @@ func AttachGitLab(ctx context.Context, cfg *GitLabConfig, opts GitLabAttachOptio
 		if info.ExpiresAt != "" {
 			expiry = info.ExpiresAt
 		}
-		for _, v := range []struct{ key, val string }{
-			{"KORYPH_BOT_TOKEN", token},
-			{"KORYPH_BOT_TOKEN_EXPIRY", expiry},
+		for _, v := range []struct {
+			key    string
+			val    string
+			masked bool
+		}{
+			{"KORYPH_BOT_TOKEN", token, true},
+			// KORYPH_BOT_TOKEN_EXPIRY is not a secret; masked=false avoids the
+			// GitLab ≥8-char constraint ("never" is only 5 chars).
+			{"KORYPH_BOT_TOKEN_EXPIRY", expiry, false},
 		} {
-			if err := glpkg.SetProjectVariable(ctx, token, opts.Project, v.key, v.val); err != nil {
+			if err := glpkg.SetProjectVariable(ctx, token, opts.Project, v.key, v.val, v.masked); err != nil {
 				return nil, fmt.Errorf("gitlab bot attach: set variable %s: %w", v.key, err)
 			}
 			fmt.Fprintf(out, "  CI variable %s set on %s\n", v.key, opts.Project)

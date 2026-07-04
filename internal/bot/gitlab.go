@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -292,16 +291,7 @@ func CreateGitLab(ctx context.Context, opts GitLabCreateOptions) (*GitLabConfig,
 
 	// Step 3: validate token via GitLab API.
 	fmt.Fprintf(out, "\nValidating token with GitLab API (%s)...\n", opts.Host)
-	if opts.Host != "gitlab.com" {
-		// Point the gitlab package at the correct host for this call.
-		oldHost := os.Getenv("KORYPH_GITLAB_HOST")
-		if err := os.Setenv("KORYPH_GITLAB_HOST", opts.Host); err != nil {
-			return nil, fmt.Errorf("gitlab bot create: set KORYPH_GITLAB_HOST: %w", err)
-		}
-		defer func() { _ = os.Setenv("KORYPH_GITLAB_HOST", oldHost) }()
-	}
-
-	info, warning, err := gitlab.ValidateToken(ctx, token, opts.RequiredScopes, opts.ExpiryWarnDays)
+	info, warning, err := gitlab.ValidateToken(ctx, token, opts.Host, opts.RequiredScopes, opts.ExpiryWarnDays)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab bot create: token validation failed: %w\n  Ensure the token has scopes: %s",
 			err, strings.Join(opts.RequiredScopes, ", "))
@@ -410,20 +400,4 @@ func defaultGLKeyRef(provider, botName string) string {
 	default:
 		return "koryph-gl-bot-" + botName
 	}
-}
-
-// RunGlabBin runs the glab CLI with the given args and returns combined output.
-// Binary path is controlled by KORYPH_GLAB_BIN (default: "glab").
-func RunGlabBin(args ...string) (string, error) {
-	bin := "glab"
-	if v := os.Getenv("KORYPH_GLAB_BIN"); v != "" {
-		bin = v
-	}
-	cmd := exec.Command(bin, args...) //nolint:gosec
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("glab %s: %w\n%s",
-			strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
 }

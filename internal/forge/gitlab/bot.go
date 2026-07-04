@@ -52,7 +52,7 @@ func (s *gitlabBotSvc) ExchangeManifest(_ context.Context, _ string) (forge.BotC
 // user/namespace information via GET /personal_access_tokens/self.
 // jwtOrToken must be a GitLab personal or project access token.
 func (s *gitlabBotSvc) ListInstallations(ctx context.Context, jwtOrToken string) ([]forge.Installation, error) {
-	info, err := fetchTokenSelf(ctx, jwtOrToken)
+	info, err := fetchTokenSelf(ctx, jwtOrToken, "")
 	if err != nil {
 		return nil, fmt.Errorf("gitlab bot: list installations: %w", err)
 	}
@@ -85,7 +85,7 @@ func (s *gitlabBotSvc) SetSecrets(ctx context.Context, cfg forge.BotConfig, owne
 	}
 
 	// Validate the token and get expiry information.
-	info, err := fetchTokenSelf(ctx, token)
+	info, err := fetchTokenSelf(ctx, token, "")
 	if err != nil {
 		return fmt.Errorf("gitlab bot: SetSecrets: validate token: %w", err)
 	}
@@ -97,11 +97,15 @@ func (s *gitlabBotSvc) SetSecrets(ctx context.Context, cfg forge.BotConfig, owne
 
 	projectID := url.PathEscape(ownerRepo)
 
-	for _, v := range []struct{ key, val string }{
-		{"KORYPH_BOT_TOKEN", token},
-		{"KORYPH_BOT_TOKEN_EXPIRY", expiry},
+	for _, v := range []struct {
+		key    string
+		val    string
+		masked bool
+	}{
+		{"KORYPH_BOT_TOKEN", token, true},
+		{"KORYPH_BOT_TOKEN_EXPIRY", expiry, false},
 	} {
-		if err := SetProjectVariable(ctx, token, projectID, v.key, v.val); err != nil {
+		if err := SetProjectVariable(ctx, token, projectID, v.key, v.val, v.masked); err != nil {
 			return fmt.Errorf("gitlab bot: SetSecrets: set %s: %w", v.key, err)
 		}
 	}
@@ -121,9 +125,14 @@ type tokenSelfInfo struct {
 }
 
 // fetchTokenSelf calls GET /personal_access_tokens/self with the given token
-// and returns the parsed response.
-func fetchTokenSelf(ctx context.Context, token string) (*tokenSelfInfo, error) {
-	apiURL := glAPIBase() + "/personal_access_tokens/self"
+// and returns the parsed response. host overrides the default host when
+// non-empty (avoids mutating the process-global env).
+func fetchTokenSelf(ctx context.Context, token, host string) (*tokenSelfInfo, error) {
+	base := glAPIBase()
+	if host != "" && host != "gitlab.com" {
+		base = "https://" + host + "/api/v4"
+	}
+	apiURL := base + "/personal_access_tokens/self"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -154,17 +163,27 @@ func fetchTokenSelf(ctx context.Context, token string) (*tokenSelfInfo, error) {
 }
 
 // SetProjectVariable creates or updates a GitLab CI/CD variable on the
-// project identified by projectID (URL-encoded "namespace/project").
-// It attempts PUT (update) first; falls back to POST (create) on 404.
+// project identified by projectID ("namespace/project" slug — URL-encoding is
+// applied internally). It attempts PUT (update) first; falls back to POST
+// (create) on 404.
 //
-// Variables are created as masked+protected to prevent log exposure and to
-// restrict availability to protected branches/tags.
-func SetProjectVariable(ctx context.Context, token, projectID, key, value string) error {
-	apiBase := glAPIBase() + "/projects/" + projectID + "/variables/" + url.PathEscape(key)
+// masked controls whether the variable is masked in job logs. Only set
+// masked=true for actual secrets; GitLab requires masked values to be ≥8
+// characters and match [a-zA-Z0-9@:.~] — non-secret or short values must use
+// masked=false. Variables are always created as protected to restrict them to
+// protected branches/tags.
+func SetProjectVariable(ctx context.Context, token, projectID, key, value string, masked bool) error {
+	escapedID := url.PathEscape(projectID)
+	apiBase := glAPIBase() + "/projects/" + escapedID + "/variables/" + url.PathEscape(key)
+
+	maskedStr := "false"
+	if masked {
+		maskedStr = "true"
+	}
 
 	body := url.Values{}
 	body.Set("value", value)
-	body.Set("masked", "true")
+	body.Set("masked", maskedStr)
 	body.Set("protected", "true")
 	body.Set("variable_type", "env_var")
 
@@ -174,7 +193,7 @@ func SetProjectVariable(ctx context.Context, token, projectID, key, value string
 	}
 
 	// Variable may not exist yet — try POST (create).
-	createURL := glAPIBase() + "/projects/" + projectID + "/variables"
+	createURL := glAPIBase() + "/projects/" + escapedID + "/variables"
 	body.Set("key", key)
 	return doVariableRequest(ctx, token, http.MethodPost, createURL, body)
 }
@@ -213,11 +232,14 @@ func doVariableRequest(ctx context.Context, token, method, rawURL string, form u
 //  3. The token has not expired.
 //  4. If it expires within warnDays, a warning is returned.
 //
-// Returns (info, nil, warning_message) on success (warning may be empty).
+// host overrides the default GitLab host when non-empty (pass cfg.Host or ""
+// for gitlab.com). This avoids mutating the process-global KORYPH_GITLAB_HOST.
+//
+// Returns (info, warning, nil) on success (warning may be empty).
 // Returns an error when the token is invalid, revoked, missing required scopes,
 // or already expired.
-func ValidateToken(ctx context.Context, token string, requiredScopes []string, warnDays int) (*tokenSelfInfo, string, error) {
-	info, err := fetchTokenSelf(ctx, token)
+func ValidateToken(ctx context.Context, token, host string, requiredScopes []string, warnDays int) (*tokenSelfInfo, string, error) {
+	info, err := fetchTokenSelf(ctx, token, host)
 	if err != nil {
 		return nil, "", fmt.Errorf("validate token: %w", err)
 	}
