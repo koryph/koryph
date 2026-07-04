@@ -123,11 +123,18 @@ func installAssetsAllProjects(stdout, stderr io.Writer, targets []string, force 
 func installAssetType(stdout, stderr io.Writer, root, target string, force bool) error {
 	switch target {
 	case "agents":
-		results, err := personas.Install(root, force)
+		// Render for root's own default_runtime (koryph-v8u.12), matching
+		// `koryph agents install`'s unset-flag default; see
+		// resolveInstallRuntime.
+		results, untiered, err := personas.InstallForRuntime(root, force, resolveInstallRuntime(root, ""))
 		if err != nil {
 			return err
 		}
 		reportInstall(stdout, stderr, "agents", results, force)
+		if len(untiered) > 0 {
+			fmt.Fprintf(stderr, "koryph: note: %d persona(s) installed unchanged (no tier: frontmatter, or tier unmapped by the target runtime): %s\n",
+				len(untiered), strings.Join(untiered, ", "))
+		}
 	case "commands":
 		results, err := commands.Install(root, force)
 		if err != nil {

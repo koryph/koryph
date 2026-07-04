@@ -73,3 +73,109 @@ func TestRecordEWMA(t *testing.T) {
 		t.Fatalf("EWMA = %g, want 13", got)
 	}
 }
+
+// TestEstimateItemForRuntimeClaudeParity proves EstimateItemForRuntime(cfg,
+// "claude", tier, size) is byte-for-byte EstimateItem(cfg, tier, size) —
+// including the unknown-tier fallback path — across every existing fixture
+// (koryph-v8u.12's "claude parity" requirement).
+func TestEstimateItemForRuntimeClaudeParity(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	cases := []struct{ tier, size string }{
+		{"haiku", "S"}, {"sonnet", "M"}, {"opus", "L"}, {"fable", "M"}, {"mystery", "M"},
+	}
+	for _, tc := range cases {
+		want := EstimateItem(cfg, tc.tier, tc.size)
+		got := EstimateItemForRuntime(cfg, "claude", tc.tier, tc.size)
+		if !approx(got, want) {
+			t.Errorf("EstimateItemForRuntime(claude, %s, %s) = %g, want %g (EstimateItem parity)",
+				tc.tier, tc.size, got, want)
+		}
+	}
+
+	// Calibration wins identically regardless of the runtime argument: it is
+	// NOT runtime-namespaced (koryph-v8u.12 back-compat decision).
+	cfg.Calibration = map[string]float64{"sonnet:M": 2.0}
+	if got := EstimateItemForRuntime(cfg, "claude", "sonnet", "M"); !approx(got, 2.0) {
+		t.Errorf("calibrated EstimateItemForRuntime(claude, ...) = %g, want 2.0", got)
+	}
+}
+
+// TestEstimateItemForRuntimeStubTable proves the estimator base table is
+// genuinely namespaced by runtime: a runtime whose config carries no
+// PerTierUSD entry for a tier falls back to THAT RUNTIME's own default base,
+// not claude's sonnet rate.
+func TestEstimateItemForRuntimeStubTable(t *testing.T) {
+	const name = "quota-estimate-test-stub-runtime"
+	tierUSDTables[name] = tierUSDTable{
+		perTier:  map[string]float64{"big": 100},
+		fallback: 1,
+	}
+	t.Cleanup(func() { delete(tierUSDTables, name) })
+
+	cfg := DefaultConfigForRuntime("acct", name)
+	if got, want := cfg.PerTierUSD["big"], 100.0; got != want {
+		t.Errorf("DefaultConfigForRuntime(%s).PerTierUSD[big] = %g, want %g", name, got, want)
+	}
+
+	// A tier the stub's own PerTierUSD carries resolves directly.
+	if got, want := EstimateItemForRuntime(cfg, name, "big", "M"), 100*1.0*1.5; !approx(got, want) {
+		t.Errorf("EstimateItemForRuntime(%s, big, M) = %g, want %g", name, got, want)
+	}
+	// An unrecognized tier falls back to the STUB's own fallback (1), not
+	// claude's sonnet rate (3).
+	if got, want := EstimateItemForRuntime(cfg, name, "unknown-tier", "M"), 1*1.0*1.5; !approx(got, want) {
+		t.Errorf("EstimateItemForRuntime(%s, unknown-tier, M) = %g, want %g (stub's own fallback)", name, got, want)
+	}
+
+	// Claude's own estimate must be unaffected by the stub table's existence.
+	claudeCfg := DefaultConfig("acct")
+	if got, want := EstimateItemForRuntime(claudeCfg, "claude", "mystery", "M"), 4.5; !approx(got, want) {
+		t.Errorf("claude estimate changed after registering a stub table: got %g, want %g", got, want)
+	}
+}
+
+// TestEstimateItemForRuntimeUnknownRuntimeFallsBackToClaude proves an
+// unregistered runtime name degrades gracefully to claude's table (a cost
+// ESTIMATE is advisory governor input, never a dispatch gate — unlike
+// modelroute.Resolve's deliberately fail-closed unknown-runtime error).
+func TestEstimateItemForRuntimeUnknownRuntimeFallsBackToClaude(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	got := EstimateItemForRuntime(cfg, "no-such-runtime", "mystery", "M")
+	want := EstimateItemForRuntime(cfg, "claude", "mystery", "M")
+	if !approx(got, want) {
+		t.Errorf("EstimateItemForRuntime(no-such-runtime, ...) = %g, want claude fallback %g", got, want)
+	}
+}
+
+// TestEstimateWaveForRuntimeClaudeParity proves EstimateWaveForRuntime(cfg,
+// "claude", items) matches EstimateWave(cfg, items).
+func TestEstimateWaveForRuntimeClaudeParity(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	items := []struct{ Tier, Size string }{
+		{"sonnet", "M"},
+		{"opus", "L"},
+	}
+	want := EstimateWave(cfg, items)
+	got := EstimateWaveForRuntime(cfg, "claude", items)
+	if !approx(got, want) {
+		t.Errorf("EstimateWaveForRuntime(claude, ...) = %g, want %g (EstimateWave parity)", got, want)
+	}
+}
+
+// TestDefaultConfigForRuntimeClaudeParity proves DefaultConfigForRuntime(acct,
+// "claude") reproduces DefaultConfig's exact PerTierUSD literal.
+func TestDefaultConfigForRuntimeClaudeParity(t *testing.T) {
+	want := DefaultConfig("acct")
+	got := DefaultConfigForRuntime("acct", "claude")
+	if len(got.PerTierUSD) != len(want.PerTierUSD) {
+		t.Fatalf("PerTierUSD length = %d, want %d", len(got.PerTierUSD), len(want.PerTierUSD))
+	}
+	for k, v := range want.PerTierUSD {
+		if got.PerTierUSD[k] != v {
+			t.Errorf("PerTierUSD[%s] = %g, want %g", k, got.PerTierUSD[k], v)
+		}
+	}
+	if got.SafetyMargin != want.SafetyMargin || got.PerAgentMaxUSD != want.PerAgentMaxUSD {
+		t.Errorf("DefaultConfigForRuntime(claude) = %+v, want match with DefaultConfig %+v", got, want)
+	}
+}

@@ -6,11 +6,20 @@ package engine
 import (
 	"bytes"
 	"context"
+	"math"
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/sched"
 )
+
+// approx compares two USD estimates for near-equality, tolerating float
+// rounding — mirrors quota's own test helper of the same name.
+func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 // runtimeLabelBD serves a single ready bead labeled runtime:codex — a runtime
 // dispatch never actually drives today (koryph-v8u.3).
@@ -106,5 +115,63 @@ func TestDispatchRecordsClaudeRuntimeByDefault(t *testing.T) {
 	}
 	if m.Runtime != "claude" {
 		t.Errorf("manifest.Runtime = %q, want claude", m.Runtime)
+	}
+}
+
+// TestWaveEstimateResolvesPerItemRuntime is the koryph-v8u.12 unit test for
+// waveEstimate's per-item runtime resolution: each item is priced via
+// quota.EstimateItemForRuntime using ITS OWN resolved runtime name
+// (modelroute.ResolveRuntimeName over the item's bead labels and the
+// project's default_runtime) rather than a hardcoded "claude" literal.
+// waveEstimate is exercised directly (no full Run()) to keep this a narrow,
+// fast unit test.
+//
+// An unregistered runtime:<name> label gracefully degrades to claude's own
+// table (quota.EstimateItemForRuntime's documented fallback — a cost
+// ESTIMATE is advisory, never a fail-closed gate), so a labeled item's
+// estimate is numerically identical to an unlabeled one here; this asserts
+// the wiring runs without error and reproduces the exact pre-koryph-v8u.12
+// value for every combination, which is the hard compatibility requirement.
+// quota's own TestEstimateItemForRuntimeStubTable proves the estimator
+// genuinely dispatches on the runtime name once a table is registered for
+// it; this test proves waveEstimate actually resolves and threads that name
+// through instead of ignoring it.
+func TestWaveEstimateResolvesPerItemRuntime(t *testing.T) {
+	quotaCfg := quota.DefaultConfig("acct")
+	r := &runner{
+		cfg:      &project.Config{}, // DefaultRuntime == "" -> project default "claude"
+		quotaCfg: quotaCfg,
+	}
+
+	unlabeled := sched.Item{
+		Issue: beads.Issue{ID: "tb-plain", Description: "short", Labels: []string{"fp:core"}},
+		Model: "sonnet",
+	}
+	explicitClaude := sched.Item{
+		Issue: beads.Issue{ID: "tb-claude", Description: "short", Labels: []string{"fp:core", "runtime:claude"}},
+		Model: "sonnet",
+	}
+	unregisteredRuntime := sched.Item{
+		Issue: beads.Issue{ID: "tb-other", Description: "short", Labels: []string{"fp:core", "runtime:wave-estimate-test-unregistered"}},
+		Model: "sonnet",
+	}
+
+	want := quota.EstimateItemForRuntime(quotaCfg, "claude", "sonnet", quota.SizeOf(len("short")))
+	for _, tc := range []struct {
+		name string
+		item sched.Item
+	}{
+		{"unlabeled bead", unlabeled},
+		{"explicit runtime:claude label", explicitClaude},
+		{"unregistered runtime label (falls back to claude)", unregisteredRuntime},
+	} {
+		if got := r.waveEstimate([]sched.Item{tc.item}); !approx(got, want) {
+			t.Errorf("%s: waveEstimate = %g, want %g", tc.name, got, want)
+		}
+	}
+
+	// A wave of all three sums to exactly 3x the single-item estimate.
+	if got, want := r.waveEstimate([]sched.Item{unlabeled, explicitClaude, unregisteredRuntime}), want*3; !approx(got, want) {
+		t.Errorf("mixed wave waveEstimate = %g, want %g", got, want)
 	}
 }

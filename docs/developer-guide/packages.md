@@ -237,7 +237,15 @@ and gates or scales dispatch.
 - **`Usage`** / **`Window`** / **`Level`** — spend snapshot, rolling measurement, `"ok"` | `"warn"` | `"drain"` | `"stop"`
 - **`State(u, cfg)`** — derive `Level`; **`ScaleSlots(u, max)`** — reduce wave width under pressure
 - **`Preflight(u, estimateUSD, cfg)`** — gate a wave before dispatch
-- **`EstimateItem`** / **`EstimateWave`** — pre-flight USD estimates
+- **`EstimateItem`** / **`EstimateWave`** — pre-flight USD estimates (claude's per-tier base prices)
+- **`EstimateItemForRuntime`** / **`EstimateWaveForRuntime`** / **`DefaultConfigForRuntime`** — the same
+  estimates, namespaced by runtime name (koryph-v8u.12): each runtime gets its own default per-tier USD
+  base table (only `claude`'s carries real numbers today), selected by the runtime a bead actually
+  resolves under (`modelroute.ResolveRuntimeName`); an unrecognized runtime name degrades to claude's
+  table rather than erroring (an estimate is advisory governor input, never a fail-closed dispatch gate).
+  Calibration keys (`"<tier>:<size>"`) are deliberately **not** runtime-namespaced — only claude
+  dispatches have ever recorded calibration, so existing `~/.koryph/quota/*.json` files keep estimating
+  exactly as before.
 - **`Record`** / **`LoadConfig`** / **`SaveConfig`** — persist actual spend and config
 
 ## registry

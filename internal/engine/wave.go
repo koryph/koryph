@@ -412,7 +412,12 @@ func onlyBead(issues []beads.Issue, id string) []beads.Issue {
 	return nil
 }
 
-// waveEstimate sums the per-item cost estimates for a candidate wave.
+// waveEstimate sums the per-item cost estimates for a candidate wave,
+// pricing each item against ITS OWN resolved runtime (koryph-v8u.12) via the
+// same bead `runtime:<name>` label / project default_runtime precedence
+// dispatchBead itself applies (modelroute.ResolveRuntimeName) — so a wave
+// mixing a runtime:<name> bead alongside claude beads estimates each against
+// the right per-runtime base table instead of always assuming claude's.
 func (r *runner) waveEstimate(items []sched.Item) float64 {
 	var est float64
 	for _, it := range items {
@@ -420,7 +425,8 @@ func (r *runner) waveEstimate(items []sched.Item) float64 {
 		if model == "" {
 			model = modelroute.TierSonnet
 		}
-		est += quota.EstimateItem(r.quotaCfg, model, quota.SizeOf(len(it.Issue.Description)))
+		runtimeName, _ := modelroute.ResolveRuntimeName(it.Issue.Labels, r.cfg.DefaultRuntime)
+		est += quota.EstimateItemForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(it.Issue.Description)))
 	}
 	return est
 }

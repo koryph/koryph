@@ -97,12 +97,29 @@ type Config struct {
 }
 
 // DefaultConfig returns uncalibrated defaults for a new account profile.
+// Equivalent to DefaultConfigForRuntime(account, "claude").
 func DefaultConfig(account string) *Config {
+	return DefaultConfigForRuntime(account, "claude")
+}
+
+// DefaultConfigForRuntime returns uncalibrated defaults for a new account
+// profile dispatching under runtimeName (koryph-v8u.12): PerTierUSD seeds
+// from that runtime's own tierUSDTables entry (see estimate.go) instead of
+// always Anthropic's haiku/sonnet/opus/fable table, so onboarding a
+// non-claude account's governor config starts from base prices at least
+// shaped for that runtime's own tier vocabulary. For runtimeName == "claude"
+// this is byte-for-byte DefaultConfig's pre-koryph-v8u.12 literal.
+func DefaultConfigForRuntime(account, runtimeName string) *Config {
+	table := tierUSDTableForRuntime(runtimeName)
+	perTier := make(map[string]float64, len(table.perTier))
+	for k, v := range table.perTier {
+		perTier[k] = v
+	}
 	return &Config{
 		SchemaVersion:  ConfigSchemaVersion,
 		Account:        account,
 		PerAgentMaxUSD: 25,
-		PerTierUSD:     map[string]float64{"haiku": 0.4, "sonnet": 3.0, "opus": 9.0, "fable": 15.0},
+		PerTierUSD:     perTier,
 		SizeMultiplier: map[string]float64{"S": 0.5, "M": 1.0, "L": 2.0},
 		SafetyMargin:   1.5,
 	}

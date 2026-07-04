@@ -105,8 +105,14 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 	// semantics whether `koryph` is run explicitly or implied by a prompt:
 	// fallback personas (.claude/agents) and the koryph-* slash commands
 	// (.claude/commands). Idempotent; differing files are left untouched
-	// (re-run `koryph agents|commands install --force` to update).
-	onboardInstall(stderr, "agents", func() ([]scaffold.Result, error) { return personas.Install(root, false) })
+	// (re-run `koryph agents|commands install --force` to update). Personas
+	// render for the project's just-scaffolded default_runtime (koryph-v8u.12;
+	// resolveInstallRuntime falls back to "claude" when unset/unreadable, the
+	// pre-koryph-v8u.12 behavior).
+	onboardInstall(stderr, "agents", func() ([]scaffold.Result, error) {
+		results, _, ierr := personas.InstallForRuntime(root, false, resolveInstallRuntime(root, ""))
+		return results, ierr
+	})
 	onboardInstall(stderr, "commands", func() ([]scaffold.Result, error) { return commands.Install(root, false) })
 	onboardRules(stderr, root)
 

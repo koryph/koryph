@@ -16,11 +16,71 @@ func SizeOf(descLen int) string {
 	}
 }
 
+// tierUSDTable is one runtime's per-tier USD estimator-base table plus an
+// explicit fallback base for a tier name the table has no entry for
+// (koryph-v8u.12). It mirrors usage.go's runtimePriceTable shape
+// (rules+fallback, koryph-v8u.3 item 4) at the coarser "$/dispatch"
+// granularity EstimateItem works at, rather than usage.go's per-MTok token
+// pricing.
+type tierUSDTable struct {
+	perTier  map[string]float64
+	fallback float64
+}
+
+// tierUSDTables namespaces the estimator's default per-tier USD base price
+// by runtime name (koryph-v8u.12), mirroring how usage.go's pricingTables
+// namespaces per-MTok pricing and internal/runtime namespaces ModelMap: each
+// runtime's dispatched-model vocabulary is its own (a Codex tier is never
+// named "sonnet"), so the governor's estimator seed must be looked up by
+// runtime name too, not assumed to be Anthropic's haiku/sonnet/opus/fable
+// forever. Only "claude" carries real numbers today — preserved byte-for-
+// byte from the pre-koryph-v8u.12 hardcoded DefaultConfig literal and
+// EstimateItem's cfg.PerTierUSD["sonnet"] fallback — a future runtime
+// adapter bead adds its own entry here exactly as usage.go's pricingTables
+// documents for token-level pricing.
+var tierUSDTables = map[string]tierUSDTable{
+	"claude": {
+		perTier:  map[string]float64{"haiku": 0.4, "sonnet": 3.0, "opus": 9.0, "fable": 15.0},
+		fallback: 3.0, // sonnet rate: the literal EstimateItem's cfg.PerTierUSD["sonnet"] fallback resolved to before this bead
+	},
+}
+
+// tierUSDTableForRuntime returns runtimeName's estimator-base table, falling
+// back to claude's when runtimeName is unregistered here — mirroring
+// priceForRuntime's graceful degrade (a cost ESTIMATE is advisory governor
+// input, never a fail-closed dispatch gate, unlike modelroute.Resolve's
+// deliberately fail-closed unknown-runtime error).
+func tierUSDTableForRuntime(runtimeName string) tierUSDTable {
+	if t, ok := tierUSDTables[runtimeName]; ok {
+		return t
+	}
+	return tierUSDTables["claude"]
+}
+
 // EstimateItem estimates the USD cost of one dispatch. A calibrated
 // "<tier>:<size>" observation wins; otherwise it is the tier base times the
 // size multiplier times the safety margin. An unknown tier falls back to the
-// sonnet base.
+// sonnet base. Equivalent to EstimateItemForRuntime(cfg, "claude", tier,
+// size); see that function for the runtime-aware generalization
+// (koryph-v8u.12).
 func EstimateItem(cfg *Config, tier, size string) float64 {
+	return EstimateItemForRuntime(cfg, "claude", tier, size)
+}
+
+// EstimateItemForRuntime is EstimateItem generalized across runtimes
+// (koryph-v8u.12): when cfg.PerTierUSD has no entry for tier (an
+// unrecognized or not-yet-configured tier name), the fallback base comes
+// from runtimeName's OWN default table instead of a hardcoded
+// claude-specific literal — so a non-claude runtime's unrecognized tier
+// degrades to ITS OWN base price, never Anthropic's sonnet rate. For
+// runtimeName=="claude" (or ""), this is byte-for-byte EstimateItem:
+// tierUSDTables["claude"].fallback is the exact 3.0 literal EstimateItem
+// always used. Calibration keys ("<tier>:<size>") are NOT runtime-
+// namespaced (back-compat decision, koryph-v8u.12: only claude dispatches
+// have ever recorded calibration, and Record's key shape is unchanged) — a
+// calibrated observation always wins regardless of runtime, matching
+// EstimateItem's existing precedence.
+func EstimateItemForRuntime(cfg *Config, runtimeName, tier, size string) float64 {
 	if cfg.Calibration != nil {
 		if v, ok := cfg.Calibration[tier+":"+size]; ok {
 			return v
@@ -28,7 +88,7 @@ func EstimateItem(cfg *Config, tier, size string) float64 {
 	}
 	base, ok := cfg.PerTierUSD[tier]
 	if !ok {
-		base = cfg.PerTierUSD["sonnet"]
+		base = tierUSDTableForRuntime(runtimeName).fallback
 	}
 	mult, ok := cfg.SizeMultiplier[size]
 	if !ok {
@@ -41,11 +101,18 @@ func EstimateItem(cfg *Config, tier, size string) float64 {
 	return base * mult * margin
 }
 
-// EstimateWave sums the per-item estimates for a wave.
+// EstimateWave sums the per-item cost estimates for a wave. Equivalent to
+// EstimateWaveForRuntime(cfg, "claude", items).
 func EstimateWave(cfg *Config, items []struct{ Tier, Size string }) float64 {
+	return EstimateWaveForRuntime(cfg, "claude", items)
+}
+
+// EstimateWaveForRuntime is EstimateWave generalized across runtimes
+// (koryph-v8u.12); see EstimateItemForRuntime.
+func EstimateWaveForRuntime(cfg *Config, runtimeName string, items []struct{ Tier, Size string }) float64 {
 	var total float64
 	for _, it := range items {
-		total += EstimateItem(cfg, it.Tier, it.Size)
+		total += EstimateItemForRuntime(cfg, runtimeName, it.Tier, it.Size)
 	}
 	return total
 }
