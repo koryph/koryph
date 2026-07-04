@@ -3,21 +3,25 @@
 
 # Installation
 
+koryph is a single static binary (built with `CGO_ENABLED=0`). **Running it
+requires no Go toolchain, no runtime, and no libraries** — download it, put
+it on your `PATH`, done. Go is only involved if you choose to build from
+source.
+
 ## Prerequisites
 
 Before installing koryph, make sure the following are in place:
 
 | Requirement | Notes |
 |---|---|
-| **Go 1.26+** | `go version` must report `go1.26` or later |
 | **git** | koryph uses git worktrees; `git` must be on your `PATH` |
 | **Claude CLI** (`claude`) | Install from [claude.ai/download](https://claude.ai/download) and log in with `claude auth login` |
 | **bd (beads)** CLI | Install from [github.com/gastownhall/beads](https://github.com/gastownhall/beads); run `bd doctor` to confirm |
+| **gh (GitHub CLI)** | Optional — needed by the GitHub-facing commands (`koryph bot`, `koryph repo`, `koryph posture`, `koryph release`) |
 
 ### Verify prerequisites
 
 ```sh
-go version          # go1.26.x or later
 git --version       # any recent version
 claude --version    # must be authenticated
 bd doctor           # no errors
@@ -27,13 +31,33 @@ bd doctor           # no errors
 
 ## Install `koryph`
 
+### Option A — prebuilt binary (recommended; no Go required)
+
+Every release ships signed binaries for macOS and Linux (amd64/arm64) with
+checksums, SBOMs, and SLSA provenance:
+
+```sh
+# pick your platform: darwin|linux x amd64|arm64
+curl -LO https://github.com/koryph/koryph/releases/latest/download/koryph_<version>_darwin_arm64.tar.gz
+tar -xzf koryph_<version>_darwin_arm64.tar.gz
+install -m 0755 koryph ~/.local/bin/   # or any directory on your PATH
+```
+
+To verify the download against the release's checksums, signature, and
+provenance, see [Supply-chain verification](supply-chain.md).
+
+A Homebrew tap is planned; until then the release tarball is the paved road.
+
+### Option B — build from source (requires a Go toolchain)
+
 ```sh
 go install github.com/koryph/koryph/cmd/koryph@latest
 ```
 
-This fetches the latest release from the module proxy, compiles it, and
-places the `koryph` binary in `$(go env GOPATH)/bin` (typically
-`~/go/bin`).
+This fetches the module, compiles it, and places the `koryph` binary in
+`$(go env GOPATH)/bin` (typically `~/go/bin`). Any Go **1.21 or later**
+works: `go.mod` pins the exact toolchain (currently 1.26.x) and modern Go
+downloads it automatically on first build.
 
 ### Verify the installation
 
@@ -175,14 +199,17 @@ Start a new shell after installing (or source the script as shown above).
 
 ### `koryph: command not found`
 
-`koryph` is installed to `$(go env GOPATH)/bin`. Add it to your `PATH`:
+The directory holding the binary is not on your `PATH`. For a prebuilt
+binary, that is wherever you installed it (e.g. `~/.local/bin`); for a
+source build it is `$(go env GOPATH)/bin`:
 
 ```sh
-export PATH="$(go env GOPATH)/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"          # prebuilt binary
+export PATH="$(go env GOPATH)/bin:$PATH"      # go install
 ```
 
-Add that line to your shell's profile file (`.zshrc`, `.bashrc`, etc.) so
-it persists across sessions.
+Add the matching line to your shell's profile file (`.zshrc`, `.bashrc`,
+etc.) so it persists across sessions.
 
 ### Wrong `koryph` binary is picked up
 

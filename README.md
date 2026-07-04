@@ -55,10 +55,14 @@ New here? Walk the whole path in
 
 ## Install (collaborators start here)
 
-```bash
-go install github.com/koryph/koryph/cmd/koryph@latest
-koryph version
-```
+koryph is a single static binary — no Go toolchain or runtime needed.
+Grab your platform's tarball from the
+[latest release](https://github.com/koryph/koryph/releases/latest)
+(signed, with checksums, SBOMs, and SLSA provenance), put `koryph` on your
+`PATH`, and run `koryph version`. Building from source works with any Go
+1.21+ (`go install github.com/koryph/koryph/cmd/koryph@latest` — the
+pinned toolchain downloads automatically). Details:
+[installation guide](docs/user-guide/installation.md).
 
 Each collaborator keeps their own machine-local registry (`~/.koryph`,
 created on first use) mapping shared projects to *their* Claude account:
