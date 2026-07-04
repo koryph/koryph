@@ -114,8 +114,10 @@ branch-protection rulesets and repo settings live as committed JSON under
 live repo against the committed IaC, then apply:
 
 ```sh
-koryph repo check     # exit 1 on drift between live GitHub settings and .github IaC
-koryph repo apply     # apply rulesets + repo settings to the live repo
+koryph repo check                        # exit 1 on drift between live GitHub settings and .github IaC
+koryph repo apply                        # diff-first → snapshot → apply; rollback with:
+koryph repo rollback                     # restore live state to the most recent pre-apply snapshot
+koryph repo rollback --to 2026-07-04T16  # restore to a specific snapshot (timestamp prefix)
 ```
 
 For repos without their own committed IaC, named **posture profiles** apply

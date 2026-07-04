@@ -89,6 +89,11 @@ koryph posture apply <profile> [--repo owner/name] [--param k=v]...
 Prints the diff between the live state and the profile, then applies any
 changes. Never deletes rulesets it does not know about.
 
+Before making any live change, koryph captures the **current** GitHub state into
+a timestamped snapshot under `<repo-root>/.koryph/snapshots/settings-<ts>.json`.
+If the diff is empty (nothing to change), no snapshot is written. Roll back with
+`koryph repo rollback` (see below).
+
 ```
 koryph posture apply oss-solo-maintainer --repo myorg/myrepo \
   --param required_checks="pre-commit,make gate"
@@ -100,6 +105,7 @@ Output:
 --- rulesets diff ---
 MISSING  pr-checks (no live ruleset)
 MISSING  signed-commits (no live ruleset)
+captured pre-change state → .koryph/snapshots/settings-2026-07-04T16-40-18Z.json; rollback with koryph repo rollback
 --- applying rulesets ---
 CREATED  pr-checks
 CREATED  signed-commits
@@ -222,3 +228,70 @@ Static files (`.json`, no `.tmpl` suffix) are copied verbatim.
 
 User profiles take precedence over built-ins of the same name — you can override
 `oss-solo-maintainer` by creating `~/.koryph/postures/oss-solo-maintainer/`.
+
+---
+
+## Pre-apply snapshots and rollback
+
+Every `koryph repo apply` and `koryph posture apply` that would change live
+settings first captures the **current** live state into a timestamped snapshot:
+
+```
+<repo-root>/.koryph/snapshots/settings-2026-07-04T16-40-18Z.json
+```
+
+The snapshot schema:
+
+```json
+{
+  "captured_at": "2026-07-04T16:40:18Z",
+  "repo": "owner/name",
+  "applied_profile": "oss-solo-maintainer",
+  "sections": {
+    "repo_flags": { "description": "...", "allow_squash_merge": true, "..." : "..." },
+    "security_and_analysis": { "secret_scanning": "enabled", "..." : "..." },
+    "vulnerability_alerts": true,
+    "actions_workflow_permissions": { "default_workflow_permissions": "read", "..." : "..." },
+    "rulesets": {
+      "protect-main": { "name": "protect-main", "..." : "..." }
+    }
+  }
+}
+```
+
+For `koryph repo apply` the top-level key is `"iac"` instead of `"applied_profile"`.
+Snapshots contain observed repo config — no secrets.
+
+**Snapshots are gitignored by default.** Koryph writes `.koryph/snapshots/` into
+the project's `.gitignore` automatically (idempotent, appended if missing) the
+first time a snapshot is created, and again during `koryph project add`. Do not
+commit snapshot files — they are machine-local state.
+
+When the diff is empty (nothing would change) no snapshot is written.
+
+### `repo rollback`
+
+```
+koryph repo rollback [--repo owner/name] [--to <timestamp>|latest]
+```
+
+Lists the available snapshots when no `--to` is given and multiple exist for the
+repo. Shows a **diff of snapshot vs. live state** before applying (same
+diff-first discipline as `apply`). If the live state already matches the
+snapshot, prints "no drift" and exits without changing anything.
+
+```sh
+# Roll back to the most recent snapshot:
+koryph repo rollback
+
+# Roll back to a specific snapshot by exact or prefix timestamp:
+koryph repo rollback --to 2026-07-04T16:40:18Z
+koryph repo rollback --to 2026-07-04T16          # must resolve to exactly one snapshot
+
+# Specify a repo explicitly:
+koryph repo rollback --repo myorg/myrepo --to latest
+```
+
+Rollback applies the snapshot through the **same apply machinery** — it is
+idempotent and safe to run repeatedly. Snapshots are never deleted automatically;
+clean them up manually when you no longer need them.

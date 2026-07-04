@@ -194,6 +194,23 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 
 	drift := false
 
+	// snapshotOnce captures a pre-change snapshot the first time it is called
+	// with a drifting section (apply mode only). Idempotent after the first
+	// call. Snapshot is skipped when diff is empty (nothing will change).
+	snapshotCaptured := false
+	snapshotOnce := func() {
+		if snapshotCaptured || !apply {
+			return
+		}
+		snapshotCaptured = true
+		snapPath, serr := posture.CaptureSnapshot(ctx, ghBin, repoSlug, cwd, "profile:"+profileName)
+		if serr != nil {
+			fmt.Fprintf(stderr, "warning: could not capture pre-change snapshot: %v\n", serr)
+			return
+		}
+		fmt.Fprintf(stdout, "captured pre-change state → %s; rollback with koryph repo rollback\n", snapPath)
+	}
+
 	// ---- rulesets -------------------------------------------------------
 	var rulesetSrc posture.Source = profileSrc
 	if hasRulesets {
@@ -209,6 +226,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 			}
 			if d {
 				drift = true
+				snapshotOnce()
 				fmt.Fprintln(stdout, "--- applying rulesets ---")
 				if err2 := posture.ApplyRulesets(ctx, ghBin, repoSlug, rulesetSrc, stdout); err2 != nil {
 					return fail(stderr, err2)
@@ -239,6 +257,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 			}
 			if d {
 				drift = true
+				snapshotOnce()
 				fmt.Fprintln(stdout, "--- applying settings ---")
 				if err2 := posture.ApplySettings(ctx, ghBin, repoSlug, settingsSrc, stdout); err2 != nil {
 					return fail(stderr, err2)
@@ -268,6 +287,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 				}
 				if d {
 					drift = true
+					snapshotOnce()
 					fmt.Fprintln(stdout, "--- applying org rulesets ---")
 					if err2 := posture.ApplyOrgRulesets(ctx, ghBin, *org, profileSrc, stdout); err2 != nil {
 						return fail(stderr, err2)
@@ -298,6 +318,10 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 			}
 			if d {
 				drift = true
+				// Note: fragments are local files, not GitHub API state; they
+				// are not included in the repo-level snapshot. snapshotOnce
+				// still fires here to capture repo state before any changes.
+				snapshotOnce()
 				fmt.Fprintln(stdout, "--- applying fragments ---")
 				if _, err2 := posture.ApplyFragments(cwd, frags, *force, stdout); err2 != nil {
 					return fail(stderr, err2)

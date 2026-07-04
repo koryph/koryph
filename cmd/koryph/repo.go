@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/posture"
@@ -18,6 +19,7 @@ func cmdRepo(args []string, stdout, stderr io.Writer) int {
 		parentHelp(stdout, "repo", "check or apply .github IaC (rulesets, repo settings)", []subVerb{
 			{"check [--repo owner/name]", "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)"},
 			{"apply [--repo owner/name]", "apply .github IaC (rulesets, repo settings) to the live repo"},
+			{"rollback [--repo owner/name] [--to <timestamp>|latest]", "roll back to a pre-apply snapshot"},
 		})
 		return 0
 	}
@@ -27,6 +29,8 @@ func cmdRepo(args []string, stdout, stderr io.Writer) int {
 		return cmdRepoCheck(rest, stdout, stderr)
 	case "apply":
 		return cmdRepoApply(rest, stdout, stderr)
+	case "rollback":
+		return cmdRepoRollback(rest, stdout, stderr)
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown repo subcommand %q", sub))
 	}
@@ -96,6 +100,10 @@ func cmdRepoCheck(args []string, stdout, stderr io.Writer) int {
 // .github/repo-settings.json and creates-or-updates the live GitHub
 // repository settings to match.  Never deletes rulesets it does not know
 // about.
+//
+// Before applying, it captures a pre-change snapshot of the live state into
+// <cwd>/.koryph/snapshots/settings-<timestamp>.json (skipped when the diff
+// is empty — nothing would change).  Roll back with `koryph repo rollback`.
 func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("repo apply", stderr)
 	repo := fs.String("repo", "", "repository in owner/name form (default: detected from git remote via gh)")
@@ -114,22 +122,95 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
-	src := posture.LocalSource{Root: "."}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	src := posture.LocalSource{Root: cwd}
 
-	// --- rulesets -----------------------------------------------------------
-	if _, err := src.RulesetsDir(); err == nil {
+	// --- diff to decide whether a snapshot is needed ----------------------
+	driftRulesets := false
+	driftSettings := false
+
+	if _, err2 := src.RulesetsDir(); err2 == nil {
+		d, err2 := posture.CheckRulesets(ctx, ghBin, repoSlug, src, stdout)
+		if err2 != nil {
+			return fail(stderr, err2)
+		}
+		driftRulesets = d
+	}
+
+	if _, err2 := src.RepoSettingsFile(); err2 == nil {
+		d, err2 := posture.CheckSettings(ctx, ghBin, repoSlug, src, stdout)
+		if err2 != nil {
+			return fail(stderr, err2)
+		}
+		driftSettings = d
+	}
+
+	anyDrift := driftRulesets || driftSettings
+	if !anyDrift {
+		// Nothing to do; diff already printed above.
+		return 0
+	}
+
+	// --- capture pre-change snapshot --------------------------------------
+	snapPath, err := posture.CaptureSnapshot(ctx, ghBin, repoSlug, cwd, "iac")
+	if err != nil {
+		// Non-fatal: warn but proceed with apply.
+		fmt.Fprintf(stderr, "warning: could not capture pre-change snapshot: %v\n", err)
+	} else {
+		fmt.Fprintf(stdout, "captured pre-change state → %s; rollback with koryph repo rollback\n", snapPath)
+	}
+
+	// --- apply -------------------------------------------------------------
+	if driftRulesets {
 		if err := posture.ApplyRulesets(ctx, ghBin, repoSlug, src, stdout); err != nil {
 			return fail(stderr, err)
 		}
 	}
 
-	// --- repo settings ------------------------------------------------------
-	if _, err := src.RepoSettingsFile(); err == nil {
+	if driftSettings {
 		if err := posture.ApplySettings(ctx, ghBin, repoSlug, src, stdout); err != nil {
 			return fail(stderr, err)
 		}
 	}
 
+	return 0
+}
+
+// cmdRepoRollback implements `koryph repo rollback [--repo owner/name] [--to <ts>|latest]`.
+//
+// It lists available pre-apply snapshots under <cwd>/.koryph/snapshots/, shows
+// the diff between the chosen snapshot and the current live state, then applies
+// the snapshot through the standard apply machinery.
+func cmdRepoRollback(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("repo rollback", stderr)
+	repo := fs.String("repo", "", "repository in owner/name form (default: detected from git remote via gh)")
+	to := fs.String("to", "latest", `snapshot selector: "latest" or a RFC3339 timestamp (or prefix, e.g. "2026-07-04T16")`)
+	setUsage(fs, stdout,
+		"roll back live repo settings to a pre-apply snapshot",
+		"[--repo owner/name] [--to <timestamp>|latest]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+
+	ctx := context.Background()
+	ghBin := posture.GHBin()
+
+	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+
+	if _, err := posture.Rollback(ctx, ghBin, repoSlug, cwd, *to, stdout, stderr); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 

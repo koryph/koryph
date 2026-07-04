@@ -165,6 +165,12 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Seed the .koryph/snapshots/ gitignore entry so pre-apply snapshots are
+	// never accidentally committed. Idempotent; non-fatal on failure.
+	if err := posture.EnsureGitignored(root); err != nil {
+		fmt.Fprintf(stderr, "koryph: warning: could not add .koryph/snapshots/ to .gitignore: %v\n", err)
+	}
+
 	if err := printJSON(stdout, rec); err != nil {
 		return fail(stderr, err)
 	}

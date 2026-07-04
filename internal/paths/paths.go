@@ -83,3 +83,17 @@ func PlanLogs(repoRoot string) string { return filepath.Join(repoRoot, ".plan-lo
 
 // KoryphRoot returns a project's koryph run directory root.
 func KoryphRoot(repoRoot string) string { return filepath.Join(PlanLogs(repoRoot), "koryph") }
+
+// ProjectKoryphDir returns the per-project ".koryph" directory at the repo
+// root. This is NOT the machine-wide KoryphHome (~/.koryph); it is the
+// repo-local metadata directory for koryph state specific to that project
+// (e.g. pre-apply snapshots under .koryph/snapshots/).
+func ProjectKoryphDir(repoRoot string) string { return filepath.Join(repoRoot, ".koryph") }
+
+// SnapshotsDir returns the directory where `koryph repo apply` /
+// `koryph posture apply` write pre-change snapshots. The directory lives
+// inside the project's .koryph/ directory so it stays with the repo.
+// Entries are gitignored by default; see posture.EnsureGitignored.
+func SnapshotsDir(repoRoot string) string {
+	return filepath.Join(ProjectKoryphDir(repoRoot), "snapshots")
+}
