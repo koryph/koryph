@@ -4,16 +4,12 @@
 package dispatch
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +17,8 @@ import (
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/claude"
 )
 
 // CLIBackend dispatches agents by shelling out to the claude CLI via a
@@ -107,44 +105,37 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		}
 	}
 
-	// 4. Build launch.sh (inspectable artifact).
+	// 4. Build launch.sh (inspectable artifact). argv/env are the claude
+	//    adapter's Command output (koryph-v8u.2) — this package no longer
+	//    decides the flag sequence or child-env construction itself; it only
+	//    embeds the result in the shell-script/detached-process shape that
+	//    is dispatch's own concern, not the Runtime interface's.
 	logPath := filepath.Join(s.PhaseDir, "session.log")
 	summaryPath := filepath.Join(s.PhaseDir, "SUMMARY.md")
 	launchPath := filepath.Join(s.PhaseDir, "launch.sh")
 	streamPath := filepath.Join(s.PhaseDir, "stream.jsonl")
 	stderrPath := filepath.Join(s.PhaseDir, "stderr.log")
 
-	args := []string{
-		"-p",
-		"--agent", sq(s.Persona),
-		"--session-id", sq(s.SessionID),
-		"--permission-mode", "dontAsk",
-		"--model", sq(s.Model),
+	rt := claude.Claude{Bin: claudeBin}
+	argv, env, err := rt.Command(toRuntimeSpec(s))
+	if err != nil {
+		return Handle{}, fmt.Errorf("dispatch %s: building claude command: %w", s.PhaseID, err)
 	}
-	if s.Effort != "" {
-		args = append(args, "--effort", sq(s.Effort))
-	}
-	if s.MaxBudgetUSD > 0 {
-		args = append(args, "--max-budget-usd", sq(strconv.FormatFloat(s.MaxBudgetUSD, 'f', -1, 64)))
-	}
-	args = append(args, "--fallback-model", "sonnet")
-	if s.SessionName != "" {
-		args = append(args, "--name", sq(s.SessionName))
-	}
-	if s.ResumeSessionID != "" {
-		args = append(args, "--resume", sq(s.ResumeSessionID), "--fork-session")
-	}
-	args = append(args,
-		"--add-dir", sq(s.PhaseDir),
-		"--output-format", "stream-json",
-		"--include-partial-messages",
-		"--verbose",
-	)
 
 	// KORYPH_HOME is exported (resolved absolute) so the guard hooks registered
 	// in .claude/settings.json as ${KORYPH_HOME:-$HOME/.koryph}/hooks/*.sh
 	// resolve to the central, agent-unwritable copy — never the worktree.
 	koryphHome := paths.KoryphHome()
+
+	// Quote every argv token for shell-embedding. Command returns plain,
+	// exec-ready values (see its doc); quoting a constant flag literal like
+	// -p or --permission-mode is a no-op once /bin/sh resolves the single
+	// quotes, so this is behavior-identical to the pre-extraction code that
+	// quoted only the dynamic subset.
+	quotedArgv := make([]string, len(argv))
+	for i, a := range argv {
+		quotedArgv[i] = sq(a)
+	}
 
 	var sb strings.Builder
 	sb.WriteString("#!/bin/sh\n")
@@ -159,7 +150,7 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		" KORYPH_SESSION_ID=" + sq(s.SessionID) +
 		" BEADS_DIR=" + sq(s.BeadsDir) + "\n")
 	sb.WriteString("cd " + sq(s.Worktree) + " || exit 97\n")
-	sb.WriteString("exec " + sq(claudeBin) + " " + strings.Join(args, " ") + " < " + sq(promptPath) + "\n")
+	sb.WriteString("exec " + strings.Join(quotedArgv, " ") + " < " + sq(promptPath) + "\n")
 
 	if err := fsx.WriteAtomic(launchPath, []byte(sb.String()), 0o755); err != nil {
 		return Handle{}, fmt.Errorf("dispatch %s: writing launch.sh: %w", s.PhaseID, err)
@@ -180,13 +171,7 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 
 	cmd := exec.Command("/bin/sh", launchPath)
 	cmd.Dir = s.Worktree
-	cmd.Env = account.ChildEnv(account.ChildEnvSpec{
-		Profile:     s.Profile,
-		Billing:     s.Billing,
-		APIKey:      s.APIKey,
-		SSHAuthSock: s.SSHAuthSock,
-		Passthrough: s.EnvPassthrough,
-	})
+	cmd.Env = env
 	cmd.Stdin = nil
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -216,10 +201,38 @@ func sq(v string) string {
 	return "'" + v + "'"
 }
 
-// resultLine is the tolerant shape of a stream-json "result" line.
-type resultLine struct {
-	Type         string   `json:"type"`
-	TotalCostUSD *float64 `json:"total_cost_usd"`
+// toRuntimeSpec converts a dispatch.Spec into the runtime-neutral
+// DispatchSpec the claude adapter's Command expects (koryph-v8u.2; see
+// internal/runtime's package doc for the field-for-field mapping this
+// mirrors). Every field not read here (ProjectID, RepoRoot, Branch, Attempt)
+// carries through unused by Command today, exactly as it was unused by
+// Dispatch's own former argv construction.
+func toRuntimeSpec(s Spec) runtime.DispatchSpec {
+	return runtime.DispatchSpec{
+		ProjectID:        s.ProjectID,
+		RepoRoot:         s.RepoRoot,
+		RunID:            s.RunID,
+		PhaseID:          s.PhaseID,
+		PhaseDir:         s.PhaseDir,
+		Worktree:         s.Worktree,
+		Branch:           s.Branch,
+		Persona:          s.Persona,
+		Model:            s.Model,
+		Effort:           s.Effort,
+		Profile:          runtime.Profile{Name: s.Profile.Name, ConfigDir: s.Profile.ConfigDir},
+		ExpectedIdentity: s.ExpectedIdentity,
+		Billing:          runtime.BillingMode(s.Billing),
+		APIKey:           s.APIKey,
+		MaxBudgetUSD:     s.MaxBudgetUSD,
+		Prompt:           s.Prompt,
+		SessionID:        s.SessionID,
+		SessionName:      s.SessionName,
+		ResumeSessionID:  s.ResumeSessionID,
+		BeadsDir:         s.BeadsDir,
+		Attempt:          s.Attempt,
+		SSHAuthSock:      s.SSHAuthSock,
+		EnvPassthrough:   s.EnvPassthrough,
+	}
 }
 
 // ParseResultCost scans a stream.jsonl for the LAST line whose JSON has
@@ -227,60 +240,19 @@ type resultLine struct {
 // is_error==true still returns its cost (we never filter on is_error —
 // false is a valid value). Returns (0, false) when no result line with a
 // cost is found or the file is unreadable.
+//
+// The scan itself lives in internal/runtime/claude (koryph-v8u.2) — this is
+// now a thin path-opening wrapper over the claude adapter's reader-based
+// ParseResultCost, so dispatch, review (via stage.go's reuse), and any
+// future generic Event consumer share exactly one parsing implementation.
 func ParseResultCost(streamPath string) (float64, bool) {
 	f, err := os.Open(streamPath)
 	if err != nil {
 		return 0, false
 	}
 	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	var cost float64
-	var found bool
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-		var rec resultLine
-		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
-		}
-		if rec.Type != "result" {
-			continue
-		}
-		if rec.TotalCostUSD != nil {
-			cost, found = *rec.TotalCostUSD, true
-		} else {
-			cost, found = 0, false
-		}
-	}
-	return cost, found
+	return claude.ParseResultCost(f)
 }
-
-// rlEvent is the tolerant stream-json shape scanned for a rate-limit/overload
-// signal (koryph-2im.4, docs/designs/2026-07-scheduler-throughput.md L5). The
-// Claude CLI surfaces an API error in more than one shape across versions —
-// a top-level "error" event, an "error" object embedded in a result, or free
-// text in a result's subtype/message/result fields (typically something like
-// `API Error: 429 {"type":"error","error":{"type":"rate_limit_error",...}}`)
-// — so every field that might carry the marker is captured and scanned.
-type rlEvent struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype,omitempty"`
-	IsError *bool  `json:"is_error,omitempty"`
-	Message string `json:"message,omitempty"`
-	Result  string `json:"result,omitempty"`
-	Error   *struct {
-		Type    string `json:"type,omitempty"`
-		Message string `json:"message,omitempty"`
-	} `json:"error,omitempty"`
-}
-
-// rateLimitMarkers are the substrings (matched case-insensitively) that
-// identify a Claude API rate-limit or overload error.
-var rateLimitMarkers = []string{"429", "rate_limit_error", "overloaded_error"}
 
 // ParseRateLimited scans a stream.jsonl for an API rate-limit/overload marker
 // inside an error-flagged event: a top-level "error" event, a "result" event
@@ -292,39 +264,16 @@ var rateLimitMarkers = []string{"429", "rate_limit_error", "overloaded_error"}
 // qualifying event anywhere in the stream marks the whole run rate-limited,
 // since it is the agent's subsequent death that completeSlot reacts to.
 // Returns false when the file is unreadable or no line qualifies.
+//
+// The scan itself lives in internal/runtime/claude (koryph-v8u.2); see
+// ParseResultCost's doc above for why this is now a thin wrapper.
 func ParseRateLimited(streamPath string) bool {
 	f, err := os.Open(streamPath)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-		var ev rlEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
-		}
-		errorish := ev.Type == "error" || ev.Error != nil || (ev.IsError != nil && *ev.IsError)
-		if !errorish {
-			continue
-		}
-		haystack := strings.ToLower(ev.Subtype + " " + ev.Message + " " + ev.Result)
-		if ev.Error != nil {
-			haystack += " " + strings.ToLower(ev.Error.Type+" "+ev.Error.Message)
-		}
-		for _, marker := range rateLimitMarkers {
-			if strings.Contains(haystack, marker) {
-				return true
-			}
-		}
-	}
-	return false
+	return claude.ParseRateLimited(f)
 }
 
 // Alive reports whether pid is a live process (signal 0 probe).
