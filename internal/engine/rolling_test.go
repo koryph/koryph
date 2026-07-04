@@ -466,7 +466,7 @@ func TestRollingDrainedExitFinalizesAndDropsDemand(t *testing.T) {
 		t.Errorf("run status = %q, want %q", run.Status, ledger.RunDrained)
 	}
 
-	_, _, demand, err := gs.Snapshot()
+	_, _, demand, err := gs.Snapshot(govern.DefaultPool)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
