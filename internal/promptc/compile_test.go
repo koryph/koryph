@@ -119,6 +119,21 @@ func TestPreambleForbiddenOperations(t *testing.T) {
 	}
 }
 
+// TestPreambleInboxCheckedAtStartAndFinish is the koryph-o72 leg-3 regression
+// test: the preamble must tell the agent to read INBOX.md at the start and
+// again before finishing, not just "between steps" — a nudge landed after
+// dispatch but before the first poll (or right before the agent wraps up)
+// would otherwise go unseen.
+func TestPreambleInboxCheckedAtStartAndFinish(t *testing.T) {
+	p := Preamble("v1")
+	if !strings.Contains(p, "when you start") {
+		t.Errorf("preamble missing an explicit at-start INBOX.md check: %q", p)
+	}
+	if !strings.Contains(p, "before you finish") {
+		t.Errorf("preamble missing an explicit before-finishing INBOX.md check: %q", p)
+	}
+}
+
 func TestResumeAndReviewBlocksConditional(t *testing.T) {
 	// Absent by default.
 	out := Compile(baseInput())
@@ -161,6 +176,35 @@ func TestPlanBlockConditional(t *testing.T) {
 	}
 	if !strings.Contains(out, "```yaml\nsteps:\n  - one\n```") {
 		t.Errorf("plan block not fenced as expected:\n%s", out)
+	}
+}
+
+// TestOperatorNotesAppearVerbatim is the koryph-o72 leg-1 regression test: a
+// note appended to a bead pre-dispatch (bd's --append-notes, which lands in
+// Issue.Notes via the adapter) must appear verbatim in the compiled prompt,
+// clearly delimited from the original description.
+func TestOperatorNotesAppearVerbatim(t *testing.T) {
+	// Absent by default — no phantom section when notes are empty.
+	out := Compile(baseInput())
+	if strings.Contains(out, "OPERATOR NOTES") {
+		t.Errorf("OPERATOR NOTES section should be absent when Bead.Notes is empty")
+	}
+
+	in := baseInput()
+	in.Bead.Notes = "scope also covers the retry path — do not ship without it"
+	out = Compile(in)
+	if !strings.Contains(out, "### OPERATOR NOTES") {
+		t.Errorf("OPERATOR NOTES section missing when Bead.Notes is set:\n%s", out)
+	}
+	if !strings.Contains(out, "scope also covers the retry path — do not ship without it") {
+		t.Errorf("operator note text missing verbatim from compiled prompt:\n%s", out)
+	}
+	// Must appear in the volatile tail (after the task heading), not the
+	// cache-stable preamble/project sections.
+	iTask := strings.Index(out, "## Task bd-42")
+	iNotes := strings.Index(out, "### OPERATOR NOTES")
+	if iNotes < iTask {
+		t.Errorf("OPERATOR NOTES section should be in the volatile tail (after %d), got index %d", iTask, iNotes)
 	}
 }
 

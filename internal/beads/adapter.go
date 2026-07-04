@@ -151,6 +151,22 @@ func (a *Adapter) Comment(ctx context.Context, id, text string) error {
 	return err
 }
 
+// AppendNotes appends text to an issue's notes via
+// `bd update <id> --append-notes <text>` (bd joins with a newline separator).
+//
+// This is the reliable pre-dispatch nudge channel (koryph-o72): a bd comment
+// is a one-way audit trail — nothing reads bd's comments back into a Show/
+// Ready result, so promptc never sees it — and INBOX.md only exists once a
+// specific dispatch has created a phase dir, which may not happen in the run
+// active when the operator nudges (a still-queued bead can be dispatched by
+// an entirely later `koryph run` invocation). Notes, by contrast, are part
+// of every `bd show`/`bd ready` result (Issue.Notes) and promptc.Compile
+// folds them into whichever future dispatch actually picks the bead up.
+func (a *Adapter) AppendNotes(ctx context.Context, id, text string) error {
+	_, err := a.run(ctx, "update", id, "--append-notes", text)
+	return err
+}
+
 // Close closes an issue via `bd close <id> --reason <reason>`.
 func (a *Adapter) Close(ctx context.Context, id, reason string) error {
 	_, err := a.run(ctx, "close", id, "--reason", reason)
@@ -359,6 +375,7 @@ type wireIssue struct {
 	ID              string       `json:"id"`
 	Title           string       `json:"title"`
 	Description     string       `json:"description"`
+	Notes           string       `json:"notes"`
 	Status          string       `json:"status"`
 	Priority        wirePriority `json:"priority"`
 	IssueType       string       `json:"issue_type"`
@@ -377,6 +394,7 @@ func (w wireIssue) toIssue() Issue {
 		ID:              w.ID,
 		Title:           w.Title,
 		Description:     w.Description,
+		Notes:           w.Notes,
 		Status:          w.Status,
 		Priority:        int(w.Priority),
 		IssueType:       w.IssueType,

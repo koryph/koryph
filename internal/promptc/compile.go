@@ -72,8 +72,11 @@ contract is identical for every dispatch of this engine version.
     - Follow-ups
     - Test evidence
     - Changes requiring orchestrator review
-- Between steps, check INBOX.md in your phase directory for operator nudges
-  and adjust course when you find one.`
+- Read INBOX.md in your phase directory when you start, between every step,
+  and again right before you finish: a nudge appended right after dispatch
+  (before your first heartbeat is even polled) is otherwise invisible until
+  your next check-in, and one appended near the end can still change what
+  "done" means.`
 
 // projectBlock returns section [2]: stable per project. Conventions, the
 // green gate, and optional cross-cutting gates and bootstrap notes. No
@@ -128,6 +131,18 @@ func volatileTail(in Input) string {
 	if strings.TrimSpace(in.Bead.Description) != "" {
 		b.WriteString("\n\n")
 		b.WriteString(strings.TrimRight(in.Bead.Description, "\n"))
+	}
+
+	// OPERATOR NOTES (koryph-o72): an addendum sent via `bd update
+	// --append-notes` while this bead was still queued — before any agent
+	// was dispatched to see it. Notes are operator guidance by construction
+	// (nothing else writes bd's notes field), so they are rendered as
+	// binding scope, clearly delimited from the bead's original description
+	// above so a reader can tell what was filed vs. what was added later.
+	if strings.TrimSpace(in.Bead.Notes) != "" {
+		b.WriteString("\n\n### OPERATOR NOTES\n")
+		b.WriteString("Added after this bead was filed — treat as required scope, not optional:\n\n")
+		b.WriteString(strings.TrimRight(in.Bead.Notes, "\n"))
 	}
 
 	if strings.TrimSpace(in.PlanYAML) != "" {

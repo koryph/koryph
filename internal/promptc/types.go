@@ -8,9 +8,16 @@
 //	                        checkpoint discipline). Cache-friendly.
 //	[2] project block     — stable per project (conventions, gate commands,
 //	                        cross-cutting gates, bootstrap notes).
-//	[3] volatile tail     — the bead (title/description/plan), resume
-//	                        context (RESUMING block with commit log guidance
-//	                        + review findings path), nudge inbox pointer.
+//	[3] volatile tail     — the bead (title/description/OPERATOR NOTES/plan),
+//	                        resume context (RESUMING block with commit log
+//	                        guidance + review findings path), nudge inbox
+//	                        pointer.
+//
+// OPERATOR NOTES (koryph-o72): Bead.Notes carries any addendum appended via
+// `bd update --append-notes` while the bead was still queued — i.e. before
+// any agent existed to read an INBOX.md. It is rendered as its own
+// clearly-delimited section whenever non-empty (compile.go's volatileTail),
+// so a pre-dispatch nudge is guaranteed to reach the agent it was meant for.
 //
 // The engine preamble MUST include the agent boundary contract:
 //   - work only in your worktree, on your branch
@@ -21,7 +28,8 @@
 //     heartbeats {state, step, pct} and a SUMMARY.md with sections:
 //     What shipped / Stubs shipped / Follow-ups / Test evidence /
 //     Changes requiring orchestrator review
-//   - check INBOX.md in your phase dir between steps for operator nudges
+//   - check INBOX.md in your phase dir at start, between steps, and again
+//     before finishing, for operator nudges sent after dispatch
 //
 // Implementation contract (compile.go):
 //   - Compile(Input) string — deterministic, no timestamps inside sections

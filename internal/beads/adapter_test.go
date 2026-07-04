@@ -30,8 +30,9 @@ case "$1" in
     printf '[{"id":"a-1","title":"Alpha","status":"open","priority":1,"issue_type":"task","labels":["fp:go:api"],"parent_id":"epic-1"},{"id":"a-2","title":"Beta","status":"open","priority":0,"issue_type":"task","labels":null}]'
     ;;
   show)
-    # {"issue":{...}} envelope, string priority "P2".
-    printf '{"issue":{"id":"a-9","title":"Gamma","status":"in_progress","priority":"P2","issue_type":"task","labels":["area:web"]}}'
+    # {"issue":{...}} envelope, string priority "P2", non-empty notes (a
+    # pre-dispatch operator addendum, koryph-o72).
+    printf '{"issue":{"id":"a-9","title":"Gamma","status":"in_progress","priority":"P2","issue_type":"task","labels":["area:web"],"notes":"pre-dispatch addendum"}}'
     ;;
   list)
     # {"issues":[...]} envelope.
@@ -150,6 +151,9 @@ func TestShowStringPriorityAndEnvelope(t *testing.T) {
 	if got.Status != "in_progress" {
 		t.Fatalf("status = %q", got.Status)
 	}
+	if got.Notes != "pre-dispatch addendum" {
+		t.Fatalf("notes = %q, want the bd notes field carried verbatim (koryph-o72)", got.Notes)
+	}
 	if args := lastArgs(t, log)[0]; args != "show a-9 --json" {
 		t.Fatalf("show argv = %q", args)
 	}
@@ -177,6 +181,7 @@ func TestMutationVerbs(t *testing.T) {
 		want string
 	}{
 		{"comment", func(a *Adapter) error { return a.Comment(ctx, "x-1", "hello world") }, "comment x-1 hello world"},
+		{"appendnotes", func(a *Adapter) error { return a.AppendNotes(ctx, "x-1", "pre-dispatch nudge") }, "update x-1 --append-notes pre-dispatch nudge"},
 		{"close", func(a *Adapter) error { return a.Close(ctx, "x-1", "done") }, "close x-1 --reason done"},
 		{"claim", func(a *Adapter) error { return a.Claim(ctx, "x-1") }, "update x-1 --claim"},
 		{"setstatus", func(a *Adapter) error { return a.SetStatus(ctx, "x-1", "blocked") }, "update x-1 --status blocked"},

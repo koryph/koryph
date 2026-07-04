@@ -17,6 +17,11 @@
 //   - Create(ctx, CreateInput) (id string, error) — `bd create --silent
 //     --body-file -` for a single bead; returns the new id.
 //   - Comment(ctx, id, text) error
+//   - AppendNotes(ctx, id, text) error — `bd update <id> --append-notes
+//     <text>`; the reliable pre-dispatch nudge channel (koryph-o72): unlike
+//     INBOX.md (only exists once a specific dispatch's phase dir exists),
+//     `bd show`/`bd ready` always return Issue.Notes, and promptc.Compile
+//     folds it into every future dispatch's prompt.
 //   - Close(ctx, id, reason) error
 //   - Claim(ctx, id) error / SetStatus(ctx, id, status) error
 //   - CreateGraph(ctx, graphJSON, dryRun) (string, error)
@@ -34,9 +39,17 @@ package beads
 
 // Issue is the subset of bd's JSON the engine consumes.
 type Issue struct {
-	ID              string   `json:"id"`
-	Title           string   `json:"title"`
-	Description     string   `json:"description,omitempty"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	// Notes carries bd's free-form `notes` field verbatim, as populated by
+	// `bd update --notes`/`--append-notes`. This is the reliable channel for
+	// an operator addendum sent while a bead is still queued (koryph-o72):
+	// `bd show --json`/`bd ready --json` return it unconditionally, so
+	// promptc.Compile can fold it into whichever future dispatch picks the
+	// bead up — unlike INBOX.md, which only exists once a specific dispatch
+	// has created a phase dir (see cmd/koryph cmdNudge).
+	Notes           string   `json:"notes,omitempty"`
 	Status          string   `json:"status"`
 	Priority        int      `json:"priority"`
 	IssueType       string   `json:"issue_type"`
