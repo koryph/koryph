@@ -150,3 +150,13 @@ sbom: ## Generate an SPDX SBOM of the module into dist/ (requires syft)
 	@mkdir -p dist
 	syft scan dir:. --source-name koryph -o spdx-json=dist/koryph.spdx.json
 	@echo "wrote dist/koryph.spdx.json"
+
+##@ Repo administration (IaC — requires admin-scoped gh auth)
+
+.PHONY: repo-check
+repo-check: ## Diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)
+	@fail=0; for s in scripts/ensure-*.sh; do "$$s" --check || fail=1; done; exit $$fail
+
+.PHONY: repo-apply
+repo-apply: ## Apply .github IaC (rulesets, repo settings) to the live repo
+	@for s in scripts/ensure-*.sh; do "$$s" --apply; done

@@ -27,6 +27,7 @@ path = [
   "internal/commands/*.md",
   "internal/release/*.json.tmpl",
   ".github/rulesets/*.json",
+  ".github/repo-settings.json",
   "docs/user-guide/doctor.md",
   ".beads/.gitignore",
   ".beads/config.yaml",
