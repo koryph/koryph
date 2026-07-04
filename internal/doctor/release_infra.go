@@ -427,9 +427,14 @@ func checkBotCredentials(opts ProjectOptions, cfg *project.Config) []Finding {
 
 	var out []Finding
 	for _, f := range credFindings {
-		level := LevelOK
-		if f.Level == bot.CheckFail {
+		var level Level
+		switch f.Level {
+		case bot.CheckFail:
 			level = LevelWarn // corrupted credentials are a warning, not a hard error
+		case bot.CheckWarn:
+			level = LevelWarn // posture warnings (e.g. inline plaintext token) must surface
+		default:
+			level = LevelOK
 		}
 		out = append(out, Finding{
 			Check:   checkNameBotCredentials,

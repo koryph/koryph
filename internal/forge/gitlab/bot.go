@@ -95,7 +95,9 @@ func (s *gitlabBotSvc) SetSecrets(ctx context.Context, cfg forge.BotConfig, owne
 		expiry = info.ExpiresAt
 	}
 
-	projectID := url.PathEscape(ownerRepo)
+	// Pass the raw "namespace/project" slug; SetProjectVariable applies
+	// url.PathEscape internally. Pre-escaping here would produce %252F (double-
+	// encoded) and a 404 for any namespaced project.
 
 	for _, v := range []struct {
 		key    string
@@ -105,7 +107,7 @@ func (s *gitlabBotSvc) SetSecrets(ctx context.Context, cfg forge.BotConfig, owne
 		{"KORYPH_BOT_TOKEN", token, true},
 		{"KORYPH_BOT_TOKEN_EXPIRY", expiry, false},
 	} {
-		if err := SetProjectVariable(ctx, token, projectID, v.key, v.val, v.masked); err != nil {
+		if err := SetProjectVariable(ctx, token, ownerRepo, v.key, v.val, v.masked); err != nil {
 			return fmt.Errorf("gitlab bot: SetSecrets: set %s: %w", v.key, err)
 		}
 	}
@@ -162,10 +164,17 @@ func fetchTokenSelf(ctx context.Context, token, host string) (*tokenSelfInfo, er
 	return &info, nil
 }
 
+// errVariableNotFound is returned by doVariableRequest when the API returns
+// HTTP 404 (variable does not exist yet). SetProjectVariable uses this sentinel
+// to distinguish a missing-variable 404 from auth, network, or 5xx failures —
+// only a 404 should trigger the PUT→POST fallback.
+var errVariableNotFound = fmt.Errorf("gitlab variable: not found (HTTP 404)")
+
 // SetProjectVariable creates or updates a GitLab CI/CD variable on the
 // project identified by projectID ("namespace/project" slug — URL-encoding is
 // applied internally). It attempts PUT (update) first; falls back to POST
-// (create) on 404.
+// (create) only on HTTP 404. Any other error (auth, network, 5xx) is returned
+// directly so the caller sees the real failure, not a misleading create attempt.
 //
 // masked controls whether the variable is masked in job logs. Only set
 // masked=true for actual secrets; GitLab requires masked values to be ≥8
@@ -187,18 +196,26 @@ func SetProjectVariable(ctx context.Context, token, projectID, key, value string
 	body.Set("protected", "true")
 	body.Set("variable_type", "env_var")
 
-	// Try PUT (update existing variable).
-	if err := doVariableRequest(ctx, token, http.MethodPut, apiBase, body); err == nil {
+	// Try PUT (update existing variable). Fall back to POST only on 404; any
+	// other error (auth, network, 5xx) is propagated so the caller sees the
+	// real failure rather than a misleading "create" attempt.
+	putErr := doVariableRequest(ctx, token, http.MethodPut, apiBase, body)
+	if putErr == nil {
 		return nil
 	}
+	if putErr != errVariableNotFound {
+		return putErr
+	}
 
-	// Variable may not exist yet — try POST (create).
+	// Variable does not exist yet — create it.
 	createURL := glAPIBase() + "/projects/" + escapedID + "/variables"
 	body.Set("key", key)
 	return doVariableRequest(ctx, token, http.MethodPost, createURL, body)
 }
 
 // doVariableRequest executes an HTTP request to the GitLab variables API.
+// It returns [errVariableNotFound] on HTTP 404 so callers can distinguish
+// a missing-variable response from other failures.
 func doVariableRequest(ctx context.Context, token, method, rawURL string, form url.Values) error {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL,
 		strings.NewReader(form.Encode()))
@@ -216,7 +233,7 @@ func doVariableRequest(ctx context.Context, token, method, rawURL string, form u
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("not found (HTTP 404)")
+		return errVariableNotFound
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)

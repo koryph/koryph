@@ -153,7 +153,9 @@ func List() ([]string, error) {
 			continue
 		}
 		n := e.Name()
-		if strings.HasSuffix(n, ".json") {
+		// Exclude *.gitlab.json — those are GitLab bot credentials read by
+		// ListGitLab() and must not be parsed as GitHub App configs.
+		if strings.HasSuffix(n, ".json") && !strings.HasSuffix(n, ".gitlab.json") {
 			names = append(names, strings.TrimSuffix(n, ".json"))
 		}
 	}
