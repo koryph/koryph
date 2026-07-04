@@ -6,6 +6,7 @@
 // [forge.Forge] interface for GitLab.com and self-hosted GitLab instances.
 //
 // Services backed by real GitLab logic:
+//   - [forge.PRService]  — MR list/get/create/close/reopen/checks/merge/approve/labels
 //   - [forge.BotService] — guided project/group access-token creation, scope
 //     and expiry validation, CI variable management
 //
@@ -13,7 +14,6 @@
 // later beads:
 //   - [forge.RepoService]       — future bead
 //   - [forge.ProtectionService] — future bead
-//   - [forge.PRService]         — future bead
 //   - [forge.SecretsService]    — future bead
 //   - [forge.ReleaseService]    — future bead
 //   - [forge.CIService]         — future bead
@@ -75,8 +75,9 @@ func (p *Provider) Repo() forge.RepoService { return &stubRepoSvc{} }
 // Protection returns a stub; to be implemented in a future bead.
 func (p *Provider) Protection() forge.ProtectionService { return &stubProtectionSvc{} }
 
-// PRs returns a stub; to be implemented in a future bead.
-func (p *Provider) PRs() forge.PRService { return &stubPRSvc{} }
+// PRs returns the GitLab MR service backed by the GitLab REST API v4.
+// Set KORYPH_GITLAB_TOKEN to a personal or project access token with api scope.
+func (p *Provider) PRs() forge.PRService { return &gitlabPRSvc{} }
 
 // Secrets returns a stub; to be implemented in a future bead.
 func (p *Provider) Secrets() forge.SecretsService { return &stubSecretsSvc{} }
@@ -116,39 +117,6 @@ func (s *stubProtectionSvc) Update(_ context.Context, _ string, _ *forge.Ruleset
 	return forge.ErrUnsupported
 }
 func (s *stubProtectionSvc) Delete(_ context.Context, _, _ string) error {
-	return forge.ErrUnsupported
-}
-
-type stubPRSvc struct{}
-
-func (s *stubPRSvc) List(_ context.Context, _, _ string, _ forge.ListPROptions) ([]forge.PR, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Get(_ context.Context, _, _ string, _ int) (*forge.PR, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Create(_ context.Context, _, _, _, _, _, _ string) (*forge.PR, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Close(_ context.Context, _, _ string, _ int) error {
-	return forge.ErrUnsupported
-}
-func (s *stubPRSvc) Reopen(_ context.Context, _, _ string, _ int) error {
-	return forge.ErrUnsupported
-}
-func (s *stubPRSvc) ListChecks(_ context.Context, _, _ string, _ int) ([]forge.CheckRun, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubPRSvc) Merge(_ context.Context, _, _ string, _ int, _ forge.MergeOptions) error {
-	return forge.ErrUnsupported
-}
-func (s *stubPRSvc) Approve(_ context.Context, _, _ string, _ int, _ string) error {
-	return forge.ErrUnsupported
-}
-func (s *stubPRSvc) AddLabels(_ context.Context, _, _ string, _ int, _ []string) error {
-	return forge.ErrUnsupported
-}
-func (s *stubPRSvc) RemoveLabels(_ context.Context, _, _ string, _ int, _ []string) error {
 	return forge.ErrUnsupported
 }
 
@@ -192,7 +160,7 @@ var (
 	_ forge.Forge             = (*Provider)(nil)
 	_ forge.RepoService       = (*stubRepoSvc)(nil)
 	_ forge.ProtectionService = (*stubProtectionSvc)(nil)
-	_ forge.PRService         = (*stubPRSvc)(nil)
+	_ forge.PRService         = (*gitlabPRSvc)(nil)
 	_ forge.SecretsService    = (*stubSecretsSvc)(nil)
 	_ forge.ReleaseService    = (*stubReleaseSvc)(nil)
 	_ forge.CIService         = (*stubCISvc)(nil)
