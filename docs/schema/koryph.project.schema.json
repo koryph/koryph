@@ -22,6 +22,17 @@
       ],
       "description": "FootprintRule maps a path glob (doublestar-lite: '*' within a segment, '**' across segments, evaluated by sched) to footprint tokens."
     },
+    "GoreleaserBuild": {
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version constrains the GoReleaser action version, e.g. \"~\u003e v2.16\".\nDefaults to \"~\u003e v2\" when empty."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "GoreleaserBuild configures the GoReleaser build mode (mode A) for the project's release pipeline."
+    },
     "IntakeSource": {
       "properties": {
         "provider": {
@@ -98,6 +109,62 @@
         "name"
       ],
       "description": "PipelineStage is one post-implement stage in the project pipeline."
+    },
+    "ReleaseBuildConfig": {
+      "properties": {
+        "goreleaser": {
+          "$ref": "#/$defs/GoreleaserBuild",
+          "description": "Goreleaser, when non-nil, selects mode A: GoReleaser-managed builds."
+        },
+        "commands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Commands, when non-empty, selects mode B: an ordered list of shell\ncommands (each run via sh -c) that build and stage artifacts."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ReleaseBuildConfig is the build sub-block of ReleaseConfig: exactly one of Goreleaser or Commands must be set (enforced by project.Config.Validate)."
+    },
+    "ReleaseConfig": {
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Type is the release-please release type, e.g. \"go\", \"simple\",\n\"node\". See https://github.com/googleapis/release-please#release-types."
+        },
+        "extra_files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "ExtraFiles lists additional files whose version strings release-please\nshould bump, e.g. [\"internal/version/version.go\"]."
+        },
+        "artifacts_dir": {
+          "type": "string",
+          "description": "ArtifactsDir is the directory where build artifacts land (default:\n\"dist\"). GoReleaser and mode-B commands should write outputs here."
+        },
+        "build": {
+          "$ref": "#/$defs/ReleaseBuildConfig",
+          "description": "Build is the build configuration: exactly one of Goreleaser or\nCommands must be set."
+        },
+        "sbom": {
+          "type": "boolean",
+          "description": "SBOM enables SBOM generation via anchore/sbom-action during the build."
+        },
+        "provenance": {
+          "type": "boolean",
+          "description": "Provenance enables SLSA provenance via\nslsa-framework/slsa-github-generator (generic, level 3)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "build"
+      ],
+      "description": "ReleaseConfig is the optional release sub-block of koryph.project.json."
     },
     "RuntimeConfig": {
       "properties": {
@@ -343,6 +410,10 @@
       },
       "type": "object",
       "description": "Runtimes configures per-runtime settings for this project, keyed by\nruntime name — the same string a bead's `runtime:\u003cname\u003e` label and\nDefaultRuntime use, and runtime.Runtime.Name()'s value. See\nRuntimeConfig's doc for how minimal this is today."
+    },
+    "release": {
+      "$ref": "#/$defs/ReleaseConfig",
+      "description": "Release, when non-nil, configures the project's release pipeline\n(managed by `koryph release setup`). It drives template rendering for\nthe caller GitHub Actions workflow and the release-please config.\nExactly one build mode (Build.Goreleaser or Build.Commands) must be\nset when this block is present (enforced by Validate)."
     }
   },
   "additionalProperties": false,

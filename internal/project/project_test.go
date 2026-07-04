@@ -73,6 +73,16 @@ func fullConfig() *Config {
 		Runtimes: map[string]RuntimeConfig{
 			"claude": {Enabled: true, ModelMap: map[string]string{"frontier": "fable"}},
 		},
+		Release: &ReleaseConfig{
+			Type:         "go",
+			ExtraFiles:   []string{"internal/version/version.go"},
+			ArtifactsDir: "dist",
+			Build: ReleaseBuildConfig{
+				Goreleaser: &GoreleaserBuild{Version: "~> v2.16"},
+			},
+			SBOM:       true,
+			Provenance: true,
+		},
 	}
 }
 
@@ -80,8 +90,18 @@ func fullConfig() *Config {
 // its zero value. This is the coverage forcing-function: adding a field to
 // Config without populating it here trips this test, which is the signal to
 // extend fullConfig — and thereby the round-trip test — for the new field.
+//
+// The skip map exempts inactive branches of union types that are intentionally
+// zero because their complementary field is active. Each exempted path must
+// have a companion *Validation test exercising the inactive branch.
 func TestConfig_AllFieldsPopulated(t *testing.T) {
-	assertNoZeroFields(t, reflect.ValueOf(fullConfig()), "Config")
+	// ReleaseBuildConfig is a union: fullConfig uses Goreleaser (mode A), so
+	// Commands (mode B) is intentionally empty.
+	// TestReleaseConfig_Validation exercises the Commands branch.
+	skip := map[string]bool{
+		"Config.Release.Build.Commands": true,
+	}
+	assertNoZeroFields(t, reflect.ValueOf(fullConfig()), "Config", skip)
 }
 
 // TestConfig_RoundTripPreservesEveryField is the direct regression guard for
@@ -266,6 +286,40 @@ func TestConfig_DefaultRuntimeValidation(t *testing.T) {
 	}
 }
 
+// TestReleaseConfig_Validation covers the release block contract:
+// type required, exactly one build mode, both modes independently valid.
+func TestReleaseConfig_Validation(t *testing.T) {
+	base := func(r *ReleaseConfig) *Config {
+		c := Default("proj")
+		c.Release = r
+		return c
+	}
+	goreleaser := &GoreleaserBuild{Version: "~> v2.16"}
+	cases := []struct {
+		name    string
+		rel     *ReleaseConfig
+		wantErr string
+	}{
+		{"nil release block is fine", nil, ""},
+		{"goreleaser mode (mode A) valid", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}}, ""},
+		{"commands mode (mode B) valid", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Commands: []string{"make build"}}}, ""},
+		{"both modes set is rejected", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser, Commands: []string{"make build"}}}, "only one build mode"},
+		{"no mode set is rejected", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{}}, "exactly one build mode is required"},
+		{"missing type is rejected", &ReleaseConfig{Build: ReleaseBuildConfig{Goreleaser: goreleaser}}, "release.type is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.rel).Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfig_LandMethod(t *testing.T) {
 	for method, want := range map[string]string{"": "ff", "ff": "ff", "squash": "squash"} {
 		if got := (&Config{MergeMethod: method}).LandMethod(); got != want {
@@ -328,15 +382,24 @@ func TestConfig_EnforceConventional(t *testing.T) {
 // and false bools all fail. It descends into structs, pointer-to-struct, and
 // struct elements of slices/maps so nested config (signing.Config, FootprintRule)
 // is covered too.
-func assertNoZeroFields(t *testing.T, v reflect.Value, path string) {
+//
+// skip is a set of dot-separated field paths (e.g. "Config.Release.Build.Commands")
+// to exempt from the zero-value check. Use this ONLY for inactive branches of
+// union types — fields that are intentionally zero because their complementary
+// field in the same union is active. Every exemption must have a companion
+// TestConfig_*Validation test that exercises the inactive branch.
+func assertNoZeroFields(t *testing.T, v reflect.Value, path string, skip map[string]bool) {
 	t.Helper()
+	if skip[path] {
+		return
+	}
 	switch v.Kind() {
 	case reflect.Ptr:
 		if v.IsNil() {
 			t.Errorf("%s: nil pointer (field left unset)", path)
 			return
 		}
-		assertNoZeroFields(t, v.Elem(), path)
+		assertNoZeroFields(t, v.Elem(), path, skip)
 	case reflect.Struct:
 		typ := v.Type()
 		for i := 0; i < v.NumField(); i++ {
@@ -344,7 +407,7 @@ func assertNoZeroFields(t *testing.T, v reflect.Value, path string) {
 			if f.PkgPath != "" {
 				continue // unexported
 			}
-			assertNoZeroFields(t, v.Field(i), path+"."+f.Name)
+			assertNoZeroFields(t, v.Field(i), path+"."+f.Name, skip)
 		}
 	case reflect.Slice, reflect.Map:
 		if v.Len() == 0 {
@@ -355,7 +418,7 @@ func assertNoZeroFields(t *testing.T, v reflect.Value, path string) {
 			// Descend into struct elements (e.g. FootprintRule) to keep their
 			// sub-fields covered.
 			if elem := v.Index(0); elem.Kind() == reflect.Struct {
-				assertNoZeroFields(t, elem, path+"[0]")
+				assertNoZeroFields(t, elem, path+"[0]", skip)
 			}
 		}
 	default:

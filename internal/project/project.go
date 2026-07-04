@@ -69,6 +69,63 @@ type PipelineStage struct {
 	Optional bool `json:"optional,omitempty"`
 }
 
+// GoreleaserBuild configures the GoReleaser build mode (mode A) for the
+// project's release pipeline. The referenced .goreleaser.yaml must exist in
+// the project root and configure artifact output to ArtifactsDir.
+type GoreleaserBuild struct {
+	// Version constrains the GoReleaser action version, e.g. "~> v2.16".
+	// Defaults to "~> v2" when empty.
+	Version string `json:"version,omitempty"`
+}
+
+// ReleaseBuildConfig is the build sub-block of ReleaseConfig: exactly one of
+// Goreleaser or Commands must be set (enforced by project.Config.Validate).
+//
+// Mode A (Goreleaser != nil): GoReleaser drives cross-platform artifact
+// creation via .goreleaser.yaml in the project root.
+// Mode B (len(Commands) > 0): an ordered list of shell commands (each run via
+// sh -c) builds and places artifacts into ArtifactsDir.
+type ReleaseBuildConfig struct {
+	// Goreleaser, when non-nil, selects mode A: GoReleaser-managed builds.
+	Goreleaser *GoreleaserBuild `json:"goreleaser,omitempty"`
+
+	// Commands, when non-empty, selects mode B: an ordered list of shell
+	// commands (each run via sh -c) that build and stage artifacts.
+	Commands []string `json:"commands,omitempty"`
+}
+
+// ReleaseConfig is the optional release sub-block of koryph.project.json. It
+// drives `koryph release setup`, which renders and installs the caller GitHub
+// Actions workflow (pointing at koryph/koryph's reusable release-train.yml)
+// and the release-please config/manifest files into the target project.
+//
+// Exactly one build mode (Goreleaser or Commands) must be present in Build
+// once this block is set (enforced by Validate).
+type ReleaseConfig struct {
+	// Type is the release-please release type, e.g. "go", "simple",
+	// "node". See https://github.com/googleapis/release-please#release-types.
+	Type string `json:"type"`
+
+	// ExtraFiles lists additional files whose version strings release-please
+	// should bump, e.g. ["internal/version/version.go"].
+	ExtraFiles []string `json:"extra_files,omitempty"`
+
+	// ArtifactsDir is the directory where build artifacts land (default:
+	// "dist"). GoReleaser and mode-B commands should write outputs here.
+	ArtifactsDir string `json:"artifacts_dir,omitempty"`
+
+	// Build is the build configuration: exactly one of Goreleaser or
+	// Commands must be set.
+	Build ReleaseBuildConfig `json:"build"`
+
+	// SBOM enables SBOM generation via anchore/sbom-action during the build.
+	SBOM bool `json:"sbom,omitempty"`
+
+	// Provenance enables SLSA provenance via
+	// slsa-framework/slsa-github-generator (generic, level 3).
+	Provenance bool `json:"provenance,omitempty"`
+}
+
 // IntakeSource configures one issue-tracker source in the koryph.project.json
 // intake list. Each entry drives one poll per `koryph intake` invocation.
 type IntakeSource struct {
@@ -255,6 +312,13 @@ type Config struct {
 	// DefaultRuntime use, and runtime.Runtime.Name()'s value. See
 	// RuntimeConfig's doc for how minimal this is today.
 	Runtimes map[string]RuntimeConfig `json:"runtimes,omitempty"`
+
+	// Release, when non-nil, configures the project's release pipeline
+	// (managed by `koryph release setup`). It drives template rendering for
+	// the caller GitHub Actions workflow and the release-please config.
+	// Exactly one build mode (Build.Goreleaser or Build.Commands) must be
+	// set when this block is present (enforced by Validate).
+	Release *ReleaseConfig `json:"release,omitempty"`
 }
 
 // Default returns a conservative baseline config.
@@ -349,6 +413,9 @@ func (c *Config) Validate() error {
 	if err := validateDefaultRuntime(c.DefaultRuntime); err != nil {
 		return err
 	}
+	if err := validateRelease(c.Release); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -423,6 +490,27 @@ func validateIntake(sources []IntakeSource) error {
 		if s.Limit < 0 {
 			return fmt.Errorf("intake[%d]: limit must be >= 0, got %d", i, s.Limit)
 		}
+	}
+	return nil
+}
+
+// validateRelease enforces the release block contract when non-nil:
+//   - Type must be non-empty.
+//   - Exactly one of Build.Goreleaser or Build.Commands must be set.
+func validateRelease(r *ReleaseConfig) error {
+	if r == nil {
+		return nil
+	}
+	if strings.TrimSpace(r.Type) == "" {
+		return fmt.Errorf("release.type is required")
+	}
+	hasGoreleaser := r.Build.Goreleaser != nil
+	hasCommands := len(r.Build.Commands) > 0
+	switch {
+	case hasGoreleaser && hasCommands:
+		return fmt.Errorf("release.build: only one build mode may be set (goreleaser or commands, not both)")
+	case !hasGoreleaser && !hasCommands:
+		return fmt.Errorf("release.build: exactly one build mode is required (goreleaser or commands)")
 	}
 	return nil
 }
