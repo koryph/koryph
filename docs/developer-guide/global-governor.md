@@ -128,8 +128,9 @@ koryph governor set --max-global N [--adaptive] [--hard-max M]
 
 Additive fields on `Config` (`internal/govern/types.go`): `Adaptive`,
 `HardMax`, `DynamicCap`, `LastDecreaseAt`, `LastRateLimitAt`, `LastProbeAt`,
-`RateLimitEvents`. A `governor.json` written before these existed unmarshals
-them all to zero, so `Adaptive=false` reproduces the old static-cap behavior
+`RateLimitEvents`, plus koryph-2im.11's settle/breaker/smoothing fields (next
+section). A `governor.json` written before these existed unmarshals them all
+to zero, so `Adaptive=false` reproduces the old static-cap behavior
 byte-for-byte (`Config.EffectiveCap`, `internal/govern/aimd.go`).
 
 **Signal.** A dead agent's stream is scanned for an API rate-limit/overload
@@ -141,19 +142,21 @@ rate-limited death is never a completed candidate) and, when it fires, calls
 `requeueRateLimited` instead of the normal requeue path.
 
 **Multiplicative decrease** (`Store.ReportRateLimit`): `dynamicCap =
-max(1, effectiveCap/2)`, at most once per 60s cooldown — events inside the
-cooldown still increment `RateLimitEvents` (observability) but do not
-re-halve, so a burst of near-simultaneous rate-limited deaths across engines
-on the host halves the shared cap once, not once each.
+max(1, effectiveCap/factor)`, at most once per settle window (see below) —
+events inside settle still increment `RateLimitEvents` (observability) but do
+not re-apply, so a burst of near-simultaneous rate-limited deaths across
+engines on the host halves the shared cap once, not once each. `factor` is 2
+normally, 4 on a detected burst (koryph-2im.11, next section).
 
 **Additive increase / probe** (`Store.EffectiveCap`, evaluated lazily on every
-`Acquire`): `dynamicCap += 1` per full 5 minutes elapsed with no intervening
-decrease, up to `hardMax`. This is what lets the cap climb **past** the
-operator's starting width to find the real sustainable concurrency — a
-decrease resets the probe's clock (`applyProbe` anchors on
-`max(LastDecreaseAt, LastProbeAt)`), so steady state is a classic AIMD
-sawtooth just under the true API ceiling. No daemon: the probe advances (and
-persists) inside whichever engine happens to call `Acquire` next.
+`Acquire`): `dynamicCap += 1` per full 5 minutes elapsed since the settle
+window last expired, up to `hardMax`. This is what lets the cap climb **past**
+the operator's starting width to find the real sustainable concurrency —
+`applyProbe` anchors on `max(SettleUntil, LastProbeAt)` (koryph-2im.11
+replaced the old `LastDecreaseAt` anchor with the settle deadline; see below),
+so steady state is a classic AIMD sawtooth just under the true API ceiling. No
+daemon: the probe advances (and persists) inside whichever engine happens to
+call `Acquire` next.
 
 **Slot handling** (`internal/ledger.Slot.RateLimitRequeues`, additive field):
 a rate-limited death requeues WITHOUT incrementing `Attempts` — the failure is
@@ -163,21 +166,84 @@ linear backoff. Exhausting it blocks with a `rate-limited requeues exhausted`
 note. I5 (never interrupt a running agent) holds unconditionally: the cap only
 gates the *next* `Acquire`, never a live process.
 
+### Settle windows, circuit breaker, dispatch smoothing (koryph-2im.11)
+
+AIMD alone can thrash: agents dispatched under the *old* cap keep triggering
+rate-limit events for minutes after a decrease, an instantaneous burst can
+need more than one halving, and several projects' refill loops reacting to
+the same cap raise can dispatch simultaneously (thundering herd). Three
+mechanisms, all Adaptive-gated (zero effect when the overlay is off) and all
+coordinated through the same flocked store:
+
+- **Settle window** (`Config.SettleSeconds`/`SettleUntil`, default 120s,
+  CLI `--settle-sec`). After ANY `DynamicCap` change — a decrease *or* an
+  additive-increase step — further changes in **either** direction are frozen
+  until `SettleUntil`. Events arriving during settle are still counted
+  (`RateLimitEvents`, and fed into the burst history below) but apply no
+  further change: decisions are only made against a population that reflects
+  the *current* cap. This subsumes and replaces the pre-L5b 60s decrease
+  cooldown. The additive probe's quiet-clock anchors on `SettleUntil`, not the
+  change's own timestamp — `applyProbe` in `internal/govern/aimd.go`.
+- **Burst-scaled decrease** (`Config.RecentRateLimitEvents`, a small
+  window-pruned history keyed by project+bead). A decrease that fires with
+  **>=3 distinct (project,bead) slots** reported within the last 30s applies
+  factor **4** instead of 2 (floored at 1) — one settle-window's worth of
+  extra lowering up front instead of two full halve-and-wait cycles. The same
+  slot reporting repeatedly is NOT a burst (distinct-identity count, not raw
+  event count).
+- **Circuit breaker** (`Config.BreakerState`: `""` closed / `"open"` /
+  `"half-open"`, plus `BreakerOpenAt`, `BreakerBreakSeconds`,
+  `BreakerReopenCount`, `ProbeProject`/`ProbeBead`/`ProbeAdmittedAt`).
+  Opens when a rate-limit event arrives with `DynamicCap` already at the
+  floor, or on **3 decreases within 10 minutes** (`Config.RecentDecreases`).
+  While open, `Acquire` denies EVERY lease machine-wide (I5 holds — running
+  agents are never touched, only new admission is refused) for
+  `Config.BreakSeconds` (default 300s, CLI `--break-sec`), doubling per
+  consecutive re-open up to a 3600s ceiling. Once elapsed the breaker goes
+  half-open: the next `Acquire` (any project) is admitted as the sole probe
+  (the flock makes this race-free — exactly one caller wins); every other
+  `Acquire` is denied until it resolves. A clean `Release` of the probe's own
+  lease (no rate-limit ever reported for it) **closes** the breaker and
+  resumes AIMD from `DynamicCap=1`, resetting `BreakerReopenCount`. A
+  `ReportRateLimit` for the probe (or, when the reporting call site cannot
+  supply bead identity, any report from the probe's own project — see the
+  KNOWN GAP note in `internal/engine/govern.go`'s `reportRateLimit`; treating
+  an ambiguous report as a probe failure is the conservative, safe direction)
+  **re-opens** with a doubled break. A probe whose lease disappears without
+  either signal ever arriving (a crashed agent, or its owning engine dying)
+  is resolved by `pruneCrashedProbe`: after `Store.ProbeTimeout` (default 30
+  minutes) with no live lease and no resolution, it conservatively re-opens —
+  a crashed probe cannot wedge the breaker half-open forever.
+- **Dispatch smoothing** (`Config.MinDispatchIntervalSeconds`, default 3s,
+  CLI `--min-dispatch-interval`). A machine-wide minimum inter-dispatch
+  spacing, jittered ±50% per admission (`Store.Jitter`, deterministic-
+  seedable for tests), enforced at `Acquire` in the closed state only (the
+  breaker's own half-open probe is a single deliberate dispatch, exempt). A
+  denial for spacing behaves exactly like a cap denial — the engine's
+  existing refill-batch deferral handles it with **no engine-loop change** —
+  and, critically, does **not** itself advance the spacing clock.
+
 `koryph governor show` prints the operator cap, adaptive on/off, dynamic cap,
-hard max, last decrease timestamp, and rate-limit event count
-(`Store.AIMDStatus`). `koryph doctor` warns when the dynamic cap has sat
-pinned at its floor for a long time after a real decrease — a signal the
-account is being persistently rate-limited, or `--hard-max` is set too low to
-recover.
+hard max, last decrease timestamp, rate-limit event count
+(`Store.AIMDStatus`), whether settle is currently active (and its deadline),
+the breaker's state (closed / open-until / half-open+probe identity), and the
+smoothing interval. `koryph doctor` warns when the dynamic cap has sat pinned
+at its floor for a long time after a real decrease, and separately when the
+circuit breaker is open/half-open (calling out "flapping" once
+`BreakerReopenCount` reaches 2 without an intervening clean close) — either
+is a signal the account is being persistently rate-limited, or `--hard-max`/
+`--break-sec` need attention.
 
 ### CLI
 
 - `koryph governor` — show the cap, active leases (project/bead/pid/age), demand
-  heartbeats, free slots, and (when configured) the AIMD overlay state, so
-  operators can see contention.
-- `koryph governor set --max-global N [--adaptive] [--hard-max M]` — write
-  `governor.json`; without `--adaptive` this clears/disables any previously
-  enabled overlay (it overwrites the file wholesale).
+  heartbeats, free slots, and (when configured) the AIMD overlay state
+  including settle/breaker/smoothing, so operators can see contention.
+- `koryph governor set --max-global N [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]` —
+  write `governor.json`; without `--adaptive` this clears/disables any
+  previously enabled overlay (it overwrites the file wholesale). The three
+  L5b flags are meaningful only under `--adaptive` and default (this
+  package's documented constants) when omitted or non-positive.
 - `board` / `status` prune stale leases and demand as a hygiene side effect.
 
 ## Failure & edge handling
@@ -202,9 +268,22 @@ recover.
   - rotation prevents starvation when `n > cap`;
   - work-conserving top-up uses idle capacity when others are satisfied.
 - AIMD overlay (`internal/govern/aimd_test.go`): halve from various caps,
-  floor at 1, cooldown suppresses a double halve, additive probe climbs past
+  floor at 1, settle suppresses a double halve, additive probe climbs past
   the starting cap up to `hardMax`, adaptive-off is byte-for-byte compatible
   with a pre-koryph-2im.4 store.
+- Settle/breaker/smoothing (`internal/govern/settle_breaker_test.go`,
+  koryph-2im.11): settle freezes both directions and the probe clock anchors
+  on settle expiry; burst-scaled decrease (distinct-slot /4 vs same-slot /2,
+  window pruning and bounded history); breaker opens on an at-floor event and
+  on 3 decreases in 10 minutes, re-open duration doubles and caps at 3600s,
+  half-open admits exactly one lease under concurrent-goroutine contention,
+  closes on a clean probe release, re-opens on a probe rate-limit report, a
+  crashed probe resolves via the `ProbeTimeout` fallback; smoothing denies a
+  second acquire inside the jittered interval without advancing the spacing
+  clock on denial; two independent `*Store` handles over one `KORYPH_HOME`
+  (simulating two engines) keep the shared dynamic cap consistent under
+  concurrent `Acquire`; adaptive-off ignores every L5b field even when
+  hand-set to values that would otherwise gate admission.
 - Rate-limit stream classification fixtures
   (`internal/dispatch/cli_test.go`): positive (`429`, `rate_limit_error`,
   `overloaded_error` shapes) and negative (ordinary errors, clean results,
@@ -213,6 +292,9 @@ recover.
   without incrementing `Attempts`, capping at `RateLimitRequeues` and blocking
   once exhausted; an ordinary death is unaffected and still burns
   `ledger.MaxAttempts`.
+- Doctor (`internal/doctor/doctor_test.go`): the circuit-breaker check is OK
+  when unconfigured/adaptive-off/closed, warns when open or half-open, and
+  calls out flapping once `BreakerReopenCount` reaches 2.
 
 ## Implementation phases (each gated green)
 
@@ -225,3 +307,10 @@ recover.
 4. **AIMD overlay (koryph-2im.4)** — adaptive cap, rate-limit stream
    classification, attempt-free requeue budget; see the dedicated section
    above.
+5. **Settle windows, circuit breaker, dispatch smoothing (koryph-2im.11)** —
+   hardens the AIMD overlay against thrashing and thundering-herd restarts;
+   see the dedicated section above. Known gap: `internal/engine/govern.go`'s
+   `reportRateLimit` cannot yet thread the dying slot's bead id through from
+   `internal/engine/poll.go` (out of bounds for that change — see the KNOWN
+   GAP comment there), so burst-distinct-slot counting is project-level
+   rather than per-bead until a one-line follow-up lands.
