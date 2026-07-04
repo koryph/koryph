@@ -15,6 +15,7 @@ import (
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/runtime/claude"
 )
 
 // Defaults per the package contract.
@@ -69,7 +70,11 @@ func Run(ctx context.Context, o Opts) Result {
 	if o.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(o.MaxBudgetUSD, 'f', -1, 64))
 	}
-	args = append(args, "--fallback-model", "sonnet", "--output-format", "json")
+	// FallbackModel (koryph-v8u.2): the same "sonnet" value dispatch/cli.go's
+	// claude adapter uses, now a single shared constant instead of two
+	// independently-duplicated literals (flagged by the koryph-v8u.2
+	// architecture review).
+	args = append(args, "--fallback-model", claude.FallbackModel, "--output-format", "json")
 
 	res, err := execx.Run(ctx, execx.Cmd{
 		Dir:     o.Worktree,
