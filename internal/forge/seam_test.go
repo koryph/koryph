@@ -20,8 +20,11 @@ const repoRoot = "../.."
 // internal/forge/** so the forge boundary stays sealed and every provider-
 // specific edge is reachable through the Forge contract.
 var forgeCLIPatterns = []*regexp.Regexp{
-	// exec.Command("gh", …) / exec.CommandContext(ctx, "glab", …)
-	regexp.MustCompile(`exec\.Command(Context)?\([^)]*"(gh|glab)"`),
+	// exec.Command("gh", …) / exec.CommandContext(ctx, "glab", …). The middle
+	// class excludes quotes so we stop at the first string literal, and one
+	// optional nested (…) group is tolerated so a resolver call before the
+	// literal — exec.CommandContext(ctx, binPath(), "gh") — is still caught.
+	regexp.MustCompile(`exec\.Command(Context)?\([^)"]*(\([^)"]*\))?[^)"]*"(gh|glab)"`),
 	// execx.Cmd{… Name: "gh" …}
 	regexp.MustCompile(`Name:\s*"(gh|glab)"`),
 	// os.Getenv("KORYPH_GH_BIN") / os.Getenv("KORYPH_GLAB_BIN") — the point
@@ -127,4 +130,35 @@ func matchesForgeCLI(src string) bool {
 		}
 	}
 	return false
+}
+
+// TestMatchesForgeCLI locks the detector against the invocation shapes it must
+// catch (including a resolver call before the literal — the nested-paren
+// false-negative noted in review) and the shapes it must not flag.
+func TestMatchesForgeCLI(t *testing.T) {
+	mustMatch := []string{
+		`exec.Command("gh", "pr", "list")`,
+		`exec.CommandContext(ctx, "glab", "mr", "list")`,
+		`exec.CommandContext(ctx, resolveBin(), "gh")`, // nested call before literal
+		`execx.Run(ctx, execx.Cmd{Dir: dir, Name: "gh", Args: args})`,
+		`if v := os.Getenv("KORYPH_GH_BIN"); v != "" {`,
+		`os.Getenv("KORYPH_GLAB_BIN")`,
+	}
+	for _, src := range mustMatch {
+		if !matchesForgeCLI(src) {
+			t.Errorf("expected forge-CLI match for: %s", src)
+		}
+	}
+
+	mustNotMatch := []string{
+		`exec.Command(ghBin, "status")`,               // binary via variable, no literal
+		`name: "KORYPH_GH_BIN"`,                       // docgen metadata, not a call
+		`KORYPH_GH_BIN         path to the gh binary`, // help text mentioning the var
+		`fmt.Println("use the gh CLI to authenticate")`,
+	}
+	for _, src := range mustNotMatch {
+		if matchesForgeCLI(src) {
+			t.Errorf("unexpected forge-CLI match for: %s", src)
+		}
+	}
 }
