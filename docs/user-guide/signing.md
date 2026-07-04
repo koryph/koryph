@@ -619,6 +619,11 @@ Artifact signing requires `key_ref` to be set (the `fetch` template needs a
 URI to retrieve private key material). Use Form 2 (`--key-ref`) or Form 3
 (`--key-ref` + `--public-key`) when enabling `--artifacts`.
 
+This is keyed signing for artifacts *your* managed project produces. To
+verify koryph's own downloaded releases (checksums, keyless cosign bundle,
+SLSA provenance, SBOMs), see
+[Verifying a release](supply-chain.md).
+
 ---
 
 ## Gitsign — keyless alternative

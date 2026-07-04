@@ -26,6 +26,7 @@ nav:
       - Running waves: user-guide/running-waves.md
       - Billing & quota: user-guide/billing-and-quota.md
       - Signing: user-guide/signing.md
+      - Verifying a release: user-guide/supply-chain.md
       - Collaboration: user-guide/collaboration.md
       - Intake: user-guide/intake.md
       - Doctor: user-guide/doctor.md
