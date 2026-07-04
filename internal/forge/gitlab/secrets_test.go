@@ -112,7 +112,7 @@ func TestGitLabSecretsServiceListOrg(t *testing.T) {
 // ---------- SetRepo (create) -------------------------------------------------
 
 func TestGitLabSecretsServiceSetRepoCreate(t *testing.T) {
-	var gotBody map[string]string
+	var gotBody map[string]any
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/projects/acme%2Fproj/variables", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -138,6 +138,10 @@ func TestGitLabSecretsServiceSetRepoCreate(t *testing.T) {
 	if gotBody["value"] != "secret123" {
 		t.Errorf("SetRepo (create): value = %q, want secret123", gotBody["value"])
 	}
+	// Verify protected=true is sent (security requirement from review).
+	if gotBody["protected"] != true {
+		t.Errorf("SetRepo (create): protected = %v, want true", gotBody["protected"])
+	}
 }
 
 // ---------- SetRepo (upsert — variable already exists) -----------------------
@@ -145,7 +149,7 @@ func TestGitLabSecretsServiceSetRepoCreate(t *testing.T) {
 func TestGitLabSecretsServiceSetRepoUpdate(t *testing.T) {
 	// Simulate: POST returns 400 with "already been taken" → PUT should be called.
 	putCalled := false
-	var putBody map[string]string
+	var putBody map[string]any
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/projects/acme%2Fproj/variables", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -181,12 +185,16 @@ func TestGitLabSecretsServiceSetRepoUpdate(t *testing.T) {
 	if putBody["value"] != "newvalue" {
 		t.Errorf("SetRepo (update): PUT body value = %q, want newvalue", putBody["value"])
 	}
+	// Verify protected=true is preserved in the update payload.
+	if putBody["protected"] != true {
+		t.Errorf("SetRepo (update): protected = %v, want true", putBody["protected"])
+	}
 }
 
 // ---------- SetOrg -----------------------------------------------------------
 
 func TestGitLabSecretsServiceSetOrg(t *testing.T) {
-	var gotBody map[string]string
+	var gotBody map[string]any
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/groups/mygroup/variables", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

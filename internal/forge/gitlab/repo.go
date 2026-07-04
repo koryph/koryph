@@ -131,12 +131,23 @@ type glProjectRaw struct {
 
 // toRepoSettings converts a GitLab project to the forge-neutral
 // [forge.RepoSettings] type.  raw is stored in [forge.RepoSettings.RawFull].
+//
+// squash_option mapping:
+//
+//	"never"       → AllowSquashMerge=false (squash disabled)
+//	"default_off" → AllowSquashMerge=true  (squash available, unchecked by default per MR)
+//	"default_on"  → AllowSquashMerge=true  (squash available, checked by default per MR)
+//	"always"      → AllowSquashMerge=true  (squash enforced)
+//
+// Both "default_off" and "default_on" map to AllowSquashMerge=true so that a
+// Get→Update round-trip does not silently disable squash that was merely
+// defaulted-off at the MR level.
 func (p *glProjectRaw) toRepoSettings(raw json.RawMessage) *forge.RepoSettings {
 	allowMerge := p.MergeMethod == "merge"
 	// ff (fast-forward) and rebase_merge are both rebase-style on GitLab.
 	allowRebase := p.MergeMethod == "rebase_merge" || p.MergeMethod == "ff"
-	// squash_option "default_on" / "always" → squash is available.
-	allowSquash := p.SquashOption == "default_on" || p.SquashOption == "always"
+	// Only "never" (or empty/unknown) means squash is disabled.
+	allowSquash := p.SquashOption != "never" && p.SquashOption != ""
 	return &forge.RepoSettings{
 		AllowMergeCommit: allowMerge,
 		AllowSquashMerge: allowSquash,

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/koryph/koryph/internal/forge"
@@ -21,9 +22,11 @@ import (
 // by the list endpoint — only keys are exposed, matching the contract of
 // [forge.SecretsService.ListRepo] and [forge.SecretsService.ListOrg].
 //
-// Variable visibility on SetRepo defaults to "env_var" (environment variable)
-// with env_scope "*" (all environments), which is the broadest and most
-// compatible setting for CI use.
+// Variables are created with protected=true so they are only available to
+// pipelines running on protected branches and tags, matching the security
+// posture of GitHub Actions secrets.  Values are not masked by default because
+// GitLab's masking constraints (single-line, ≥8 chars, no whitespace) must be
+// validated per-value and the SecretsService contract has no masking flag.
 //
 // Self-managed instances are served by KORYPH_GITLAB_HOST (via [prAPIBase]).
 type gitlabSecretsSvc struct{}
@@ -42,7 +45,7 @@ func (s *gitlabSecretsSvc) ListRepo(ctx context.Context, owner, repo string) ([]
 // GitLab groups are the equivalent of GitHub organisations.
 func (s *gitlabSecretsSvc) ListOrg(ctx context.Context, org string) ([]string, error) {
 	apiURL := fmt.Sprintf("%s/groups/%s/variables?per_page=100",
-		prAPIBase(), glURLEscape(org))
+		prAPIBase(), url.PathEscape(org))
 	return s.listVarKeys(ctx, apiURL, fmt.Sprintf("gitlab secrets: list group vars %s", org))
 }
 
@@ -59,7 +62,7 @@ func (s *gitlabSecretsSvc) SetRepo(ctx context.Context, owner, repo, name, value
 // The repos parameter is not used — GitLab group variables apply to all
 // projects in the group (scoping by project requires individual project variables).
 func (s *gitlabSecretsSvc) SetOrg(ctx context.Context, org, name, value string, _ []string) error {
-	base := fmt.Sprintf("%s/groups/%s/variables", prAPIBase(), glURLEscape(org))
+	base := fmt.Sprintf("%s/groups/%s/variables", prAPIBase(), url.PathEscape(org))
 	return s.upsertVar(ctx, base, name, value,
 		fmt.Sprintf("gitlab secrets: set group var %q on %s", name, org))
 }
@@ -96,11 +99,15 @@ func (s *gitlabSecretsSvc) listVarKeys(ctx context.Context, apiURL, errPrefix st
 
 // upsertVar tries to create a variable; if GitLab returns 400 (variable
 // already exists), it falls back to a PUT update on the specific key.
+//
+// Variables are always created with protected=true so they are restricted to
+// protected branches and tags (consistent with [bot.go] SetProjectVariable).
 func (s *gitlabSecretsSvc) upsertVar(ctx context.Context, baseURL, name, value, errPrefix string) error {
-	payload, err := json.Marshal(map[string]string{
+	payload, err := json.Marshal(map[string]any{
 		"key":               name,
 		"value":             value,
 		"variable_type":     "env_var",
+		"protected":         true,
 		"environment_scope": "*",
 	})
 	if err != nil {
@@ -117,15 +124,18 @@ func (s *gitlabSecretsSvc) upsertVar(ctx context.Context, baseURL, name, value, 
 	// GitLab returns 400 when the variable already exists; fall back to PUT.
 	if code == http.StatusBadRequest {
 		if isAlreadyExists(body) {
-			updatePayload, err := json.Marshal(map[string]string{
+			updatePayload, err := json.Marshal(map[string]any{
 				"value":             value,
 				"variable_type":     "env_var",
+				"protected":         true,
 				"environment_scope": "*",
 			})
 			if err != nil {
 				return fmt.Errorf("%s: marshal update payload: %w", errPrefix, err)
 			}
-			putURL := baseURL + "/" + name
+			// url.PathEscape is required: GitLab variable keys allow [A-Z0-9_] but
+			// caller-supplied keys must still be safe to embed in URL path segments.
+			putURL := baseURL + "/" + url.PathEscape(name)
 			if _, err := glExpect(ctx, http.MethodPut, putURL, updatePayload, http.StatusOK); err != nil {
 				return fmt.Errorf("%s (update): %w", errPrefix, err)
 			}

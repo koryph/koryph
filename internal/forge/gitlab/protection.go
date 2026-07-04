@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/koryph/koryph/internal/forge"
@@ -243,7 +244,7 @@ func (s *gitlabProtectionSvc) listProtectedBranches(ctx context.Context, owner, 
 
 func (s *gitlabProtectionSvc) getProtectedBranch(ctx context.Context, owner, repo, branch string) (*forge.Ruleset, error) {
 	apiURL := fmt.Sprintf("%s/projects/%s/protected_branches/%s",
-		prAPIBase(), glPIDPath(owner, repo), glURLEscape(branch))
+		prAPIBase(), glPIDPath(owner, repo), url.PathEscape(branch))
 	raw, err := glExpect(ctx, http.MethodGet, apiURL, nil, http.StatusOK)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab protection: get protected branch %q for %s/%s: %w", branch, owner, repo, err)
@@ -278,18 +279,41 @@ func (s *gitlabProtectionSvc) createProtectedBranch(ctx context.Context, owner, 
 // updateProtectedBranch deletes then re-creates the protected branch.
 // GitLab does not provide a PATCH/PUT for protected branches; delete + create
 // is the official workaround.
+//
+// Safety: the existing branch config is fetched before deletion.  If the
+// re-create step fails, a best-effort restore is attempted using the
+// previously captured config so the branch is not left permanently unprotected.
 func (s *gitlabProtectionSvc) updateProtectedBranch(ctx context.Context, owner, repo string, rs *forge.Ruleset) error {
 	branch := strings.TrimPrefix(rs.ID, idPrefixPB)
+
+	// Capture existing config before any destructive step.
+	prior, fetchErr := s.getProtectedBranch(ctx, owner, repo, branch)
+
 	if err := s.deleteProtectedBranch(ctx, owner, repo, branch); err != nil {
 		return fmt.Errorf("gitlab protection: update protected branch %q (delete step): %w", branch, err)
 	}
-	_, err := s.createProtectedBranch(ctx, owner, repo, rs)
-	return err
+
+	_, createErr := s.createProtectedBranch(ctx, owner, repo, rs)
+	if createErr != nil {
+		// Attempt rollback using the prior config.
+		if fetchErr == nil && prior != nil && prior.Raw != nil {
+			restoreRS := &forge.Ruleset{Name: prior.Name, Raw: prior.Raw}
+			if _, restoreErr := s.createProtectedBranch(ctx, owner, repo, restoreRS); restoreErr != nil {
+				return fmt.Errorf("gitlab protection: update protected branch %q failed and rollback failed: create: %w; restore: %v",
+					branch, createErr, restoreErr)
+			}
+			return fmt.Errorf("gitlab protection: update protected branch %q (create step, rolled back): %w",
+				branch, createErr)
+		}
+		return fmt.Errorf("gitlab protection: update protected branch %q (create step, branch is now unprotected): %w",
+			branch, createErr)
+	}
+	return nil
 }
 
 func (s *gitlabProtectionSvc) deleteProtectedBranch(ctx context.Context, owner, repo, branch string) error {
 	apiURL := fmt.Sprintf("%s/projects/%s/protected_branches/%s",
-		prAPIBase(), glPIDPath(owner, repo), glURLEscape(branch))
+		prAPIBase(), glPIDPath(owner, repo), url.PathEscape(branch))
 	if _, err := glExpect(ctx, http.MethodDelete, apiURL, nil, http.StatusNoContent); err != nil {
 		return fmt.Errorf("gitlab protection: delete protected branch %q for %s/%s: %w", branch, owner, repo, err)
 	}
@@ -396,7 +420,7 @@ func (s *gitlabProtectionSvc) listApprovalRules(ctx context.Context, owner, repo
 
 func (s *gitlabProtectionSvc) getApprovalRule(ctx context.Context, owner, repo, arID string) (*forge.Ruleset, error) {
 	apiURL := fmt.Sprintf("%s/projects/%s/approval_rules/%s",
-		prAPIBase(), glPIDPath(owner, repo), arID)
+		prAPIBase(), glPIDPath(owner, repo), url.PathEscape(arID))
 	raw, err := glExpect(ctx, http.MethodGet, apiURL, nil, http.StatusOK)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab protection: get approval rule %s for %s/%s: %w", arID, owner, repo, err)
@@ -434,7 +458,7 @@ func (s *gitlabProtectionSvc) createApprovalRule(ctx context.Context, owner, rep
 // updateApprovalRule replaces an existing approval rule via PUT.
 func (s *gitlabProtectionSvc) updateApprovalRule(ctx context.Context, owner, repo, arID string, rs *forge.Ruleset) error {
 	apiURL := fmt.Sprintf("%s/projects/%s/approval_rules/%s",
-		prAPIBase(), glPIDPath(owner, repo), arID)
+		prAPIBase(), glPIDPath(owner, repo), url.PathEscape(arID))
 	if _, err := glExpect(ctx, http.MethodPut, apiURL, rs.Raw, http.StatusOK); err != nil {
 		return fmt.Errorf("gitlab protection: update approval rule %s for %s/%s: %w", arID, owner, repo, err)
 	}
@@ -444,7 +468,7 @@ func (s *gitlabProtectionSvc) updateApprovalRule(ctx context.Context, owner, rep
 // deleteApprovalRule removes an approval rule by ID.
 func (s *gitlabProtectionSvc) deleteApprovalRule(ctx context.Context, owner, repo, arID string) error {
 	apiURL := fmt.Sprintf("%s/projects/%s/approval_rules/%s",
-		prAPIBase(), glPIDPath(owner, repo), arID)
+		prAPIBase(), glPIDPath(owner, repo), url.PathEscape(arID))
 	if _, err := glExpect(ctx, http.MethodDelete, apiURL, nil, http.StatusNoContent); err != nil {
 		return fmt.Errorf("gitlab protection: delete approval rule %s for %s/%s: %w", arID, owner, repo, err)
 	}
@@ -461,20 +485,6 @@ func splitTarget(target string) (owner, repo string) {
 		return parts[0], parts[1]
 	}
 	return target, ""
-}
-
-// glURLEscape returns the URL-path-escaped form of s (e.g. "*" → "%2A").
-// Used for branch names that may contain wildcards.
-func glURLEscape(s string) string {
-	// We only need to escape characters that would break URL path segments.
-	// Use a simple replacement table for the most common cases in branch names.
-	replacer := strings.NewReplacer(
-		"/", "%2F",
-		"*", "%2A",
-		"#", "%23",
-		"?", "%3F",
-	)
-	return replacer.Replace(s)
 }
 
 // Compile-time interface check.
