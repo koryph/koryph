@@ -99,6 +99,24 @@
       ],
       "description": "PipelineStage is one post-implement stage in the project pipeline."
     },
+    "RuntimeConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enabled gates whether this project allows dispatching under this\nruntime at all; a bead or default_runtime naming a disabled runtime is\nrefused the same as an unregistered one. False (the default, also when\nthe whole entry is omitted) requires an explicit per-runtime opt-in —\nthe safer default while only claude is wired end-to-end in the engine."
+        },
+        "model_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "ModelMap sparsely overrides this runtime's own tier-\u003emodel table\n(mirrors Config.ModelMap's shape, scoped to just this runtime)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "RuntimeConfig is one runtime's per-project override (koryph-v8u.3), keyed by runtime name in Config.Runtimes."
+    },
     "SigningConfig": {
       "properties": {
         "required": {
@@ -314,6 +332,17 @@
         "rolling"
       ],
       "description": "DispatchMode selects the engine's dispatch loop (koryph-2im.3,\ndocs/designs/2026-07-scheduler-throughput.md L1): \"wave\" (also\nwhen empty) dispatches a fixed-width batch and blocks until every slot\nin it lands before scanning the frontier again; \"rolling\" continuously\nrefills any slot that frees up without waiting for the rest of the\nbatch. A run's --dispatch-mode flag overrides this value; --once runs\ntoday's wave semantics in both modes."
+    },
+    "default_runtime": {
+      "type": "string",
+      "description": "DefaultRuntime selects the runtime (internal/runtime.Runtime) a bead\ndispatches under when it carries no `runtime:\u003cname\u003e` label\n(koryph-v8u.3). Empty means \"claude\" — today's only runtime the engine\nactually dispatches through; internal/engine's dispatchBead blocks\n(rather than silently substituting claude) any bead or default that\nresolves to anything else. Must be \"\", \"claude\", or a name registered\nin runtime.Default (enforced by Validate)."
+    },
+    "runtimes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RuntimeConfig"
+      },
+      "type": "object",
+      "description": "Runtimes configures per-runtime settings for this project, keyed by\nruntime name — the same string a bead's `runtime:\u003cname\u003e` label and\nDefaultRuntime use, and runtime.Runtime.Name()'s value. See\nRuntimeConfig's doc for how minimal this is today."
     }
   },
   "additionalProperties": false,

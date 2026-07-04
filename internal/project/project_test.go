@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/runtimetest"
 	"github.com/koryph/koryph/internal/signing"
 )
 
@@ -67,6 +69,10 @@ func fullConfig() *Config {
 		DispatchStaggerSeconds: 6,
 		PollSeconds:            5,
 		DispatchMode:           "rolling",
+		DefaultRuntime:         "claude",
+		Runtimes: map[string]RuntimeConfig{
+			"claude": {Enabled: true, ModelMap: map[string]string{"frontier": "fable"}},
+		},
 	}
 }
 
@@ -213,6 +219,42 @@ func TestConfig_DispatchModeValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := Default("proj")
 			c.DispatchMode = tc.mode
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfig_DefaultRuntimeValidation exercises koryph-v8u.3's
+// default_runtime contract: "" and "claude" are always valid without a
+// registry lookup; any other name must be registered in runtime.Default or
+// Validate fails closed.
+func TestConfig_DefaultRuntimeValidation(t *testing.T) {
+	const registeredName = "project-test-registered-runtime"
+	stub := runtimetest.Stub{StubName: registeredName}
+	if err := runtime.Default.Register(stub); err != nil {
+		t.Fatalf("Register(%s): %v", registeredName, err)
+	}
+
+	cases := []struct {
+		name    string
+		runtime string
+		wantErr string
+	}{
+		{"empty defaults to claude", "", ""},
+		{"claude is always valid", "claude", ""},
+		{"a registered runtime is valid", registeredName, ""},
+		{"an unregistered runtime fails closed", "totally-unregistered-runtime", "default_runtime"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default("proj")
+			c.DefaultRuntime = tc.runtime
 			err := c.Validate()
 			switch {
 			case tc.wantErr == "" && err != nil:

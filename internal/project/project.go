@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/signing"
 )
 
@@ -100,6 +101,28 @@ type IntakeSource struct {
 	// Mapping is reserved for future provider-specific field remapping.
 	// Ignored in v1.
 	Mapping map[string]string `json:"mapping,omitempty"`
+}
+
+// RuntimeConfig is one runtime's per-project override (koryph-v8u.3), keyed
+// by runtime name in Config.Runtimes. Deliberately minimal: an entry exists
+// today only to (a) let an operator explicitly enable a registered runtime
+// for this project, even though it may already be available process-wide,
+// and (b) carry a per-runtime sparse tier->model override alongside the
+// top-level ModelMap (which today only ever applies to the active/claude
+// runtime). Richer per-runtime policy (its own Stages/Tiers/Gate) is future
+// work once a second real adapter (koryph-v8u.6) lands and requirements are
+// concrete.
+type RuntimeConfig struct {
+	// Enabled gates whether this project allows dispatching under this
+	// runtime at all; a bead or default_runtime naming a disabled runtime is
+	// refused the same as an unregistered one. False (the default, also when
+	// the whole entry is omitted) requires an explicit per-runtime opt-in —
+	// the safer default while only claude is wired end-to-end in the engine.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ModelMap sparsely overrides this runtime's own tier->model table
+	// (mirrors Config.ModelMap's shape, scoped to just this runtime).
+	ModelMap map[string]string `json:"model_map,omitempty"`
 }
 
 // Config is the per-project adapter.
@@ -217,6 +240,21 @@ type Config struct {
 	// batch. A run's --dispatch-mode flag overrides this value; --once runs
 	// today's wave semantics in both modes.
 	DispatchMode string `json:"dispatch_mode,omitempty" jsonschema:"enum=wave,enum=rolling"`
+
+	// DefaultRuntime selects the runtime (internal/runtime.Runtime) a bead
+	// dispatches under when it carries no `runtime:<name>` label
+	// (koryph-v8u.3). Empty means "claude" — today's only runtime the engine
+	// actually dispatches through; internal/engine's dispatchBead blocks
+	// (rather than silently substituting claude) any bead or default that
+	// resolves to anything else. Must be "", "claude", or a name registered
+	// in runtime.Default (enforced by Validate).
+	DefaultRuntime string `json:"default_runtime,omitempty"`
+
+	// Runtimes configures per-runtime settings for this project, keyed by
+	// runtime name — the same string a bead's `runtime:<name>` label and
+	// DefaultRuntime use, and runtime.Runtime.Name()'s value. See
+	// RuntimeConfig's doc for how minimal this is today.
+	Runtimes map[string]RuntimeConfig `json:"runtimes,omitempty"`
 }
 
 // Default returns a conservative baseline config.
@@ -307,6 +345,30 @@ func (c *Config) Validate() error {
 	}
 	if err := validateIntake(c.Intake); err != nil {
 		return err
+	}
+	if err := validateDefaultRuntime(c.DefaultRuntime); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateDefaultRuntime enforces koryph-v8u.3's default_runtime contract:
+// empty and "claude" are always valid without a registry lookup (claude
+// self-registers into runtime.Default at process start via
+// internal/runtime/claude's init side effect, but Validate must not depend on
+// that import having happened — e.g. a bare `koryph validate` binary build —
+// so "claude" is special-cased here exactly as it is in
+// modelroute.Resolve/ResolveRuntimeName); anything else must be a name
+// actually registered in runtime.Default. Fail closed: a project must never
+// be able to point default_runtime at a runtime dispatch cannot possibly
+// select.
+func validateDefaultRuntime(name string) error {
+	if name == "" || name == "claude" {
+		return nil
+	}
+	if _, ok := runtime.Default.Get(name); !ok {
+		return fmt.Errorf(
+			"default_runtime %q is not a registered runtime (want \"claude\", empty, or a name registered in runtime.Default)", name)
 	}
 	return nil
 }
