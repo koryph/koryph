@@ -17,6 +17,20 @@ import (
 	"github.com/koryph/koryph/internal/project"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "posture",
+		summary: "apply a named desired-state profile to a GitHub repo",
+		run:     cmdPosture,
+		subs: []command{
+			{name: "list", summary: "list built-in and user-defined profiles", run: cmdPostureList},
+			{name: "check", summary: "diff live GitHub state against a profile (exit 1 on drift)", run: cmdPostureCheck},
+			{name: "diff", summary: "show drift between live state and a profile (always exit 0)", run: cmdPostureDiff},
+			{name: "apply", summary: "show diff then apply a profile to the live GitHub repo", run: cmdPostureApply},
+		},
+	})
+}
+
 // cmdPosture dispatches the posture sub-verbs.
 func cmdPosture(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {

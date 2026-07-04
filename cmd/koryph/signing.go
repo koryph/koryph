@@ -17,6 +17,28 @@ import (
 	"github.com/koryph/koryph/internal/signing"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "signing",
+		summary: "configure and operate vault-backed commit signing",
+		run:     cmdSigning,
+		subs: []command{
+			{name: "setup", summary: "write the signing policy into the adapter", run: cmdSigningSetup},
+			{name: "enable", summary: "load the key + apply repo git config", run: cmdSigningEnable},
+			{name: "status", summary: "mode/provider/agent-ready summary", run: cmdSigningStatus},
+			{name: "verify", summary: "verify branch commit signatures", run: cmdSigningVerify},
+		},
+	})
+	registerCmd(command{
+		name:    "sign",
+		summary: "cosign sign-blob an artifact",
+		run:     cmdSign,
+		subs: []command{
+			{name: "blob", summary: "sign a file via the vault key", run: cmdSignBlob},
+		},
+	})
+}
+
 // atFilePrefix marks a --public-key value as a path to read from disk.
 const atFilePrefix = "@"
 

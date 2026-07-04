@@ -14,6 +14,22 @@ import (
 	"github.com/koryph/koryph/internal/quota"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "quota",
+		summary: "per-account governor snapshot",
+		run:     cmdQuota,
+		subs: []command{
+			{name: "calibrate", summary: "calibrate a governor ceiling", run: cmdQuotaCalibrate},
+		},
+	})
+	registerCmd(command{
+		name:    "metrics",
+		summary: "burn + reliability rollup across projects",
+		run:     cmdMetrics,
+	})
+}
+
 // resolvedRuntimeName is the runtime `koryph quota` resolves an account's
 // config dir for today (koryph-v8u.5): real per-project runtime SELECTION is
 // koryph-v8u.3's job — until it lands, registry.Record.AccountFor always

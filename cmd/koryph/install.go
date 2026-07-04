@@ -20,6 +20,25 @@ import (
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "commands",
+		summary: "install koryph-* Claude slash commands",
+		run:     cmdCommands,
+		subs: []command{
+			{name: "install", summary: "install commands into <root>/.claude/commands", run: cmdCommandsInstall},
+		},
+	})
+	registerCmd(command{
+		name:    "rules",
+		summary: "install hook scripts + merge wiring",
+		run:     cmdRules,
+		subs: []command{
+			{name: "install", summary: "install hooks into <root>/.claude/settings.json", run: cmdRulesInstall},
+		},
+	})
+}
+
 // assetTargets is the canonical ordered set of koryph asset kinds that
 // `project install-assets` (and `project add`) install. agentsmd comes first
 // because it is the runtime-neutral file installed unconditionally; the others

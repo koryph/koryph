@@ -16,6 +16,18 @@ import (
 	pkgrelease "github.com/koryph/koryph/internal/release"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "release",
+		summary: "configure and operate the project release pipeline",
+		run:     cmdRelease,
+		subs: []command{
+			{name: "setup", summary: "render and install release workflow + release-please config", run: cmdReleaseSetup},
+			{name: "kick", summary: "close+reopen the Release PR so checks fire under your gh auth", run: cmdReleaseKick},
+		},
+	})
+}
+
 // cmdRelease dispatches the release sub-verbs.
 func cmdRelease(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {

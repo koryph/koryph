@@ -11,6 +11,14 @@ import (
 	"github.com/koryph/koryph/internal/doctor"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "doctor",
+		summary: "health check: layout, binaries, registry, governor",
+		run:     cmdDoctor,
+	})
+}
+
 // cmdDoctor runs health checks and prints a human table (or JSON with --json).
 // Without --project it checks the global ~/.koryph installation.
 // With --project <id> it checks a specific registered project.

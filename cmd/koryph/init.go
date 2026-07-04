@@ -13,6 +13,14 @@ import (
 	"github.com/koryph/koryph/internal/paths"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "init",
+		summary: "create ~/.koryph, verify tools on PATH, print next steps",
+		run:     cmdInit,
+	})
+}
+
 // cmdInit creates ~/.koryph (idempotent), verifies required tools on PATH,
 // and prints next steps so a fresh collaborator can start immediately.
 func cmdInit(args []string, stdout, stderr io.Writer) int {

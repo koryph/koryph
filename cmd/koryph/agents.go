@@ -14,6 +14,17 @@ import (
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "agents",
+		summary: "install fallback personas",
+		run:     cmdAgents,
+		subs: []command{
+			{name: "install", summary: "install personas into <root>/.claude/agents", run: cmdAgentsInstall},
+		},
+	})
+}
+
 // cmdAgents dispatches the agents sub-verbs.
 func cmdAgents(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {

@@ -17,6 +17,14 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "intake",
+		summary: "poll labeled GitHub issues into planning beads",
+		run:     cmdIntake,
+	})
+}
+
 // cmdIntake polls a project's labeled GitHub issues and files one planning
 // bead per new issue. When the project's koryph.project.json carries an
 // "intake" list, all configured sources are iterated in one run and the

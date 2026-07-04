@@ -26,6 +26,30 @@ import (
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "project",
+		summary: "onboard and manage registered projects",
+		run:     cmdProject,
+		subs: []command{
+			{name: "add", summary: "register a project", run: cmdProjectAdd},
+			{name: "list", summary: "list managed projects", run: cmdProjectList},
+			{name: "show", summary: "print one project record as JSON", run: cmdProjectShow},
+			{name: "set-account", summary: "change a project's account (audited)", run: cmdProjectSetAccount},
+		},
+	})
+	registerCmd(command{
+		name:    "onboard",
+		summary: "read-only inventory of a project",
+		run:     cmdOnboard,
+	})
+	registerCmd(command{
+		name:    "validate",
+		summary: "run the pre-dispatch gate",
+		run:     cmdValidate,
+	})
+}
+
 // cmdProject dispatches the project sub-verbs.
 func cmdProject(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {

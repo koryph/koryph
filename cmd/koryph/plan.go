@@ -16,6 +16,17 @@ import (
 	"github.com/koryph/koryph/internal/project"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "plan",
+		summary: "plan and analyze the project bead corpus",
+		run:     cmdPlan,
+		subs: []command{
+			{name: "audit", summary: "read-only corpus conflict analysis", run: cmdPlanAudit},
+		},
+	})
+}
+
 // cmdPlan dispatches the plan sub-verbs.
 func cmdPlan(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {

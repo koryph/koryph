@@ -26,6 +26,16 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 )
 
+func init() {
+	registerCmd(command{name: "tail", summary: "tail a phase's session.log + stderr.log", run: cmdTail})
+	registerCmd(command{name: "nudge", summary: "append an operator note to a phase INBOX", run: cmdNudge})
+	registerCmd(command{name: "stop", summary: "stop an agent (or every agent with --all)", run: cmdStop})
+	registerCmd(command{name: "merge", summary: "land a finished agent branch", run: cmdMerge})
+	registerCmd(command{name: "land", summary: "land an engine-opened PR fast-forward-only", run: cmdLand})
+	registerCmd(command{name: "review-pr", summary: "analyze another author's PR", run: cmdReviewPR})
+	registerCmd(command{name: "pr-sync", summary: "reconcile pr-opened beads against live PR state", run: cmdPRSync})
+}
+
 // latestRun resolves the record and its latest run for a project.
 func latestRun(ctx context.Context, store *registry.Store, projectID string) (*registry.Record, *ledger.Run, error) {
 	rec, err := store.Get(projectID)

@@ -12,6 +12,18 @@ import (
 	"github.com/koryph/koryph/internal/govern"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "governor",
+		summary: "inspect and set the machine-wide concurrency cap",
+		run:     cmdGovernor,
+		subs: []command{
+			{name: "show", summary: "show the cap, leases, and demand"},
+			{name: "set", summary: "set the machine-wide cap", run: cmdGovernorSet},
+		},
+	})
+}
+
 // cmdGovernor dispatches the global concurrency governor sub-verbs.
 func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {

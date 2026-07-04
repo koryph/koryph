@@ -20,124 +20,17 @@ import (
 // out of usage() and the completion candidate lists.
 const completeVerb = "__complete"
 
-// command is one node in the data-driven command tree. It is the single source
-// of truth for the mux (run() dispatches through lookupCommand), for usage
-// discovery, and for completion. A parent carries subs; a leaf carries none.
-// run may be nil for a sub that only names a value (e.g. `completion bash`),
-// in which case it contributes no flags to completion.
-type command struct {
-	name    string
-	summary string
-	run     func([]string, io.Writer, io.Writer) int
-	subs    []command
-}
-
-// commandTable is the ordered list of top-level koryph commands. The mux, the
-// completion engine, and future usage rendering all derive from it, so a new
-// command is wired in exactly one place. The hidden __complete verb is handled
-// directly in run() and intentionally absent here.
-var commandTable = []command{
-	{name: "init", summary: "create ~/.koryph, verify tools on PATH, print next steps", run: cmdInit},
-	{name: "project", summary: "onboard and manage registered projects", run: cmdProject, subs: []command{
-		{name: "add", summary: "register a project", run: cmdProjectAdd},
-		{name: "list", summary: "list managed projects", run: cmdProjectList},
-		{name: "show", summary: "print one project record as JSON", run: cmdProjectShow},
-		{name: "set-account", summary: "change a project's account (audited)", run: cmdProjectSetAccount},
-	}},
-	{name: "onboard", summary: "read-only inventory of a project", run: cmdOnboard},
-	{name: "validate", summary: "run the pre-dispatch gate", run: cmdValidate},
-	{name: "intake", summary: "poll labeled GitHub issues into planning beads", run: cmdIntake},
-	{name: "run", summary: "execute one engine run over a project", run: cmdRun},
-	{name: "board", summary: "one-line-per-project run overview", run: cmdBoard},
-	{name: "roster", summary: "per-bead titled roster grouped by lifecycle", run: cmdRoster},
-	{name: "status", summary: "latest-run per-slot detail", run: cmdStatus},
-	{name: "tail", summary: "tail a phase's session.log + stderr.log", run: cmdTail},
-	{name: "nudge", summary: "append an operator note to a phase INBOX", run: cmdNudge},
-	{name: "stop", summary: "stop an agent (or every agent with --all)", run: cmdStop},
-	{name: "drain", summary: "gracefully wind down a run: finish active slots, dispatch nothing new", run: cmdDrain},
-	{name: "resize", summary: "live width override for a running loop", run: cmdResize},
-	{name: "merge", summary: "land a finished agent branch", run: cmdMerge},
-	{name: "land", summary: "land an engine-opened PR fast-forward-only", run: cmdLand},
-	{name: "review-pr", summary: "analyze another author's PR", run: cmdReviewPR},
-	{name: "pr-sync", summary: "reconcile pr-opened beads against live PR state", run: cmdPRSync},
-	{name: "bot", summary: "provision and manage koryph GitHub App bots", run: cmdBot, subs: []command{
-		{name: "create", summary: "create a GitHub App via the manifest flow (one browser click)", run: cmdBotCreate},
-		{name: "install", summary: "print/open the installation page for a provisioned bot", run: cmdBotInstall},
-		{name: "list", summary: "list provisioned bots in ~/.koryph/bots/", run: cmdBotList},
-	}},
-	{name: "release", summary: "configure and operate the project release pipeline", run: cmdRelease, subs: []command{
-		{name: "setup", summary: "render and install release workflow + release-please config", run: cmdReleaseSetup},
-		{name: "kick", summary: "close+reopen the Release PR so checks fire under your gh auth", run: cmdReleaseKick},
-	}},
-	{name: "signing", summary: "configure and operate vault-backed commit signing", run: cmdSigning, subs: []command{
-		{name: "setup", summary: "write the signing policy into the adapter", run: cmdSigningSetup},
-		{name: "enable", summary: "load the key + apply repo git config", run: cmdSigningEnable},
-		{name: "status", summary: "mode/provider/agent-ready summary", run: cmdSigningStatus},
-		{name: "verify", summary: "verify branch commit signatures", run: cmdSigningVerify},
-	}},
-	{name: "sign", summary: "cosign sign-blob an artifact", run: cmdSign, subs: []command{
-		{name: "blob", summary: "sign a file via the vault key", run: cmdSignBlob},
-	}},
-	{name: "quota", summary: "per-account governor snapshot", run: cmdQuota, subs: []command{
-		{name: "calibrate", summary: "calibrate a governor ceiling", run: cmdQuotaCalibrate},
-	}},
-	{name: "batch", summary: "submit a Message Batch (explicit per-token spend)", run: cmdBatch, subs: []command{
-		{name: "run", summary: "submit a batch from a JSONL file", run: cmdBatchRun},
-	}},
-	{name: "metrics", summary: "burn + reliability rollup across projects", run: cmdMetrics},
-	{name: "agents", summary: "install fallback personas", run: cmdAgents, subs: []command{
-		{name: "install", summary: "install personas into <root>/.claude/agents", run: cmdAgentsInstall},
-	}},
-	{name: "commands", summary: "install koryph-* Claude slash commands", run: cmdCommands, subs: []command{
-		{name: "install", summary: "install commands into <root>/.claude/commands", run: cmdCommandsInstall},
-	}},
-	{name: "rules", summary: "install hook scripts + merge wiring", run: cmdRules, subs: []command{
-		{name: "install", summary: "install hooks into <root>/.claude/settings.json", run: cmdRulesInstall},
-	}},
-	{name: "repo", summary: "check or apply .github IaC (rulesets, repo settings)", run: cmdRepo, subs: []command{
-		{name: "check", summary: "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)", run: cmdRepoCheck},
-		{name: "apply", summary: "apply .github IaC (rulesets, repo settings) to the live repo", run: cmdRepoApply},
-	}},
-	{name: "posture", summary: "apply a named desired-state profile to a GitHub repo", run: cmdPosture, subs: []command{
-		{name: "list", summary: "list built-in and user-defined profiles", run: cmdPostureList},
-		{name: "check", summary: "diff live GitHub state against a profile (exit 1 on drift)", run: cmdPostureCheck},
-		{name: "diff", summary: "show drift between live state and a profile (always exit 0)", run: cmdPostureDiff},
-		{name: "apply", summary: "show diff then apply a profile to the live GitHub repo", run: cmdPostureApply},
-	}},
-	{name: "governor", summary: "inspect and set the machine-wide concurrency cap", run: cmdGovernor, subs: []command{
-		{name: "show", summary: "show the cap, leases, and demand"},
-		{name: "set", summary: "set the machine-wide cap", run: cmdGovernorSet},
-	}},
-	{name: "doctor", summary: "health check: layout, binaries, registry, governor", run: cmdDoctor},
-	{name: "plan", summary: "plan and analyze the project bead corpus", run: cmdPlan, subs: []command{
-		{name: "audit", summary: "read-only corpus conflict analysis", run: cmdPlanAudit},
-	}},
-	{name: "version", summary: "print the engine version", run: cmdVersion},
-	{name: "completion", summary: "print or install a shell completion script", run: cmdCompletion, subs: []command{
-		{name: "bash", summary: "print the bash completion script"},
-		{name: "zsh", summary: "print the zsh completion script"},
-		{name: "install", summary: "install the completion script to the standard location", run: cmdCompletionInstall},
-	}},
-}
-
-// lookupCommand returns the top-level command node with the given name, or nil.
-func lookupCommand(name string) *command {
-	for i := range commandTable {
-		if commandTable[i].name == name {
-			return &commandTable[i]
-		}
-	}
-	return nil
-}
-
-// findSub returns c's subcommand with the given name, or nil.
-func findSub(c *command, name string) *command {
-	for i := range c.subs {
-		if c.subs[i].name == name {
-			return &c.subs[i]
-		}
-	}
-	return nil
+func init() {
+	registerCmd(command{
+		name:    "completion",
+		summary: "print or install a shell completion script",
+		run:     cmdCompletion,
+		subs: []command{
+			{name: "bash", summary: "print the bash completion script"},
+			{name: "zsh", summary: "print the zsh completion script"},
+			{name: "install", summary: "install the completion script to the standard location", run: cmdCompletionInstall},
+		},
+	})
 }
 
 // --- __complete -------------------------------------------------------------
@@ -238,8 +131,8 @@ func resolveNode(line []string) (*command, bool) {
 
 // topLevelNames returns every top-level command name.
 func topLevelNames() []string {
-	names := make([]string, 0, len(commandTable))
-	for _, c := range commandTable {
+	names := make([]string, 0, len(commandRegistry))
+	for _, c := range commandRegistry {
 		names = append(names, c.name)
 	}
 	return names

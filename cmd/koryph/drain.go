@@ -13,6 +13,19 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "drain",
+		summary: "gracefully wind down a run: finish active slots, dispatch nothing new",
+		run:     cmdDrain,
+	})
+	registerCmd(command{
+		name:    "resize",
+		summary: "live width override for a running loop",
+		run:     cmdResize,
+	})
+}
+
 // cmdDrain writes a one-shot operator drain request for a project (or, with
 // --all, every registered project). The engine's shared governorGate check
 // (koryph-57v.1, internal/engine/wave.go) re-reads the sentinel at every

@@ -16,6 +16,19 @@ import (
 	"github.com/koryph/koryph/internal/signing"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "bot",
+		summary: "provision and manage koryph GitHub App bots",
+		run:     cmdBot,
+		subs: []command{
+			{name: "create", summary: "create a GitHub App via the manifest flow (one browser click)", run: cmdBotCreate},
+			{name: "install", summary: "print/open the installation page for a provisioned bot", run: cmdBotInstall},
+			{name: "list", summary: "list provisioned bots in ~/.koryph/bots/", run: cmdBotList},
+		},
+	})
+}
+
 // cmdBot dispatches the 'koryph bot' sub-verbs.
 //
 // Three replication scenarios are first-class:

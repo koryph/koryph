@@ -249,6 +249,14 @@ HELP
 `)
 }
 
+func init() {
+	registerCmd(command{
+		name:    "version",
+		summary: "print the engine version",
+		run:     cmdVersion,
+	})
+}
+
 func cmdVersion(_ []string, stdout, _ io.Writer) int {
 	fmt.Fprintf(stdout, "koryph %s\n", engine.EngineVersion)
 	return 0

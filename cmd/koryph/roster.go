@@ -18,6 +18,14 @@ import (
 	"github.com/koryph/koryph/internal/sched"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "roster",
+		summary: "per-bead titled roster grouped by lifecycle",
+		run:     cmdRoster,
+	})
+}
+
 // rosterSlot is one entry in the MERGED or RUNNING group.
 type rosterSlot struct {
 	ID     string `json:"id"`

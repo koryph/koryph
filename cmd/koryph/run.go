@@ -15,6 +15,12 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 )
 
+func init() {
+	registerCmd(command{name: "run", summary: "execute one engine run over a project", run: cmdRun})
+	registerCmd(command{name: "board", summary: "one-line-per-project run overview", run: cmdBoard})
+	registerCmd(command{name: "status", summary: "latest-run per-slot detail", run: cmdStatus})
+}
+
 // cmdRun executes one engine run over a project.
 func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("run", stderr)

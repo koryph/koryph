@@ -13,6 +13,18 @@ import (
 	"github.com/koryph/koryph/internal/posture"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "repo",
+		summary: "check or apply .github IaC (rulesets, repo settings)",
+		run:     cmdRepo,
+		subs: []command{
+			{name: "check", summary: "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)", run: cmdRepoCheck},
+			{name: "apply", summary: "apply .github IaC (rulesets, repo settings) to the live repo", run: cmdRepoApply},
+		},
+	})
+}
+
 // cmdRepo dispatches the repo sub-verbs.
 func cmdRepo(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {

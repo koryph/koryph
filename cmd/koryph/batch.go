@@ -17,6 +17,17 @@ import (
 	"github.com/koryph/koryph/internal/engine"
 )
 
+func init() {
+	registerCmd(command{
+		name:    "batch",
+		summary: "submit a Message Batch (explicit per-token spend)",
+		run:     cmdBatch,
+		subs: []command{
+			{name: "run", summary: "submit a batch from a JSONL file", run: cmdBatchRun},
+		},
+	})
+}
+
 // batchLine is one input record from the JSONL file.
 type batchLine struct {
 	ID     string `json:"id"`
