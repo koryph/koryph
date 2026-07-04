@@ -1,0 +1,21 @@
+{
+  "repo": {
+    "allow_merge_commit": false,
+    "allow_squash_merge": true,
+    "allow_rebase_merge": true,
+    "allow_auto_merge": false,
+    "delete_branch_on_merge": true,
+    "allow_update_branch": true,
+    "web_commit_signoff_required": true
+  },
+  "security_and_analysis": {
+    "secret_scanning": "enabled",
+    "secret_scanning_push_protection": "enabled",
+    "dependabot_security_updates": "enabled"
+  },
+  "vulnerability_alerts": true,
+  "actions_workflow": {
+    "default_workflow_permissions": "read",
+    "can_approve_pull_request_reviews": true
+  }
+}

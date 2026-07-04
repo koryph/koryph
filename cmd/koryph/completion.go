@@ -98,6 +98,12 @@ var commandTable = []command{
 		{name: "check", summary: "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)", run: cmdRepoCheck},
 		{name: "apply", summary: "apply .github IaC (rulesets, repo settings) to the live repo", run: cmdRepoApply},
 	}},
+	{name: "posture", summary: "apply a named desired-state profile to a GitHub repo", run: cmdPosture, subs: []command{
+		{name: "list", summary: "list built-in and user-defined profiles", run: cmdPostureList},
+		{name: "check", summary: "diff live GitHub state against a profile (exit 1 on drift)", run: cmdPostureCheck},
+		{name: "diff", summary: "show drift between live state and a profile (always exit 0)", run: cmdPostureDiff},
+		{name: "apply", summary: "show diff then apply a profile to the live GitHub repo", run: cmdPostureApply},
+	}},
 	{name: "governor", summary: "inspect and set the machine-wide concurrency cap", run: cmdGovernor, subs: []command{
 		{name: "show", summary: "show the cap, leases, and demand"},
 		{name: "set", summary: "set the machine-wide cap", run: cmdGovernorSet},

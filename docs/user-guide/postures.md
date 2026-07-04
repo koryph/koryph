@@ -1,0 +1,224 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2026 The Koryph Developers -->
+
+# Posture Profiles
+
+A **posture profile** is a named bundle of desired-state files — branch-protection
+rulesets and repository settings — that you can apply to any GitHub repository
+with a single command. Profiles generalise the `koryph repo check|apply` workflow:
+instead of writing `.github/` IaC files yourself, you pick a profile and pass
+parameters.
+
+Koryph ships one built-in profile: **`oss-solo-maintainer`**. You can also
+create custom profiles in `~/.koryph/postures/<name>/`.
+
+---
+
+## Built-in profile: `oss-solo-maintainer`
+
+Designed for an open-source project with a single (or small team of) maintainer(s).
+Applies:
+
+| Section | What it sets |
+|---|---|
+| `pr-checks` ruleset | 1 required review, optional required CI check names (via `--param`) |
+| `signed-commits` ruleset | `required_signatures`, `non_fast_forward`, `deletion` on the default branch |
+| Repo settings | `allow_squash_merge=true`, `allow_merge_commit=false`, `delete_branch_on_merge=true`, `web_commit_signoff_required=true` |
+| Security & analysis | `secret_scanning`, `secret_scanning_push_protection`, `dependabot_security_updates` all **enabled** |
+| Vulnerability alerts | **enabled** |
+| Actions workflow | `default_workflow_permissions=read`, `can_approve_pull_request_reviews=true` |
+
+### Parameters
+
+| Name | Description | Default |
+|---|---|---|
+| `required_checks` | Comma-separated required CI check names added to the `pr-checks` ruleset. Omit to skip the `required_status_checks` rule entirely. | _(empty — rule omitted)_ |
+
+---
+
+## Commands
+
+All posture commands accept `--repo owner/name`. When `--repo` is omitted,
+koryph detects the repository from the current directory's git remote via `gh`.
+
+### `posture list`
+
+```
+koryph posture list
+```
+
+Lists all available profiles — built-ins (embedded in the binary) and user
+profiles in `~/.koryph/postures/`.
+
+```
+NAME                  SOURCE    DESCRIPTION
+oss-solo-maintainer   builtin   Baseline posture for an OSS project with a solo maintainer: ...
+my-custom-profile     user      My company standard posture
+```
+
+### `posture check`
+
+```
+koryph posture check <profile> [--repo owner/name] [--param k=v]...
+```
+
+Compares the live GitHub repository state against the profile. Prints `OK`,
+`MISSING`, or `DRIFT` per section — identical to `koryph repo check`. **Exits 1**
+if drift is detected (useful for CI gating).
+
+```
+koryph posture check oss-solo-maintainer --repo myorg/myrepo \
+  --param required_checks="pre-commit,make gate"
+```
+
+### `posture diff`
+
+```
+koryph posture diff <profile> [--repo owner/name] [--param k=v]...
+```
+
+Same as `check` but **always exits 0** — drift is informational, not a failure.
+Useful for exploration and auditing without breaking scripts.
+
+### `posture apply`
+
+```
+koryph posture apply <profile> [--repo owner/name] [--param k=v]...
+```
+
+Prints the diff between the live state and the profile, then applies any
+changes. Never deletes rulesets it does not know about.
+
+```
+koryph posture apply oss-solo-maintainer --repo myorg/myrepo \
+  --param required_checks="pre-commit,make gate"
+```
+
+Output:
+
+```
+--- rulesets diff ---
+MISSING  pr-checks (no live ruleset)
+MISSING  signed-commits (no live ruleset)
+--- applying rulesets ---
+CREATED  pr-checks
+CREATED  signed-commits
+--- settings diff ---
+DRIFT    security & analysis:
+         - {"dependabot_security_updates":"disabled","secret_scanning":"disabled",...}
+         + {"dependabot_security_updates":"enabled","secret_scanning":"enabled",...}
+--- applying settings ---
+UPDATED  security & analysis
+```
+
+---
+
+## Ejectability — repo-local `.github/` overrides the profile
+
+A repository that has **ejected** from a profile by writing its own `.github/`
+IaC files stays sovereign. Koryph detects this automatically, per section:
+
+- If `.github/rulesets/` exists in the current directory → local rulesets win;
+  profile rulesets are ignored.
+- If `.github/repo-settings.json` exists → local settings win; profile settings
+  are ignored.
+
+Koryph prints an `INFO` line for each overridden section:
+
+```
+INFO     rulesets: repo has .github/rulesets/ — using local IaC (profile rulesets ignored)
+```
+
+This means you can safely run `koryph posture check oss-solo-maintainer` in any
+repo — repos that have their own IaC are unaffected. Ejected repos continue to be
+managed by `koryph repo check|apply`.
+
+---
+
+## Solo-maintainer walkthrough (zero to compliant)
+
+This walkthrough shows how to apply the `oss-solo-maintainer` profile to a new
+GitHub repository. You need `gh` authenticated and `koryph` on your PATH.
+
+**1. Check current drift:**
+
+```
+koryph posture check oss-solo-maintainer --repo myorg/myrepo \
+  --param required_checks="pre-commit,ci"
+```
+
+Expect `MISSING` lines for the rulesets and `DRIFT` lines for security settings
+on a freshly created repo.
+
+**2. Apply the profile:**
+
+```
+koryph posture apply oss-solo-maintainer --repo myorg/myrepo \
+  --param required_checks="pre-commit,ci"
+```
+
+Koryph prints the diff, then creates the two rulesets and patches the settings.
+
+**3. Verify no remaining drift:**
+
+```
+koryph posture check oss-solo-maintainer --repo myorg/myrepo \
+  --param required_checks="pre-commit,ci"
+# exits 0 — OK for every section
+```
+
+**4. Ongoing enforcement (optional):**
+
+Add the check to CI (e.g. a scheduled GitHub Actions workflow):
+
+```yaml
+- name: posture check
+  run: |
+    koryph posture check oss-solo-maintainer \
+      --param required_checks="pre-commit,make gate"
+```
+
+---
+
+## Creating a custom profile
+
+A user profile lives at `~/.koryph/postures/<name>/`. Its structure mirrors the
+built-in profiles:
+
+```
+~/.koryph/postures/my-company/
+  manifest.json
+  rulesets/
+    main-protection.json
+    signed-commits.json
+  repo-settings.json
+```
+
+`manifest.json` describes the profile:
+
+```json
+{
+  "name": "my-company",
+  "description": "Company-standard GitHub posture",
+  "parameters": {
+    "required_checks": {
+      "description": "Comma-separated required CI check names",
+      "default": "build,test"
+    }
+  }
+}
+```
+
+Template files (suffix `.json.tmpl`) are rendered with Go `text/template`.
+Available variables:
+
+| Variable | Description |
+|---|---|
+| `.RequiredChecks` | Slice of `{Context string}` objects for required CI checks |
+
+Use `{{toJSON .RequiredChecks}}` to emit a JSON array of `{"context":"…"}` objects.
+
+Static files (`.json`, no `.tmpl` suffix) are copied verbatim.
+
+User profiles take precedence over built-ins of the same name — you can override
+`oss-solo-maintainer` by creating `~/.koryph/postures/oss-solo-maintainer/`.

@@ -1,0 +1,10 @@
+{
+  "name": "oss-solo-maintainer",
+  "description": "Baseline posture for an OSS project with a solo maintainer: 1-approval PR checks, signed commits everywhere, secret scanning + push protection, dependabot alerts, squash-merge defaults.",
+  "parameters": {
+    "required_checks": {
+      "description": "Comma-separated required CI check names added to the pr-checks ruleset (e.g. 'pre-commit,make gate').  Omit to skip the required_status_checks rule.",
+      "default": ""
+    }
+  }
+}

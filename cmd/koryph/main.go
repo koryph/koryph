@@ -191,6 +191,16 @@ REPO IaC  (desired-state files: .github/rulesets/*.json, .github/repo-settings.j
   repo apply [--repo owner/name]
                         apply .github IaC (rulesets, repo settings) to the live repo
 
+POSTURE  (named desired-state profiles — built-in or ~/.koryph/postures/<name>)
+  posture list          list built-in and user-defined profiles
+  posture check <profile> [--repo owner/name] [--param k=v]...
+                        diff live GitHub state against profile (exit 1 on drift)
+  posture diff <profile> [--repo owner/name] [--param k=v]...
+                        show drift between live state and profile (always exits 0)
+  posture apply <profile> [--repo owner/name] [--param k=v]...
+                        print diff then apply profile to the live GitHub repo
+                        (repo-local .github/ IaC overrides profile per section — ejectability)
+
 ASSETS  (installed automatically by 'project add'; use these to refresh or repair)
   project install-assets (<root> | --all-projects) [agents|commands|rules|all] [--force]
                         (re)install koryph assets — agents, commands & rules (default all);

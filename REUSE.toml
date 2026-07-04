@@ -28,6 +28,7 @@ path = [
   "internal/release/*.json.tmpl",
   ".github/rulesets/*.json",
   ".github/repo-settings.json",
+  "internal/posture/builtin/**",
   "docs/user-guide/doctor.md",
   ".beads/.gitignore",
   ".beads/config.yaml",
