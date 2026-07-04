@@ -65,6 +65,18 @@ type ProjectOptions struct {
 	CommandsFS fs.FS
 	// AgentsFS overrides the embedded agents FS (injectable for tests).
 	AgentsFS fs.FS
+
+	// GitHubRepo derives the "owner/repo" slug for the project (injectable for
+	// tests). nil means: run `git remote get-url origin` and parse the URL.
+	GitHubRepo func(repoRoot string) (string, error)
+	// GHSecretList lists secret names for the given owner/repo via `gh secret
+	// list`. Return (nil, err) on failure; the release-bot-secrets check degrades
+	// gracefully on error. nil means: invoke the real `gh` CLI.
+	GHSecretList func(ownerRepo string) ([]string, error)
+	// GHActionsPermissions returns can_approve_pull_request_reviews for the
+	// given owner/repo. Return (false, err) on failure; the actions-approval
+	// check degrades gracefully on error. nil means: invoke the real `gh` CLI.
+	GHActionsPermissions func(ownerRepo string) (bool, error)
 }
 
 func (o *ProjectOptions) home() string {
@@ -107,6 +119,27 @@ func (o *ProjectOptions) listWorktrees(root string) ([]worktreeEntry, error) {
 		return o.ListWorktrees(root)
 	}
 	return defaultListWorktrees(root)
+}
+
+func (o *ProjectOptions) gitHubRepo(repoRoot string) (string, error) {
+	if o.GitHubRepo != nil {
+		return o.GitHubRepo(repoRoot)
+	}
+	return defaultGitHubRepo(repoRoot)
+}
+
+func (o *ProjectOptions) ghSecretList(ownerRepo string) ([]string, error) {
+	if o.GHSecretList != nil {
+		return o.GHSecretList(ownerRepo)
+	}
+	return defaultGHSecretList(ownerRepo)
+}
+
+func (o *ProjectOptions) ghActionsPermissions(ownerRepo string) (bool, error) {
+	if o.GHActionsPermissions != nil {
+		return o.GHActionsPermissions(ownerRepo)
+	}
+	return defaultGHActionsPermissions(ownerRepo)
 }
 
 // resolveRoot returns the project's repository root, either from RepoRoot or
@@ -173,6 +206,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.addAll(checkStalledRuns(opts, repoRoot))
 	r.addAll(checkOrphanWorktrees(opts, repoRoot, cfg))
 	r.addAll(checkAssetDrift(opts, repoRoot))
+	r.addAll(checkReleaseInfra(opts, repoRoot, cfg))
 
 	for _, f := range r.Findings {
 		if f.Fixed {

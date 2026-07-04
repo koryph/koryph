@@ -228,6 +228,18 @@ func prettifyJSON(src []byte) ([]byte, error) {
 	return append(out, '\n'), nil
 }
 
+// RenderCallerWorkflow renders the caller workflow template against rc and
+// returns the raw YAML bytes. This is exported so the doctor package can
+// compare the installed .github/workflows/release.yml against the current
+// template without re-running the full setup flow.
+func RenderCallerWorkflow(rc *project.ReleaseConfig) ([]byte, error) {
+	if rc == nil {
+		return nil, fmt.Errorf("release: RenderCallerWorkflow: ReleaseConfig is nil")
+	}
+	td := buildTemplateData(rc, "")
+	return renderTemplate("caller-workflow.yml", EmbeddedWorkflowTmpl, td)
+}
+
 // humanSteps returns the ordered list of actions a human operator must
 // complete before the release pipeline can run end-to-end. These are printed
 // by the CLI after setup so the operator knows what remains.
