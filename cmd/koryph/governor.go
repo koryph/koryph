@@ -17,9 +17,23 @@ func init() {
 		name:    "governor",
 		summary: "inspect and set the machine-wide concurrency cap",
 		run:     cmdGovernor,
+		DocLinks: []string{
+			"concepts/governors.md",
+			"user-guide/billing-and-quota.md",
+			"developer-guide/global-governor.md",
+		},
 		subs: []command{
-			{name: "show", summary: "show the cap, leases, and demand"},
-			{name: "set", summary: "set the machine-wide cap", run: cmdGovernorSet},
+			{
+				name:     "show",
+				summary:  "show the cap, active leases, and demand",
+				DocLinks: []string{"concepts/governors.md"},
+			},
+			{
+				name:     "set",
+				summary:  "set the machine-wide cap",
+				run:      cmdGovernorSet,
+				DocLinks: []string{"concepts/governors.md", "developer-guide/global-governor.md"},
+			},
 		},
 	})
 }

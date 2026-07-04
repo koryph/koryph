@@ -23,6 +23,10 @@ func init() {
 		name:    "roster",
 		summary: "per-bead titled roster grouped by lifecycle",
 		run:     cmdRoster,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+			"concepts/beads.md",
+		},
 	})
 }
 

@@ -21,8 +21,17 @@ func init() {
 		name:    "plan",
 		summary: "plan and analyze the project bead corpus",
 		run:     cmdPlan,
+		DocLinks: []string{
+			"concepts/beads.md",
+			"concepts/footprints.md",
+		},
 		subs: []command{
-			{name: "audit", summary: "read-only corpus conflict analysis", run: cmdPlanAudit},
+			{
+				name:     "audit",
+				summary:  "read-only corpus conflict analysis: footprint gaps, non-dispatchable beads, parallel width",
+				run:      cmdPlanAudit,
+				DocLinks: []string{"concepts/beads.md", "concepts/footprints.md"},
+			},
 		},
 	})
 }

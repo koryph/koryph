@@ -21,9 +21,23 @@ func init() {
 		name:    "release",
 		summary: "configure and operate the project release pipeline",
 		run:     cmdRelease,
+		DocLinks: []string{
+			"concepts/release-train.md",
+			"user-guide/releasing-projects.md",
+		},
 		subs: []command{
-			{name: "setup", summary: "render and install release workflow + release-please config", run: cmdReleaseSetup},
-			{name: "kick", summary: "close+reopen the Release PR so checks fire under your gh auth", run: cmdReleaseKick},
+			{
+				name:     "setup",
+				summary:  "render and install release workflow + release-please config",
+				run:      cmdReleaseSetup,
+				DocLinks: []string{"concepts/release-train.md", "user-guide/releasing-projects.md"},
+			},
+			{
+				name:     "kick",
+				summary:  "close+reopen the Release PR so checks fire under your gh auth",
+				run:      cmdReleaseKick,
+				DocLinks: []string{"concepts/release-train.md", "user-guide/releasing-projects.md"},
+			},
 		},
 	})
 }

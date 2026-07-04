@@ -18,6 +18,10 @@ func init() {
 		name:    "init",
 		summary: "create ~/.koryph, verify tools on PATH, print next steps",
 		run:     cmdInit,
+		DocLinks: []string{
+			"user-guide/installation.md",
+			"user-guide/quickstart.md",
+		},
 	})
 }
 

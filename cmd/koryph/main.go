@@ -258,6 +258,7 @@ func init() {
 		name:    "version",
 		summary: "print the engine version",
 		run:     cmdVersion,
+		// No DocLinks: version has no associated concept or user-guide page.
 	})
 }
 

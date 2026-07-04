@@ -22,12 +22,41 @@ func init() {
 		name:    "posture",
 		summary: "apply a named desired-state profile to a GitHub repo",
 		run:     cmdPosture,
+		DocLinks: []string{
+			"concepts/postures.md",
+			"user-guide/postures.md",
+		},
 		subs: []command{
-			{name: "list", summary: "list built-in and user-defined profiles", run: cmdPostureList},
-			{name: "describe", summary: "explain every setting a profile enforces and why", run: cmdPostureDescribe},
-			{name: "check", summary: "diff live GitHub state against a profile (exit 1 on drift)", run: cmdPostureCheck},
-			{name: "diff", summary: "show drift between live state and a profile (always exit 0)", run: cmdPostureDiff},
-			{name: "apply", summary: "show diff then apply a profile to the live GitHub repo", run: cmdPostureApply},
+			{
+				name:     "list",
+				summary:  "list built-in and user-defined profiles",
+				run:      cmdPostureList,
+				DocLinks: []string{"user-guide/postures.md"},
+			},
+			{
+				name:     "describe",
+				summary:  "explain every setting a profile enforces and why",
+				run:      cmdPostureDescribe,
+				DocLinks: []string{"concepts/postures.md", "user-guide/postures.md"},
+			},
+			{
+				name:     "check",
+				summary:  "diff live GitHub state against a profile (exit 1 on drift)",
+				run:      cmdPostureCheck,
+				DocLinks: []string{"concepts/postures.md", "user-guide/postures.md"},
+			},
+			{
+				name:     "diff",
+				summary:  "show drift between live state and a profile (always exit 0)",
+				run:      cmdPostureDiff,
+				DocLinks: []string{"concepts/postures.md", "user-guide/postures.md"},
+			},
+			{
+				name:     "apply",
+				summary:  "show diff then apply a profile to the live GitHub repo",
+				run:      cmdPostureApply,
+				DocLinks: []string{"concepts/postures.md", "user-guide/postures.md"},
+			},
 		},
 	})
 }

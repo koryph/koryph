@@ -25,10 +25,18 @@ func init() {
 		name:    "completion",
 		summary: "print or install a shell completion script",
 		run:     cmdCompletion,
+		DocLinks: []string{
+			"user-guide/installation.md",
+		},
 		subs: []command{
-			{name: "bash", summary: "print the bash completion script"},
-			{name: "zsh", summary: "print the zsh completion script"},
-			{name: "install", summary: "install the completion script to the standard location", run: cmdCompletionInstall},
+			{name: "bash", summary: "print the bash completion script", DocLinks: []string{"user-guide/installation.md"}},
+			{name: "zsh", summary: "print the zsh completion script", DocLinks: []string{"user-guide/installation.md"}},
+			{
+				name:     "install",
+				summary:  "install the completion script to the standard location",
+				run:      cmdCompletionInstall,
+				DocLinks: []string{"user-guide/installation.md"},
+			},
 		},
 	})
 }

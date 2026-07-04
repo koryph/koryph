@@ -22,6 +22,10 @@ func init() {
 		name:    "intake",
 		summary: "poll labeled GitHub issues into planning beads",
 		run:     cmdIntake,
+		DocLinks: []string{
+			"user-guide/intake.md",
+			"concepts/beads.md",
+		},
 	})
 }
 

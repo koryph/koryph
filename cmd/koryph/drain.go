@@ -18,11 +18,19 @@ func init() {
 		name:    "drain",
 		summary: "gracefully wind down a run: finish active slots, dispatch nothing new",
 		run:     cmdDrain,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+			"concepts/rolling-dispatch.md",
+		},
 	})
 	registerCmd(command{
 		name:    "resize",
 		summary: "live width override for a running loop",
 		run:     cmdResize,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+			"concepts/governors.md",
+		},
 	})
 }
 

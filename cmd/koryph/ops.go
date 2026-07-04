@@ -27,13 +27,65 @@ import (
 )
 
 func init() {
-	registerCmd(command{name: "tail", summary: "tail a phase's session.log + stderr.log", run: cmdTail})
-	registerCmd(command{name: "nudge", summary: "append an operator note to a phase INBOX", run: cmdNudge})
-	registerCmd(command{name: "stop", summary: "stop an agent (or every agent with --all)", run: cmdStop})
-	registerCmd(command{name: "merge", summary: "land a finished agent branch", run: cmdMerge})
-	registerCmd(command{name: "land", summary: "land an engine-opened PR fast-forward-only", run: cmdLand})
-	registerCmd(command{name: "review-pr", summary: "analyze another author's PR", run: cmdReviewPR})
-	registerCmd(command{name: "pr-sync", summary: "reconcile pr-opened beads against live PR state", run: cmdPRSync})
+	registerCmd(command{
+		name:    "tail",
+		summary: "tail a phase's session.log + stderr.log",
+		run:     cmdTail,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
+	registerCmd(command{
+		name:    "nudge",
+		summary: "append an operator note to a phase INBOX",
+		run:     cmdNudge,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
+	registerCmd(command{
+		name:    "stop",
+		summary: "stop an agent (or every agent with --all)",
+		run:     cmdStop,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
+	registerCmd(command{
+		name:    "merge",
+		summary: "land a finished agent branch",
+		run:     cmdMerge,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+			"concepts/worktrees.md",
+		},
+	})
+	registerCmd(command{
+		name:    "land",
+		summary: "land an engine-opened PR fast-forward-only",
+		run:     cmdLand,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+			"concepts/worktrees.md",
+		},
+	})
+	registerCmd(command{
+		name:    "review-pr",
+		summary: "analyze another author's PR",
+		run:     cmdReviewPR,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+			"user-guide/collaboration.md",
+		},
+	})
+	registerCmd(command{
+		name:    "pr-sync",
+		summary: "reconcile pr-opened beads against live PR state",
+		run:     cmdPRSync,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
 }
 
 // latestRun resolves the record and its latest run for a project.

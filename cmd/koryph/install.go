@@ -25,16 +25,33 @@ func init() {
 		name:    "commands",
 		summary: "install koryph-* Claude slash commands",
 		run:     cmdCommands,
+		DocLinks: []string{
+			"user-guide/projects-and-accounts.md",
+		},
 		subs: []command{
-			{name: "install", summary: "install commands into <root>/.claude/commands", run: cmdCommandsInstall},
+			{
+				name:     "install",
+				summary:  "install commands into <root>/.claude/commands",
+				run:      cmdCommandsInstall,
+				DocLinks: []string{"user-guide/projects-and-accounts.md"},
+			},
 		},
 	})
 	registerCmd(command{
 		name:    "rules",
 		summary: "install hook scripts + merge wiring",
 		run:     cmdRules,
+		DocLinks: []string{
+			"user-guide/projects-and-accounts.md",
+			"concepts/worktrees.md",
+		},
 		subs: []command{
-			{name: "install", summary: "install hooks into <root>/.claude/settings.json", run: cmdRulesInstall},
+			{
+				name:     "install",
+				summary:  "install hooks into <root>/.claude/settings.json",
+				run:      cmdRulesInstall,
+				DocLinks: []string{"user-guide/projects-and-accounts.md"},
+			},
 		},
 	})
 }

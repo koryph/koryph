@@ -22,19 +22,58 @@ func init() {
 		name:    "signing",
 		summary: "configure and operate vault-backed commit signing",
 		run:     cmdSigning,
+		DocLinks: []string{
+			"user-guide/signing.md",
+			"concepts/postures.md",
+		},
 		subs: []command{
-			{name: "setup", summary: "write the signing policy into the adapter", run: cmdSigningSetup},
-			{name: "enable", summary: "load the key + apply repo git config", run: cmdSigningEnable},
-			{name: "status", summary: "mode/provider/agent-ready summary", run: cmdSigningStatus},
-			{name: "verify", summary: "verify branch commit signatures", run: cmdSigningVerify},
+			{
+				name:     "setup",
+				summary:  "write the signing policy into the adapter",
+				run:      cmdSigningSetup,
+				DocLinks: []string{"user-guide/signing.md"},
+			},
+			{
+				name:     "enable",
+				summary:  "load the key + apply repo git config",
+				run:      cmdSigningEnable,
+				DocLinks: []string{"user-guide/signing.md"},
+			},
+			{
+				name:     "keygen",
+				summary:  "generate a passphrase-protected SSH signing key (no-vault path)",
+				run:      cmdSigningKeygen,
+				DocLinks: []string{"user-guide/signing.md"},
+			},
+			{
+				name:     "status",
+				summary:  "mode/provider/agent-ready summary",
+				run:      cmdSigningStatus,
+				DocLinks: []string{"user-guide/signing.md"},
+			},
+			{
+				name:     "verify",
+				summary:  "verify branch commit signatures",
+				run:      cmdSigningVerify,
+				DocLinks: []string{"user-guide/signing.md"},
+			},
 		},
 	})
 	registerCmd(command{
 		name:    "sign",
 		summary: "cosign sign-blob an artifact",
 		run:     cmdSign,
+		DocLinks: []string{
+			"user-guide/signing.md",
+			"user-guide/supply-chain.md",
+		},
 		subs: []command{
-			{name: "blob", summary: "sign a file via the vault key", run: cmdSignBlob},
+			{
+				name:     "blob",
+				summary:  "sign a file via the vault key",
+				run:      cmdSignBlob,
+				DocLinks: []string{"user-guide/signing.md", "user-guide/supply-chain.md"},
+			},
 		},
 	})
 }

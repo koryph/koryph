@@ -21,10 +21,47 @@ func init() {
 		name:    "bot",
 		summary: "provision and manage koryph GitHub App bots",
 		run:     cmdBot,
+		DocLinks: []string{
+			"concepts/release-train.md",
+			"user-guide/release-bot.md",
+		},
 		subs: []command{
-			{name: "create", summary: "create a GitHub App via the manifest flow (one browser click)", run: cmdBotCreate},
-			{name: "install", summary: "print/open the installation page for a provisioned bot", run: cmdBotInstall},
-			{name: "list", summary: "list provisioned bots in ~/.koryph/bots/", run: cmdBotList},
+			{
+				name:     "create",
+				summary:  "create a GitHub App via the manifest flow (one browser click)",
+				run:      cmdBotCreate,
+				DocLinks: []string{"user-guide/release-bot.md"},
+			},
+			{
+				name:     "install",
+				summary:  "print/open the installation page for a provisioned bot",
+				run:      cmdBotInstall,
+				DocLinks: []string{"user-guide/release-bot.md"},
+			},
+			{
+				name:     "attach",
+				summary:  "wire a repo to a bot: set secrets and enable Actions PR-approval toggle",
+				run:      cmdBotAttach,
+				DocLinks: []string{"user-guide/release-bot.md"},
+			},
+			{
+				name:     "list",
+				summary:  "list provisioned bots in ~/.koryph/bots/",
+				run:      cmdBotList,
+				DocLinks: []string{"user-guide/release-bot.md"},
+			},
+			{
+				name:     "check",
+				summary:  "run the bot validator chain (JWT, installation, secrets, Actions toggle)",
+				run:      cmdBotCheck,
+				DocLinks: []string{"user-guide/release-bot.md"},
+			},
+			{
+				name:     "vault-migrate",
+				summary:  "move a plaintext bot private key into a vault or encrypted file",
+				run:      cmdBotVaultMigrate,
+				DocLinks: []string{"user-guide/signing.md", "user-guide/release-bot.md"},
+			},
 		},
 	})
 }

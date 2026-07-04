@@ -16,9 +16,32 @@ import (
 )
 
 func init() {
-	registerCmd(command{name: "run", summary: "execute one engine run over a project", run: cmdRun})
-	registerCmd(command{name: "board", summary: "one-line-per-project run overview", run: cmdBoard})
-	registerCmd(command{name: "status", summary: "latest-run per-slot detail", run: cmdStatus})
+	registerCmd(command{
+		name:    "run",
+		summary: "execute one engine run over a project",
+		run:     cmdRun,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+			"concepts/rolling-dispatch.md",
+			"concepts/beads.md",
+		},
+	})
+	registerCmd(command{
+		name:    "board",
+		summary: "one-line-per-project run overview",
+		run:     cmdBoard,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
+	registerCmd(command{
+		name:    "status",
+		summary: "latest-run per-slot detail",
+		run:     cmdStatus,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
 }
 
 // cmdRun executes one engine run over a project.

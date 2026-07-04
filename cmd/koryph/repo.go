@@ -18,10 +18,35 @@ func init() {
 		name:    "repo",
 		summary: "check or apply .github IaC (rulesets, repo settings)",
 		run:     cmdRepo,
+		DocLinks: []string{
+			"user-guide/postures.md",
+			"concepts/ejectability.md",
+		},
 		subs: []command{
-			{name: "describe", summary: "explain every setting in .github IaC and why", run: cmdRepoDescribe},
-			{name: "check", summary: "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)", run: cmdRepoCheck},
-			{name: "apply", summary: "apply .github IaC (rulesets, repo settings) to the live repo", run: cmdRepoApply},
+			{
+				name:     "describe",
+				summary:  "explain every setting in .github IaC and why",
+				run:      cmdRepoDescribe,
+				DocLinks: []string{"user-guide/postures.md"},
+			},
+			{
+				name:     "check",
+				summary:  "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)",
+				run:      cmdRepoCheck,
+				DocLinks: []string{"user-guide/postures.md", "concepts/ejectability.md"},
+			},
+			{
+				name:     "apply",
+				summary:  "apply .github IaC (rulesets, repo settings) to the live repo",
+				run:      cmdRepoApply,
+				DocLinks: []string{"user-guide/postures.md", "concepts/ejectability.md"},
+			},
+			{
+				name:     "rollback",
+				summary:  "roll back to a pre-apply snapshot",
+				run:      cmdRepoRollback,
+				DocLinks: []string{"user-guide/postures.md"},
+			},
 		},
 	})
 }

@@ -22,8 +22,16 @@ func init() {
 		name:    "batch",
 		summary: "submit a Message Batch (explicit per-token spend)",
 		run:     cmdBatch,
+		DocLinks: []string{
+			"user-guide/billing-and-quota.md",
+		},
 		subs: []command{
-			{name: "run", summary: "submit a batch from a JSONL file", run: cmdBatchRun},
+			{
+				name:     "run",
+				summary:  "submit a batch from a JSONL file",
+				run:      cmdBatchRun,
+				DocLinks: []string{"user-guide/billing-and-quota.md"},
+			},
 		},
 	})
 }

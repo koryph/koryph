@@ -31,22 +31,60 @@ func init() {
 		name:    "project",
 		summary: "onboard and manage registered projects",
 		run:     cmdProject,
+		DocLinks: []string{
+			"user-guide/projects-and-accounts.md",
+			"concepts/accounts.md",
+		},
 		subs: []command{
-			{name: "add", summary: "register a project", run: cmdProjectAdd},
-			{name: "list", summary: "list managed projects", run: cmdProjectList},
-			{name: "show", summary: "print one project record as JSON", run: cmdProjectShow},
-			{name: "set-account", summary: "change a project's account (audited)", run: cmdProjectSetAccount},
+			{
+				name:     "add",
+				summary:  "register a project (inspect + register + scaffold adapter + install assets)",
+				run:      cmdProjectAdd,
+				DocLinks: []string{"user-guide/projects-and-accounts.md", "user-guide/zero-to-shipped.md"},
+			},
+			{
+				name:     "install-assets",
+				summary:  "(re)install koryph assets — agents, commands, and rules",
+				run:      cmdProjectInstallAssets,
+				DocLinks: []string{"user-guide/projects-and-accounts.md"},
+			},
+			{
+				name:     "list",
+				summary:  "list managed projects (id, account, status, root)",
+				run:      cmdProjectList,
+				DocLinks: []string{"user-guide/projects-and-accounts.md"},
+			},
+			{
+				name:     "show",
+				summary:  "print one project record as JSON",
+				run:      cmdProjectShow,
+				DocLinks: []string{"user-guide/projects-and-accounts.md"},
+			},
+			{
+				name:     "set-account",
+				summary:  "change a project's account (audited; resets validation)",
+				run:      cmdProjectSetAccount,
+				DocLinks: []string{"user-guide/projects-and-accounts.md", "concepts/accounts.md"},
+			},
 		},
 	})
 	registerCmd(command{
 		name:    "onboard",
 		summary: "read-only inventory of a project",
 		run:     cmdOnboard,
+		DocLinks: []string{
+			"user-guide/projects-and-accounts.md",
+			"architecture.md",
+		},
 	})
 	registerCmd(command{
 		name:    "validate",
 		summary: "run the pre-dispatch gate",
 		run:     cmdValidate,
+		DocLinks: []string{
+			"user-guide/projects-and-accounts.md",
+			"user-guide/zero-to-shipped.md",
+		},
 	})
 }
 

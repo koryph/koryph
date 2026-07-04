@@ -19,8 +19,16 @@ func init() {
 		name:    "agents",
 		summary: "install fallback personas",
 		run:     cmdAgents,
+		DocLinks: []string{
+			"user-guide/projects-and-accounts.md",
+		},
 		subs: []command{
-			{name: "install", summary: "install personas into <root>/.claude/agents", run: cmdAgentsInstall},
+			{
+				name:     "install",
+				summary:  "install personas into <root>/.claude/agents",
+				run:      cmdAgentsInstall,
+				DocLinks: []string{"user-guide/projects-and-accounts.md"},
+			},
 		},
 	})
 }

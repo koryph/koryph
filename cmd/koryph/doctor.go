@@ -16,6 +16,9 @@ func init() {
 		name:    "doctor",
 		summary: "health check: layout, binaries, registry, governor",
 		run:     cmdDoctor,
+		DocLinks: []string{
+			"user-guide/doctor.md",
+		},
 	})
 }
 

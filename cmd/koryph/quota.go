@@ -21,16 +21,34 @@ func init() {
 		name:    "quota",
 		summary: "per-account governor snapshot",
 		run:     cmdQuota,
+		DocLinks: []string{
+			"concepts/governors.md",
+			"user-guide/billing-and-quota.md",
+		},
 		subs: []command{
-			{name: "calibrate", summary: "calibrate a governor ceiling", run: cmdQuotaCalibrate},
+			{
+				name:     "calibrate",
+				summary:  "calibrate a governor ceiling from an observed /usage reading",
+				run:      cmdQuotaCalibrate,
+				DocLinks: []string{"concepts/governors.md", "user-guide/billing-and-quota.md"},
+			},
 		},
 	})
 	registerCmd(command{
 		name:    "metrics",
 		summary: "burn + reliability rollup across projects",
 		run:     cmdMetricsDispatch,
+		DocLinks: []string{
+			"user-guide/billing-and-quota.md",
+			"concepts/governors.md",
+		},
 		subs: []command{
-			{name: "estimator", summary: "per-(model,size) estimator accuracy stats", run: cmdMetricsEstimator},
+			{
+				name:     "estimator",
+				summary:  "per-(model,size) estimator accuracy stats",
+				run:      cmdMetricsEstimator,
+				DocLinks: []string{"user-guide/billing-and-quota.md"},
+			},
 		},
 	})
 }
