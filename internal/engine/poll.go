@@ -167,6 +167,12 @@ func (r *runner) waitTick(ctx context.Context, wake <-chan os.Signal, interval t
 // only commits the cheap commit-count/heartbeat refresh, which resume
 // recomputes from git anyway — so batching it costs no crash safety.
 func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
+	// Refresh the demand heartbeat on every poll tick so the engine's presence
+	// is visible to `koryph doctor` even under slot saturation — when every
+	// global slot is occupied no new admissions happen, so the admission-time
+	// refresh in wave/rolling loops never fires, and the 10-minute TTL would
+	// falsely expire on a healthy, fully-loaded pipeline (koryph-p42).
+	r.refreshDemand()
 	for _, id := range r.activePhaseIDs() {
 		sl := r.run.Slots[id]
 		if sl == nil || ledger.Terminal(sl.Status) {

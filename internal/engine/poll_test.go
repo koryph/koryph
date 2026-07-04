@@ -6,9 +6,14 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
 )
 
@@ -92,6 +97,60 @@ func TestProgressProbeDue(t *testing.T) {
 		if got := progressProbeDue(tick); got != expect {
 			t.Errorf("progressProbeDue(%d) = %v, want %v", tick, got, expect)
 		}
+	}
+}
+
+// TestPollPassRefreshesDemand verifies that pollPass refreshes the engine's
+// demand heartbeat on every poll tick, not only at dispatch time. Under slot
+// saturation (all global slots occupied, no new admissions), the dispatch-time
+// refresh in wave/rolling loops never fires; without this fix, doctor's
+// 10-minute TTL would false-trigger on a healthy, fully-loaded pipeline
+// (koryph-p42).
+func TestPollPassRefreshesDemand(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+
+	// Demand file for project "proj" in the default (anthropic) pool lives at
+	// {KORYPH_HOME}/slots/demand/proj.json — see govern.Store.demandPath.
+	demandFile := filepath.Join(f.home, "slots", "demand", "proj.json")
+	if _, err := os.Stat(demandFile); !os.IsNotExist(err) {
+		t.Fatalf("demand file unexpectedly present before test: stat=%v", err)
+	}
+
+	before := time.Now().Add(-time.Second) // generous buffer against sub-second clocks
+
+	// Construct a minimal runner with just the fields pollPass needs:
+	//   gov  → refreshDemand writes the heartbeat
+	//   run  → activePhaseIDs iterates run.Slots (empty: no slots to poll)
+	//   store → SaveRun persists the ledger (fsx.WriteJSONAtomic creates dirs)
+	gs := govern.NewStore()
+	r := &runner{
+		opts:  Options{ProjectID: "proj"},
+		gov:   gs,
+		run:   &ledger.Run{RunID: "test-run-p42", Slots: map[string]*ledger.Slot{}},
+		store: &ledger.Store{KoryphRoot: filepath.Join(f.repo, ".plan-logs", "koryph")},
+	}
+
+	r.pollPass(context.Background(), false)
+
+	// pollPass must have written a fresh demand heartbeat via refreshDemand.
+	data, err := os.ReadFile(demandFile)
+	if err != nil {
+		t.Fatalf("demand file not created by pollPass: %v\n(fix: pollPass must call refreshDemand)", err)
+	}
+	var d govern.Demand
+	if err := json.Unmarshal(data, &d); err != nil {
+		t.Fatalf("demand file malformed: %v", err)
+	}
+	ts, err := time.Parse(time.RFC3339, d.UpdatedAt)
+	if err != nil {
+		t.Fatalf("demand UpdatedAt not parseable: %v", err)
+	}
+	if ts.Before(before) {
+		t.Errorf("demand UpdatedAt = %v, want >= %v (pollPass did not refresh demand heartbeat)",
+			ts, before)
+	}
+	if d.Project != "proj" {
+		t.Errorf("demand Project = %q, want \"proj\"", d.Project)
 	}
 }
 

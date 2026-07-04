@@ -247,6 +247,54 @@ func TestGovernorConfigOnePerPool(t *testing.T) {
 	}
 }
 
+// TestZombieLeaseDeadAgentAliveEngineNotZombie covers the koryph-p42 false-
+// positive: when the agent process has legitimately exited (build done) but
+// the engine is still alive managing the slot through review / rebase / gate
+// / merge, the dead agent PID must NOT be flagged as a zombie. The engine PID
+// is the correct liveness signal for post-build stages.
+func TestZombieLeaseDeadAgentAliveEngineNotZombie(t *testing.T) {
+	home := fabricate(t)
+	slotsDir := filepath.Join(home, "slots")
+	writeLease(t, slotsDir, govern.Lease{
+		Project:   "myproject",
+		Bead:      "abc-review",
+		PID:       99999, // agent is dead (build finished)
+		EnginePID: 88888, // engine is alive (in review/merge stage)
+		Provider:  "anthropic",
+	})
+
+	o := opts(home)
+	o.Alive = func(pid int) bool { return pid == 88888 } // only engine alive
+	r, _ := Run(o)
+	f := findCheck(r, checkNameZombies)
+	if f.Level != LevelOK {
+		t.Errorf("zombie level=%s, want ok when engine is alive (post-build stage is normal): %s",
+			f.Level, f.Message)
+	}
+}
+
+// TestZombieLeaseDeadBothIsZombie confirms that a lease is flagged as a zombie
+// only when BOTH the agent PID and the engine PID are dead (koryph-p42).
+func TestZombieLeaseDeadBothIsZombie(t *testing.T) {
+	home := fabricate(t)
+	slotsDir := filepath.Join(home, "slots")
+	writeLease(t, slotsDir, govern.Lease{
+		Project:   "myproject",
+		Bead:      "abc-orphan",
+		PID:       99999, // agent dead
+		EnginePID: 88888, // engine also dead
+	})
+
+	o := opts(home)
+	o.Alive = func(pid int) bool { return false } // both dead
+	r, _ := Run(o)
+	f := findCheck(r, checkNameZombies)
+	if f.Level != LevelWarn {
+		t.Errorf("zombie level=%s, want warn when both agent and engine are dead: %s",
+			f.Level, f.Message)
+	}
+}
+
 // TestZombieLeaseNamesItsPool proves a zombie-lease Finding names the pool
 // the lease belongs to (Lease.Provider, koryph-v8u.11).
 func TestZombieLeaseNamesItsPool(t *testing.T) {

@@ -450,6 +450,14 @@ func checkZombieLeases(opts Options) []Finding {
 			clean++
 			continue
 		}
+		// Agent PID is dead (or zero). A live engine holding this lease means the
+		// slot is in a post-build stage (review / rebase / gate / merge) — the
+		// NORMAL shape once the agent process exits after building. Only flag as a
+		// zombie when the engine itself is also gone (koryph-p42).
+		if l.EnginePID > 0 && opts.alive(l.EnginePID) {
+			clean++
+			continue
+		}
 
 		pidStr := "-"
 		if probePID > 0 {
