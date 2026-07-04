@@ -7,6 +7,10 @@ repo_url: https://github.com/koryph/koryph
 # Internal roadmap/design docs stay in-repo (referenced by CLAUDE.md and the
 # epics) but are excluded from the published book. llms.txt is a static asset
 # copied verbatim to the site root for AI-agent discovery.
+# NOTE: the site builds with zensical, which does not implement exclude_docs
+# yet (accepted into their backlog — zensical/zensical#135); until it ships,
+# CI enforces the exclusion by removing docs/designs before the build (see
+# .github/workflows/docs.yml). The key stays for intent + forward compat.
 exclude_docs: |
   designs/
 theme:

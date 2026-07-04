@@ -119,13 +119,19 @@ ext-test: ## Run the VS Code extension unit test suite in ide/vscode/ (skipped w
 
 ##@ Documentation
 
+# Local builds include docs/designs (zensical lacks exclude_docs — see
+# docs.yml); the published site excludes them via the CI build.
 .PHONY: docs-serve
-docs-serve: ## Serve the mkdocs book locally (requires mkdocs-material)
-	mkdocs serve
+docs-serve: ## Serve the docs book locally (zensical; falls back to uvx)
+	@if command -v zensical >/dev/null 2>&1; then zensical serve; \
+	elif command -v uvx >/dev/null 2>&1; then uvx zensical serve; \
+	else echo "zensical not found — provided by the nix dev shell, or install uv"; exit 1; fi
 
 .PHONY: docs-build
-docs-build: ## Build the mkdocs book strictly into site/
-	mkdocs build --strict
+docs-build: ## Build the docs book strictly into site/ (zensical; falls back to uvx)
+	@if command -v zensical >/dev/null 2>&1; then zensical build --strict; \
+	elif command -v uvx >/dev/null 2>&1; then uvx zensical build --strict; \
+	else echo "zensical not found — provided by the nix dev shell, or install uv"; exit 1; fi
 
 ##@ Release
 

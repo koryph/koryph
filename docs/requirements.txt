@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 The Koryph Developers
 #
-# Docs toolchain for CI (GitHub Pages). Local dev gets the same tools pinned via
-# flake.nix. Material for MkDocs 9.7.x is in maintenance mode (no 2.0 upgrade
-# path); stay on 9.7 and re-evaluate at the Zensical check-in (~Q4 2026).
-mkdocs-material>=9.7,<9.8
+# Docs toolchain for CI (GitHub Pages). Local dev gets zensical pinned via
+# flake.nix. Migrated from Material for MkDocs 9.7.x (maintenance mode since
+# the Zensical launch) 2026-07-04; zensical reads mkdocs.yml natively.
+# exclude_docs is not implemented yet (zensical/zensical#135 — backlogged);
+# docs.yml removes docs/designs before the build until it ships.
+zensical>=0.0.46,<0.1

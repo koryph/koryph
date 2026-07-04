@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   build:
-    name: build (mkdocs --strict)
+    name: build (zensical --strict)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -33,7 +33,12 @@ jobs:
           cache: pip
           cache-dependency-path: docs/requirements.txt
       - run: pip install -r docs/requirements.txt
-      - run: mkdocs build --strict
+      # zensical does not implement mkdocs.yml's exclude_docs yet (accepted
+      # into their backlog — zensical/zensical#135). Enforce the designs/
+      # exclusion here on the disposable CI checkout; drop this step when
+      # zensical ships exclude_docs support.
+      - run: rm -rf docs/designs
+      - run: zensical build --strict
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:

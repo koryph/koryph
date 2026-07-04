@@ -5,7 +5,7 @@
 
   inputs = {
     # Determinate Systems' weekly nixpkgs carries the tool versions this
-    # project pins: go 1.26.x, goreleaser 2.16+, mkdocs-material 9.7.x, syft,
+    # project pins: go 1.26.x, goreleaser 2.16+, zensical 0.0.4x, syft,
     # cosign, reuse. flake.lock freezes the exact revision for reproducibility.
     nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1.tar.gz";
   };
@@ -57,8 +57,9 @@
       devShells = forAllSystems (system: pkgs:
         let
           go = goFor system pkgs;
-          # mkdocs + Material theme for the docs book (make docs-build / docs-serve).
-          docs = pkgs.python3.withPackages (ps: with ps; [ mkdocs mkdocs-material ]);
+          # zensical for the docs book (make docs-build / docs-serve); reads
+          # the existing mkdocs.yml (compat mode, Material successor).
+          docs = pkgs.zensical;
         in
         {
           default = pkgs.mkShell {
