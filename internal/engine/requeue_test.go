@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/internal/beads"
@@ -142,5 +143,39 @@ func TestRequeueRebuildsStaleWorktreeWithoutCommits(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(fresh, "wip.txt")); !os.IsNotExist(err) {
 		t.Errorf("rebuilt worktree should not carry stale WIP: stat err = %v", err)
+	}
+}
+
+// TestRequeueNoCommitsMissingBranchIsClean proves the koryph-pln fix: when the
+// operator has already deleted the agent's branch before the engine's
+// refreshWorktreeForRequeue branch-reset step runs, the absent branch IS the
+// clean state — the step must proceed silently rather than emitting a
+// "dispatch may attach the old tip" warning.
+func TestRequeueNoCommitsMissingBranchIsClean(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	ctx := context.Background()
+
+	// Create a worktree for the bead, then remove both the worktree AND its
+	// branch — simulating what happens when the operator manually cleans up
+	// after killing the agent. The worktree path is gone and the branch doesn't
+	// exist either.
+	wtPath := ensureWorktreeAt(t, f, "tb1")
+	branch := worktree.BranchFor("tb1")
+
+	// Remove the worktree and branch so the slot has no worktree and no branch.
+	runGit(t, f.repo, "worktree", "remove", "--force", wtPath)
+	runGit(t, f.repo, "branch", "-D", branch)
+
+	// Capture progress output so we can assert the warning is NOT emitted.
+	var buf bytes.Buffer
+	r.opts.Out = &buf
+
+	sl := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Branch: branch, Worktree: wtPath, Commits: 0}
+	// Must not panic and must not warn about "dispatch may attach the old tip".
+	r.refreshWorktreeForRequeue(ctx, sl)
+
+	if strings.Contains(buf.String(), "dispatch may attach the old tip") {
+		t.Errorf("unexpected warning for already-absent branch: %q", buf.String())
 	}
 }

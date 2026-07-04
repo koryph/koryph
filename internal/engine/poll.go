@@ -296,6 +296,11 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 // the independent RateLimitRequeues budget. I5 holds: this never touches a
 // running agent, only gates the NEXT dispatch's admission via the governor.
 func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
+	// Same closed-bead guard as requeueSlot: drop cleanly if the operator
+	// retired the bead while the rate-limited agent was running.
+	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
+		return
+	}
 	r.reportRateLimit(sl.PhaseID)
 
 	if sl.RateLimitRequeues >= rateLimitedRequeueBudget {
@@ -338,6 +343,34 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		// admitted.
 		footprint: sl.Footprint,
 	})
+}
+
+// beadClosedMidFlight checks whether the bead has been closed or deferred by
+// the operator while the agent was running. When true it marks the slot blocked
+// (without burning an attempt), releases the global slot, logs the event, and
+// returns true so every requeue path can return early.
+//
+// A Show error is treated as "not closed": if we cannot confirm the bead's
+// state we let the requeue proceed rather than silently dropping work on a
+// transient bd failure.
+func (r *runner) beadClosedMidFlight(ctx context.Context, id string) bool {
+	iss, err := r.adapter.Show(ctx, id)
+	if err != nil {
+		return false // bd unavailable or bead not found — let the requeue proceed
+	}
+	if iss.Status != "closed" && iss.Status != "deferred" {
+		return false
+	}
+	_ = r.store.UpdateSlot(r.run, id, func(s *ledger.Slot) {
+		s.Status = ledger.SlotBlocked
+		s.Note = "bead closed while in flight — releasing slot"
+	})
+	if sl := r.run.Slots[id]; sl != nil {
+		r.checkpointSlot(sl, "closed-mid-flight")
+	}
+	r.releaseGlobalSlot(id)
+	r.progress("bead %s: bead closed while in flight — releasing slot", id)
+	return true
 }
 
 // finishCandidate runs the configured post-implement pipeline stages, the
@@ -694,6 +727,14 @@ func prBody(iss beads.Issue, runID string) string {
 // the manifest carries a session id and the worktree survives) a native session
 // resume.
 func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, why string) {
+	// Before re-dispatching for any reason (agent death, gate-fail, review
+	// bounce, merge error) re-validate that the bead is still open. The
+	// operator may have closed or deferred it while the previous agent was
+	// running; without this check the engine would waste a full re-dispatch on
+	// a bead the operator has already retired (live repro koryph-pln).
+	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
+		return
+	}
 	attempt := sl.Attempts + 1
 	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
 	r.backoffSleep(ctx, sl.Attempts)
@@ -793,8 +834,10 @@ func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot)
 		}
 	}
 	// Drop the stale branch so Ensure recreates it from the default branch tip
-	// rather than re-checking-out the old one.
-	if err := worktree.DeleteBranch(ctx, r.rec.Root, sl.Branch); err != nil {
+	// rather than re-checking-out the old one. A "not found" error means the
+	// operator already deleted the branch — that IS the clean state, so proceed
+	// silently instead of warning about an absent branch.
+	if err := worktree.DeleteBranch(ctx, r.rec.Root, sl.Branch); err != nil && !strings.Contains(err.Error(), "not found") {
 		r.progress("bead %s: requeue branch reset skipped (%v) — dispatch may attach the old tip", sl.PhaseID, err)
 	}
 }
