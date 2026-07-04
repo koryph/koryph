@@ -5,18 +5,23 @@ package doctor
 
 // release_infra.go — per-project release-infrastructure checks
 //
-// Four checks are grouped under the "release-infra" umbrella and called from
+// Five checks are grouped under the "release-infra" umbrella and called from
 // RunProject after the core structural checks:
 //
 //  1. release-block         — release block ↔ caller workflow consistency
 //  2. release-workflow-drift — installed workflow vs. current template
 //  3. release-bot-secrets   — RELEASE_BOT_APP_ID/PRIVATE_KEY via gh api
 //  4. actions-approval      — can_approve_pull_request_reviews via gh api
+//  5. bot-credentials       — offline PEM validity for stored bots
 //
 // Checks 3 and 4 use gh(1) under the hood; they degrade gracefully (LevelOK
 // with a "skipped" note) when gh is absent, unauthenticated, or lacks admin
 // access — so they never turn a clean project into a red report just because
 // the operator ran the doctor locally without credentials.
+//
+// Check 5 is purely offline (no network) and only runs when the project has a
+// release block — it surfaces corrupted bot credentials before the operator
+// tries to use them.
 
 import (
 	"crypto/sha256"
@@ -26,6 +31,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/koryph/koryph/internal/bot"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/release"
 )
@@ -37,6 +43,7 @@ const (
 	checkNameReleaseWorkflow   = "release-workflow-drift"
 	checkNameReleaseBotSecrets = "release-bot-secrets"
 	checkNameActionsApproval   = "actions-approval"
+	checkNameBotCredentials    = "bot-credentials"
 )
 
 // callerWorkflowPath returns the conventional path of the caller workflow
@@ -54,6 +61,7 @@ func checkReleaseInfra(opts ProjectOptions, repoRoot string, cfg *project.Config
 	out = append(out, checkReleaseWorkflowDrift(repoRoot, cfg)...)
 	out = append(out, checkReleaseBotSecrets(opts, repoRoot, cfg)...)
 	out = append(out, checkActionsApproval(opts, repoRoot, cfg)...)
+	out = append(out, checkBotCredentials(opts, cfg)...)
 	return out
 }
 
@@ -217,7 +225,7 @@ func checkReleaseBotSecrets(opts ProjectOptions, repoRoot string, cfg *project.C
 			out = append(out, Finding{
 				Check:   checkNameReleaseBotSecrets,
 				Level:   LevelWarn,
-				Message: ownerRepo + ": " + want + ": missing (run `provision-release-bot.sh --attach " + ownerRepo + "` to configure)",
+				Message: ownerRepo + ": " + want + ": missing (run `koryph bot attach --name <name> --repo " + ownerRepo + "` to configure)",
 			})
 		}
 	}
@@ -271,7 +279,7 @@ func checkActionsApproval(opts ProjectOptions, repoRoot string, cfg *project.Con
 	return []Finding{{
 		Check:   checkNameActionsApproval,
 		Level:   LevelWarn,
-		Message: ownerRepo + ": Actions can_approve_pull_request_reviews: disabled (run `provision-release-bot.sh --attach " + ownerRepo + "` to enable)",
+		Message: ownerRepo + ": Actions can_approve_pull_request_reviews: disabled (run `koryph bot attach --name <name> --repo " + ownerRepo + "` to enable)",
 	}}
 }
 
@@ -348,4 +356,61 @@ func parseGitHubSlug(remoteURL string) (string, bool) {
 func releaseFileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// --- 5. bot-credentials (offline) -------------------------------------------
+
+// checkBotCredentials is a purely offline check that verifies the PEM stored
+// in each ~/.koryph/bots/*.json file can produce a structurally valid JWT.
+// It only runs when the project has a release block (when release is not
+// configured, bot credentials are not relevant to the project). The check
+// degrades gracefully (LevelOK) when no bots are stored at all.
+//
+// The injectable BotCredentialCheck field on ProjectOptions allows tests to
+// inject a fake list of credential findings without touching the real filesystem.
+func checkBotCredentials(opts ProjectOptions, cfg *project.Config) []Finding {
+	if cfg == nil || cfg.Release == nil {
+		return []Finding{{
+			Check:   checkNameBotCredentials,
+			Level:   LevelOK,
+			Message: "release not configured; bot credential check skipped",
+		}}
+	}
+
+	// Use injectable function if provided (test seam); fall back to the real
+	// bot.CheckCredentials() which reads ~/.koryph/bots/.
+	listFn := opts.BotCredentialCheck
+	if listFn == nil {
+		listFn = bot.CheckCredentials
+	}
+
+	credFindings, err := listFn()
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameBotCredentials,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("list bots: %v", err),
+		}}
+	}
+	if len(credFindings) == 0 {
+		return []Finding{{
+			Check:   checkNameBotCredentials,
+			Level:   LevelOK,
+			Message: "no bots stored (run `koryph bot create` then `koryph bot attach --name N --repo OWNER/REPO`)",
+		}}
+	}
+
+	var out []Finding
+	for _, f := range credFindings {
+		level := LevelOK
+		if f.Level == bot.CheckFail {
+			level = LevelWarn // corrupted credentials are a warning, not a hard error
+		}
+		out = append(out, Finding{
+			Check:   checkNameBotCredentials,
+			Level:   level,
+			Message: fmt.Sprintf("bot %s: %s", f.Name, f.Message),
+		})
+	}
+	return out
 }

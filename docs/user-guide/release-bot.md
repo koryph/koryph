@@ -103,15 +103,42 @@ koryph bot install --name mylogin-release-bot
 This prints the installation URL and opens it in your browser.  Select the
 repositories you want to grant access to, then click **Install**.
 
-### Step 3 — Wire the bot to a project
+### Step 3 — Attach the bot to a repository
 
 ```bash
-koryph release setup --project <id> --bot mylogin-release-bot
+koryph bot attach --name mylogin-release-bot --repo OWNER/REPO
 ```
 
-### Step 4 — Verify
+This performs all wiring in a single idempotent command:
+
+1. Mints a short-lived JWT from the stored PEM (no `gh` dependency for
+   App-auth calls).
+2. Resolves the App installation that covers `OWNER` via the GitHub App API.
+3. Adds `OWNER/REPO` to the installation (idempotent).
+4. Sets `RELEASE_BOT_APP_ID` and `RELEASE_BOT_PRIVATE_KEY` as per-repo
+   Actions secrets.
+5. Enables the `can_approve_pull_request_reviews` toggle on the repository.
+
+For org-level secrets (shared across repos in the same org), pass
+`--org-secrets`:
 
 ```bash
+koryph bot attach --name mylogin-release-bot --repo OWNER/REPO --org-secrets
+```
+
+### Step 4 — Wire the bot to a project
+
+```bash
+koryph release setup --project <id>
+```
+
+### Step 5 — Verify
+
+```bash
+# Full validator chain: JWT validity, installation, secrets, toggle, workflow
+koryph bot check --name mylogin-release-bot --repo OWNER/REPO
+
+# Per-project doctor check (also checks bot credentials offline)
 koryph doctor --project <id>
 ```
 
@@ -128,6 +155,9 @@ koryph bot create --name mylogin-release-bot --public
 
 # Install: visit the URL and select the guest-org repos you administer
 koryph bot install --name mylogin-release-bot
+
+# Wire the specific repo
+koryph bot attach --name mylogin-release-bot --repo GUEST-ORG/MY-REPO
 ```
 
 On the installation page, select the **guest organisation** from the account
@@ -151,6 +181,10 @@ koryph bot create --name myorg-release-bot --org myorg
 
 # Install within the org
 koryph bot install --name myorg-release-bot
+
+# Wire a specific repo (sets per-repo secrets by default;
+# use --org-secrets to set org-level secrets shared across repos)
+koryph bot attach --name myorg-release-bot --repo myorg/my-repo
 ```
 
 The bot is owned by the org and can only be installed within that org.
@@ -167,6 +201,59 @@ koryph bot list
 mylogin-release-bot            app_id=12345      owner=mylogin           private
 myorg-release-bot              app_id=67890      owner=myorg             private
 ```
+
+Add `--check` for a quick offline PEM validity check:
+
+```bash
+koryph bot list --check
+```
+
+For a full live identity check against the GitHub API, use `koryph bot check`:
+
+```bash
+koryph bot check --name mylogin-release-bot
+```
+
+---
+
+## Checking bot health
+
+`koryph bot check` runs a validator chain with precise remediation per failure:
+
+| Check | What it validates |
+|-------|------------------|
+| `jwt-valid` | PEM parses; JWT minted; `GET /app` confirms `app_id` match |
+| `installation-exists` | At least one installation found for the app |
+| `installation-covers` | Installation covers the target `OWNER` (with `--repo`) |
+| `secrets-present` | `RELEASE_BOT_APP_ID` + `RELEASE_BOT_PRIVATE_KEY` present |
+| `toggle-on` | `can_approve_pull_request_reviews` is enabled |
+| `caller-workflow` | `.github/workflows/release.yml` present in the repo |
+
+```bash
+# Identity check only (no --repo):
+koryph bot check --name mylogin-release-bot
+
+# Full check against a specific repo:
+koryph bot check --name mylogin-release-bot --repo OWNER/REPO
+```
+
+Exit codes: `0` all ok / `1` warnings / `2` failures.
+
+---
+
+## `koryph doctor` integration
+
+`koryph doctor --project <id>` automatically checks bot health when the project
+has a release block configured:
+
+- **`release-bot-secrets`**: verifies `RELEASE_BOT_APP_ID` and
+  `RELEASE_BOT_PRIVATE_KEY` are present on the project's GitHub repo.
+- **`actions-approval`**: verifies `can_approve_pull_request_reviews` is enabled.
+- **`bot-credentials`**: offline PEM validity check for all stored bots in
+  `~/.koryph/bots/`.
+
+The bot-credentials check never makes a network call — it surfaces corrupted
+credential files before the operator tries to use them.
 
 ---
 
@@ -234,6 +321,21 @@ A credential file already exists at `~/.koryph/bots/<name>.json`.  Either:
 - Delete the file and re-run to provision a new App, **or**
 - Use `--name` with a different name to create a parallel App.
 
+### `koryph bot check` reports "no installation found"
+
+Run `koryph bot install --name <name>` to open the GitHub installation page,
+then select the repositories to grant access to.  After installing, re-run
+`koryph bot attach`.
+
+### `koryph bot check` reports `secrets-present: warn`
+
+The check requires repository admin access to read secret names via the GitHub
+API.  If you have admin access and the secrets are still missing, run:
+
+```bash
+koryph bot attach --name <name> --repo OWNER/REPO
+```
+
 ### Permission denied during installation
 
 If the org requires admin approval, your install click submits a request that
@@ -254,3 +356,6 @@ approves the request via GitHub.
   short-lived (≤ 1 hour) and scoped to the repository.
 - Only `contents: write` and `pull_requests: write` are requested — no org
   permissions, no admin access.
+- JWTs minted by `koryph bot attach` and `koryph bot check` are also
+  short-lived (10-minute expiry), used only for the GitHub App API, and never
+  stored or logged.

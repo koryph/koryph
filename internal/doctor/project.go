@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/agents"
+	"github.com/koryph/koryph/internal/bot"
 	"github.com/koryph/koryph/internal/commands"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
@@ -77,6 +78,10 @@ type ProjectOptions struct {
 	// given owner/repo. Return (false, err) on failure; the actions-approval
 	// check degrades gracefully on error. nil means: invoke the real `gh` CLI.
 	GHActionsPermissions func(ownerRepo string) (bool, error)
+	// BotCredentialCheck returns offline PEM-validity findings for all stored
+	// bots. nil means: call bot.CheckCredentials() against the real filesystem.
+	// Inject a fake in tests to avoid touching ~/.koryph/bots/.
+	BotCredentialCheck func() ([]bot.CredentialFinding, error)
 }
 
 func (o *ProjectOptions) home() string {

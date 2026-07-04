@@ -341,8 +341,8 @@ func TestReleaseBotSecretsBothMissing(t *testing.T) {
 		if f.Level != LevelWarn {
 			t.Errorf("bot-secrets: got %s %q, want warn", f.Level, f.Message)
 		}
-		if !strings.Contains(f.Message, "provision-release-bot.sh") {
-			t.Errorf("bot-secrets: expected provision hint, got %q", f.Message)
+		if !strings.Contains(f.Message, "koryph bot attach") {
+			t.Errorf("bot-secrets: expected 'koryph bot attach' provision hint, got %q", f.Message)
 		}
 	}
 }
@@ -419,8 +419,8 @@ func TestActionsApprovalDisabled(t *testing.T) {
 	if !strings.Contains(f.Message, "disabled") {
 		t.Errorf("actions-approval: expected 'disabled' in message, got %q", f.Message)
 	}
-	if !strings.Contains(f.Message, "provision-release-bot.sh") {
-		t.Errorf("actions-approval: expected provision hint, got %q", f.Message)
+	if !strings.Contains(f.Message, "koryph bot attach") {
+		t.Errorf("actions-approval: expected 'koryph bot attach' provision hint, got %q", f.Message)
 	}
 }
 

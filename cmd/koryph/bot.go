@@ -22,23 +22,28 @@ import (
 //   - Private bot on the owning GitHub account (default):
 //     koryph bot create --name <login>-release-bot
 //     koryph bot install --name <login>-release-bot
+//     koryph bot attach --name <login>-release-bot --repo OWNER/REPO
 //     (Only the owning account can install the app.)
 //
 //   - Public bot for guest-org repos (you admin repos but don't own the org):
 //     koryph bot create --name <login>-release-bot --public
 //     koryph bot install --name <login>-release-bot
+//     koryph bot attach --name <login>-release-bot --repo OWNER/REPO
 //     (Repo admins in any org can scope-install the app to their repos.)
 //
 //   - Per-org private bot (you own the org):
 //     koryph bot create --name <org>-release-bot --org <org>
 //     koryph bot install --name <org>-release-bot
+//     koryph bot attach --name <org>-release-bot --repo OWNER/REPO
 //     (Private app owned by the org; org members can install within that org.)
 func cmdBot(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "bot", "provision and manage koryph GitHub App bots", []subVerb{
 			{"create [--name N] [--org ORG] [--public]", "create a GitHub App via the manifest flow (one browser click)"},
 			{"install --name N", "print/open the installation page for a provisioned bot"},
-			{"list", "list provisioned bots in ~/.koryph/bots/"},
+			{"attach --name N --repo OWNER/REPO [--org-secrets]", "wire a repo: add to installation, set secrets, enable Actions toggle"},
+			{"list [--check]", "list provisioned bots; --check does a live GET /app identity check per bot"},
+			{"check --name N [--repo OWNER/REPO]", "run the full validator chain: JWT, installation, secrets, toggle, workflow"},
 		})
 		return 0
 	}
@@ -48,8 +53,12 @@ func cmdBot(args []string, stdout, stderr io.Writer) int {
 		return cmdBotCreate(rest, stdout, stderr)
 	case "install":
 		return cmdBotInstall(rest, stdout, stderr)
+	case "attach":
+		return cmdBotAttach(rest, stdout, stderr)
 	case "list":
 		return cmdBotList(rest, stdout, stderr)
+	case "check":
+		return cmdBotCheck(rest, stdout, stderr)
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown bot subcommand %q", sub))
 	}
@@ -170,9 +179,11 @@ func cmdBotInstall(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdBotList implements 'koryph bot list'.
+// With --check it also does a live GET /app identity check per stored bot.
 func cmdBotList(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("bot list", stderr)
-	setUsage(fs, stdout, "list provisioned bots in ~/.koryph/bots/", "")
+	liveCheck := fs.Bool("check", false, "perform a live GET /app identity check for each bot")
+	setUsage(fs, stdout, "list provisioned bots in ~/.koryph/bots/", "[--check]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -197,8 +208,114 @@ func cmdBotList(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "  %-30s  app_id=%-8d  owner=%-20s  %s\n",
 			cfg.Name, cfg.AppID, cfg.Owner, vis)
+		if *liveCheck {
+			// Offline PEM check only — the full identity check is koryph bot check.
+			if pemErr := bot.ValidatePEM(cfg); pemErr != nil {
+				fmt.Fprintf(stdout, "    ! PEM invalid: %v\n", pemErr)
+			} else {
+				fmt.Fprintf(stdout, "    ✓ PEM valid (run `koryph bot check --name %s` for full identity verification)\n", n)
+			}
+		}
 	}
 	return 0
+}
+
+// cmdBotAttach implements 'koryph bot attach --name N --repo OWNER/REPO'.
+//
+// Idempotent: safe to re-run. Each step checks current state before mutating.
+func cmdBotAttach(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("bot attach", stderr)
+	flagName := fs.String("name", "", "bot name (required)")
+	flagRepo := fs.String("repo", "", "GitHub repository as OWNER/REPO (required)")
+	flagOrgSecrets := fs.Bool("org-secrets", false, "set secrets at org level with selected-repos visibility instead of per-repo")
+	setUsage(fs, stdout,
+		"wire a repo to a bot: add to installation, set secrets, enable Actions PR-approval toggle",
+		"--name N --repo OWNER/REPO [--org-secrets]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+	if *flagName == "" {
+		return usageErr(stderr, "bot attach: --name is required")
+	}
+	if *flagRepo == "" {
+		return usageErr(stderr, "bot attach: --repo is required")
+	}
+
+	cfg, err := bot.Load(*flagName)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	fmt.Fprintf(stdout, "koryph bot attach: wiring %s to bot %s\n\n", *flagRepo, cfg.Name)
+
+	ctx := context.Background()
+	result, err := bot.Attach(ctx, cfg, bot.AttachOptions{
+		Name:       *flagName,
+		Repo:       *flagRepo,
+		OrgSecrets: *flagOrgSecrets,
+		Out:        stdout,
+	})
+	if err != nil {
+		return fail(stderr, fmt.Errorf("bot attach: %w", err))
+	}
+
+	fmt.Fprintf(stdout, "\n✓ Done. %s is wired to bot %s (installation %d).\n\n",
+		*flagRepo, cfg.Name, result.InstallationID)
+	fmt.Fprintf(stdout, "Verify the full configuration:\n")
+	fmt.Fprintf(stdout, "  koryph bot check --name %s --repo %s\n", cfg.Name, *flagRepo)
+	return 0
+}
+
+// cmdBotCheck implements 'koryph bot check --name N [--repo OWNER/REPO]'.
+//
+// Runs the full validator chain: JWT validity, installation existence,
+// installation covers repo, secrets present, Actions toggle on, caller
+// workflow present.
+func cmdBotCheck(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("bot check", stderr)
+	flagName := fs.String("name", "", "bot name (required)")
+	flagRepo := fs.String("repo", "", "GitHub repository as OWNER/REPO (optional; adds repo-scoped validators)")
+	setUsage(fs, stdout,
+		"run the bot validator chain: JWT, installation, secrets, Actions toggle, caller workflow",
+		"--name N [--repo OWNER/REPO]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+	if *flagName == "" {
+		return usageErr(stderr, "bot check: --name is required")
+	}
+
+	cfg, err := bot.Load(*flagName)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	if *flagRepo != "" {
+		fmt.Fprintf(stdout, "koryph bot check: validating bot %s against repo %s\n\n", cfg.Name, *flagRepo)
+	} else {
+		fmt.Fprintf(stdout, "koryph bot check: validating bot %s (credentials + identity only)\n\n", cfg.Name)
+	}
+
+	ctx := context.Background()
+	findings, err := bot.Check(ctx, cfg, bot.CheckOptions{
+		Name: *flagName,
+		Repo: *flagRepo,
+	})
+	if err != nil {
+		return fail(stderr, fmt.Errorf("bot check: %w", err))
+	}
+
+	exitCode := bot.PrintCheckResults(stdout, findings)
+
+	switch exitCode {
+	case 0:
+		fmt.Fprintln(stdout, "\nall checks passed.")
+	case 1:
+		fmt.Fprintln(stdout, "\nwarnings found (exit 1).")
+	default:
+		fmt.Fprintln(stdout, "\nfailures found (exit 2).")
+	}
+	return exitCode
 }
 
 // --- helpers ----------------------------------------------------------------
