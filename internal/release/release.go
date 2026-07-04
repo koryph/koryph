@@ -31,6 +31,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/project"
 )
@@ -111,7 +112,22 @@ type SetupResult struct {
 // All files are written atomically (write-then-rename). The manifest is
 // never overwritten — the human operator manages it from the first release
 // onwards.
+//
+// To use the forge-mediated CI rendering path (e.g. for forge portability
+// tests), call [SetupForge] with a non-nil [forge.CIService] instead.
 func Setup(repoRoot string, rc *project.ReleaseConfig, initialVersion string) (*SetupResult, error) {
+	return SetupForge(repoRoot, rc, initialVersion, nil)
+}
+
+// SetupForge is the forge-mediated variant of [Setup]. When ci is non-nil,
+// the caller workflow bytes are produced by ci.Render("caller") instead of
+// the embedded template; all other behaviour is identical. Pass nil for ci
+// to use the embedded template directly (same as [Setup]).
+//
+// This is the consumption point for [forge.CIService] within internal/release:
+// GitHub-specific (and future GitLab-specific) callers supply the CI service
+// from their forge provider, keeping the forge seam sealed.
+func SetupForge(repoRoot string, rc *project.ReleaseConfig, initialVersion string, ci forge.CIService) (*SetupResult, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("release: project has no release block; add one to koryph.project.json first")
 	}
@@ -121,10 +137,20 @@ func Setup(repoRoot string, rc *project.ReleaseConfig, initialVersion string) (*
 
 	td := buildTemplateData(rc, initialVersion)
 
-	// Render all three templates.
-	wfBytes, err := renderTemplate("caller-workflow.yml", EmbeddedWorkflowTmpl, td)
-	if err != nil {
-		return nil, fmt.Errorf("release: render workflow: %w", err)
+	// Render the caller workflow — via the forge CI service when provided,
+	// or the embedded template when ci is nil (backward-compatible path).
+	var wfBytes []byte
+	var err error
+	if ci != nil {
+		wfBytes, err = ci.Render("caller")
+		if err != nil {
+			return nil, fmt.Errorf("release: forge CI render workflow: %w", err)
+		}
+	} else {
+		wfBytes, err = renderTemplate("caller-workflow.yml", EmbeddedWorkflowTmpl, td)
+		if err != nil {
+			return nil, fmt.Errorf("release: render workflow: %w", err)
+		}
 	}
 	cfgBytes, err := renderTemplate("release-please-config.json", EmbeddedConfigTmpl, td)
 	if err != nil {

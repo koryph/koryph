@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/koryph/koryph/internal/forge"
 )
 
 // AttachOptions configures a 'koryph bot attach' run.
@@ -31,6 +33,12 @@ type AttachOptions struct {
 
 	// GHBin overrides the gh CLI binary path (tests inject a stub).
 	GHBin string
+
+	// BotSvc is an optional [forge.BotService] for the secret-wiring step.
+	// When non-nil, Attach calls BotSvc.SetSecrets instead of the built-in
+	// gh-CLI path. Use this to route through the forge seam in tests or
+	// for forge-portable invocations. nil = use the built-in gh CLI path.
+	BotSvc forge.BotService
 }
 
 // AttachResult summarises what 'koryph bot attach' did.
@@ -127,9 +135,27 @@ func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult
 
 	// Step 4: set secrets (uses the resolved PEM — Action secrets always need
 	// the operational PEM copy, regardless of where it is stored locally).
-	secrets, err := setSecrets(ctx, cfg, resolvedPEM, opts, ghBin, out)
-	if err != nil {
-		return nil, fmt.Errorf("bot attach: %w", err)
+	//
+	// When opts.BotSvc is non-nil we route through the forge seam; otherwise
+	// we use the built-in gh CLI path (backward-compatible default).
+	var secrets []string
+	if opts.BotSvc != nil {
+		fCfg := forge.BotConfig{
+			AppID:         cfg.AppID,
+			Slug:          cfg.Slug,
+			PrivateKeyPEM: resolvedPEM,
+		}
+		if err := opts.BotSvc.SetSecrets(ctx, fCfg, opts.Repo); err != nil {
+			return nil, fmt.Errorf("bot attach: forge set secrets: %w", err)
+		}
+		secrets = []string{"RELEASE_BOT_APP_ID", "RELEASE_BOT_PRIVATE_KEY"}
+		fmt.Fprintf(out, "  ✓ secrets set via forge (RELEASE_BOT_APP_ID, RELEASE_BOT_PRIVATE_KEY)\n")
+	} else {
+		var sErr error
+		secrets, sErr = setSecrets(ctx, cfg, resolvedPEM, opts, ghBin, out)
+		if sErr != nil {
+			return nil, fmt.Errorf("bot attach: %w", sErr)
+		}
 	}
 
 	// Step 5: enable Actions PR-approval toggle.
