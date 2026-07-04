@@ -51,7 +51,15 @@ sequenceDiagram
     Pub->>Repo: gh release upload v<Engine> checksums.txt.intoto.jsonl
     Pub->>Repo: gh release edit v<Engine> --draft=false
     Note over Repo: publication — immutability now locks the asset set
+    Pub->>Repo: flip Release PR label to "autorelease: tagged"
 ```
+
+The final label flip matters more than it looks: release-please marks merged
+Release PRs `autorelease: pending` and **aborts every subsequent run** while
+one exists untagged. Because the train — not release-please — owns tagging
+and the GitHub release, the publish job must flip the label itself, or the
+next release cycle never opens a Release PR (found the hard way after
+v0.5.0: a day of runs silently reported success while aborting).
 
 All four jobs live in one reusable workflow, `.github/workflows/
 release-train.yml`, which koryph's own `.github/workflows/release-please.yml`

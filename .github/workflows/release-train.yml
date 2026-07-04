@@ -374,6 +374,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # upload the provenance asset; publish the release
+      pull-requests: write # flip the release PR's autorelease label below
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: v${{ needs.tag-and-build.outputs.version }}
@@ -388,3 +389,19 @@ jobs:
         run: gh release upload "$TAG" checksums.txt.intoto.jsonl --repo "${{ github.repository }}"
       - name: Publish the release (immutability locks assets from here on)
         run: gh release edit "$TAG" --draft=false --repo "${{ github.repository }}"
+      # release-please marks merged Release PRs "autorelease: pending" and
+      # ABORTS every subsequent run while such a PR exists untagged. Because
+      # this train (not release-please) owns tagging and the GitHub release,
+      # nothing flips that label unless we do it here — post-v0.5.0 all runs
+      # silently aborted ("There are untagged, merged release PRs
+      # outstanding") until the label was corrected. github.sha is the
+      # squash-merge of the Release PR, so the commit->pulls API finds it.
+      - name: Mark the release PR tagged (unblocks future release-please runs)
+        run: |
+          pr=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            echo "::error::no PR associated with ${{ github.sha }} — flip the release PR's label manually: gh pr edit <n> --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
+            exit 1
+          fi
+          gh pr edit "$pr" --repo "${{ github.repository }}" --remove-label "autorelease: pending" || true
+          gh pr edit "$pr" --repo "${{ github.repository }}" --add-label "autorelease: tagged"
