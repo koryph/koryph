@@ -126,6 +126,7 @@ func Run(opts Options) (*Report, error) {
 	r.addAll(checkZombieLeases(opts))
 	r.addAll(checkStaleDemand(opts))
 	r.addAll(checkQuotaCalibration(opts))
+	r.addAll(checkQuotaGuardOverride(opts))
 	r.addAll(checkVaultProviders(opts))
 
 	for _, f := range r.Findings {
@@ -605,6 +606,48 @@ func checkQuotaCalibration(opts Options) []Finding {
 	}
 	if len(findings) == 0 {
 		return []Finding{{Check: checkNameQuota, Level: LevelOK, Message: "no quota configs"}}
+	}
+	return findings
+}
+
+// checkQuotaGuardOverride warns when any account has a live billing-guard
+// advisory override written by `koryph quota guard`. An override that is
+// still within its --until window is intentional, but operators should know
+// it is active (the guard is bypassed for that account). Expired overrides
+// are silently OK — they revert automatically in the engine. (koryph-i25)
+func checkQuotaGuardOverride(opts Options) []Finding {
+	const checkName = "quota-guard-override"
+	quotaDir := filepath.Join(opts.home(), "quota")
+	entries, err := os.ReadDir(quotaDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return nil // quota-calibration already reports on readability
+	}
+
+	now := opts.now()
+	var findings []Finding
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		account := strings.TrimSuffix(e.Name(), ".json")
+		data, rerr := os.ReadFile(filepath.Join(quotaDir, e.Name()))
+		if rerr != nil {
+			continue
+		}
+		var cfg quota.Config
+		if jerr := json.Unmarshal(data, &cfg); jerr != nil {
+			continue
+		}
+		if advisory, reason := quota.ConfigGuardAdvisory(&cfg, now); advisory {
+			findings = append(findings, Finding{
+				Check:   checkName,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("account %s: billing guard advisory — %s (disable with `koryph quota guard --account %s on`)", account, reason, account),
+			})
+		}
 	}
 	return findings
 }
