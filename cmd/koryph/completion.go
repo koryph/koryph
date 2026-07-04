@@ -60,6 +60,11 @@ var commandTable = []command{
 	{name: "land", summary: "land an engine-opened PR fast-forward-only", run: cmdLand},
 	{name: "review-pr", summary: "analyze another author's PR", run: cmdReviewPR},
 	{name: "pr-sync", summary: "reconcile pr-opened beads against live PR state", run: cmdPRSync},
+	{name: "bot", summary: "provision and manage koryph GitHub App bots", run: cmdBot, subs: []command{
+		{name: "create", summary: "create a GitHub App via the manifest flow (one browser click)", run: cmdBotCreate},
+		{name: "install", summary: "print/open the installation page for a provisioned bot", run: cmdBotInstall},
+		{name: "list", summary: "list provisioned bots in ~/.koryph/bots/", run: cmdBotList},
+	}},
 	{name: "release", summary: "configure and operate the project release pipeline", run: cmdRelease, subs: []command{
 		{name: "setup", summary: "render and install release workflow + release-please config", run: cmdReleaseSetup},
 	}},

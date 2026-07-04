@@ -114,6 +114,17 @@ OPERATE
                         --approve/--close register your approval or close the PR
   pr-sync --project ID  reconcile pr-opened beads against live PR state: a PR merged or
                         closed by any means marks its slot merged/blocked (nothing stranded)
+  bot create [--name N] [--org ORG] [--public] [--headless]
+                        create a GitHub App via the Manifest flow (one browser click);
+                        persists {name, app_id, slug, owner, public, pem} to
+                        ~/.koryph/bots/<name>.json (0600); permissions: contents:write +
+                        pull_requests:write only (no org permissions → guest-org repo-admin
+                        installs work); no webhook; --public for guest-org scenario
+  bot install --name N  print/open https://github.com/apps/<slug>/installations/new;
+                        explains private/public/org install scenarios and approval-request
+                        behaviour when org policy restricts third-party app installs
+  bot list              list provisioned bots in ~/.koryph/bots/
+
   signing setup --project ID --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]
       [--public-key "ssh-ed25519 ..."] [--artifacts]
                         write the vault-backed signing policy into the project adapter
