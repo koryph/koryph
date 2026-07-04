@@ -25,6 +25,7 @@ path = [
   ".codex/**",
   ".vscode/**",
   "internal/commands/*.md",
+  "internal/release/*.json.tmpl",
   "docs/user-guide/doctor.md",
   ".beads/.gitignore",
   ".beads/config.yaml",

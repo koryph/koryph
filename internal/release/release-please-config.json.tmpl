@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "{{.Type}}",
+  "include-component-in-tag": false,
+  "signoff": "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+  "skip-github-release": true,
+  "packages": {
+    ".": {
+{{- if .ExtraFiles}}
+      "extra-files": [{{range $i, $f := .ExtraFiles}}{{if $i}}, {{end}}"{{$f}}"{{end}}]
+{{- end}}
+    }
+  }
+}
