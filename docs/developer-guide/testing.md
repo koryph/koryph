@@ -20,6 +20,27 @@ All test commands are Makefile targets (see `make help` for the full list):
 The **green gate** is the canonical pre-merge bar.  A PR is mergeable only
 when `make gate` passes cleanly.
 
+## VS Code extension (`ide/vscode/`)
+
+The extension has its own toolchain (npm/tsc/esbuild/mocha) and is kept out
+of `make gate` so the Go gate stays fast and doesn't require Node. It has a
+dedicated CI job instead.
+
+| Target | What it does |
+|---|---|
+| `make ext-build` | `npm ci` + `npm run bundle` — esbuild bundle to `dist/extension.js` |
+| `make ext-test` | `npm ci` + `npm test` — plain-mocha unit suite (`src/test/suite/**`) |
+
+Both targets print a notice and skip (exit 0) if `npm` is not on `$PATH`,
+mirroring how `make lint` and `make reuse` treat optional tools.
+
+`npm test` runs `pretest` (`tsc -p ./`) then mocha over
+`out/test/suite/**/*.test.js` — the fixture-driven, pure-Node unit tests
+(per `.mocharc.json`). It does **not** invoke `@vscode/test-electron`: the
+in-host smoke suite under `src/test/vscode-suite/` runs separately via
+`npm run test:electron` (needs a VS Code download and a display), and is
+intentionally not part of `make ext-test` or CI.
+
 ## Package overview
 
 | Package | Approach |

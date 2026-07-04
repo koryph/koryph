@@ -100,6 +100,18 @@ reuse: ## REUSE/SPDX compliance (skipped with a notice if no runner; CI enforces
 .PHONY: gate
 gate: fmt-check build vet test lint reuse ## The green gate (mirrors koryph.project.json)
 
+##@ VS Code Extension
+
+.PHONY: ext-build
+ext-build: ## Build the VS Code extension bundle in ide/vscode/ (skipped with a notice if npm is absent)
+	@command -v npm >/dev/null 2>&1 || { echo "npm not installed; skipping ext-build (CI enforces it) — see ide/vscode/"; exit 0; }
+	cd ide/vscode && npm ci --no-fund --no-audit && npm run bundle
+
+.PHONY: ext-test
+ext-test: ## Run the VS Code extension unit test suite in ide/vscode/ (skipped with a notice if npm is absent)
+	@command -v npm >/dev/null 2>&1 || { echo "npm not installed; skipping ext-test (CI enforces it) — see ide/vscode/"; exit 0; }
+	cd ide/vscode && npm ci --no-fund --no-audit && npm test
+
 ##@ Documentation
 
 .PHONY: docs-serve

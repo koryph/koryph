@@ -78,3 +78,34 @@ jobs:
         with:
           go-version: "1.26"
       - run: make vuln
+  vscode-ext:
+    name: VS Code extension (make ext-build ext-test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Check for extension-relevant changes
+        id: filter
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+            echo "$changed" | grep -qE '^(ide/vscode/|Makefile$)' \
+              && echo "match=true" >> "$GITHUB_OUTPUT" || echo "match=false" >> "$GITHUB_OUTPUT"
+          else
+            # Non-PR events (push to main): always run — this is the merge gate.
+            echo "match=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.filter.outputs.match == 'true'
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: ide/vscode/package-lock.json
+      - name: make ext-build ext-test
+        if: steps.filter.outputs.match == 'true'
+        run: make ext-build ext-test
+      - name: skipped (no extension-relevant changes)
+        if: steps.filter.outputs.match != 'true'
+        run: echo "No changes under ide/vscode/ or Makefile — skipping extension build/test."
