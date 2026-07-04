@@ -72,7 +72,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			BeadID:           sl.PhaseID,
 			BeadTitle:        issue.Title,
 			Profile:          r.profile,
-			ExpectedIdentity: r.rec.ExpectedIdentity,
+			ExpectedIdentity: r.expectedIdentity,
 			Billing:          r.billing,
 			APIKey:           r.apiKey,
 			SSHAuthSock:      r.sshAuthSock,

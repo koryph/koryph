@@ -11,6 +11,8 @@ import (
 
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/runtimetest"
 )
 
 // calibrateStopped writes a calibrated governor config whose usage source is
@@ -93,5 +95,39 @@ func TestRunBillingGuardRegistryAdvisory(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "billing guard ADVISORY (project billing_guard=advisory)") {
 		t.Fatalf("expected registry advisory log line, got:\n%s", out.String())
+	}
+}
+
+// TestGuardModeAdvisoryWhenRuntimeHasNoUsageSource is the koryph-v8u.5 quota-
+// gating unit test: a runtime whose Capabilities().UsageSource is false must
+// force the billing guard advisory — measured-if-possible, never blocking —
+// even when the governor itself is calibrated, since there is no fail-closed
+// usage source to enforce against. guardMode is exercised directly (no full
+// Run()) so this stays a narrow, fast unit test of the capability gate.
+func TestGuardModeAdvisoryWhenRuntimeHasNoUsageSource(t *testing.T) {
+	r := &runner{
+		rec: &registry.Record{},
+		rt:  runtimetest.Stub{Caps: runtime.Capabilities{UsageSource: false}},
+	}
+	advisory, why := r.guardMode(true /* calibrated */)
+	if !advisory {
+		t.Fatal("guardMode advisory = false, want true when the runtime has no usage source")
+	}
+	if !strings.Contains(why, "usage source") {
+		t.Errorf("why = %q, want it to mention the missing usage source", why)
+	}
+}
+
+// TestGuardModeEnforcedWhenRuntimeHasUsageSource pins the no-op case: a
+// runtime that DOES report a usage source (claude, always, today) must not
+// trip the new capability gate — enforcement stays exactly as it was before
+// koryph-v8u.5 once the governor is calibrated.
+func TestGuardModeEnforcedWhenRuntimeHasUsageSource(t *testing.T) {
+	r := &runner{
+		rec: &registry.Record{},
+		rt:  runtimetest.Stub{Caps: runtime.Capabilities{UsageSource: true}},
+	}
+	if advisory, why := r.guardMode(true /* calibrated */); advisory {
+		t.Fatalf("guardMode advisory = true (%q), want false: calibrated + a runtime with a usage source must enforce", why)
 	}
 }

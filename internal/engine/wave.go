@@ -350,13 +350,27 @@ func (r *runner) governor(ctx context.Context) (quota.Level, bool, quota.Usage) 
 // the only path to per-token spend.
 // guardMode resolves whether the billing guard's throttling constraints are
 // advisory for this run, and why. Precedence: run flag > project registry
-// setting > baseline (uncalibrated governor). Enforced is the default.
+// setting > runtime usage-source capability > baseline (uncalibrated
+// governor). Enforced is the default.
+//
+// The runtime-capability check (koryph-v8u.5) is the quota-gating half of
+// this bead: a runtime whose Capabilities().UsageSource is false has no
+// fail-closed usage measurement (see internal/quota's ccusage/transcript
+// sources, which remain claude-only), so the governor's warn/drain/stop
+// enforcement would otherwise block dispatch against an unmeasured account —
+// ADVISORY is the only honest posture until that runtime has a real usage
+// source. Claude reports UsageSource true, so this branch is a no-op for
+// every project today; it only changes behavior for a future non-claude
+// runtime.
 func (r *runner) guardMode(calibrated bool) (advisory bool, why string) {
 	if r.opts.NoBillingGuard {
 		return true, "--no-billing-guard"
 	}
 	if r.rec.BillingGuard == "advisory" {
 		return true, "project billing_guard=advisory"
+	}
+	if r.rt != nil && !r.rt.Capabilities().UsageSource {
+		return true, fmt.Sprintf("runtime %q has no usage source (measured advisory only)", r.rt.Name())
 	}
 	if !calibrated {
 		return true, "baseline: governor uncalibrated"
@@ -599,7 +613,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Model:            res.Model,
 		Effort:           effort,
 		Profile:          r.profile,
-		ExpectedIdentity: r.rec.ExpectedIdentity,
+		ExpectedIdentity: r.expectedIdentity,
 		Billing:          r.billing,
 		APIKey:           r.apiKey,
 		MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,

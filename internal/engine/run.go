@@ -21,9 +21,21 @@ import (
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/claude"
 	"github.com/koryph/koryph/internal/signing"
 	"github.com/koryph/koryph/internal/version"
 )
+
+// resolvedRuntimeName is the runtime every project's engine run resolves to
+// today (koryph-v8u.5): registry.Record.AccountFor and dispatch.CLIBackend's
+// default both take "claude" from this single constant rather than
+// duplicating the literal at each call site. Real per-project/per-bead
+// runtime SELECTION (bead `runtime:<name>` label, project
+// default_runtime/runtimes block) is koryph-v8u.3's job — until it lands,
+// every project has exactly one implicit runtime, so this is not yet a
+// meaningful choice.
+const resolvedRuntimeName = "claude"
 
 // Environment overrides (primarily for tests; production leaves them unset).
 const (
@@ -53,6 +65,16 @@ type runner struct {
 	store    *ledger.Store
 	run      *ledger.Run
 	profile  account.Profile
+	// expectedIdentity is resolved via registry.Record.AccountFor(resolvedRuntimeName)
+	// (koryph-v8u.5) rather than read as r.rec.ExpectedIdentity at each call
+	// site — identical value for every project today (AccountFor's flat-field
+	// fallback), but real once a project opts into runtime_accounts.
+	expectedIdentity string
+	// rt is the resolved runtime.Runtime adapter for this run (koryph-v8u.5):
+	// identity verification and quota-governor capability gating both go
+	// through it. Always "claude" today — see resolvedRuntimeName's doc for
+	// why real selection is out of scope here.
+	rt       runtime.Runtime
 	backend  dispatch.Backend
 	quotaCfg *quota.Config
 	gov      *govern.Store
@@ -129,12 +151,25 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 			cfg.WorkSource)
 	}
 
-	profile := account.Profile{Name: rec.AccountProfile, ConfigDir: rec.ClaudeConfigDir}
+	// ra resolves the effective account profile for this run's runtime
+	// (koryph-v8u.5): registry.Record.AccountFor falls back to the flat
+	// AccountProfile/ClaudeConfigDir/ExpectedIdentity fields when the project
+	// has no runtime_accounts entry for resolvedRuntimeName, which is every
+	// project today — so profile/expectedIdentity below are identical to
+	// pre-v8u.5's rec.ClaudeConfigDir/rec.ExpectedIdentity reads.
+	ra := rec.AccountFor(resolvedRuntimeName)
+	profile := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
+	expectedIdentity := ra.ExpectedIdentity
+
+	// rt is the resolved runtime adapter (see resolvedRuntimeName's doc).
+	rt := claude.New(os.Getenv(envClaudeBin))
 
 	// Run-level identity check, fail closed BEFORE any state is touched (no
 	// lock, no run dir, no worktrees). The dispatch backend re-verifies per
-	// dispatch as belt-and-braces.
-	if _, err := account.VerifyExpected(ctx, profile, rec.ExpectedIdentity); err != nil {
+	// dispatch as belt-and-braces. Reached through the runtime seam
+	// (koryph-v8u.5): claude's VerifyIdentity delegates to
+	// account.VerifyExpected, unchanged.
+	if _, err := rt.VerifyIdentity(ctx, runtime.Profile{Name: profile.Name, ConfigDir: profile.ConfigDir}, expectedIdentity); err != nil {
 		return Outcome{Code: ExitFatal}, err
 	}
 
@@ -157,20 +192,22 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	defer func() { _ = lock.Unlock() }()
 
 	r := &runner{
-		opts:     opts,
-		reg:      reg,
-		rec:      rec,
-		cfg:      cfg,
-		adapter:  adapter,
-		beadsDir: adapter.BeadsDir,
-		store:    store,
-		profile:  profile,
-		backend:  &dispatch.CLIBackend{ClaudeBin: os.Getenv(envClaudeBin)},
-		gov:      govern.NewStore(),
-		owner:    fmt.Sprintf("koryph@%s:%d", hostName(), os.Getpid()),
-		width:    effectiveWidth(opts.Max, cfg.MaxConcurrentSlots),
-		issues:   map[string]beads.Issue{},
-		billing:  account.BillingSubscription,
+		opts:             opts,
+		reg:              reg,
+		rec:              rec,
+		cfg:              cfg,
+		adapter:          adapter,
+		beadsDir:         adapter.BeadsDir,
+		store:            store,
+		profile:          profile,
+		expectedIdentity: expectedIdentity,
+		rt:               rt,
+		backend:          &dispatch.CLIBackend{ClaudeBin: os.Getenv(envClaudeBin), Runtime: rt},
+		gov:              govern.NewStore(),
+		owner:            fmt.Sprintf("koryph@%s:%d", hostName(), os.Getpid()),
+		width:            effectiveWidth(opts.Max, cfg.MaxConcurrentSlots),
+		issues:           map[string]beads.Issue{},
+		billing:          account.BillingSubscription,
 	}
 	if r.quotaCfg, err = quota.LoadConfig(r.quotaName()); err != nil {
 		return Outcome{Code: ExitFatal}, err

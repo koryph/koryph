@@ -14,6 +14,13 @@ import (
 	"github.com/koryph/koryph/internal/quota"
 )
 
+// resolvedRuntimeName is the runtime `koryph quota` resolves an account's
+// config dir for today (koryph-v8u.5): real per-project runtime SELECTION is
+// koryph-v8u.3's job — until it lands, registry.Record.AccountFor always
+// falls back to the flat ClaudeConfigDir field this command read directly
+// before this bead, so the snapshot is unchanged end-to-end.
+const resolvedRuntimeName = "claude"
+
 // cmdQuota dispatches the quota show/calibrate verbs.
 func cmdQuota(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "calibrate" {
@@ -55,7 +62,7 @@ func cmdQuotaShow(args []string, stdout, stderr io.Writer) int {
 	seen := map[string]bool{}
 	for _, rec := range recs {
 		if _, ok := configDir[rec.AccountProfile]; !ok {
-			configDir[rec.AccountProfile] = rec.ClaudeConfigDir
+			configDir[rec.AccountProfile] = rec.AccountFor(resolvedRuntimeName).ConfigDir
 		}
 		if !seen[rec.AccountProfile] {
 			seen[rec.AccountProfile] = true
