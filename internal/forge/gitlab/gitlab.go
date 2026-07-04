@@ -6,18 +6,18 @@
 // [forge.Forge] interface for GitLab.com and self-hosted GitLab instances.
 //
 // Services backed by real GitLab logic:
-//   - [forge.PRService]  — MR list/get/create/close/reopen/checks/merge/approve/labels
-//   - [forge.BotService] — guided project/group access-token creation, scope
+//   - [forge.RepoService]       — project settings (merge method, squash option, …)
+//   - [forge.ProtectionService] — protected branches, push rules, approval rules
+//   - [forge.PRService]         — MR list/get/create/close/reopen/checks/merge/approve/labels
+//   - [forge.SecretsService]    — CI/CD variables (project and group scope)
+//   - [forge.BotService]        — guided project/group access-token creation, scope
 //     and expiry validation, CI variable management
-//   - [forge.CIService]  — .gitlab-ci.yml rendering: "release" (release train
+//   - [forge.CIService]         — .gitlab-ci.yml rendering: "release" (release train
 //     pipeline) and "docs" (GitLab Pages docs-publish pipeline)
 //
 // Services stubbed (returning [forge.ErrUnsupported]) — to be extracted in
 // later beads:
-//   - [forge.RepoService]       — future bead
-//   - [forge.ProtectionService] — future bead
-//   - [forge.SecretsService]    — future bead
-//   - [forge.ReleaseService]    — future bead
+//   - [forge.ReleaseService] — future bead
 //
 // # Authentication
 //
@@ -46,7 +46,6 @@ package gitlab
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 
 	"github.com/koryph/koryph/internal/forge"
@@ -106,18 +105,24 @@ func (p *Provider) Capabilities() forge.Capabilities {
 	}
 }
 
-// Repo returns a stub; to be implemented in a future bead.
-func (p *Provider) Repo() forge.RepoService { return &stubRepoSvc{} }
+// Repo returns the GitLab project-settings service backed by the GitLab REST
+// API v4.  Set KORYPH_GITLAB_TOKEN to a personal or project access token with
+// api scope.
+func (p *Provider) Repo() forge.RepoService { return &gitlabRepoSvc{} }
 
-// Protection returns a stub; to be implemented in a future bead.
-func (p *Provider) Protection() forge.ProtectionService { return &stubProtectionSvc{} }
+// Protection returns the GitLab protection service backed by the GitLab REST
+// API v4.  It aggregates protected branches, push rules, and approval rules
+// behind the [forge.ProtectionService] interface.
+func (p *Provider) Protection() forge.ProtectionService { return &gitlabProtectionSvc{} }
 
 // PRs returns the GitLab MR service backed by the GitLab REST API v4.
 // Set KORYPH_GITLAB_TOKEN to a personal or project access token with api scope.
 func (p *Provider) PRs() forge.PRService { return &gitlabPRSvc{} }
 
-// Secrets returns a stub; to be implemented in a future bead.
-func (p *Provider) Secrets() forge.SecretsService { return &stubSecretsSvc{} }
+// Secrets returns the GitLab CI/CD variables service backed by the GitLab
+// REST API v4.  Set KORYPH_GITLAB_TOKEN to a personal or project access
+// token with api scope.
+func (p *Provider) Secrets() forge.SecretsService { return &gitlabSecretsSvc{} }
 
 // Releases returns a stub; to be implemented in a future bead.
 func (p *Provider) Releases() forge.ReleaseService { return &stubReleaseSvc{} }
@@ -131,66 +136,6 @@ func (p *Provider) CI() forge.CIService { return &gitlabCISvc{rc: p.rc} }
 func (p *Provider) Bot() forge.BotService { return &gitlabBotSvc{} }
 
 // ---------- stubs for not-yet-implemented services ----------------------------
-
-type stubRepoSvc struct{}
-
-func (s *stubRepoSvc) Get(_ context.Context, _, _ string) (*forge.RepoSettings, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubRepoSvc) Update(_ context.Context, _, _ string, _ *forge.RepoSettings) error {
-	return forge.ErrUnsupported
-}
-func (s *stubRepoSvc) GetRaw(_ context.Context, _, _ string) (json.RawMessage, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubRepoSvc) PatchRaw(_ context.Context, _, _ string, _ json.RawMessage) error {
-	return forge.ErrUnsupported
-}
-func (s *stubRepoSvc) VulnAlerts(_ context.Context, _, _ string) (bool, error) {
-	return false, forge.ErrUnsupported
-}
-func (s *stubRepoSvc) SetVulnAlerts(_ context.Context, _, _ string, _ bool) error {
-	return forge.ErrUnsupported
-}
-func (s *stubRepoSvc) ActionsWorkflow(_ context.Context, _, _ string) (json.RawMessage, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubRepoSvc) SetActionsWorkflow(_ context.Context, _, _ string, _ json.RawMessage) error {
-	return forge.ErrUnsupported
-}
-
-type stubProtectionSvc struct{}
-
-func (s *stubProtectionSvc) List(_ context.Context, _ string) ([]forge.Ruleset, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Get(_ context.Context, _, _ string) (*forge.Ruleset, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Create(_ context.Context, _ string, _ *forge.Ruleset) (*forge.Ruleset, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Update(_ context.Context, _ string, _ *forge.Ruleset) error {
-	return forge.ErrUnsupported
-}
-func (s *stubProtectionSvc) Delete(_ context.Context, _, _ string) error {
-	return forge.ErrUnsupported
-}
-
-type stubSecretsSvc struct{}
-
-func (s *stubSecretsSvc) ListRepo(_ context.Context, _, _ string) ([]string, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubSecretsSvc) ListOrg(_ context.Context, _ string) ([]string, error) {
-	return nil, forge.ErrUnsupported
-}
-func (s *stubSecretsSvc) SetRepo(_ context.Context, _, _, _, _ string) error {
-	return forge.ErrUnsupported
-}
-func (s *stubSecretsSvc) SetOrg(_ context.Context, _, _, _ string, _ []string) error {
-	return forge.ErrUnsupported
-}
 
 type stubReleaseSvc struct{}
 
@@ -211,10 +156,10 @@ func (s *stubReleaseSvc) Publish(_ context.Context, _, _, _ string) error {
 
 var (
 	_ forge.Forge             = (*Provider)(nil)
-	_ forge.RepoService       = (*stubRepoSvc)(nil)
-	_ forge.ProtectionService = (*stubProtectionSvc)(nil)
+	_ forge.RepoService       = (*gitlabRepoSvc)(nil)
+	_ forge.ProtectionService = (*gitlabProtectionSvc)(nil)
 	_ forge.PRService         = (*gitlabPRSvc)(nil)
-	_ forge.SecretsService    = (*stubSecretsSvc)(nil)
+	_ forge.SecretsService    = (*gitlabSecretsSvc)(nil)
 	_ forge.ReleaseService    = (*stubReleaseSvc)(nil)
 	_ forge.CIService         = (*gitlabCISvc)(nil)
 )
