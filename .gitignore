@@ -3,6 +3,10 @@
 
 bin/
 dist/
+# root-level `go build .` artifact — agents keep leaving one behind and it
+# fails the REUSE gate (burned koryph-6g2.6's whole requeue budget)
+/koryph
+
 site/
 .env
 .env.local
