@@ -59,7 +59,7 @@ func TestSchemaWellFormed(t *testing.T) {
 	}
 	// Spot-check a required top-level field and a constrained field so a
 	// regression in the emitter (dropped fields, lost tags) is caught here.
-	for _, key := range []string{"merge_policy", "merge_method", "risk_tier_default", "signing", "area_map"} {
+	for _, key := range []string{"merge_policy", "merge_method", "risk_tier_default", "signing", "area_map", "dispatch_mode"} {
 		if _, ok := props[key]; !ok {
 			t.Errorf("schema missing property %q", key)
 		}
@@ -67,5 +67,9 @@ func TestSchemaWellFormed(t *testing.T) {
 	rt, _ := props["risk_tier_default"].(map[string]any)
 	if rt["maximum"] != float64(3) || rt["minimum"] != float64(0) {
 		t.Errorf("risk_tier_default range not [0,3]: %v", rt)
+	}
+	dm, _ := props["dispatch_mode"].(map[string]any)
+	if enum, _ := dm["enum"].([]any); len(enum) != 2 || enum[0] != "wave" || enum[1] != "rolling" {
+		t.Errorf("dispatch_mode enum not [wave, rolling]: %v", dm["enum"])
 	}
 }

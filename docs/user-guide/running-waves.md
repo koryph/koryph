@@ -28,6 +28,29 @@ the ceiling, no new agents are dispatched (active ones finish) and the run pause
 with a `budget-cap` reason. This is a per-run ceiling, separate from the account
 cost governor and the global concurrency governor.
 
+## Dispatch mode: wave vs rolling
+
+Two dispatch loops share every scan/preflight/dispatch/poll primitive above; they
+differ only in when the next scan happens:
+
+- **`wave`** (default) — the loop described above: dispatch a batch, then wait for
+  **every** slot in it to land before scanning again. Simple and predictable, at the
+  cost of idling a slot that frees early while its wave-mates are still running.
+- **`rolling`** — continuously refills: every poll tick it re-checks the governor,
+  recomputes free capacity from the currently-running count, and tops off any slot
+  that has freed up — without waiting for the rest of the batch. A slot that lands
+  early is refilled on the next tick instead of sitting idle.
+
+Select the mode with `dispatch_mode` in `koryph.project.json` (`"wave"` or
+`"rolling"`) or per run with `--dispatch-mode wave|rolling` (the flag wins over the
+config; an unrecognized value is a usage error). `--once` runs the exact same
+single-pass semantics — one dispatch pass, poll to idle, exit — in **both** modes,
+so a validation/canary invocation behaves identically either way. Every other flag
+(`--only`, `--budget`, `--dry-run`, `--resume`, quota governor levels, footprint
+gating) applies identically in rolling mode; footprint conflicts against a
+currently in-flight bead are still deferred (and re-checked on the next tick) so
+two conflicting beads never run at once, whichever mode is active.
+
 ## The bd ready frontier
 
 Every wave starts with `bd ready`, which returns all issues whose dependencies are

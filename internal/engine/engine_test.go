@@ -41,6 +41,11 @@ type fixOpts struct {
 	pipeline []project.PipelineStage
 	// bdScript overrides the fake-bd script (default: one ready bead then empty).
 	bdScript string
+	// claudeScript overrides the fake-claude script entirely (default:
+	// fakeClaudeScript, or personaClaudeScript when pipeline is set). Used by
+	// the rolling-dispatch tests (koryph-2im.3) to distinguish behavior by
+	// $KORYPH_PHASE_ID (e.g. one bead sleeps to hold a slot open).
+	claudeScript string
 }
 
 const fakeIdentityEmail = "test@example.com"
@@ -166,6 +171,9 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 	claudeScript := fakeClaudeScript
 	if len(o.pipeline) > 0 {
 		claudeScript = personaClaudeScript
+	}
+	if o.claudeScript != "" {
+		claudeScript = o.claudeScript
 	}
 	bdScript := fakeBDScript
 	if o.bdScript != "" {

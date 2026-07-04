@@ -36,6 +36,7 @@ Created by `koryph onboard`, validated by `koryph validate`.
 | `risk_tier_default` | int | 2 | Recovery tier (0–3) for beads without an `rt:*` label. |
 | `max_concurrent_slots` | int | 3 | Wave width cap for this project. |
 | `dispatch_stagger_seconds` | int | 8 | Seconds between agent launches within a wave. |
+| `dispatch_mode` | string | `"wave"` | `"wave"` or `"rolling"`. Rolling continuously refills a slot as it frees up instead of waiting for the whole batch; see [Running Waves](running-waves.md#dispatch-mode-wave-vs-rolling). `--dispatch-mode` on `koryph run` overrides this per run. |
 
 **Conventional commits are enforced by default.** With `commit_style` unset or
 `"conventional"`, the merge and PR paths validate every commit subject in
