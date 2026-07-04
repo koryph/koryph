@@ -391,3 +391,40 @@ koryph tail --project myproject beads-042 -n 100   # last 100 lines
 
 Output includes `session.log` (human-readable progress), `stderr.log`, and the path to
 `stream.jsonl` (the raw Claude event stream, useful for cost and token breakdowns).
+
+## Corpus audit: koryph plan audit
+
+Before running the loop — or after changing `area_map` in `koryph.project.json` — run the
+corpus audit to see how well your bead corpus parallelizes under the current scheduler rules:
+
+```sh
+koryph plan audit --project myproject
+```
+
+The audit is **read-only** (no bd mutations, no loop-behavior change). It reports:
+
+| Section | What it means |
+|---|---|
+| **UNLABELED** | Beads whose footprint resolves to `domain:unknown` — they serialize one-per-wave. Add `area:*` or `fp:*` labels to unlock concurrency. |
+| **NON-DISPATCHABLE** | Beads that will never dispatch as-is: wrong `issue_type` (epic/feature/decision/merge-request), `gt:*` gate label, `no-dispatch`, or `refactor-core`. |
+| **CONFLICTING PAIRS** | Every pair of open, dependency-unordered beads whose footprints conflict under the scheduler's rules. A dependency-unordered pair could in principle run simultaneously but their footprints prevent it. The shared conflict tokens and the mode (`write-write`, `write-read`, or `mixed`) are named for each pair. |
+| **PARALLEL WIDTH** | Current: maximum beads that can run simultaneously with current labels (greedy, no concurrency cap). Potential: same metric after virtually re-labeling every `domain:unknown` bead — shows the concurrency recoverable by labeling. |
+| **CORPUS STATS** | Counts of `refactor-core` (orchestrator-authored on main; never loop-dispatched) and `no-dispatch` (manually deferred) beads. |
+
+**Machine-readable output.** Pass `--json` to get a structured JSON report for agent consumption
+(e.g., for a `koryph-replan` skill that automatically files label-fix beads):
+
+```sh
+koryph plan audit --project myproject --json | jq .parallel_width
+```
+
+**Typical workflow after changing `area_map`.** Refinining the area map changes which tokens
+each `area:*` label resolves to, which can reveal new conflicts or unlock new parallelism:
+
+```sh
+# 1. Edit koryph.project.json: add/modify area_map entries.
+# 2. Audit the corpus to see the impact:
+koryph plan audit --project myproject
+# 3. File labeling tasks for beads with domain:unknown, or split conflicting beads.
+# 4. Re-run the audit to confirm the improvement.
+```

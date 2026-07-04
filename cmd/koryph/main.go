@@ -88,6 +88,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdGovernor(rest, stdout, stderr)
 	case "doctor":
 		return cmdDoctor(rest, stdout, stderr)
+	case "plan":
+		return cmdPlan(rest, stdout, stderr)
 	case "-h", "--help":
 		usage(stdout)
 		return 0
@@ -158,6 +160,10 @@ OBSERVE / OPERATE
                         and stalled-run checks); --fix installs missing assets (project mode)
                         or removes zombies/stale-demand (global mode); --force (with --fix
                         --project) also overwrites stale asset files; exits 0/1/2 (ok/warn/err)
+  plan audit --project ID [--json]
+                        read-only corpus conflict analysis: footprint gaps, non-dispatchable
+                        beads, dependency-unordered conflicting pairs, achievable parallel
+                        width; --json for machine-readable output (koryph-replan input)
   board [--json]        one-line-per-project run overview
   roster --project ID [--run ID] [--json]
                         per-bead titled roster grouped by lifecycle: MERGED /

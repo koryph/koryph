@@ -263,6 +263,54 @@ func (a *Adapter) Remember(ctx context.Context, text string) error {
 	return err
 }
 
+// List returns all non-closed open issues via `bd list --json --limit 0`.
+// This is the full open corpus, not just the ready frontier. Gate and infra
+// beads (gt:*, agent/rig/role/message types) are excluded by bd's default
+// filters; closed issues are excluded unless --all is passed (it is not here).
+func (a *Adapter) List(ctx context.Context) ([]Issue, error) {
+	res, err := a.run(ctx, "list", "--json", "--limit", "0")
+	if err != nil {
+		return nil, err
+	}
+	return parseIssueList([]byte(res.Stdout))
+}
+
+// DepDigraph returns the project's dependency graph as a map from each issue ID
+// to the set of issue IDs it directly depends on (its blockers), parsed from
+// `bd list --format digraph`. The digraph format emits one edge per line:
+// "A B" meaning A depends on B (A is blocked until B closes). The returned map
+// includes only edges present in bd's digraph; missing keys have no
+// dependencies. A missing binary is not an error: returns an empty map.
+func (a *Adapter) DepDigraph(ctx context.Context) (map[string][]string, error) {
+	if !a.Available() {
+		return map[string][]string{}, nil
+	}
+	res, err := a.run(ctx, "list", "--format", "digraph", "--limit", "0")
+	if err != nil {
+		// A non-zero exit (e.g. no issues in the db) is a graceful empty.
+		return map[string][]string{}, nil
+	}
+	deps := map[string][]string{}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			continue
+		}
+		child, parent := parts[0], parts[1]
+		// "child parent" means child depends on parent — skip self-loops
+		// (parent-child containment edges produce them occasionally).
+		if child == parent {
+			continue
+		}
+		deps[child] = append(deps[child], parent)
+	}
+	return deps, nil
+}
+
 // Available reports whether the bd binary resolves on PATH.
 func (a *Adapter) Available() bool {
 	return execx.LookPath(a.Bin)
