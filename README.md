@@ -1,59 +1,54 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
 
-# koryph — the AI software factory
+# koryph — vibe-code with discipline
 
 [![CI](https://github.com/koryph/koryph/actions/workflows/ci.yml/badge.svg)](https://github.com/koryph/koryph/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/koryph/koryph/badge)](https://scorecard.dev/viewer/?uri=github.com/koryph/koryph)
 [![REUSE status](https://api.reuse.software/badge/github.com/koryph/koryph)](https://api.reuse.software/info/github.com/koryph/koryph)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-`koryph` takes a project from a git repo to built, signed, released software —
-autonomous coding agents do the building, koryph enforces the discipline that
-makes that safe. It stands on three pillars:
+**koryph turns AI coding agents into a software factory.** Point it at a git
+repo and it plans the work, runs a fleet of agents (Claude Code today, more
+runtimes via adapters) in parallel without merge conflicts, keeps them inside
+budget and policy, merges only what passes your gate — and ships signed,
+attested releases at the end. One static binary. No SaaS. Nothing to
+unsubscribe from.
 
-- **Build** — the agent factory. koryph reads each project's
-  [beads](https://github.com/gastownhall/beads) ready-graph, batches
-  conflict-free work by declared footprint, dispatches headless coding agents
-  into isolated git worktrees under the **correct account**, checkpoints
-  everything to disk, governs subscription burn, and merges finished work
-  through a green gate.
-- **Protect** — hygiene as code. Branch-protection rulesets and repo settings
-  live as committed JSON (`make repo-check` / `make repo-apply`), commit
-  signing is enforced from vault-served keys, protected paths and boundary
-  guards contain every agent, and `koryph doctor` catches drift.
-- **Ship** — the release train. Conventional-commit versioning for any
-  language, draft-until-complete immutable releases, SBOM + cosign + SLSA
-  provenance, and a vault-backed release bot — with graceful fallbacks when no
-  bot is provisioned.
+Tools like Claude Code made writing code fast; the bottleneck is now
+everything *around* the code — coordination, review, spend, security hygiene,
+and releases. koryph carries that process so you and your agents can carry
+the ideas. It is opinionated about **process**, never about your application:
+delete koryph and your repo is still a perfectly ordinary repo.
 
-New here? Walk the whole path in
-[Zero to shipped](docs/user-guide/zero-to-shipped.md).
+**Docs: [koryph.build](https://koryph.build/)** — concepts, quickstart, and
+the full [zero-to-shipped journey](https://koryph.build/user-guide/zero-to-shipped/).
 
-## Invariants
+## What's in the box
 
-- **Account-safe**: every dispatch constructs its Claude environment explicitly
-  from the local project registry (never from the ambient shell), verifies the
-  logged-in identity fail-closed, and logs the account used. Projects never
-  switch accounts implicitly.
-- **Subscription-first**: agent dispatch runs through the headless `claude` CLI
-  on the account's subscription. Per-token API spend happens only when
-  explicitly configured AND the governor has exhausted the subscription window.
-  Batch mode (Message Batches API) requires explicit dispatch, always.
-- **Billing guard defaults on, never blocks a baseline**: quota throttling
-  (preflight, drain/stop, slot scaling) is enforced by default, automatically
-  advisory while an account is uncalibrated, and disableable per run
-  (`--no-billing-guard`) or per project (`billing_guard: advisory`).
-- **Beads is the source of truth** for task state, per project. Each project
-  carries its own beads/Dolt database (synced through that project's git
-  remote), so every collaborator shares the same task graph.
-- **Checkpoints live with the work**: run ledgers + manifests are repo files
-  under each project's `.plan-logs/`; git commits are the durable checkpoints.
-- **Opus is the model ceiling** unless a project's policy explicitly allows
-  Fable. Recovery may upgrade to Opus, never beyond.
-- **Never delete a dirty worktree** without explicit approval.
+- **Footprint scheduler** — tasks declare what they touch; only conflict-free
+  work runs in parallel, refilled continuously (rolling dispatch).
+- **Isolated + gated** — every agent in its own git worktree; finished work
+  goes review → rebase → *your* green gate → fast-forward merge. Protected
+  paths (CI, hooks, policy) are refused outright.
+- **Cost governors** — per-provider adaptive concurrency (AIMD + circuit
+  breakers), subscription-first billing, quota calibration and throttling.
+- **Account-safe** — each project pins its account; identity is verified
+  fail-closed before any dispatch.
+- **Hygiene as code** — branch protection, repo settings, and security
+  posture as applyable named profiles (`koryph repo check|apply`,
+  `koryph posture`); commit signing from vault-served keys (Proton Pass,
+  1Password, macOS Keychain, encrypted file).
+- **Release train** — conventional-commit versioning for any language;
+  draft-until-complete immutable releases with SBOM, cosign signatures, and
+  SLSA provenance; one-click vault-backed release bot.
+- **Planning skills** — `/koryph-plan`, `/koryph-import`, `/koryph-replan`
+  turn designs and prompts into a correctly-footprinted
+  [beads](https://github.com/gastownhall/beads) task graph.
+- **Operate live** — `koryph board`/`roster`, `koryph doctor` drift checks,
+  and a VS Code cockpit extension.
 
-## Install (collaborators start here)
+## Install
 
 koryph is a single static binary — no Go toolchain or runtime needed.
 Grab your platform's tarball from the
@@ -62,67 +57,51 @@ Grab your platform's tarball from the
 `PATH`, and run `koryph version`. Building from source works with any Go
 1.21+ (`go install github.com/koryph/koryph/cmd/koryph@latest` — the
 pinned toolchain downloads automatically). Details:
-[installation guide](docs/user-guide/installation.md).
+[installation guide](https://koryph.build/user-guide/installation/).
 
-Each collaborator keeps their own machine-local registry (`~/.koryph`,
-created on first use) mapping shared projects to *their* Claude account:
+## Quickstart
+
+Each collaborator keeps their own machine-local registry (`~/.koryph`)
+mapping shared projects to *their* AI account:
 
 ```bash
 koryph project add /path/to/project --account personal --identity you@example.com
 koryph validate <project-id>
-koryph run --project <project-id> --once
+koryph run --project <project-id> --once --auto-merge --review
 ```
 
 The shareable parts live in the project repo (`koryph.project.json`, the
-beads database, `.claude/agents`); the personal parts (account mapping, quota
-calibration, audit log) stay in `~/.koryph`. Full guides: `docs/` (mkdocs
-book — user guide + developer guide).
+beads database, agent personas); the personal parts (account mapping, quota
+calibration, audit log) stay in `~/.koryph`.
+
+## Operating invariants
+
+- **Account-safe**: dispatch environments are constructed explicitly from the
+  registry and identity-verified fail-closed — never inherited from the shell.
+- **Subscription-first**: per-token API spend only by explicit opt-in, and
+  only after the subscription window is exhausted.
+- **Billing guard defaults on**, advisory while uncalibrated, disableable per
+  run or per project.
+- **Beads is the source of truth** for task state, synced through each
+  project's own git remote.
+- **Checkpoints live with the work**: ledgers and manifests are repo files;
+  git commits are the durable checkpoints.
+- **Never delete a dirty worktree** without explicit approval.
 
 ## Versioning
 
-Semantic versions, tagged `v<version>`. Projects pin a minimum engine in
-`koryph.project.json`:
-
-```json
-{ "engine_version": "0.2+" }
-```
-
-`koryph run` refuses to drive a project that requires a newer engine.
-Commit messages default to Conventional Commits; a project can supply its own
-template via `commit_style: "custom"` + `commit_template`, or map a `commit`
-persona in `stages`.
-
-## Layout
-
-| Path | Role |
-|---|---|
-| `cmd/koryph` | CLI entry point |
-| `internal/engine` | wave loop (scan → batch → preflight → dispatch → poll → review → merge) |
-| `internal/registry` | per-user project registry + audit log (`~/.koryph`, git-backed) |
-| `internal/account` | account/profile env construction + identity verification |
-| `internal/dispatch` | dispatch backends (subscription CLI, api-key CLI) |
-| `internal/anthro` | direct Anthropic API + Message Batches (explicit only) |
-| `internal/beads` | bd adapter (ready-graph, labels, merge-slot, snapshots) |
-| `internal/sched` | footprint conflict coloring + wave building |
-| `internal/ledger` | run ledger + checkpoint manifest v2 |
-| `internal/worktree` | worktree lifecycle |
-| `internal/merge` | rebase → green gate → ff-merge + protected paths |
-| `internal/quota` | per-account usage windows + 80/90/95 loop governor |
-| `internal/modelroute` | stage/label model resolution + rationale |
-| `internal/promptc` | cache-stable prompt compiler |
-| `internal/project` | per-project adapter config (`koryph.project.json`) |
-| `internal/onboard` | project onboarding (inventory, register, validate) |
-| `internal/version` | engine semver + project requirement check |
-| `hooks/` | shipped Claude Code hooks (agent-boundary guard, worktree guard) |
-| `agents/` | fallback agent personas installed into projects |
+Semantic versions, tagged `v<version>`. Projects pin a minimum engine via
+`engine_version` in `koryph.project.json`; `koryph run` refuses to drive a
+project that requires a newer engine. Code layout and package roles:
+[developer guide](https://koryph.build/developer-guide/packages/).
 
 ## For AI agents
 
 A machine-readable index of the documentation (llmstxt.org format) lives at
 [`docs/llms.txt`](docs/llms.txt) and is published at the docs-site root
-(`/llms.txt`). Agents scanning this repository or the docs site should ingest it
-to learn the project's structure, the operating contract in
-[CLAUDE.md](CLAUDE.md), and the canonical user/developer guides.
+(`/llms.txt`). Agents scanning this repository or the docs site should ingest
+it to learn the project's structure, the operating contract in
+[CLAUDE.md](CLAUDE.md), and the canonical guides.
 
 ## License
 
