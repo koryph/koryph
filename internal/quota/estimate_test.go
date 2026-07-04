@@ -61,16 +61,86 @@ func TestEstimateWave(t *testing.T) {
 func TestRecordEWMA(t *testing.T) {
 	cfg := DefaultConfig("acct")
 
-	// First observation seeds the value.
-	Record(cfg, "opus", "L", 10)
+	// First observation seeds the value (no estimate → error stats skipped).
+	Record(cfg, "opus", "L", 10, 0)
 	if got := cfg.Calibration["opus:L"]; !approx(got, 10) {
 		t.Fatalf("seed = %g, want 10", got)
 	}
+	if cfg.ErrorStats != nil {
+		t.Fatalf("ErrorStats should be nil when estimateUSD=0")
+	}
 
 	// Second folds in via EWMA: 0.7*10 + 0.3*20 = 13.
-	Record(cfg, "opus", "L", 20)
+	Record(cfg, "opus", "L", 20, 0)
 	if got := cfg.Calibration["opus:L"]; !approx(got, 13) {
 		t.Fatalf("EWMA = %g, want 13", got)
+	}
+}
+
+func TestRecordErrorStats(t *testing.T) {
+	cfg := DefaultConfig("acct")
+
+	// First observation with estimate: actual=10, estimate=8 → ratio=1.25, APE=25%.
+	Record(cfg, "sonnet", "M", 10, 8)
+	es := cfg.ErrorStats["sonnet:M"]
+	if es == nil {
+		t.Fatal("ErrorStats not created")
+	}
+	if es.N != 1 {
+		t.Fatalf("N = %d, want 1", es.N)
+	}
+	if !approx(es.Bias, 1.25) {
+		t.Fatalf("Bias = %g, want 1.25", es.Bias)
+	}
+	wantMAPE := math.Abs(10-8) / 8 * 100 // 25
+	if !approx(es.MAPE, wantMAPE) {
+		t.Fatalf("MAPE = %g, want %g", es.MAPE, wantMAPE)
+	}
+
+	// Second observation: actual=4, estimate=8 → ratio=0.5, APE=50%.
+	// EWMA bias: 0.7*1.25 + 0.3*0.5 = 1.025. EWMA MAPE: 0.7*25 + 0.3*50 = 32.5.
+	Record(cfg, "sonnet", "M", 4, 8)
+	if es.N != 2 {
+		t.Fatalf("N = %d, want 2", es.N)
+	}
+	wantBias := 0.7*1.25 + 0.3*0.5
+	if !approx(es.Bias, wantBias) {
+		t.Fatalf("Bias = %g, want %g", es.Bias, wantBias)
+	}
+	wantMAPE2 := 0.7*25 + 0.3*50
+	if !approx(es.MAPE, wantMAPE2) {
+		t.Fatalf("MAPE = %g, want %g", es.MAPE, wantMAPE2)
+	}
+}
+
+func TestEstimateItemCorrected_BelowThreshold(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	// Seed 4 observations (below BiasCorrectionThreshold=5).
+	for i := 0; i < 4; i++ {
+		Record(cfg, "sonnet", "M", 9.0, 4.5) // estimate=4.5, actual=9 → bias=2
+	}
+	corrected, base := EstimateItemCorrected(cfg, "sonnet", "M")
+	// Below threshold: corrected == base.
+	if !approx(corrected, base) {
+		t.Fatalf("below threshold: corrected=%g != base=%g", corrected, base)
+	}
+}
+
+func TestEstimateItemCorrected_AboveThreshold(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	// Seed 5 observations (at BiasCorrectionThreshold); bias converges toward 2.
+	for i := 0; i < BiasCorrectionThreshold; i++ {
+		Record(cfg, "sonnet", "M", 9.0, 4.5) // actual=9, estimate=4.5 → ratio=2
+	}
+	corrected, base := EstimateItemCorrected(cfg, "sonnet", "M")
+	// Above threshold: corrected = base * bias. Bias is approximately 2.
+	bias := cfg.ErrorStats["sonnet:M"].Bias
+	wantCorrected := base * bias
+	if !approx(corrected, wantCorrected) {
+		t.Fatalf("corrected=%g, want base(%g)*bias(%g)=%g", corrected, base, bias, wantCorrected)
+	}
+	if approx(corrected, base) {
+		t.Fatalf("corrected should differ from base when bias correction is active")
 	}
 }
 

@@ -246,12 +246,17 @@ func slotAlive(pid int) bool {
 // candidate (review + merge policy), block, or requeue.
 func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	if cost, ok := dispatch.ParseResultCost(sl.Stream); ok {
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.CostUSD = cost })
+		// ADD the new attempt's cost to whatever was accumulated from prior
+		// attempts (koryph-6bl: CostUSD accumulates across requeues so total
+		// spend per bead is never lost when a slot is replaced on requeue).
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.CostUSD += cost })
 		model, size := sl.Model, r.sizeClass(sl.PhaseID)
 		// Lock-guarded read-modify-write so concurrent runs on the same account
 		// don't clobber each other's EWMA calibration (koryph-8iu.1).
+		// Pass sl.EstimateUSD so Record can also update error stats (koryph-6bl);
+		// 0 on an old-format slot is treated as "unknown" and skips error stats.
 		if cfg, err := quota.UpdateConfig(r.quotaName(), func(c *quota.Config) error {
-			quota.Record(c, model, size, cost)
+			quota.Record(c, model, size, cost, sl.EstimateUSD)
 			return nil
 		}); err == nil {
 			r.quotaCfg = cfg
@@ -342,6 +347,10 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		// to a recompute that could have drifted from what was actually
 		// admitted.
 		footprint: sl.Footprint,
+		// Carry accumulated cost forward (koryph-6bl) — same reasoning as
+		// requeueSlot: rate-limited agents may have spent tokens before being
+		// throttled; that cost must not be lost across the requeue.
+		accumulatedCostUSD: sl.CostUSD,
 	})
 }
 
@@ -767,6 +776,10 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		// Carry the persisted footprint forward too (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,
+		// Carry accumulated cost forward so the new slot starts from the total
+		// spend so far (koryph-6bl): completeSlot ADDs the next attempt's cost
+		// rather than overwriting, so the sum across all attempts is correct.
+		accumulatedCostUSD: sl.CostUSD,
 	})
 }
 

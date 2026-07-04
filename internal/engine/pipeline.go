@@ -84,7 +84,11 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		if sr.CostUSD > 0 {
 			model, size, cost := res.Model, r.sizeClass(sl.PhaseID), sr.CostUSD
 			if cfg, err := quota.UpdateConfig(r.quotaName(), func(c *quota.Config) error {
-				quota.Record(c, model, size, cost)
+				// Pipeline-stage dispatches don't have a pre-stamped estimate
+				// (they are launched by the post-implement pipeline, not the
+				// main wave estimator), so pass 0 to skip error-stat updates
+				// while still updating the base EWMA calibration (koryph-6bl).
+				quota.Record(c, model, size, cost, 0)
 				return nil
 			}); err == nil {
 				r.quotaCfg = cfg

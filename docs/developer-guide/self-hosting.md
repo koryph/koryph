@@ -104,6 +104,33 @@ The scheduler's footprint model turns architectural coupling into an
 counts. That inversion is the point: instead of a coupling opinion, you
 get a coupling measurement.
 
+## Estimator accuracy: telemetry-driven self-tuning (koryph-6bl)
+
+The same principle applies to cost estimation. Before koryph-6bl the
+estimator produced a base estimate at dispatch time but never recorded it
+beside the actual, so whether the estimate was systematically off was
+invisible. The fix follows the same pattern as the parallelism ceiling
+example above:
+
+1. **Observe** — the dispatch-time estimate is stamped on each ledger slot
+   (`estimate_usd`), so every actual/estimate pair is retained.
+2. **Measure** — `completeSlot` folds `actual / estimate` into a per-bucket
+   rolling bias and MAPE (mean absolute percentage error), persisted in the
+   quota config.
+3. **Self-correct** — once 5 observations accumulate for a bucket,
+   `waveEstimate` multiplies the base by the learned bias factor so the
+   *next* estimate is already corrected. No restart, no CLI command.
+4. **Inspect** — `koryph metrics estimator` surfaces the current accuracy
+   table: bucket / n / bias / MAPE / whether correction is active.
+
+This is exactly the telemetry-driven tuning pattern: the fleet records
+enough about its own operation that its failure mode (systematic
+under-estimation → surprise quota drain) is diagnosable from the record,
+and the fix (bias correction) ships as a code change measured against the
+same signal that found the problem. The refill log line gains a confidence
+hint (`est $3.20 +/-35%`) so an operator watching a run can immediately see
+how much to trust the estimate before the batch commits.
+
 ## What else self-hosting caught (same day)
 
 - **A prompt-delivery bug**: operator notes appended to not-yet-dispatched

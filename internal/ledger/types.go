@@ -112,6 +112,14 @@ type Slot struct {
 	ResumeSHA  string  `json:"resume_sha,omitempty"`
 	CostUSD    float64 `json:"cost_usd"`
 
+	// EstimateUSD is the dispatch-time cost estimate stamped at the moment the
+	// slot was first created (koryph-6bl). Additive: a Slot decoded from a
+	// ledger that predates this field unmarshals it to 0 (= unknown / skip in
+	// error statistics). For requeued slots this holds the estimate for the
+	// most-recent attempt; it is NOT accumulated across attempts (unlike
+	// CostUSD, which accumulates).
+	EstimateUSD float64 `json:"estimate_usd,omitempty"`
+
 	// GateRequeues and MergeRequeues count requeues already spent on,
 	// respectively, a post-rebase gate failure and a merge error — each
 	// budgeted 2 (koryph-2im.6), still bounded by Attempts < MaxAttempts.

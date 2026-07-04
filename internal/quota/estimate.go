@@ -3,6 +3,8 @@
 
 package quota
 
+import "math"
+
 // SizeOf buckets a work item by its description length: S (<400), M (<2000),
 // otherwise L.
 func SizeOf(descLen int) string {
@@ -119,8 +121,13 @@ func EstimateWaveForRuntime(cfg *Config, runtimeName string, items []struct{ Tie
 
 // Record folds an observed dispatch cost into the per-"<tier>:<size>"
 // calibration via an EWMA (0.7*old + 0.3*new), seeding with the first
-// observation. The caller is responsible for persisting cfg with SaveConfig.
-func Record(cfg *Config, tier, size string, actualUSD float64) {
+// observation. estimateUSD is the dispatch-time estimate for this slot —
+// when > 0 it is also folded into the per-key ErrorStats (bias + MAPE) for
+// the bias-correction path (koryph-6bl). Pass 0 when the estimate is
+// unknown (old ledger slots, requeues without a fresh estimate) to skip
+// error-stat updates while still updating the base calibration. The caller
+// is responsible for persisting cfg with SaveConfig.
+func Record(cfg *Config, tier, size string, actualUSD, estimateUSD float64) {
 	if cfg.Calibration == nil {
 		cfg.Calibration = map[string]float64{}
 	}
@@ -130,4 +137,70 @@ func Record(cfg *Config, tier, size string, actualUSD float64) {
 	} else {
 		cfg.Calibration[key] = actualUSD
 	}
+
+	// Update error statistics when both actual and a valid estimate are
+	// available — estimateUSD == 0 means "unknown"; skip gracefully.
+	if estimateUSD > 0 {
+		if cfg.ErrorStats == nil {
+			cfg.ErrorStats = map[string]*ErrorStat{}
+		}
+		ratio := actualUSD / estimateUSD
+		ape := math.Abs(actualUSD-estimateUSD) / estimateUSD * 100
+		if es, ok := cfg.ErrorStats[key]; ok {
+			es.N++
+			es.Bias = 0.7*es.Bias + 0.3*ratio
+			es.MAPE = 0.7*es.MAPE + 0.3*ape
+		} else {
+			cfg.ErrorStats[key] = &ErrorStat{N: 1, Bias: ratio, MAPE: ape}
+		}
+	}
+}
+
+// BiasCorrectionThreshold is the minimum sample count before the learned
+// bias factor is applied to the estimate. Below this threshold the estimate
+// is uncorrected — there is not enough evidence to trust the ratio.
+// Exported so the metrics/CLI layer can annotate rows that have reached it.
+const BiasCorrectionThreshold = 5
+
+// EstimateItemCorrected returns the bias-corrected and raw base estimates
+// for one dispatch (koryph-6bl). Once ErrorStats[key].N >= 5, the returned
+// corrected value is base * bias; below the threshold corrected == base.
+// Equivalent to EstimateItemCorrectedForRuntime(cfg, "claude", tier, size).
+func EstimateItemCorrected(cfg *Config, tier, size string) (corrected, base float64) {
+	return EstimateItemCorrectedForRuntime(cfg, "claude", tier, size)
+}
+
+// EstimateItemCorrectedForRuntime is EstimateItemCorrected generalized
+// across runtimes. It applies the learned bias factor once enough samples
+// have accumulated, so systematic under/over-estimation self-corrects
+// instead of persisting (koryph-6bl). When the bias-corrected path is
+// active the returned base is the pre-correction value so callers can
+// surface both ("est $1.65 base $1.20").
+func EstimateItemCorrectedForRuntime(cfg *Config, runtimeName, tier, size string) (corrected, base float64) {
+	base = EstimateItemForRuntime(cfg, runtimeName, tier, size)
+	corrected = base
+	if cfg.ErrorStats != nil {
+		key := tier + ":" + size
+		if es, ok := cfg.ErrorStats[key]; ok && es.N >= BiasCorrectionThreshold {
+			corrected = base * es.Bias
+		}
+	}
+	return corrected, base
+}
+
+// EstimateWaveCorrected sums per-item corrected cost estimates for a wave.
+// Equivalent to EstimateWaveCorrectedForRuntime(cfg, "claude", items).
+func EstimateWaveCorrected(cfg *Config, items []struct{ Tier, Size string }) float64 {
+	return EstimateWaveCorrectedForRuntime(cfg, "claude", items)
+}
+
+// EstimateWaveCorrectedForRuntime is EstimateWaveCorrected generalized
+// across runtimes (koryph-6bl).
+func EstimateWaveCorrectedForRuntime(cfg *Config, runtimeName string, items []struct{ Tier, Size string }) float64 {
+	var total float64
+	for _, it := range items {
+		c, _ := EstimateItemCorrectedForRuntime(cfg, runtimeName, it.Tier, it.Size)
+		total += c
+	}
+	return total
 }

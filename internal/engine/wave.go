@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -412,12 +413,17 @@ func onlyBead(issues []beads.Issue, id string) []beads.Issue {
 	return nil
 }
 
-// waveEstimate sums the per-item cost estimates for a candidate wave,
-// pricing each item against ITS OWN resolved runtime (koryph-v8u.12) via the
-// same bead `runtime:<name>` label / project default_runtime precedence
-// dispatchBead itself applies (modelroute.ResolveRuntimeName) — so a wave
-// mixing a runtime:<name> bead alongside claude beads estimates each against
-// the right per-runtime base table instead of always assuming claude's.
+// waveEstimate sums the per-item bias-corrected cost estimates for a
+// candidate wave, pricing each item against ITS OWN resolved runtime
+// (koryph-v8u.12) via the same bead `runtime:<name>` label / project
+// default_runtime precedence dispatchBead itself applies
+// (modelroute.ResolveRuntimeName) — so a wave mixing a runtime:<name> bead
+// alongside claude beads estimates each against the right per-runtime base
+// table instead of always assuming claude's.
+//
+// Bias correction (koryph-6bl): once enough observations accumulate for a
+// (tier, size) bucket the corrected estimate replaces the raw base, so
+// systematic under/over-estimation self-corrects instead of persisting.
 func (r *runner) waveEstimate(items []sched.Item) float64 {
 	var est float64
 	for _, it := range items {
@@ -426,17 +432,65 @@ func (r *runner) waveEstimate(items []sched.Item) float64 {
 			model = modelroute.TierSonnet
 		}
 		runtimeName, _ := modelroute.ResolveRuntimeName(it.Issue.Labels, r.cfg.DefaultRuntime)
-		est += quota.EstimateItemForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(it.Issue.Description)))
+		corrected, _ := quota.EstimateItemCorrectedForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(it.Issue.Description)))
+		est += corrected
 	}
 	return est
 }
 
+// itemEstimate returns the bias-corrected estimate for a single bead, using
+// the same model/runtime/size logic as waveEstimate (koryph-6bl). This is
+// called at dispatch time so the estimate can be persisted on the ledger
+// slot alongside the eventual actual, making estimator error observable.
+func (r *runner) itemEstimate(iss beads.Issue, model, runtimeName string) float64 {
+	if model == "" {
+		model = modelroute.TierSonnet
+	}
+	corrected, _ := quota.EstimateItemCorrectedForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(iss.Description)))
+	return corrected
+}
+
 // windowNote renders the estimate/usage suffix for the wave progress line.
+// When MAPE data is available for the dominant tier in the wave it appends
+// a confidence hint so the operator can see how accurate the estimate
+// historically is, e.g. "(est $1.65 +/-40% / window 3%)" (koryph-6bl).
 func (r *runner) windowNote(calibrated bool, u quota.Usage, est float64) string {
 	if !calibrated {
 		return " (governor uncalibrated)"
 	}
+	mapeHint := r.waveMAPEHint()
+	if mapeHint != "" {
+		return fmt.Sprintf(" (est $%.2f %s/ window %.0f%%)", est, mapeHint, u.Window5h.Fraction()*100)
+	}
 	return fmt.Sprintf(" (est $%.2f / window %.0f%%)", est, u.Window5h.Fraction()*100)
+}
+
+// waveMAPEHint returns a "+/-X%" confidence string derived from the median
+// MAPE across error-stat buckets that have enough observations, or "" when
+// no data is available yet. The hint is intentionally coarse (rounded to the
+// nearest 5%) to avoid false precision (koryph-6bl).
+func (r *runner) waveMAPEHint() string {
+	if r.quotaCfg == nil || len(r.quotaCfg.ErrorStats) == 0 {
+		return ""
+	}
+	var total float64
+	var count int
+	for _, es := range r.quotaCfg.ErrorStats {
+		if es != nil && es.N >= quota.BiasCorrectionThreshold {
+			total += es.MAPE
+			count++
+		}
+	}
+	if count == 0 {
+		return ""
+	}
+	mean := total / float64(count)
+	// Round to nearest 5%.
+	rounded := math.Round(mean/5) * 5
+	if rounded < 5 {
+		return ""
+	}
+	return fmt.Sprintf("+/-%.0f%% ", rounded)
 }
 
 // activeFootprints derives sched.BuildWave's in-flight footprint set from the
@@ -530,6 +584,12 @@ type dispatchReq struct {
 	// Footprint nil too, and activeFootprints falls back to its
 	// recompute-from-labels chain exactly as before this bead.
 	footprint *sched.Footprint
+	// accumulatedCostUSD carries forward the total cost already spent on
+	// previous attempts of this bead, so that CostUSD on the new slot
+	// starts at the right baseline and completeSlot can ADD the new
+	// attempt's cost rather than overwrite it (koryph-6bl). Zero on a fresh
+	// first-attempt dispatch.
+	accumulatedCostUSD float64
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -657,6 +717,12 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	_ = r.adapter.Claim(ctx, beadID) // best-effort
 	r.holdGlobalSlot(beadID, handle.PID, res.Model)
 
+	// Stamp the dispatch-time estimate (koryph-6bl). This is the per-attempt
+	// estimate (bias-corrected when enough samples exist), NOT accumulated —
+	// it is the prediction we are making for THIS attempt, used later by
+	// completeSlot to compute estimator error and update ErrorStats.
+	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName)
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	sl := &ledger.Slot{
 		PhaseID:           beadID,
@@ -690,6 +756,10 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Note:              q.note,
 		RateLimitRequeues: q.rateLimitRequeues,
 		Footprint:         q.footprint,
+		EstimateUSD:       estimateUSD,
+		// CostUSD starts from accumulatedCostUSD so prior-attempt spend is
+		// not lost when completeSlot ADDs the new attempt's cost (koryph-6bl).
+		CostUSD: q.accumulatedCostUSD,
 	}
 	_ = r.store.SetSlot(r.run, sl)
 	r.dispatched++

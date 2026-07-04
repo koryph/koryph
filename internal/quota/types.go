@@ -81,19 +81,37 @@ type Usage struct {
 // config. Files without it (pre-versioning) still load and are backfilled.
 const ConfigSchemaVersion = 1
 
+// ErrorStat tracks per-(model, size-class) estimator accuracy across all
+// observed dispatches (koryph-6bl). It is stored under Config.ErrorStats
+// keyed by "<tier>:<size>" (the same key as Config.Calibration).
+//
+// Bias is the rolling mean of (actual/estimate) ratios — 1.0 means perfect,
+// > 1.0 means the estimator is systematically under-estimating, < 1.0 means
+// over-estimating. MAPE is the rolling mean absolute percentage error
+// ((|actual-estimate|/estimate)*100). Both use the same 0.7/0.3 EWMA as
+// the base calibration so recent observations carry more weight.
+//
+// Additive: absent from old configs (nil map → no-op in readers).
+type ErrorStat struct {
+	N    int     `json:"n"`    // total observations (not EWMA-decayed)
+	Bias float64 `json:"bias"` // EWMA of actual/estimate ratio
+	MAPE float64 `json:"mape"` // EWMA of |actual−estimate|/estimate * 100
+}
+
 // Config is per-account governor configuration + calibration state,
 // persisted at ~/.koryph/quota/<account>.json.
 type Config struct {
-	SchemaVersion    int                `json:"schema_version,omitempty"`
-	Account          string             `json:"account"`
-	WindowCeilingUSD float64            `json:"window_ceiling_usd"`
-	WeeklyCeilingUSD float64            `json:"weekly_ceiling_usd"`
-	PlanTier         string             `json:"plan_tier,omitempty"` // e.g. max20x, teams
-	PerAgentMaxUSD   float64            `json:"per_agent_max_usd"`   // --max-budget-usd kill switch
-	PerTierUSD       map[string]float64 `json:"per_tier_usd"`        // estimator base
-	SizeMultiplier   map[string]float64 `json:"size_multiplier"`     // S/M/L
-	SafetyMargin     float64            `json:"safety_margin"`
-	Calibration      map[string]float64 `json:"calibration,omitempty"` // "<tier>:<size>" → EWMA USD
+	SchemaVersion    int                   `json:"schema_version,omitempty"`
+	Account          string                `json:"account"`
+	WindowCeilingUSD float64               `json:"window_ceiling_usd"`
+	WeeklyCeilingUSD float64               `json:"weekly_ceiling_usd"`
+	PlanTier         string                `json:"plan_tier,omitempty"` // e.g. max20x, teams
+	PerAgentMaxUSD   float64               `json:"per_agent_max_usd"`   // --max-budget-usd kill switch
+	PerTierUSD       map[string]float64    `json:"per_tier_usd"`        // estimator base
+	SizeMultiplier   map[string]float64    `json:"size_multiplier"`     // S/M/L
+	SafetyMargin     float64               `json:"safety_margin"`
+	Calibration      map[string]float64    `json:"calibration,omitempty"` // "<tier>:<size>" → EWMA USD
+	ErrorStats       map[string]*ErrorStat `json:"error_stats,omitempty"` // "<tier>:<size>" → accuracy stats (koryph-6bl)
 }
 
 // DefaultConfig returns uncalibrated defaults for a new account profile.

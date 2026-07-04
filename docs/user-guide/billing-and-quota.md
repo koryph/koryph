@@ -117,6 +117,49 @@ After real dispatches the estimator self-calibrates via an EWMA
 (`0.7 × old + 0.3 × actual`) per model-tier × size bucket (S / M / L),
 so preflight estimates improve over time without further manual updates.
 
+### Estimator error loop (koryph-6bl)
+
+The dispatch-time estimate is now persisted beside the eventual actual cost
+on every ledger slot (`estimate_usd`). After each agent completes, koryph
+computes two accuracy metrics per `(tier, size)` bucket and persists them in
+the quota config alongside `calibration`:
+
+| Metric | Meaning |
+|--------|---------|
+| **Bias** | EWMA of `actual / estimate` — 1.0 is perfect; > 1 = under-estimating |
+| **MAPE** | EWMA of `|actual − estimate| / estimate × 100` — percentage error |
+
+Once a bucket accumulates **5 observations**, the bias factor is applied to
+future estimates automatically (`corrected = base × bias`), so systematic
+under- or over-estimation self-corrects without any manual intervention.
+The refill log line gains a confidence hint when MAPE data is available:
+
+```
+wave 3: 12 ready, dispatching 2 (est $3.20 +/-35% / window 18%)
+```
+
+**Inspect estimator accuracy:**
+
+```sh
+koryph metrics estimator              # tabular: account / key / n / base / bias / MAPE / correction active
+koryph metrics estimator --json       # machine-readable
+koryph metrics estimator --account personal   # single account
+```
+
+The table marks rows with `|bias − 1| > 0.5` as **WARN** — these buckets
+have large systematic error and are candidates for a manual `quota calibrate`
+pass to reset the ceiling.
+
+**The feedback loop:**
+
+1. `waveEstimate` computes a per-item estimate at dispatch and persists it on
+   the slot as `estimate_usd`.
+2. When the agent completes, `completeSlot` records `actual / estimate` in
+   `ErrorStats["tier:size"]` via the same lock-guarded EWMA as the base
+   calibration.
+3. The next wave picks up the corrected estimate automatically — no restart,
+   no CLI command.
+
 ---
 
 ## The billing guard
