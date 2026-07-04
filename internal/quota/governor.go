@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
@@ -104,6 +105,60 @@ func LoadConfig(account string) (*Config, error) {
 // private account state).
 func SaveConfig(cfg *Config) error {
 	return fsx.WriteJSONAtomicPerm(configPath(cfg.Account), cfg, 0o600)
+}
+
+// SetGuardMode writes a billing-guard override into the account's quota config
+// under an exclusive flock. mode must be one of GuardModeOn, GuardModeAdvisory,
+// or GuardModeOff (the CLI also accepts "off" as a synonym for "advisory";
+// SetGuardMode normalises "off" → "advisory" in the stored value so readers
+// need only test for "" / "on" vs "advisory"). until is an optional expiry
+// time (zero = permanent). The caller is responsible for audit logging.
+//
+// Calling SetGuardMode with mode == GuardModeOn (or "") clears both fields so
+// the JSON stays compact.
+func SetGuardMode(account, mode string, until time.Time) (*Config, error) {
+	return UpdateConfig(account, func(c *Config) error {
+		switch mode {
+		case GuardModeOn, "":
+			c.GuardMode = ""
+			c.GuardUntil = ""
+		case GuardModeOff, GuardModeAdvisory:
+			c.GuardMode = GuardModeAdvisory // normalise "off" → "advisory"
+			if !until.IsZero() {
+				c.GuardUntil = until.UTC().Format(time.RFC3339)
+			} else {
+				c.GuardUntil = ""
+			}
+		default:
+			return fmt.Errorf("quota: unknown guard mode %q (want on|advisory|off)", mode)
+		}
+		return nil
+	})
+}
+
+// ConfigGuardAdvisory reports whether the stored guard mode is advisory right
+// now, taking the optional GuardUntil expiry into account. now is injected for
+// testing; pass time.Now() in production callers.
+//
+// Returns (false, "") when the mode is enforced (or has expired).
+// Returns (true, reason) when advisory, where reason is a human-readable
+// description suitable for log lines and doctor findings.
+func ConfigGuardAdvisory(cfg *Config, now time.Time) (advisory bool, reason string) {
+	if cfg == nil || cfg.GuardMode == "" || cfg.GuardMode == GuardModeOn {
+		return false, ""
+	}
+	// Check expiry.
+	if cfg.GuardUntil != "" {
+		t, err := time.Parse(time.RFC3339, cfg.GuardUntil)
+		if err == nil && now.After(t) {
+			// Expired — treat as enforced.
+			return false, ""
+		}
+	}
+	if cfg.GuardUntil != "" {
+		return true, fmt.Sprintf("quota guard advisory (live toggle; expires %s)", cfg.GuardUntil)
+	}
+	return true, "quota guard advisory (live toggle)"
 }
 
 // isCalibrated reports whether at least one ceiling has been calibrated (from

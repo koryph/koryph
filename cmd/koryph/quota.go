@@ -10,10 +10,12 @@ import (
 	"math"
 	"sort"
 	"text/tabwriter"
+	"time"
 
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/metrics"
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/registry"
 )
 
 func init() {
@@ -31,6 +33,15 @@ func init() {
 				summary:  "calibrate a governor ceiling from an observed /usage reading",
 				run:      cmdQuotaCalibrate,
 				DocLinks: []string{"concepts/governors.md", "user-guide/billing-and-quota.md"},
+			},
+			{
+				name:    "guard",
+				summary: "live billing-guard toggle — on|advisory|off [--until <duration>]; re-read each wave without a restart",
+				run:     cmdQuotaGuard,
+				DocLinks: []string{
+					"user-guide/billing-and-quota.md",
+					"concepts/governors.md",
+				},
 			},
 		},
 	})
@@ -60,10 +71,15 @@ func init() {
 // before this bead, so the snapshot is unchanged end-to-end.
 const resolvedRuntimeName = "claude"
 
-// cmdQuota dispatches the quota show/calibrate verbs.
+// cmdQuota dispatches the quota show/calibrate/guard verbs.
 func cmdQuota(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "calibrate" {
-		return cmdQuotaCalibrate(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "calibrate":
+			return cmdQuotaCalibrate(args[1:], stdout, stderr)
+		case "guard":
+			return cmdQuotaGuard(args[1:], stdout, stderr)
+		}
 	}
 	return cmdQuotaShow(args, stdout, stderr)
 }
@@ -181,6 +197,86 @@ func cmdQuotaCalibrate(args []string, stdout, stderr io.Writer) int {
 		ceiling = cfg.WeeklyCeilingUSD
 	}
 	fmt.Fprintf(stdout, "calibrated %s %s ceiling: $%.2f\n", *acct, *window, ceiling)
+	return 0
+}
+
+// cmdQuotaGuard sets the billing-guard mode for an account live, without
+// requiring a loop restart. The engine re-reads the quota config at every
+// wave boundary (via governor() → quota.LoadConfig), so the change takes
+// effect on the very next wave. (koryph-i25)
+//
+// Usage: koryph quota guard --account A on|advisory|off [--until <duration>]
+func cmdQuotaGuard(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("quota guard", stderr)
+	acct := fs.String("account", "", "account to configure (required)")
+	until := fs.String("until", "", "auto-revert duration from now (e.g. 2h, 24h); omit for permanent")
+	setUsage(fs, stdout,
+		"live billing-guard toggle: on|advisory|off [--until <duration>] — re-read by the loop at every wave",
+		"--account A on|advisory|off [--until <duration>]")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if *acct == "" {
+		return usageErr(stderr, "quota guard: --account is required")
+	}
+	if len(pos) != 1 {
+		return usageErr(stderr, "quota guard: exactly one positional argument required: on|advisory|off")
+	}
+	mode := pos[0]
+	switch mode {
+	case quota.GuardModeOn, quota.GuardModeAdvisory, quota.GuardModeOff:
+		// valid
+	default:
+		return usageErr(stderr, fmt.Sprintf("quota guard: unknown mode %q — want on|advisory|off", mode))
+	}
+
+	var untilTime time.Time
+	if *until != "" {
+		d, derr := time.ParseDuration(*until)
+		if derr != nil {
+			return usageErr(stderr, fmt.Sprintf("quota guard: --until %q is not a valid duration: %v", *until, derr))
+		}
+		if d <= 0 {
+			return usageErr(stderr, "quota guard: --until duration must be positive")
+		}
+		untilTime = time.Now().Add(d)
+	}
+
+	cfg, serr := quota.SetGuardMode(*acct, mode, untilTime)
+	if serr != nil {
+		return fail(stderr, serr)
+	}
+
+	// Audit: emit to the registry audit log so the change is traceable.
+	ctx := context.Background()
+	store, aerr := openStore(ctx)
+	if aerr == nil {
+		detail := map[string]any{
+			"account":    *acct,
+			"guard_mode": cfg.GuardMode,
+		}
+		if cfg.GuardUntil != "" {
+			detail["guard_until"] = cfg.GuardUntil
+		}
+		_ = store.Audit(registry.Event{
+			Kind:   "quota-guard",
+			Actor:  cliActor(),
+			Detail: detail,
+		})
+	}
+
+	// Human-readable confirmation.
+	switch mode {
+	case quota.GuardModeOn:
+		fmt.Fprintf(stdout, "quota guard %s: enforced (billing guard re-enabled)\n", *acct)
+	default:
+		msg := fmt.Sprintf("quota guard %s: advisory (billing guard disabled — usage still measured)", *acct)
+		if cfg.GuardUntil != "" {
+			msg += fmt.Sprintf("; auto-reverts at %s", cfg.GuardUntil)
+		}
+		fmt.Fprintln(stdout, msg)
+	}
 	return 0
 }
 

@@ -98,6 +98,16 @@ type ErrorStat struct {
 	MAPE float64 `json:"mape"` // EWMA of |actual−estimate|/estimate * 100
 }
 
+// GuardModeOn is the default enforced billing-guard mode. GuardModeAdvisory
+// and GuardModeOff both disable throttling (usage is still measured and
+// logged). "off" is a synonym for "advisory" accepted by the CLI — both
+// store as "advisory" after normalisation by SetGuardMode.
+const (
+	GuardModeOn       = "on"
+	GuardModeAdvisory = "advisory"
+	GuardModeOff      = "off"
+)
+
 // Config is per-account governor configuration + calibration state,
 // persisted at ~/.koryph/quota/<account>.json.
 type Config struct {
@@ -112,6 +122,22 @@ type Config struct {
 	SafetyMargin     float64               `json:"safety_margin"`
 	Calibration      map[string]float64    `json:"calibration,omitempty"` // "<tier>:<size>" → EWMA USD
 	ErrorStats       map[string]*ErrorStat `json:"error_stats,omitempty"` // "<tier>:<size>" → accuracy stats (koryph-6bl)
+
+	// GuardMode is the live billing-guard toggle written by
+	// `koryph quota guard`. "" or "on" = enforced (default).
+	// "advisory"/"off" = guard advisory for this account: usage is still
+	// measured and logged but never blocks dispatch. The engine re-reads
+	// this field at every wave boundary via governor() → LoadConfig(),
+	// so a toggle takes effect on the very next wave without a restart.
+	// (koryph-i25)
+	GuardMode string `json:"guard_mode,omitempty"`
+
+	// GuardUntil is an optional RFC3339 timestamp set by
+	// `koryph quota guard --until`. When non-empty the guard override
+	// expires at that time and reverts to enforced automatically; the
+	// engine treats an expired override identically to GuardMode="on".
+	// (koryph-i25)
+	GuardUntil string `json:"guard_until,omitempty"`
 }
 
 // DefaultConfig returns uncalibrated defaults for a new account profile.
