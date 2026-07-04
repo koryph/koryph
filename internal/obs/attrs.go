@@ -43,6 +43,38 @@ const (
 	// KeyLifecycle is the bot lifecycle event label (e.g. "create.started",
 	// "create.succeeded", "load", "save"). Used on bot.lifecycle log records.
 	KeyLifecycle = "lifecycle_event"
+
+	// Section O2 engine + scheduler instrumentation keys.
+
+	// KeyStage is the pipeline stage name (e.g. "docs", "test") for stage
+	// duration histograms and pipeline progress lines.
+	KeyStage = "stage"
+
+	// KeyCoDispatch is the number of slots co-dispatched in this wave/refill
+	// (gauge). Emitted at each refill boundary to track parallelism.
+	KeyCoDispatch = "co_dispatch"
+
+	// KeyDeferralToken is the footprint token that caused a bead to be deferred
+	// (e.g. "fp:core", "domain:unknown"). Used for deferrals_by_token metric.
+	KeyDeferralToken = "deferral_token"
+
+	// KeyDispatchedCount is the number of beads dispatched in a wave/refill.
+	KeyDispatchedCount = "dispatched_count"
+
+	// KeyReadyCount is the number of ready beads seen in a frontier scan.
+	KeyReadyCount = "ready_count"
+
+	// KeyWave is the wave or refill number within the current run.
+	KeyWave = "wave"
+
+	// KeyPID is the OS process id of a dispatched agent.
+	KeyPID = "pid"
+
+	// KeyCostUSD is the actual cost of a bead attempt in USD.
+	KeyCostUSD = "cost_usd"
+
+	// KeyEstimateUSD is the pre-dispatch bias-corrected cost estimate in USD.
+	KeyEstimateUSD = "estimate_usd"
 )
 
 // RunAttrs returns slog attributes for a run context. Pass "" for any field
