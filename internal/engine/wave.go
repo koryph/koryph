@@ -532,6 +532,22 @@ type dispatchReq struct {
 func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	beadID := q.issue.ID
 
+	// Runtime selection (koryph-v8u.3): bead `runtime:<name>` label > project
+	// default_runtime > "claude" (modelroute.ResolveRuntimeName). Dispatch
+	// itself only ever drives the claude CLI today — no other runtime's
+	// worktree/backend/ledger wiring exists yet — so anything other than
+	// "claude" blocks the slot right here, before any worktree or backend
+	// work happens, rather than silently falling back to claude (which would
+	// dispatch a bead under an identity/account/model policy the operator
+	// never asked for).
+	runtimeName, runtimeWhy := modelroute.ResolveRuntimeName(q.issue.Labels, r.cfg.DefaultRuntime)
+	if runtimeName != "claude" {
+		r.blockSlot(beadID, q, fmt.Sprintf(
+			"runtime %s not available (dispatch only supports claude today; resolved via %s)",
+			runtimeName, runtimeWhy))
+		return
+	}
+
 	res, err := modelroute.Resolve(modelroute.Req{
 		Stage:         modelroute.StageImplement,
 		Labels:        q.issue.Labels,
@@ -541,12 +557,13 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
 		// step inside Resolve: a bead model:<tier> label (above) still wins
 		// unchanged; absent that, the implement-stage persona's `tier`
-		// frontmatter resolves through runtime.ClaudeModelMap (overlaid with
-		// the project's ModelMap override) before falling back to the
-		// persona's legacy `model` pin and finally the hardcoded stage
-		// default.
+		// frontmatter resolves through the selected runtime's ModelMap
+		// (overlaid with the project's ModelMap override) before falling
+		// back to the persona's legacy `model` pin and finally the
+		// runtime-namespaced hardcoded stage default (koryph-v8u.3).
 		RepoRoot: r.rec.Root,
 		ModelMap: r.cfg.ModelMap,
+		Runtime:  runtimeName,
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "model resolution: "+err.Error())
@@ -647,6 +664,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Model:             res.Model,
 		ModelWhy:          res.Rationale,
 		Effort:            effort,
+		Runtime:           runtimeName,
 		AccountProfile:    r.rec.AccountProfile,
 		ClaudeConfigDir:   r.rec.ClaudeConfigDir,
 		VerifiedIdentity:  handle.VerifiedIdentity,
@@ -680,6 +698,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		SessionName:     sessionName,
 		Model:           res.Model,
 		ModelWhy:        res.Rationale,
+		Runtime:         runtimeName,
 		WorktreePath:    wt.Path,
 		Branch:          branch,
 		BaseCommit:      r.baseCommit(ctx),

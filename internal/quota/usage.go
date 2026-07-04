@@ -155,22 +155,74 @@ func ccusageWeekly(ctx context.Context, env []string) (float64, bool) {
 // modelPrice is per-MTok pricing in USD.
 type modelPrice struct{ in, out, cacheWrite, cacheRead float64 }
 
-// priceFor returns approximate per-MTok pricing by matching a substring of the
-// model id. Unknown models are priced as sonnet.
+// priceRule matches a lowercased substring of a model id to its price; rules
+// are tried in order and the first match wins (mirrors the pre-existing
+// switch's case order: opus, haiku, fable, sonnet).
+type priceRule struct {
+	substr string
+	price  modelPrice
+}
+
+// runtimePriceTable is one runtime's ordered substring->price rules plus a
+// fallback for a model id that matches none of them.
+type runtimePriceTable struct {
+	rules    []priceRule
+	fallback modelPrice
+}
+
+// claudePriceTable is claude's pricing table (koryph-v8u.3 item 4),
+// preserved byte-for-byte from the pre-existing hardcoded priceFor switch —
+// same substrings, same order, same fallback (sonnet rates).
+var claudePriceTable = runtimePriceTable{
+	rules: []priceRule{
+		{"opus", modelPrice{in: 15, out: 75, cacheWrite: 18.75, cacheRead: 1.5}},
+		{"haiku", modelPrice{in: 0.8, out: 4, cacheWrite: 1, cacheRead: 0.08}},
+		{"fable", modelPrice{in: 25, out: 125, cacheWrite: 31.25, cacheRead: 2.5}},
+		{"sonnet", modelPrice{in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.3}},
+	},
+	fallback: modelPrice{in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.3},
+}
+
+// pricingTables namespaces per-MTok pricing by runtime name (koryph-v8u.3
+// item 4), mirroring how internal/modelroute namespaces stage defaults and
+// internal/runtime namespaces ModelMap. Only "claude" is populated: usage
+// accounting (Snapshot/JSONLScan) reads Claude's own transcript format
+// exclusively today, so no other runtime's spend is ever priced through this
+// path yet — the runtime key is plumbed through priceForRuntime now so a
+// later runtime's usage-accounting bead only needs to add its own table
+// entry here, not re-thread a parameter through every caller.
+var pricingTables = map[string]runtimePriceTable{
+	"claude": claudePriceTable,
+}
+
+// priceFor returns approximate per-MTok pricing for a claude model id. Kept
+// as the stable, single-argument entry point every existing caller
+// (priceUsage) already uses; it is priceForRuntime("claude", model).
 func priceFor(model string) modelPrice {
-	m := strings.ToLower(model)
-	switch {
-	case strings.Contains(m, "opus"):
-		return modelPrice{in: 15, out: 75, cacheWrite: 18.75, cacheRead: 1.5}
-	case strings.Contains(m, "haiku"):
-		return modelPrice{in: 0.8, out: 4, cacheWrite: 1, cacheRead: 0.08}
-	case strings.Contains(m, "fable"):
-		return modelPrice{in: 25, out: 125, cacheWrite: 31.25, cacheRead: 2.5}
-	case strings.Contains(m, "sonnet"):
-		return modelPrice{in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.3}
-	default:
-		return modelPrice{in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.3}
+	return priceForRuntime("claude", model)
+}
+
+// priceForRuntime returns approximate per-MTok pricing by matching a
+// substring of model against runtimeName's table (koryph-v8u.3 item 4,
+// table-driven replacement for the old hardcoded opus/haiku/fable/sonnet
+// switch). An unrecognized runtimeName falls back to the claude table,
+// exactly as an unrecognized MODEL substring already falls back to sonnet
+// pricing within a table — usage pricing is advisory/approximate governor
+// input, never a dispatch gate, so it degrades gracefully here rather than
+// erroring the way modelroute.Resolve's deliberately fail-closed
+// unknown-runtime check does.
+func priceForRuntime(runtimeName, model string) modelPrice {
+	table, ok := pricingTables[runtimeName]
+	if !ok {
+		table = claudePriceTable
 	}
+	m := strings.ToLower(model)
+	for _, rule := range table.rules {
+		if strings.Contains(m, rule.substr) {
+			return rule.price
+		}
+	}
+	return table.fallback
 }
 
 // usageTokens is the token accounting on a transcript line.

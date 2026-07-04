@@ -87,6 +87,14 @@ type Slot struct {
 	ModelWhy    string `json:"model_rationale,omitempty"`
 	Effort      string `json:"effort,omitempty"`
 
+	// Runtime is the runtime (internal/runtime.Runtime.Name()) this slot
+	// dispatched under (koryph-v8u.3): "claude" today, always — the engine
+	// blocks any other resolved runtime rather than dispatching it. Additive:
+	// a Slot decoded from a ledger that predates this field unmarshals it to
+	// "", which every reader should treat as "claude" (the only runtime that
+	// ever existed before this field was added).
+	Runtime string `json:"runtime,omitempty"`
+
 	AccountProfile   string `json:"account_profile"`
 	ClaudeConfigDir  string `json:"claude_config_dir,omitempty"`
 	VerifiedIdentity string `json:"verified_identity,omitempty"`
@@ -187,6 +195,11 @@ type Manifest struct {
 	BillingMode     string    `json:"billing_mode"`
 	BootstrapCmds   []string  `json:"bootstrap_commands,omitempty"`
 	UpdatedAt       string    `json:"updated_at"`
+
+	// Runtime is the runtime this slot dispatched under (koryph-v8u.3),
+	// mirroring Slot.Runtime — see its doc for the additive/"" == "claude"
+	// contract.
+	Runtime string `json:"runtime,omitempty"`
 }
 
 // Decision is one recovery classification outcome.
