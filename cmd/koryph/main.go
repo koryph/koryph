@@ -149,7 +149,12 @@ OPERATE
                         render and install the caller release workflow, release-please-config.json,
                         and .release-please-manifest.json into the project; --mode selects the
                         build toolchain (goreleaser = mode A, commands = mode B) when the
-                        project has no release block; prints remaining HUMAN steps after install
+                        project has no release block; prints remaining HUMAN steps + current rung
+  release kick --repo OWNER/REPO [--pr N] [--wait [--wait-timeout D]]
+                        close+reopen the open Release PR so GitHub fires checks under your real
+                        gh auth token (bot-less rung-2 per-release step); auto-detects by the
+                        "autorelease: pending" label, or use --pr to name one explicitly;
+                        --wait polls until all checks conclude
 
 OBSERVE
   board [--json]        one-line-per-project run overview

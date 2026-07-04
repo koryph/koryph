@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/koryph/koryph/internal/project"
 	pkgrelease "github.com/koryph/koryph/internal/release"
@@ -20,6 +21,7 @@ func cmdRelease(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "release", "configure and operate the project release pipeline", []subVerb{
 			{"setup --project ID [--mode goreleaser|commands] [--version V] [--bot]", "render and install release workflow + release-please config into the project"},
+			{"kick --repo OWNER/REPO [--pr N] [--wait]", "close+reopen the Release PR so checks fire under your gh auth (bot-less rung-2 flow)"},
 		})
 		return 0
 	}
@@ -27,6 +29,8 @@ func cmdRelease(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "setup":
 		return cmdReleaseSetup(rest, stdout, stderr)
+	case "kick":
+		return cmdReleaseKick(rest, stdout, stderr)
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown release subcommand %q", sub))
 	}
@@ -147,6 +151,16 @@ func cmdReleaseSetup(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  %d. %s\n", i+1, step)
 		}
 	}
+
+	// Print which fallback rung the project is on so the operator knows
+	// exactly what is required before each release.
+	fmt.Fprintln(stdout)
+	if *flagBot {
+		fmt.Fprintln(stdout, "Release rung: rung 1 (bot) — Release PR checks fire automatically.")
+	} else {
+		fmt.Fprintln(stdout, "Release rung: rung 2 (bot-less) — run `koryph release kick --repo OWNER/REPO` before each release to trigger checks.")
+		fmt.Fprintln(stdout, "  See docs/user-guide/release-bot.md §\"Fallback ladder\" for higher rungs (PAT, admin-merge).")
+	}
 	return 0
 }
 
@@ -157,6 +171,64 @@ func newReleaseConfig(mode string) (*project.ReleaseConfig, error) {
 		Type: "go", // sensible default; operator edits koryph.project.json to change
 	}
 	return rc, applyBuildMode(rc, mode)
+}
+
+// cmdReleaseKick implements `koryph release kick --repo OWNER/REPO [--pr N] [--wait]`.
+//
+// It closes then reopens the open Release PR so that GitHub fires check
+// workflows under the operator's real gh authentication token. This is the
+// bot-less rung-2 flow: when the GITHUB_TOKEN fallback is active (no
+// RELEASE_BOT_APP_ID/PRIVATE_KEY secrets), checks do NOT fire on the
+// release-please-authored events because GitHub blocks workflow triggers from
+// GITHUB_TOKEN. Kick solves that with one command per release.
+//
+// Guard rails:
+//   - Without --pr: auto-detects by the "autorelease: pending" label; errors
+//     if none found.
+//   - With --pr: uses the given number; warns if the PR lacks the label.
+//   - Idempotent: if the PR is already closed for some reason, close is
+//     skipped and reopen still runs.
+//   - --wait polls check conclusions until all are non-pending or 10 min
+//     elapses (override with --wait-timeout).
+func cmdReleaseKick(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("release kick", stderr)
+	flagRepo := fs.String("repo", "", "owner/repo GitHub slug (required)")
+	flagPR := fs.Int("pr", 0, "explicit PR number (skips auto-detect)")
+	flagWait := fs.Bool("wait", false, "poll check conclusions after reopening")
+	flagWaitTimeout := fs.String("wait-timeout", "10m", "max wait duration (e.g. 10m, 30m)")
+	setUsage(fs, stdout,
+		"close+reopen the Release PR so checks fire under your gh auth (bot-less rung-2 flow)",
+		"--repo OWNER/REPO [--pr N] [--wait [--wait-timeout D]]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+	if *flagRepo == "" {
+		return usageErr(stderr, "release kick: --repo OWNER/REPO is required")
+	}
+
+	waitTimeout := 10 * time.Minute
+	if *flagWaitTimeout != "10m" {
+		d, err := time.ParseDuration(*flagWaitTimeout)
+		if err != nil {
+			return usageErr(stderr, fmt.Sprintf("release kick: --wait-timeout: invalid duration %q: %v", *flagWaitTimeout, err))
+		}
+		waitTimeout = d
+	}
+
+	opts := pkgrelease.KickOptions{
+		Repo:        *flagRepo,
+		PR:          *flagPR,
+		Wait:        *flagWait,
+		WaitTimeout: waitTimeout,
+		Stdout:      stdout,
+		Stderr:      stderr,
+	}
+
+	_, err := pkgrelease.Kick(opts)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	return 0
 }
 
 // applyBuildMode sets the build mode on an existing ReleaseConfig, clearing

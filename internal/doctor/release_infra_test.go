@@ -337,13 +337,20 @@ func TestReleaseBotSecretsBothMissing(t *testing.T) {
 	opts := projectOptsWithRelease(root, "owner/repo", []string{}, nil, false, nil)
 	r, _ := RunProject(opts)
 	fs := findAllChecks(r, checkNameReleaseBotSecrets)
-	for _, f := range fs {
-		if f.Level != LevelWarn {
-			t.Errorf("bot-secrets: got %s %q, want warn", f.Level, f.Message)
-		}
-		if !strings.Contains(f.Message, "koryph bot attach") {
-			t.Errorf("bot-secrets: expected 'koryph bot attach' provision hint, got %q", f.Message)
-		}
+	// When both secrets are missing we emit a single "bot-less" finding
+	// (not two per-secret findings) with a kick hint.
+	if len(fs) != 1 {
+		t.Fatalf("bot-secrets: expected 1 finding when both missing (bot-less mode), got %d", len(fs))
+	}
+	f := fs[0]
+	if f.Level != LevelWarn {
+		t.Errorf("bot-secrets: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "bot-less") {
+		t.Errorf("bot-secrets: expected 'bot-less' in message, got %q", f.Message)
+	}
+	if !strings.Contains(f.Message, "koryph release kick") {
+		t.Errorf("bot-secrets: expected 'koryph release kick' hint, got %q", f.Message)
 	}
 }
 

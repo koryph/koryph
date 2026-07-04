@@ -213,6 +213,22 @@ func checkReleaseBotSecrets(opts ProjectOptions, repoRoot string, cfg *project.C
 		nameSet[n] = true
 	}
 
+	appIDPresent := nameSet["RELEASE_BOT_APP_ID"]
+	keyPresent := nameSet["RELEASE_BOT_PRIVATE_KEY"]
+
+	// When both secrets are absent the workflow uses the GITHUB_TOKEN fallback
+	// (bot-less mode). This is a valid, supported configuration — checks will
+	// fire when the operator runs `koryph release kick` before each release.
+	// Report this as a contextual warning rather than a bot-setup error so it
+	// is clear that releases still work; the operator just needs one extra step.
+	if !appIDPresent && !keyPresent {
+		return []Finding{{
+			Check:   checkNameReleaseBotSecrets,
+			Level:   LevelWarn,
+			Message: ownerRepo + ": bot-less (GITHUB_TOKEN fallback active) — run `koryph release kick --repo " + ownerRepo + "` before each release to trigger checks (or run `koryph bot attach` to configure a bot)",
+		}}
+	}
+
 	var out []Finding
 	for _, want := range []string{"RELEASE_BOT_APP_ID", "RELEASE_BOT_PRIVATE_KEY"} {
 		if nameSet[want] {

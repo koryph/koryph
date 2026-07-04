@@ -67,6 +67,7 @@ var commandTable = []command{
 	}},
 	{name: "release", summary: "configure and operate the project release pipeline", run: cmdRelease, subs: []command{
 		{name: "setup", summary: "render and install release workflow + release-please config", run: cmdReleaseSetup},
+		{name: "kick", summary: "close+reopen the Release PR so checks fire under your gh auth", run: cmdReleaseKick},
 	}},
 	{name: "signing", summary: "configure and operate vault-backed commit signing", run: cmdSigning, subs: []command{
 		{name: "setup", summary: "write the signing policy into the adapter", run: cmdSigningSetup},
