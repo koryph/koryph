@@ -1,5 +1,7 @@
 {
   "repo": {
+    "description": "Vibe-code with discipline: koryph turns AI coding agents (Claude Code and friends) into a software factory — footprint-scheduled parallel agents, quota governors, gated merges, hygiene as code, and signed SLSA-attested releases. One static binary, no SaaS.",
+    "homepage": "https://koryph.build",
     "allow_merge_commit": false,
     "allow_squash_merge": true,
     "allow_rebase_merge": true,

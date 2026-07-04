@@ -242,7 +242,7 @@ func extractRepoFlags(full map[string]json.RawMessage) ([]byte, error) {
 	keys := []string{
 		"allow_merge_commit", "allow_squash_merge", "allow_rebase_merge",
 		"allow_auto_merge", "delete_branch_on_merge", "allow_update_branch",
-		"web_commit_signoff_required",
+		"web_commit_signoff_required", "description", "homepage",
 	}
 	out := make(map[string]json.RawMessage, len(keys))
 	for _, k := range keys {
