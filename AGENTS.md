@@ -1,127 +1,148 @@
-# Agent Instructions
+# AGENTS.md — koryph operating contract
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+The **canonical, runtime-neutral operating contract** every agent follows in this
+repository — Claude Code, Codex, Cursor, Grok, or any other runtime. It states the
+*rules*; the deep *how* lives in `docs/`, linked inline (every fact stated twice is a
+future inconsistency). Claude-specific wiring lives in [CLAUDE.md](CLAUDE.md); nothing
+here assumes you are Claude.
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [SYNC_CONCEPTS.md](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
+## Capability tiers (not model names)
 
-## Quick Reference
+koryph sizes work by runtime-agnostic **tier**, mapped to your runtime's models by its
+adapter — see [agents/README.md](agents/README.md):
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
-```
+- **frontier** — strongest reasoning tier; required where an error poisons downstream
+  automation (decomposition, footprint/dependency assignment, plan scoring, security
+  review, recovery analysis).
+- **standard** — capable coding tier; implementation against a precise spec, tests, docs.
+- **light** — fast/cheap tier; exploration, summarization, log triage.
 
-## Non-Interactive Shell Commands
+## Task tracking: beads only
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
+All work lives in **beads** (`bd`) — never TodoWrite or markdown TODO lists. Loop:
+`bd ready` → `bd show <id>` → `bd update <id> --claim` → `bd close <id>`. Persist durable
+insight with `bd remember` (no MEMORY.md files). Run `bd prime` once per session for the
+full reference; the managed block below is the short form.
 
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+## Dispatch-shaped beads
 
-**Use these forms instead:**
-```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
+The wave loop **silently skips** beads that are not dispatch-shaped. To be dispatched:
 
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
-```
+- **Type `task`, `bug`, or `chore`.** `feature`/`epic`/`decision`/`merge-request` are
+  containers and never dispatch; a `gt:*` gate label also blocks it.
+- **Footprint-labeled**, so the scheduler can batch conflict-free work.
 
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
+### Footprint grammar — `internal/sched/footprint.go`
+
+Tokens split into **read** and **write** sets with RWMutex semantics: two beads sharing a
+token conflict only when **at least one writes** it. Labels **compose** — a bead may carry
+several and the token sets union:
+
+- `area:<name>` → **write** tokens via `area_map` in `koryph.project.json`. Prefer the
+  **narrowest honest area** (per-package: `area:sched`, `area:quota`, `area:dispatch`,
+  `area:ledger`, `area:govern`, `area:merge`, `area:review`, `area:worktree`,
+  `area:beads`, `area:registry`, `area:docs`; `area:engine` = the wave-loop package).
+- `fp:<token>` → a raw **write** token.
+- `fp:read:<token>` → a **read** token; read-only touches co-run with any other reader and
+  exclude only a *writer* of that token (e.g. a docs bead that merely reads engine code).
+- Any `fp:*` label makes the bead ignore its `area:*` labels; a token declared both read
+  and write collapses to **write**.
+- **No footprint label** → the catch-all write token `domain:unknown`, colliding with
+  every other unlabeled bead — unknowns serialize one-per-wave.
+
+Over-broad areas cost only parallelism; under-broad risks a false-parallel merge conflict.
+Audit a corpus with `koryph plan audit`. Full model:
+[docs/user-guide/running-waves.md](docs/user-guide/running-waves.md).
+
+### Never-dispatched labels
+
+- `refactor-core` — authored and landed by the orchestrating session **on main**, never
+  loop-dispatched (self-hosting safety rule).
+- `no-dispatch` — manually deferred; skipped until the label is removed.
+
+## The green gate
+
+One command validates everything: `make gate` (format, build, vet, tests, lint — identical
+to CI). It must be green before any work is called done; `make help` lists all targets.
+Details: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Commits
+
+- **Conventional Commits**: `type(scope): imperative subject` — `feat`, `fix`, `docs`,
+  `chore`, `refactor`, `test`, `ci`, `build`, `perf`, `style`.
+- **DCO sign-off** on every commit: `git commit -s`.
+- **SSH-signed** commits are required, enforced by local hooks, CI, and GitHub rulesets;
+  enable signing first — [docs/user-guide/signing.md](docs/user-guide/signing.md).
+
+Commit early and often — commits are the only durable checkpoint; uncommitted work is lost
+if a run is interrupted.
+
+## Protected paths and boundary guards
+
+Worktree merges are **refused** if the branch touches any of: `.claude/`, `.beads/`,
+`hooks/`, `agents/`, `.github/`, `koryph.project.json`, `Makefile`,
+`.pre-commit-config.yaml`, `.envrc`, `LICENSE`. Headless agents additionally run behind
+boundary guards (installed outside any writable worktree) that **deterministically block**
+`git checkout main`, `git merge`, `git push`, `bd close`, touching another worktree, or
+writing koryph's own enforcement surface. A guard denial means you drifted — those actions
+belong to the orchestrator, not the agent; do not route around it.
+
+## The merge pipeline
+
+A finished branch (`agent/<bead-id>`) lands through one pipeline regardless of policy:
+**sync default branch → rebase onto it → run the green gate → fast-forward-only merge**.
+ff-only is deliberate — it keeps the gate-checked, reviewed, SSH-signed commits
+byte-for-byte (merge/squash/rebase-merge would break the signatures). Merge policy (`auto`
+/ `manual` / `pr`) is set per project or per epic; `pr` opens a GitHub PR instead of
+fast-forwarding, landed later with `koryph land`. Full flow:
+[docs/user-guide/running-waves.md](docs/user-guide/running-waves.md).
+
+## Dispatch modes
+
+- **wave** (default) — dispatch a conflict-free batch, wait for every slot to land, rescan.
+- **rolling** — refill continuously; each poll tick tops off freed slots without waiting
+  for the batch. Footprint conflicts are honored identically in both modes.
+
+Set via `dispatch_mode` in `koryph.project.json` or `--dispatch-mode`.
+
+## Operator verbs
+
+Pick the narrowest lever — all in
+[docs/user-guide/running-waves.md](docs/user-guide/running-waves.md):
+
+- `koryph drain` — stop new dispatch, let running agents finish, then exit.
+- `koryph resize --max N` — change a live loop's width (re-read at each boundary).
+- `koryph stop <id>` — SIGTERM one agent (it commits and exits; loop requeues or merges).
+- `koryph stop <id> --force` / `koryph stop --all --force` — SIGKILL; **uncommitted work
+  is lost**.
+- `koryph nudge <id> "…"` — append a course-correction to the agent's `INBOX.md`.
+- `koryph tail <id>` — inspect a running agent's output without attaching.
+
+## Governors
+
+Two orthogonal gates guard every dispatch; work proceeds only when **both** allow it. The
+**cost governor** (`internal/quota`) tracks each account's rolling 5-hour and 7-day spend
+against a calibrated ceiling and steps OK → Warn → Drain → Stop, failing closed when usage
+is unmeasurable. The **machine-global concurrency governor** (`internal/govern`) caps the
+agents running across *all* projects so parallel `koryph run` invocations cannot
+collectively trip Claude rate limits; an optional **AIMD adaptive overlay** (`koryph
+governor set --adaptive`) turns the static cap into a congestion controller — additive
+increase after quiet, multiplicative decrease on a rate-limit signal, hardened by settle
+windows, a circuit breaker, and dispatch smoothing. See
+[docs/user-guide/billing-and-quota.md](docs/user-guide/billing-and-quota.md).
+
+## Non-interactive shell
+
+Always pass non-interactive flags so a `-i`-aliased tool cannot hang on a prompt:
+`rm -f`, `rm -rf`, `cp -f`, `mv -f`; `ssh`/`scp -o BatchMode=yes`; `apt-get -y`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
 ## Beads Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+This project uses **bd (beads)** for issue tracking — commands and rules are in
+"Task tracking: beads only" above; run `bd prime` for the full workflow.
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
+The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions. It is subordinate to the operating contract above and to any explicit user, repository, or orchestrator instruction. Do not commit, push, or sync unless the active instructions grant it; at handoff, report changed files, validation, issue status, and any blocked commit/push step.
 <!-- END BEADS INTEGRATION -->
-
-<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
-## Beads Issue Tracker
-
-Use Beads (`bd`) for durable task tracking in repositories that include it. Use the `beads` skill at `.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install) for Beads workflow guidance, then use the `bd` CLI for issue operations.
-
-### Quick Reference
-
-```bash
-bd ready                # Find available work
-bd show <id>            # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>           # Complete work
-bd prime                # Refresh Beads context
-```
-
-### Rules
-
-- Use `bd` for all task tracking; do not create markdown TODO lists.
-- Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
-- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-<!-- END BEADS CODEX SETUP -->
