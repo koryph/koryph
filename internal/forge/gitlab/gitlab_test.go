@@ -4,6 +4,8 @@
 package gitlab_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/koryph/koryph/internal/forge"
@@ -71,16 +73,20 @@ func TestGitLabServicesReturnStubOrReal(t *testing.T) {
 func TestGitLabStubServicesReturnUnsupported(t *testing.T) {
 	gl, _ := forge.Default.Get("gitlab")
 
-	// Stubs must return ErrUnsupported, not panic.
-	if _, err := gl.Repo().Get(nil, "ns", "proj"); err != forge.ErrUnsupported { //nolint:staticcheck
-		t.Errorf("Repo().Get: want ErrUnsupported, got %v", err)
-	}
-	if _, err := gl.Protection().List(nil, "target"); err != forge.ErrUnsupported { //nolint:staticcheck
-		t.Errorf("Protection().List: want ErrUnsupported, got %v", err)
-	}
-	if _, err := gl.Releases().Create(nil, "ns", "proj", "v1.0", "notes"); err != forge.ErrUnsupported { //nolint:staticcheck
+	// ReleaseService is still stubbed — must return ErrUnsupported.
+	if _, err := gl.Releases().Create(context.Background(), "ns", "proj", "v1.0", "notes"); err != forge.ErrUnsupported { //nolint:staticcheck
 		t.Errorf("Releases().Create: want ErrUnsupported, got %v", err)
 	}
+
+	// Protection().List for a bare group name (no "/") returns ErrUnsupported
+	// (group-level protection not yet supported), wrapped in a context error.
+	_, err := gl.Protection().List(context.Background(), "mygroup") //nolint:staticcheck
+	if !errors.Is(err, forge.ErrUnsupported) {
+		t.Errorf("Protection().List(group): want wrapped ErrUnsupported, got %v", err)
+	}
+
+	// RepoService and ProtectionService are now real implementations; their
+	// ErrUnsupported methods are VulnAlerts / ActionsWorkflow — tested in repo_test.go.
 }
 
 // TestGitLabCIDocsRendersWithoutConfig verifies that CI().Render("docs")
