@@ -131,10 +131,12 @@ ONBOARDING
                         read-only inventory of a project (mode-5 report)
   validate <project-id>|--project ID
                         run the pre-dispatch gate; promotes registered->migrated on green
-  agents install <root> [--force]
-                        install fallback personas into <root>/.claude/agents (idempotent; --force overwrites differing files)
-  commands install <root> [--force]
-                        install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; --force overwrites)
+  agents install (<root> | --all-projects) [--force]
+                        install fallback personas into <root>/.claude/agents (idempotent; --force overwrites differing files;
+                        --all-projects refreshes every registered project)
+  commands install (<root> | --all-projects) [--force]
+                        install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; --force overwrites;
+                        --all-projects refreshes every registered project)
   rules install <root> [--force]
                         install the hook scripts + merge hook/permission wiring into <root>/.claude/settings.json (additive)
 
@@ -149,11 +151,13 @@ RUN
                         poll a project's labeled GitHub issues into no-dispatch planning beads
 
 OBSERVE / OPERATE
-  doctor [--project ID] [--json] [--fix]
-                        health check: layout, binaries, registry, governor, zombie
-                        leases, stale demand heartbeats, quota calibration, vault providers;
-                        --project scopes the check to one registered project;
-                        --fix removes zombie slots + stale demand; exits 0/1/2 (ok/warn/err)
+  doctor [--project ID] [--json] [--fix] [--force]
+                        health check: layout, binaries, registry, governor, zombie leases,
+                        stale demand, quota calibration, vault providers, asset drift;
+                        --project scopes the check to one registered project (adds asset-drift
+                        and stalled-run checks); --fix installs missing assets (project mode)
+                        or removes zombies/stale-demand (global mode); --force (with --fix
+                        --project) also overwrites stale asset files; exits 0/1/2 (ok/warn/err)
   board [--json]        one-line-per-project run overview
   roster --project ID [--run ID] [--json]
                         per-bead titled roster grouped by lifecycle: MERGED /

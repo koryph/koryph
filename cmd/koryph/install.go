@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -19,6 +20,7 @@ func cmdCommands(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "commands", "manage the koryph-* Claude slash commands in a project", []subVerb{
 			{"install <root> [--force]", "install koryph-* slash commands into <root>/.claude/commands"},
+			{"install --all-projects [--force]", "install koryph-* slash commands into every registered project"},
 		})
 		return 0
 	}
@@ -114,17 +116,31 @@ func onboardRules(stderr io.Writer, root string) {
 
 // cmdCommandsInstall writes the koryph-* Claude slash commands into
 // <root>/.claude/commands. Identical files are a no-op; content that differs is
-// left untouched unless --force is passed.
+// left untouched unless --force is passed. With --all-projects, installs into
+// every registered project instead of a single <root>.
 func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("commands install", stderr)
 	force := fs.Bool("force", false, "overwrite existing commands whose content differs")
-	setUsage(fs, stdout, "install koryph-* Claude slash commands into <root>/.claude/commands (idempotent)", "<root> [--force]")
+	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
+	setUsage(fs, stdout, "install koryph-* Claude slash commands into <root>/.claude/commands (idempotent)",
+		"(<root> | --all-projects) [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
 	}
+
+	if *allProjects {
+		if len(pos) > 0 {
+			return usageErr(stderr, "commands install: <root> and --all-projects are mutually exclusive")
+		}
+		return installAllProjects(stdout, stderr, "commands", *force,
+			func(root string, force bool) ([]scaffold.Result, error) {
+				return commands.Install(root, force)
+			})
+	}
+
 	if len(pos) < 1 {
-		return usageErr(stderr, "commands install: <root> is required")
+		return usageErr(stderr, "commands install: <root> is required (or use --all-projects)")
 	}
 	root, err := filepath.Abs(pos[0])
 	if err != nil {
@@ -135,6 +151,51 @@ func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	reportInstall(stdout, stderr, "commands", results, *force)
+	return 0
+}
+
+// installAllProjects calls the given install function for every project in the
+// registry, prints a per-project summary, and returns 0 if all installs
+// succeed or 1 if any project install fails (best-effort: failures do not stop
+// processing of remaining projects). label is used in status messages.
+func installAllProjects(stdout, stderr io.Writer, label string, force bool,
+	install func(root string, force bool) ([]scaffold.Result, error)) int {
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	recs, err := store.List()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(recs) == 0 {
+		fmt.Fprintln(stdout, "no projects registered")
+		return 0
+	}
+
+	anyFailed := false
+	for _, rec := range recs {
+		results, ierr := install(rec.Root, force)
+		if ierr != nil {
+			fmt.Fprintf(stderr, "koryph: warning: %s: %s install failed: %v\n", rec.ProjectID, label, ierr)
+			anyFailed = true
+			continue
+		}
+		installed := scaffold.Count(results, scaffold.ActionInstalled)
+		overwritten := scaffold.Count(results, scaffold.ActionOverwritten)
+		unchanged := scaffold.Count(results, scaffold.ActionUnchanged)
+		skipped := scaffold.Count(results, scaffold.ActionSkipped)
+		fmt.Fprintf(stdout, "%s: %d installed, %d overwritten, %d unchanged, %d skipped\n",
+			rec.ProjectID, installed, overwritten, unchanged, skipped)
+		if conflicts := scaffold.Conflicts(results); len(conflicts) > 0 && !force {
+			fmt.Fprintf(stderr, "koryph: warning: %s: %d %s differ, left unchanged: %s\n",
+				rec.ProjectID, len(conflicts), label, strings.Join(conflicts, ", "))
+		}
+	}
+	if anyFailed {
+		return 1
+	}
 	return 0
 }
 

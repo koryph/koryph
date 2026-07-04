@@ -5,13 +5,17 @@ package doctor
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/koryph/koryph/agents"
+	"github.com/koryph/koryph/internal/commands"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
@@ -38,9 +42,13 @@ type ProjectOptions struct {
 	WorktreeRoot string
 	// Home overrides paths.KoryphHome() (tests use t.TempDir()).
 	Home string
-	// Fix is reserved for future safe project-level cleanup; currently a no-op
-	// in project mode (no project check has a safe auto-fix).
+	// Fix enables auto-remediation: missing assets are installed; stale
+	// assets are reinstalled when Force is also set.
 	Fix bool
+	// Force, when combined with Fix, causes stale (content-differing) asset
+	// files to be overwritten. Without Force, only missing files are written
+	// and differing files are left untouched.
+	Force bool
 	// Now supplies the current time (injectable for tests).
 	Now func() time.Time
 	// Alive reports whether a pid is a live process (injectable for tests).
@@ -53,6 +61,10 @@ type ProjectOptions struct {
 	// ListWorktrees lists git worktrees by path and branch for the given repo
 	// root (injectable for tests; default delegates to worktree.List).
 	ListWorktrees func(root string) ([]worktreeEntry, error)
+	// CommandsFS overrides the embedded commands FS (injectable for tests).
+	CommandsFS fs.FS
+	// AgentsFS overrides the embedded agents FS (injectable for tests).
+	AgentsFS fs.FS
 }
 
 func (o *ProjectOptions) home() string {
@@ -60,6 +72,20 @@ func (o *ProjectOptions) home() string {
 		return o.Home
 	}
 	return paths.KoryphHome()
+}
+
+func (o *ProjectOptions) commandsFS() fs.FS {
+	if o.CommandsFS != nil {
+		return o.CommandsFS
+	}
+	return commands.FS
+}
+
+func (o *ProjectOptions) agentsFS() fs.FS {
+	if o.AgentsFS != nil {
+		return o.AgentsFS
+	}
+	return agents.FS
 }
 
 func (o *ProjectOptions) now() time.Time {
@@ -117,6 +143,7 @@ const (
 	checkNameProtectedPaths  = "protected-paths"
 	checkNameStalledRuns     = "stalled-runs"
 	checkNameOrphanWorktrees = "orphan-worktrees"
+	checkNameAssetDrift      = "asset-drift"
 )
 
 // RunProject executes project-scoped health checks and returns the report.
@@ -145,6 +172,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	}
 	r.addAll(checkStalledRuns(opts, repoRoot))
 	r.addAll(checkOrphanWorktrees(opts, repoRoot, cfg))
+	r.addAll(checkAssetDrift(opts, repoRoot))
 
 	for _, f := range r.Findings {
 		if f.Fixed {
@@ -418,6 +446,145 @@ func checkOrphanWorktrees(opts ProjectOptions, repoRoot string, cfg *project.Con
 		}}
 	}
 	return orphans
+}
+
+// --- asset drift check ------------------------------------------------------
+
+// assetSpec describes one embedded asset set to check for drift.
+type assetSpec struct {
+	label   string                 // "commands" or "agents" (used in messages)
+	fsys    fs.FS                  // the embedded FS to compare against
+	destDir string                 // destination dir relative to repoRoot
+	filter  func(name string) bool // nil = accept all entries
+}
+
+// checkAssetDrift compares the installed .claude/commands/koryph-*.md and
+// .claude/agents/koryph-*.md files against the currently embedded set using
+// SHA-256 hashes. It reports:
+//   - missing: asset is in the embedded set but not installed on disk
+//   - stale:   installed file's content differs from the embedded version
+//
+// When opts.Fix is true, missing files are always installed. Stale files are
+// reinstalled only when opts.Force is also true; without Force they are
+// reported but left untouched.
+func checkAssetDrift(opts ProjectOptions, repoRoot string) []Finding {
+	specs := []assetSpec{
+		{
+			label:   "commands",
+			fsys:    opts.commandsFS(),
+			destDir: filepath.Join(repoRoot, ".claude", "commands"),
+			filter:  nil, // commands.FS only embeds koryph-*.md
+		},
+		{
+			label:   "agents",
+			fsys:    opts.agentsFS(),
+			destDir: filepath.Join(repoRoot, ".claude", "agents"),
+			filter:  func(name string) bool { return strings.HasPrefix(name, "koryph-") },
+		},
+	}
+
+	var findings []Finding
+	totalOK := 0
+
+	for _, spec := range specs {
+		entries, err := fs.ReadDir(spec.fsys, ".")
+		if err != nil {
+			findings = append(findings, Finding{
+				Check:   checkNameAssetDrift,
+				Level:   LevelError,
+				Message: fmt.Sprintf("%s: read embedded FS: %v", spec.label, err),
+			})
+			continue
+		}
+
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			if spec.filter != nil && !spec.filter(e.Name()) {
+				continue
+			}
+
+			embedded, rerr := fs.ReadFile(spec.fsys, e.Name())
+			if rerr != nil {
+				findings = append(findings, Finding{
+					Check:   checkNameAssetDrift,
+					Level:   LevelError,
+					Message: fmt.Sprintf("%s/%s: read embedded asset: %v", spec.label, e.Name(), rerr),
+				})
+				continue
+			}
+			embeddedHash := sha256.Sum256(embedded)
+
+			destPath := filepath.Join(spec.destDir, e.Name())
+			onDisk, derr := os.ReadFile(destPath)
+
+			if errors.Is(derr, os.ErrNotExist) {
+				// Asset is missing from the project.
+				f := Finding{
+					Check:   checkNameAssetDrift,
+					Level:   LevelWarn,
+					Message: fmt.Sprintf("%s/%s: missing (run `koryph %s install <root>` or `koryph doctor --project ... --fix`)", spec.label, e.Name(), spec.label),
+				}
+				if opts.Fix {
+					if merr := os.MkdirAll(spec.destDir, 0o755); merr == nil {
+						if werr := os.WriteFile(destPath, embedded, 0o644); werr == nil {
+							f.Level = LevelOK
+							f.Message = fmt.Sprintf("%s/%s: installed (was missing)", spec.label, e.Name())
+							f.Fixed = true
+						}
+					}
+				}
+				findings = append(findings, f)
+				continue
+			}
+
+			if derr != nil {
+				findings = append(findings, Finding{
+					Check:   checkNameAssetDrift,
+					Level:   LevelError,
+					Message: fmt.Sprintf("%s/%s: read on-disk file: %v", spec.label, e.Name(), derr),
+				})
+				continue
+			}
+
+			diskHash := sha256.Sum256(onDisk)
+			if diskHash == embeddedHash {
+				totalOK++
+				continue // up to date — no finding
+			}
+
+			// Asset exists but content differs (stale or locally diverged).
+			f := Finding{
+				Check:   checkNameAssetDrift,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("%s/%s: stale (content differs from embedded version; run `koryph doctor --project ... --fix --force` to reinstall)", spec.label, e.Name()),
+			}
+			if opts.Fix {
+				if opts.Force {
+					if werr := os.WriteFile(destPath, embedded, 0o644); werr == nil {
+						f.Level = LevelOK
+						f.Message = fmt.Sprintf("%s/%s: reinstalled (was stale)", spec.label, e.Name())
+						f.Fixed = true
+					}
+				} else {
+					// Differing files are left untouched without --force so user
+					// local modifications are never silently clobbered.
+					f.Message = fmt.Sprintf("%s/%s: stale, left unchanged (add --force to overwrite)", spec.label, e.Name())
+				}
+			}
+			findings = append(findings, f)
+		}
+	}
+
+	if len(findings) == 0 {
+		return []Finding{{
+			Check:   checkNameAssetDrift,
+			Level:   LevelOK,
+			Message: fmt.Sprintf("%d asset(s) up to date", totalOK),
+		}}
+	}
+	return findings
 }
 
 // --- git worktree listing ---------------------------------------------------

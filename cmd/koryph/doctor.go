@@ -18,10 +18,11 @@ import (
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("doctor", stderr)
 	jsonOut := fs.Bool("json", false, "emit the report as JSON instead of a table")
-	fix := fs.Bool("fix", false, "remove zombie slot files and stale demand heartbeats")
+	fix := fs.Bool("fix", false, "auto-remediate: remove zombie slots/stale demand (global); install missing assets (project)")
+	force := fs.Bool("force", false, "with --fix and --project: also overwrite stale asset files (default: only install missing)")
 	projectID := fs.String("project", "", "run project-scoped checks for the named project")
-	setUsage(fs, stdout, "health check: layout, binaries, registry, governor, leases, quota, vaults",
-		"[--project ID] [--json] [--fix]")
+	setUsage(fs, stdout, "health check: layout, binaries, registry, governor, leases, quota, vaults, asset drift",
+		"[--project ID] [--json] [--fix] [--force]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -32,6 +33,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		report, err = doctor.RunProject(doctor.ProjectOptions{
 			ProjectID: *projectID,
 			Fix:       *fix,
+			Force:     *force,
 		})
 	} else {
 		report, err = doctor.Run(doctor.Options{Fix: *fix})
