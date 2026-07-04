@@ -51,6 +51,9 @@
     "review": [
       "go:review"
     ],
+    "epicreview": [
+      "go:epicreview"
+    ],
     "worktree": [
       "go:worktree"
     ],
