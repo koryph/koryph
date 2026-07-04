@@ -6,6 +6,24 @@
     "cli": [
       "go:cli"
     ],
+    "cli:bot": [
+      "go:cli:bot"
+    ],
+    "cli:posture": [
+      "go:cli:posture"
+    ],
+    "cli:release": [
+      "go:cli:release"
+    ],
+    "cli:signing": [
+      "go:cli:signing"
+    ],
+    "cli:project": [
+      "go:cli:project"
+    ],
+    "cli:ops": [
+      "go:cli:ops"
+    ],
     "docs": [
       "docs"
     ],

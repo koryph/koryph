@@ -39,7 +39,10 @@ Task→doc map; keep this file small and stable (prompt-cache warmth).
   **narrowest honest area** — per-package areas exist (`area:sched`,
   `area:quota`, `area:dispatch`, `area:ledger`, `area:govern`, `area:merge`,
   `area:review`, `area:worktree`, `area:beads`, `area:registry`;
-  `area:engine` means the wave-loop package itself). Read-only touches use
+  `area:engine` means the wave-loop package itself; CLI-family: `area:cli`
+  = command framework (main.go, cmdregistry, completion), `area:cli:bot`,
+  `area:cli:posture`, `area:cli:release`, `area:cli:signing`,
+  `area:cli:project`, `area:cli:ops`). Read-only touches use
   `fp:read:<token>` (readers co-run; writers exclude). Mechanics:
   `internal/sched/footprint.go`, `internal/sched/wave.go`.
 - `refactor-core`-labeled beads are NEVER loop-dispatched — the orchestrating
