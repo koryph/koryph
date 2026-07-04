@@ -14,6 +14,7 @@ This file is a machine-readable index for AI agents and tools ingesting the proj
 
 - [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md): install `koryph`; per-user machine-local registry.
 - [Quickstart](https://github.com/koryph/koryph/blob/main/docs/user-guide/quickstart.md): register a project and run a first wave end-to-end.
+- [Zero to shipped](https://github.com/koryph/koryph/blob/main/docs/user-guide/zero-to-shipped.md): the full journey across the three pillars (Build/Protect/Ship) with today's shipped commands.
 - [Projects & accounts](https://github.com/koryph/koryph/blob/main/docs/user-guide/projects-and-accounts.md): the `~/.koryph` registry, per-project account isolation, identity verification.
 - [Running waves](https://github.com/koryph/koryph/blob/main/docs/user-guide/running-waves.md): the wave loop (scan → batch → preflight → dispatch → poll → review → merge), `--once`/`--only`/`--budget`.
 - [Billing & quota](https://github.com/koryph/koryph/blob/main/docs/user-guide/billing-and-quota.md): subscription-first dispatch, the quota governor, throttling, calibration.

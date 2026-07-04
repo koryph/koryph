@@ -1,19 +1,34 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
 
-# koryph — multi-project orchestrator for autonomous Claude Code agents
+# koryph — the AI software factory
 
 [![CI](https://github.com/koryph/koryph/actions/workflows/ci.yml/badge.svg)](https://github.com/koryph/koryph/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/koryph/koryph/badge)](https://scorecard.dev/viewer/?uri=github.com/koryph/koryph)
 [![REUSE status](https://api.reuse.software/badge/github.com/koryph/koryph)](https://api.reuse.software/info/github.com/koryph/koryph)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-`koryph` runs autonomous implementation waves across many git projects: it
-reads each project's [beads](https://github.com/gastownhall/beads) ready-graph,
-batches conflict-free work by declared footprint, dispatches headless Claude
-Code agents into isolated git worktrees under the **correct Claude account**,
-checkpoints everything to disk, governs subscription burn, and merges finished
-work through a green gate.
+`koryph` takes a project from a git repo to built, signed, released software —
+autonomous coding agents do the building, koryph enforces the discipline that
+makes that safe. It stands on three pillars:
+
+- **Build** — the agent factory. koryph reads each project's
+  [beads](https://github.com/gastownhall/beads) ready-graph, batches
+  conflict-free work by declared footprint, dispatches headless coding agents
+  into isolated git worktrees under the **correct account**, checkpoints
+  everything to disk, governs subscription burn, and merges finished work
+  through a green gate.
+- **Protect** — hygiene as code. Branch-protection rulesets and repo settings
+  live as committed JSON (`make repo-check` / `make repo-apply`), commit
+  signing is enforced from vault-served keys, protected paths and boundary
+  guards contain every agent, and `koryph doctor` catches drift.
+- **Ship** — the release train. Conventional-commit versioning for any
+  language, draft-until-complete immutable releases, SBOM + cosign + SLSA
+  provenance, and a vault-backed release bot — with graceful fallbacks when no
+  bot is provisioned.
+
+New here? Walk the whole path in
+[Zero to shipped](docs/user-guide/zero-to-shipped.md).
 
 ## Invariants
 

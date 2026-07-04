@@ -3,13 +3,21 @@
 
 # Architecture
 
-koryph is a multi-project orchestrator that drives autonomous Claude Code
-agents through a repeating **wave loop**: it reads ready work from beads,
-schedules a conflict-free batch, dispatches each bead to a headless `claude`
-CLI running in an isolated git worktree, polls the agents to completion,
-reviews and merges the green ones, and closes the bead. Every stage is a
-distinct Go package so it can be swapped, mocked, or re-entered on recovery
-without dragging the rest of the pipeline along.
+koryph is an AI software factory built on three pillars — **Build** (the agent
+factory), **Protect** (hygiene as code), and **Ship** (the release train). The
+document below maps the Build pillar in depth, because that is the engine's hot
+path; Protect and Ship are covered in [Signing](user-guide/signing.md),
+[Releasing projects](user-guide/releasing-projects.md), and the repo-settings
+IaC under `.github/`. For the end-to-end journey across all three, see
+[Zero to shipped](user-guide/zero-to-shipped.md).
+
+At its core koryph drives autonomous coding agents through a repeating **wave
+loop**: it reads ready work from beads, schedules a conflict-free batch,
+dispatches each bead to a headless agent runtime (the `claude` CLI by default)
+running in an isolated git worktree, polls the agents to completion, reviews
+and merges the green ones, and closes the bead. Every stage is a distinct Go
+package so it can be swapped, mocked, or re-entered on recovery without
+dragging the rest of the pipeline along.
 
 See the [enhancement roadmap](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-enhancement-roadmap.md)
 (kept in-repo, not in the published book) for design rationale and migration

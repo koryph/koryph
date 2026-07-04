@@ -3,10 +3,25 @@
 
 # koryph
 
-Multi-project orchestrator for autonomous Claude Code agents: beads-native,
-account-safe, subscription-first. Start with the
-[installation guide](user-guide/installation.md), then the
-[quickstart](user-guide/quickstart.md).
+The AI software factory: koryph takes a project from a git repo to built,
+signed, released software — autonomous coding agents do the building, koryph
+enforces the discipline that makes that safe. It stands on three pillars:
+
+- **Build** — the agent factory. Beads-native planning, a rolling
+  footprint-aware scheduler, personas and model tiers across agent runtimes,
+  and a review → rebase → green-gate → fast-forward merge pipeline, all
+  account-safe and subscription-first.
+- **Protect** — hygiene as code. Branch-protection rulesets and repo settings
+  as committed JSON, enforced commit signing from vault-served keys, protected
+  paths and boundary guards, and drift detection through `koryph doctor`.
+- **Ship** — the release train. Conventional-commit versioning for any
+  language, draft-until-complete immutable releases, SBOM + cosign + SLSA
+  provenance, and a vault-backed release bot with graceful fallbacks.
+
+New here? Start with the
+[installation guide](user-guide/installation.md), then walk the whole path in
+[Zero to shipped](user-guide/zero-to-shipped.md). The
+[quickstart](user-guide/quickstart.md) is the fastest route to a first wave.
 
 This book covers both audiences: the **user guide** for operators and
 collaborators, and the **developer guide** for contributors to koryph

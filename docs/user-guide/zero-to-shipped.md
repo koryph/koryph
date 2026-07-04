@@ -1,0 +1,211 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2026 The Koryph Developers -->
+
+# Zero to shipped
+
+This chapter walks the whole journey koryph exists to serve: from a git repo
+to built, signed, released software, with autonomous coding agents doing the
+building and koryph enforcing the discipline that makes that safe. Every step
+below is a **shipped command** you can run today. Where a smoother front door
+is planned but not yet built, it is marked as such — nothing here oversells.
+
+The journey spans koryph's three pillars:
+
+- **Build** — plan work into beads, then run waves of agents against it.
+- **Protect** — pin repository hygiene as committed IaC and enforce signing.
+- **Ship** — set up the release train and publish signed, provenanced builds.
+
+You do not need all three on day one. A project can stop after Build and add
+Protect and Ship later; each pillar is opt-in and independently useful.
+
+---
+
+## The front door today (and the one coming)
+
+Today koryph starts from an **existing git repository** — one you already
+created (`git init`, `gh repo create`, or a clone). You bring the repo; koryph
+registers it, scaffolds its agent contract, and takes over from there.
+
+> **Planned, not yet shipped:** a single `koryph new <name> --lang …` command
+> that creates the GitHub repo, seeds the license/REUSE/README/CI skeleton,
+> initialises beads, applies a hygiene posture, and wires signing and the
+> release train in one shot. It does not exist yet — see the
+> [software-factory design](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-software-factory.md)
+> §3.1. Until it lands, the steps below are the real front door.
+
+---
+
+## Stage 1 — Register the project (Build)
+
+Point koryph at your repo and map it to the account its agents will run under:
+
+```sh
+koryph project add ~/src/myproject \
+  --account personal \
+  --identity you@example.com
+```
+
+`project add` inspects the repo, writes a machine-local registry record under
+`~/.koryph`, and installs the agent scaffolding: `AGENTS.md` (the runtime-neutral
+operating contract), fallback personas, and — for Claude Code — the `koryph-*`
+slash commands, hooks, and permission baseline. Then confirm the pre-dispatch
+gate passes:
+
+```sh
+koryph validate myproject
+```
+
+`validate` checks hooks, adapter config, beads initialisation, and account
+identity, promoting the record `registered → migrated` on the first green pass.
+
+See [Quickstart](quickstart.md) for the full asset table and validation output.
+
+---
+
+## Stage 2 — Turn intent into a bead graph (Build)
+
+Waves dispatch **beads** (issues in the project's local beads/Dolt database).
+`bd ready` must be non-empty or the loop has nothing to build. Two shipped
+paths get you there:
+
+- **From a design doc** — run `/koryph-plan <doc>` in your editor (or the
+  `koryph-plan` skill) to decompose a design into a filed, conflict-aware bead
+  graph with footprints and dependencies wired.
+- **From existing markdown** — run `/koryph-import [path]` (the `koryph-import`
+  skill) to convert `ROADMAP.md`, `TODO.md`, or inline TODO/FIXME clusters
+  into that same footprint-labelled corpus. See [Intake](intake.md).
+
+You can also file a single well-formed issue with `/koryph-issue "<desc>"`.
+Footprint labels (`area:*`, `fp:read:*`) are what let the scheduler run
+conflict-free work in parallel — the planning commands assign them for you.
+
+---
+
+## Stage 3 — Run waves (Build)
+
+Dry-run a single wave first to see exactly what would dispatch:
+
+```sh
+koryph run --project myproject --once --dry-run
+```
+
+Remove `--dry-run` to fire a live wave, and drop `--once` to loop until the
+ready-graph drains:
+
+```sh
+koryph run --project myproject --once            # one live wave
+koryph run --project myproject --review --auto-merge   # loop, review + merge
+```
+
+Each dispatch runs in an isolated worktree under the verified account; koryph
+polls to completion, then reviews, rebases, runs the green gate, and
+fast-forward-merges the green branches. Watch progress with `koryph board`
+and `koryph status --project myproject`. See [Running waves](running-waves.md)
+for `--resume`, `--max`, and auto-merge policy, and
+[Billing & quota](billing-and-quota.md) before enabling `--allow-api-spend`.
+
+---
+
+## Stage 4 — Pin repository hygiene (Protect)
+
+koryph treats GitHub security settings as **infrastructure as code**:
+branch-protection rulesets and repo settings live as committed JSON under
+`.github/`, so the enforced posture is reviewable and reproducible. Diff the
+live repo against the committed IaC, then apply:
+
+```sh
+make repo-check    # exit 1 on drift between live GitHub settings and .github IaC
+make repo-apply    # apply rulesets + repo settings to the live repo
+```
+
+> **Scope today:** these are per-repo make targets driving this repo's own
+> `.github/` IaC. Named, reusable **posture profiles** that apply the same
+> discipline across many repos (`koryph posture apply …`) are designed but not
+> yet shipped — software-factory design §3.2. For now, copy the `.github/`
+> IaC pattern into each repo you own.
+
+`koryph doctor --project myproject` reports configuration drift as part of the
+same hygiene story.
+
+---
+
+## Stage 5 — Enforce commit signing (Protect)
+
+koryph can require SSH-signed, DCO-signed-off commits, serving the signing key
+from a vault so it never lives loose on disk:
+
+```sh
+koryph signing setup     # provision / register the signing key from the vault
+koryph signing enable --project myproject
+koryph signing status
+```
+
+Once enabled, unsigned or unsigned-off commits are refused by the local hooks
+and the merge gate. See [Signing](signing.md) for the vault flow, key
+rotation, and verification.
+
+---
+
+## Stage 6 — Set up the release train (Ship)
+
+Give the project a language-agnostic release pipeline with one command:
+
+```sh
+# Mode A — generic build commands (any language)
+koryph release setup --project myproject --mode commands
+
+# Mode B — GoReleaser (Go projects with .goreleaser.yaml)
+koryph release setup --project myproject --mode goreleaser
+```
+
+`release setup` renders the release-please config and the release-train
+workflow, then prints the remaining human steps (provision the bot, set
+repository secrets, add the bot to branch-protection bypass, push to open the
+first Release PR). It is idempotent for the workflow and config files. See
+[Releasing projects](releasing-projects.md) for the build contract and both
+modes in depth.
+
+After merge, publication is always the **last** step: nothing is published
+until the tag, artifacts, SBOM, and SLSA provenance are all attached, so every
+release locks a complete, immutable asset set.
+
+---
+
+## Stage 7 — Provision the release bot (Ship)
+
+The release bot is a GitHub App whose vault-backed key lets the release train
+push tags and manage releases without a human PAT. Create it once per account:
+
+```sh
+koryph bot create --name mylogin-release-bot
+koryph bot attach --project myproject     # sets RELEASE_BOT_APP_ID + PRIVATE_KEY secrets
+koryph bot check --project myproject
+```
+
+`koryph release setup … --bot` runs create + attach for you in one step. On a
+headless machine, pass `--headless` to `bot create` and open the printed URL
+from another device. The private key PEM is never printed to the terminal.
+
+If you skip the bot, the release train still works with a graceful fallback —
+see [The release bot](release-bot.md) for the three replication models
+(personal, guest org, owned org) and the fallback behaviour.
+
+---
+
+## The whole journey, at a glance
+
+| Pillar | Stage | Command(s) |
+|---|---|---|
+| Build | Register | `koryph project add`, `koryph validate` |
+| Build | Plan | `/koryph-plan`, `/koryph-import`, `/koryph-issue` |
+| Build | Run | `koryph run --project … [--review --auto-merge]` |
+| Protect | Hygiene | `make repo-check`, `make repo-apply`, `koryph doctor` |
+| Protect | Signing | `koryph signing setup / enable / status` |
+| Ship | Release | `koryph release setup --project … --mode …` |
+| Ship | Bot | `koryph bot create / attach / check` |
+
+That is the factory: an existing repo in, signed and released software out,
+with agents building under discipline the whole way. The remaining gap — a
+one-command `koryph new` front door and cross-repo posture profiles — is
+tracked in the [software-factory design](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-software-factory.md);
+everything above ships today.

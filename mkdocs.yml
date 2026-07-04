@@ -22,6 +22,7 @@ nav:
   - User guide:
       - Installation: user-guide/installation.md
       - Quickstart: user-guide/quickstart.md
+      - Zero to shipped: user-guide/zero-to-shipped.md
       - Projects & accounts: user-guide/projects-and-accounts.md
       - Running waves: user-guide/running-waves.md
       - Billing & quota: user-guide/billing-and-quota.md
