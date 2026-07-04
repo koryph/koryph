@@ -35,10 +35,15 @@ permissions:
 jobs:
   release:
     name: release
+    # PERMISSION SUPERSET: a caller job must grant every permission any
+    # callee job declares, or the run dies at startup_failure before any
+    # job runs. actions:read is required by release-train's provenance job
+    # (the SLSA generator inspects the Actions run environment).
     permissions:
       contents: write
       pull-requests: write
       id-token: write
+      actions: read
     uses: ./.github/workflows/release-train.yml
     with:
       release_type: "go"
