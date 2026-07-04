@@ -643,3 +643,47 @@ func TestBatchRunRequiresYes(t *testing.T) {
 		t.Errorf("stderr should tell the user to pass --yes:\n%s", errb)
 	}
 }
+
+// TestProjectListJSON proves `project list --json` emits a JSON array of
+// registry.Record, with the correct count, project ID, and account.
+func TestProjectListJSON(t *testing.T) {
+	isolate(t)
+
+	// Empty registry → JSON array, zero elements.
+	code, out, errb := runCmd("project", "list", "--json")
+	if code != 0 {
+		t.Fatalf("project list --json (empty): code %d stderr=%s", code, errb)
+	}
+	var empty []registry.Record
+	if err := json.Unmarshal([]byte(out), &empty); err != nil {
+		t.Fatalf("empty list not valid JSON: %v\n%s", err, out)
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected empty slice, got %d records", len(empty))
+	}
+
+	// Register a project, then check the JSON array has one entry.
+	root := gitRepo(t)
+	if code, _, errb = runCmd("project", "add", root,
+		"--account", "personal", "--identity", "me@example.com", "--id", "jsontest"); code != 0 {
+		t.Fatalf("project add: code %d stderr=%s", code, errb)
+	}
+
+	code, out, errb = runCmd("project", "list", "--json")
+	if code != 0 {
+		t.Fatalf("project list --json: code %d stderr=%s", code, errb)
+	}
+	var recs []registry.Record
+	if err := json.Unmarshal([]byte(out), &recs); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	if recs[0].ProjectID != "jsontest" {
+		t.Errorf("project_id = %q, want jsontest", recs[0].ProjectID)
+	}
+	if recs[0].AccountProfile != "personal" {
+		t.Errorf("account_profile = %q, want personal", recs[0].AccountProfile)
+	}
+}

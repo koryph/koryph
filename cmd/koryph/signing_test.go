@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -559,4 +560,73 @@ func TestSigningSetupPerProjectIndependence(t *testing.T) {
 	if fp1 == fp2 {
 		t.Errorf("fingerprints must differ when public keys differ: fp=%q", fp1)
 	}
+}
+
+// TestSigningStatusJSONUnconfigured proves `signing status --json` emits a
+// JSON object with configured:false when signing has not been set up.
+func TestSigningStatusJSONUnconfigured(t *testing.T) {
+	setupProject(t)
+
+	code, out, errb := runCmd("signing", "status", "--project", "demo", "--json")
+	if code != 0 {
+		t.Fatalf("signing status --json (unconfigured): code %d stderr=%s", code, errb)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if configured, _ := obj["configured"].(bool); configured {
+		t.Errorf("expected configured=false, got %v", obj["configured"])
+	}
+}
+
+// TestSigningStatusJSONConfigured proves `signing status --json` emits a
+// well-formed signingStatusJSON with the expected fields after setup.
+func TestSigningStatusJSONConfigured(t *testing.T) {
+	root := setupProject(t)
+	keyRef := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyRef, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Use a key with a valid blob so KeyFingerprint produces a real SHA256 fp.
+	if code, _, errb := runCmd("signing", "setup",
+		"--project", "demo", "--provider", "file", "--key-ref", keyRef,
+		"--identity", "dev@example.com", "--public-key", testValidPubKey); code != 0 {
+		t.Fatalf("setup: code %d stderr=%s", code, errb)
+	}
+
+	code, out, errb := runCmd("signing", "status", "--project", "demo", "--json")
+	if code != 0 {
+		t.Fatalf("signing status --json: code %d stderr=%s", code, errb)
+	}
+
+	var st signingStatusJSON
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if st.ProjectID != "demo" {
+		t.Errorf("project_id = %q, want demo", st.ProjectID)
+	}
+	if st.Mode != signing.ModeSSH {
+		t.Errorf("mode = %q, want %q", st.Mode, signing.ModeSSH)
+	}
+	if st.Provider != "file" {
+		t.Errorf("provider = %q, want file", st.Provider)
+	}
+	if st.Identity != "dev@example.com" {
+		t.Errorf("identity = %q, want dev@example.com", st.Identity)
+	}
+	if !st.Required {
+		t.Errorf("required = false, want true")
+	}
+	if st.PubkeyFP == "" || !strings.HasPrefix(st.PubkeyFP, "SHA256:") {
+		t.Errorf("pubkey_fp = %q, want SHA256: prefix", st.PubkeyFP)
+	}
+	if st.AgentReady == nil {
+		t.Errorf("agent_ready should be set for SSH mode")
+	}
+	if st.AllowedSignersPath == "" {
+		t.Errorf("allowed_signers_path should be non-empty")
+	}
+	_ = root
 }

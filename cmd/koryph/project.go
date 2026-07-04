@@ -118,7 +118,8 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 
 func cmdProjectList(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project list", stderr)
-	setUsage(fs, stdout, "list managed projects (id, account, status, root)", "")
+	asJSON := fs.Bool("json", false, "emit JSON array of project records")
+	setUsage(fs, stdout, "list managed projects (id, account, status, root)", "[--json]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -130,6 +131,15 @@ func cmdProjectList(args []string, stdout, stderr io.Writer) int {
 	recs, err := store.List()
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if *asJSON {
+		if recs == nil {
+			recs = []*registry.Record{}
+		}
+		if err := printJSON(stdout, recs); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
 	}
 	if len(recs) == 0 {
 		fmt.Fprintln(stdout, "no projects registered")

@@ -288,11 +288,31 @@ func cmdSigningEnable(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// signingStatusJSON is the --json shape for `signing status`. It carries
+// every field that printSigningStatus renders to the human table, so scripts
+// can branch on mode, agent_ready, allowed_signers_state, etc. without
+// parsing free-form text.
+type signingStatusJSON struct {
+	ProjectID           string            `json:"project_id"`
+	Required            bool              `json:"required"`
+	Mode                string            `json:"mode"`
+	Provider            string            `json:"provider"`
+	KeySource           string            `json:"key_source"`
+	Identity            string            `json:"identity"`
+	Artifacts           bool              `json:"artifacts"`
+	PubkeyFP            string            `json:"pubkey_fp,omitempty"`
+	AgentReady          *bool             `json:"agent_ready,omitempty"`
+	Repo                signing.RepoState `json:"repo"`
+	AllowedSignersPath  string            `json:"allowed_signers_path"`
+	AllowedSignersState string            `json:"allowed_signers_state"`
+}
+
 // cmdSigningStatus prints the mode/provider/agent/repo summary.
 func cmdSigningStatus(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("signing status", stderr)
 	projectID := fs.String("project", "", "project id (required)")
-	setUsage(fs, stdout, "mode/provider/agent-ready/repo-config/allowed_signers summary", "--project ID")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	setUsage(fs, stdout, "mode/provider/agent-ready/repo-config/allowed_signers summary", "--project ID [--json]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -306,11 +326,63 @@ func cmdSigningStatus(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if cfg.Signing == nil {
+		if *asJSON {
+			// Emit a minimal JSON object indicating signing is not configured.
+			if err := printJSON(stdout, map[string]any{
+				"project_id": *projectID,
+				"configured": false,
+			}); err != nil {
+				return fail(stderr, err)
+			}
+			return 0
+		}
 		fmt.Fprintf(stdout, "project %s: signing not configured (run `koryph signing setup`)\n", *projectID)
+		return 0
+	}
+	if *asJSON {
+		if err := printJSON(stdout, buildSigningStatusJSON(ctx, rec, cfg.Signing)); err != nil {
+			return fail(stderr, err)
+		}
 		return 0
 	}
 	printSigningStatus(ctx, stdout, rec, cfg.Signing)
 	return 0
+}
+
+// buildSigningStatusJSON assembles the signingStatusJSON for --json output.
+func buildSigningStatusJSON(ctx context.Context, rec *registry.Record, sc *signing.Config) signingStatusJSON {
+	st := signing.InspectRepo(ctx, rec.Root)
+	allowedPath := filepath.Join(rec.Root, signing.AllowedSignersFileName)
+	allowedState := "missing"
+	if data, err := os.ReadFile(allowedPath); err == nil {
+		allowedState = "present"
+		if sc.Identity != "" && !strings.Contains(string(data), sc.Identity) {
+			allowedState = "present (identity NOT listed)"
+		}
+	}
+
+	out := signingStatusJSON{
+		ProjectID:           rec.ProjectID,
+		Required:            sc.Required,
+		Mode:                sc.EffectiveMode(),
+		Provider:            sc.Provider,
+		KeySource:           signingKeySource(sc),
+		Identity:            sc.Identity,
+		Artifacts:           sc.Artifacts,
+		Repo:                st,
+		AllowedSignersPath:  allowedPath,
+		AllowedSignersState: allowedState,
+	}
+	if sc.EffectiveMode() == signing.ModeSSH {
+		fp := ""
+		if sc.PublicKey != "" {
+			fp = signing.KeyFingerprint(sc.PublicKey)
+		}
+		out.PubkeyFP = fp
+		ready := signing.AgentReady(ctx, sc.PublicKey)
+		out.AgentReady = &ready
+	}
+	return out
 }
 
 // printSigningStatus renders the policy, agent readiness, repo git config,

@@ -15,16 +15,16 @@ import (
 // cmdGovernor dispatches the global concurrency governor sub-verbs.
 func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return cmdGovernorShow(stdout, stderr)
+		return cmdGovernorShow(nil, stdout, stderr)
 	}
 	switch args[0] {
 	case "show":
-		return cmdGovernorShow(stdout, stderr)
+		return cmdGovernorShow(args[1:], stdout, stderr)
 	case "set":
 		return cmdGovernorSet(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		parentHelp(stdout, "governor", "inspect and set per-provider agent concurrency pools", []subVerb{
-			{"show", "show every pool's cap, active leases, and demanding projects (default)"},
+			{"show [--json]", "show every pool's cap, active leases, and demanding projects (default)"},
 			{"set --max-global N [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]",
 				"set one pool's cap (--provider omitted = anthropic); --adaptive enables the AIMD overlay (settle/breaker/smoothing apply only with --adaptive)"},
 		})
@@ -34,18 +34,72 @@ func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+// governorPoolJSON is the --json shape for one pool in `governor show`. It
+// includes the computed derived fields (cap, in_use, free) that the human
+// table renders, so scripts can avoid re-computing them.
+type governorPoolJSON struct {
+	Pool   string          `json:"pool"`
+	Cap    int             `json:"cap"`
+	InUse  int             `json:"in_use"`
+	Free   int             `json:"free"`
+	AIMD   govern.Config   `json:"aimd"`
+	Leases []govern.Lease  `json:"leases"`
+	Demand []govern.Demand `json:"demand"`
+}
+
 // cmdGovernorShow prints EVERY provider pool's cap plus its live leases and
 // demand (koryph-v8u.11: independent per-provider governor pools — see
 // internal/govern's package doc), pruning stale state as a side effect. A
 // machine with only the default anthropic pool in use prints exactly one
 // pool block, so this is a superset of the pre-koryph-v8u.11 single-pool
-// output.
-func cmdGovernorShow(stdout, stderr io.Writer) int {
+// output. With --json it emits a JSON array of governorPoolJSON, one entry
+// per pool.
+func cmdGovernorShow(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("governor show", stderr)
+	asJSON := fs.Bool("json", false, "emit JSON array of pool snapshots")
+	setUsage(fs, stdout, "show every pool's cap, active leases, and demanding projects", "[--json]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+
 	gs := govern.NewStore()
 	pools, err := gs.Pools()
 	if err != nil {
 		return fail(stderr, err)
 	}
+
+	if *asJSON {
+		snaps := make([]governorPoolJSON, 0, len(pools))
+		for _, pool := range pools {
+			ps, err := gs.PoolStatus(pool)
+			if err != nil {
+				return fail(stderr, err)
+			}
+			eff := ps.AIMD.EffectiveCap()
+			leases := ps.Leases
+			if leases == nil {
+				leases = []govern.Lease{}
+			}
+			demand := ps.Demand
+			if demand == nil {
+				demand = []govern.Demand{}
+			}
+			snaps = append(snaps, governorPoolJSON{
+				Pool:   pool,
+				Cap:    gs.Cap(pool),
+				InUse:  len(leases),
+				Free:   max0(eff - len(leases)),
+				AIMD:   ps.AIMD,
+				Leases: leases,
+				Demand: demand,
+			})
+		}
+		if err := printJSON(stdout, snaps); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
+	}
+
 	for i, pool := range pools {
 		if i > 0 {
 			fmt.Fprintln(stdout)

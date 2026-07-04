@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -210,5 +211,124 @@ func TestGovernorProviderOmittedDefaultsToAnthropic(t *testing.T) {
 	_, out, _ := runCmd("governor", "show")
 	if strings.Count(out, "pool ") != 1 || !strings.Contains(out, "pool anthropic:") {
 		t.Errorf("expected exactly one (anthropic) pool block:\n%s", out)
+	}
+}
+
+// TestGovernorShowJSON proves `governor show --json` emits a JSON array with
+// the correct pool name, cap, in_use, free, and empty lease/demand slices on
+// a fresh machine.
+func TestGovernorShowJSON(t *testing.T) {
+	isolate(t)
+	if code, _, _ := runCmd("governor", "set", "--max-global", "5"); code != 0 {
+		t.Fatal("set failed")
+	}
+
+	code, out, errb := runCmd("governor", "show", "--json")
+	if code != 0 {
+		t.Fatalf("governor show --json: code %d stderr=%s", code, errb)
+	}
+
+	var snaps []governorPoolJSON
+	if err := json.Unmarshal([]byte(out), &snaps); err != nil {
+		t.Fatalf("governor show --json not valid JSON: %v\n%s", err, out)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("expected 1 pool, got %d", len(snaps))
+	}
+	s := snaps[0]
+	if s.Pool != govern.DefaultPool {
+		t.Errorf("pool = %q, want %q", s.Pool, govern.DefaultPool)
+	}
+	if s.Cap != 5 {
+		t.Errorf("cap = %d, want 5", s.Cap)
+	}
+	if s.InUse != 0 || s.Free != 5 {
+		t.Errorf("in_use=%d free=%d, want 0/5", s.InUse, s.Free)
+	}
+	if s.Leases == nil || s.Demand == nil {
+		t.Errorf("leases/demand should be non-nil empty slices, got leases=%v demand=%v", s.Leases, s.Demand)
+	}
+}
+
+// TestGovernorShowJSONAdaptive proves `governor show --json` surfaces the AIMD
+// overlay fields (adaptive, dynamic_cap, hard_max) when --adaptive was set.
+func TestGovernorShowJSONAdaptive(t *testing.T) {
+	isolate(t)
+	if code, _, _ := runCmd("governor", "set", "--max-global", "3", "--adaptive", "--hard-max", "12"); code != 0 {
+		t.Fatal("set --adaptive failed")
+	}
+
+	code, out, errb := runCmd("governor", "show", "--json")
+	if code != 0 {
+		t.Fatalf("governor show --json: code %d stderr=%s", code, errb)
+	}
+
+	var snaps []governorPoolJSON
+	if err := json.Unmarshal([]byte(out), &snaps); err != nil {
+		t.Fatalf("governor show --json not valid JSON: %v\n%s", err, out)
+	}
+	if len(snaps) == 0 {
+		t.Fatal("no pool snapshots returned")
+	}
+	s := snaps[0]
+	if !s.AIMD.Adaptive {
+		t.Errorf("AIMD.Adaptive = false, want true")
+	}
+	if s.AIMD.HardMax != 12 {
+		t.Errorf("AIMD.HardMax = %d, want 12", s.AIMD.HardMax)
+	}
+}
+
+// TestGovernorShowJSONMultiPool proves `governor show --json` returns one entry
+// per pool when multiple pools are configured.
+func TestGovernorShowJSONMultiPool(t *testing.T) {
+	isolate(t)
+	if code, _, _ := runCmd("governor", "set", "--max-global", "4"); code != 0 {
+		t.Fatal("set anthropic failed")
+	}
+	if code, _, _ := runCmd("governor", "set", "--max-global", "2", "--provider", "openai"); code != 0 {
+		t.Fatal("set openai failed")
+	}
+
+	code, out, errb := runCmd("governor", "show", "--json")
+	if code != 0 {
+		t.Fatalf("governor show --json: code %d stderr=%s", code, errb)
+	}
+
+	var snaps []governorPoolJSON
+	if err := json.Unmarshal([]byte(out), &snaps); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("expected 2 pools, got %d", len(snaps))
+	}
+	caps := map[string]int{}
+	for _, s := range snaps {
+		caps[s.Pool] = s.Cap
+	}
+	if caps[govern.DefaultPool] != 4 {
+		t.Errorf("anthropic cap = %d, want 4", caps[govern.DefaultPool])
+	}
+	if caps["openai"] != 2 {
+		t.Errorf("openai cap = %d, want 2", caps["openai"])
+	}
+}
+
+// TestGovernorShowJSONNoSubVerb proves `governor show --json` with the
+// explicit "show" sub-verb emits valid JSON when no pools are explicitly set
+// (default pool is always included).
+func TestGovernorShowJSONNoSubVerb(t *testing.T) {
+	isolate(t)
+	// No explicit `set` — default pool is always present.
+	code, out, errb := runCmd("governor", "show", "--json")
+	if code != 0 {
+		t.Fatalf("governor show --json: code %d stderr=%s", code, errb)
+	}
+	var snaps []governorPoolJSON
+	if err := json.Unmarshal([]byte(out), &snaps); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if len(snaps) == 0 {
+		t.Error("expected at least one pool snapshot")
 	}
 }
