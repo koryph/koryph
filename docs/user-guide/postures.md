@@ -56,6 +56,82 @@ oss-solo-maintainer   builtin   Baseline posture for an OSS project with a solo 
 my-custom-profile     user      My company standard posture
 ```
 
+### `posture describe`
+
+```
+koryph posture describe <profile> [--repo owner/name] [--param k=v]...
+```
+
+Renders a human-readable explanation of every managed setting and ruleset rule
+in the profile:
+
+- **Target value** — what the profile enforces for each setting key.
+- **Security rationale** — plain-language explanation of what attack or mistake
+  the setting prevents (e.g. signed commits = commit provenance; push protection =
+  credential leak prevention; 1 required review = no unreviewed changes on main).
+- **Live value and change status** (with `--repo`) — the current GitHub value for
+  each setting, and whether applying the profile would change it.
+
+Rationale text is sourced from three places, in order of precedence:
+1. The `--param`-derived manifest `descriptions` map (community profiles may ship this in `manifest.json`).
+2. The `descriptions` map in the profile's `repo-settings.json` file.
+3. Built-in fallback rationale in koryph for all well-known setting keys and rule types.
+
+Ruleset files may also carry `_rationale` (a per-ruleset summary) and
+`_rule_descriptions` (a per-rule map) at the top level of their JSON — these
+fields are stripped during check/apply normalization and are purely informational.
+
+**Profile-only description (no live check):**
+
+```
+koryph posture describe oss-solo-maintainer
+```
+
+Sample output (truncated):
+
+```
+Profile: oss-solo-maintainer
+Baseline posture for an OSS project with a solo maintainer: ...
+
+── Repo Settings ───────────────────────────────────────────────────────────────
+
+  [repo flags]
+  allow_merge_commit                         false
+    Prevents merge commits on the default branch, enforcing a clean bisectable
+    history where every change is squash-merged or rebase-merged.
+
+  ...
+
+── Rulesets ────────────────────────────────────────────────────────────────────
+
+  [signed-commits] target: branch  conditions: ~DEFAULT_BRANCH
+  Enforces cryptographic commit signing and protects default-branch integrity ...
+
+    required_signatures
+      All commits must be GPG or SSH signed, proving commit provenance and
+      making unauthorized history modifications detectable.
+
+    non_fast_forward
+      Prevents force-pushes that rewrite history on the protected branch.
+
+    deletion
+      Prevents accidental or malicious deletion of the protected branch.
+```
+
+**With live comparison (`--repo`):**
+
+```
+koryph posture describe oss-solo-maintainer --repo myorg/myrepo \
+  --param required_checks="pre-commit,make gate"
+```
+
+Each setting line gains a `live:` sub-line:
+
+```
+  secret_scanning                            "enabled"
+    live: "disabled"                              [→ WOULD CHANGE]
+```
+
 ### `posture check`
 
 ```
@@ -116,6 +192,23 @@ DRIFT    security & analysis:
 --- applying settings ---
 UPDATED  security & analysis
 ```
+
+---
+
+## `repo describe` — describe repo-local IaC
+
+`koryph repo describe` produces the same output format as `posture describe`
+but reads from the repository's own `.github/` IaC files instead of a named
+profile:
+
+```
+koryph repo describe [--repo owner/name]
+```
+
+Use it to understand what a repository's own `.github/rulesets/*.json` and
+`.github/repo-settings.json` enforce and why, with the same per-setting
+rationale as `posture describe`. The `--repo` flag adds live values and
+change markers identical to those in `posture describe --repo`.
 
 ---
 
@@ -228,6 +321,57 @@ Static files (`.json`, no `.tmpl` suffix) are copied verbatim.
 
 User profiles take precedence over built-ins of the same name — you can override
 `oss-solo-maintainer` by creating `~/.koryph/postures/oss-solo-maintainer/`.
+
+### Making a custom profile self-documenting
+
+Add a `descriptions` map to `manifest.json` to override or add rationale for
+any setting key. Built-in rationale already exists for all keys used by
+`oss-solo-maintainer`; override when your profile sets keys with different
+intent or adds novel keys:
+
+```json
+{
+  "name": "my-company",
+  "description": "Company-standard GitHub posture",
+  "descriptions": {
+    "allow_auto_merge": "Auto-merge is enabled for our release bot (override: intentional).",
+    "my_custom_key":   "Explanation of what this company-specific setting prevents."
+  }
+}
+```
+
+Alternatively, add a `descriptions` map directly in `repo-settings.json`:
+
+```json
+{
+  "repo": { ... },
+  "descriptions": {
+    "allow_merge_commit": "Custom rationale next to the setting it describes."
+  }
+}
+```
+
+For rulesets, add `_rationale` (per-ruleset summary) and `_rule_descriptions`
+(per-rule map) to the ruleset JSON file — these fields are **stripped during
+check/apply normalization** and are purely informational:
+
+```json
+{
+  "name": "my-protection",
+  "_rationale": "Enforces our branch protection policy.",
+  "_rule_descriptions": {
+    "deletion": "Prevents accidental branch deletion by our CI bots."
+  },
+  "enforcement": "active",
+  "target": "branch",
+  "rules": [
+    { "type": "deletion" }
+  ]
+}
+```
+
+Rationale lookup order: `_rule_descriptions` in the file > `manifest.json`
+`descriptions` (keyed as `"rule.<type>"`) > built-in fallback.
 
 ---
 

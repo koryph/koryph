@@ -1,4 +1,9 @@
 {
+  "_rationale": "Requires at least one reviewer and optional required CI status checks before any change can merge to the default branch.",
+  "_rule_descriptions": {
+    "pull_request": "Requires at least one human review before a PR can merge, preventing unreviewed code from landing on the default branch.",
+    "required_status_checks": "Blocks merging until the named CI checks all pass, preventing broken or untested code from landing on the default branch."
+  },
   "bypass_actors": [
     {
       "actor_id": 5,

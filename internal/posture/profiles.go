@@ -30,6 +30,12 @@ type Manifest struct {
 	// their chosen fragments in koryph.project.json posture.fragments; listing
 	// them here is informational — they are never auto-installed.
 	RecommendedFragments []string `json:"recommended_fragments,omitempty"`
+	// Descriptions maps setting field names and rule type keys (prefixed with
+	// "rule.") to human-readable security rationale, overriding the built-in
+	// fallbacks in builtinSettingRationale / builtinRuleRationale.  Community
+	// profiles use this to make their profiles self-documenting without
+	// modifying the Go source.
+	Descriptions map[string]string `json:"descriptions,omitempty"`
 }
 
 // ParamDescriptor describes one profile parameter.

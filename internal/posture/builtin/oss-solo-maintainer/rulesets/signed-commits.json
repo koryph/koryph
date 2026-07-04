@@ -1,4 +1,10 @@
 {
+  "_rationale": "Enforces cryptographic commit signing and protects default-branch integrity against force-push and deletion.",
+  "_rule_descriptions": {
+    "required_signatures": "All commits must be GPG or SSH signed, proving commit provenance and making unauthorized history modifications detectable.",
+    "non_fast_forward": "Prevents force-pushes that rewrite history on the protected branch — existing signed commits cannot be silently replaced.",
+    "deletion": "Prevents accidental or malicious deletion of the protected branch."
+  },
   "bypass_actors": [],
   "conditions": {
     "ref_name": {

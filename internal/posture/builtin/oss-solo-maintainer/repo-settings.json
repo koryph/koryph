@@ -17,5 +17,20 @@
   "actions_workflow": {
     "default_workflow_permissions": "read",
     "can_approve_pull_request_reviews": true
+  },
+  "descriptions": {
+    "allow_merge_commit": "Prevents merge commits on the default branch, enforcing a clean bisectable history where every change is squash-merged or rebase-merged.",
+    "allow_squash_merge": "Allows squash-merging pull requests into a single commit, keeping the default branch history linear and easy to read.",
+    "allow_rebase_merge": "Allows rebase-merging pull requests for a linear history without an extra merge commit.",
+    "allow_auto_merge": "Disabled so pull requests cannot auto-merge without an explicit human action, even when all checks pass.",
+    "delete_branch_on_merge": "Automatically deletes merged branches to prevent stale branch accumulation.",
+    "allow_update_branch": "Allows contributors to rebase their PR branch on the latest base, reducing stale-base merge conflicts.",
+    "web_commit_signoff_required": "Requires a DCO sign-off on all commits made through the GitHub web UI, matching the CLI requirement and ensuring contributor agreement for every change.",
+    "secret_scanning": "Scans commits for secrets (API keys, tokens, passwords) and alerts the repository owner on detection, reducing the exposure window of accidentally committed credentials.",
+    "secret_scanning_push_protection": "Blocks pushes that contain detected secrets before they reach GitHub — prevents credential leaks at push time, not just after the fact.",
+    "dependabot_security_updates": "Automatically opens pull requests to update dependencies with known CVEs, keeping the dependency graph free of publicly-disclosed vulnerabilities.",
+    "vulnerability_alerts": "Alerts the repository owner when a dependency has a known security vulnerability, giving early warning of exposure in the dependency graph.",
+    "default_workflow_permissions": "Limits GITHUB_TOKEN to read-only scope by default, requiring workflows to explicitly request write access and reducing blast radius of a compromised workflow.",
+    "can_approve_pull_request_reviews": "Allows workflow runs to approve pull requests, required for automated release bots that must unblock their own PRs."
   }
 }

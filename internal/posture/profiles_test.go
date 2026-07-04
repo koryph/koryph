@@ -171,7 +171,10 @@ func TestRenderProfile_Builtin_WithChecks(t *testing.T) {
 
 func TestRenderProfile_Builtin_NoChecks_NoStatusChecksRule(t *testing.T) {
 	// When no required_checks param is given, the required_status_checks rule
-	// block should be absent from pr-checks.json.
+	// object (with "type": "required_status_checks") should be absent from the
+	// rules array of pr-checks.json.  The _rule_descriptions metadata field may
+	// still reference the key by name; the test checks for the rule type marker
+	// rather than the bare string.
 	home := t.TempDir()
 	src, cleanup, err := posture.RenderProfile("oss-solo-maintainer", nil, home)
 	if err != nil {
@@ -187,13 +190,17 @@ func TestRenderProfile_Builtin_NoChecks_NoStatusChecksRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pr-checks.json: %v", err)
 	}
-	if strings.Contains(string(raw), "required_status_checks") {
-		t.Errorf("expected no required_status_checks block when no checks given; got:\n%s", raw)
-	}
-	// Must still be valid JSON.
+
+	// Must be valid JSON.
 	var v interface{}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Errorf("rendered pr-checks.json is not valid JSON: %v", err)
+	}
+
+	// The rule type marker ("type": "required_status_checks") must not appear
+	// in the rules array when no checks are parameterised.
+	if strings.Contains(string(raw), `"type": "required_status_checks"`) {
+		t.Errorf("expected no required_status_checks rule type when no checks given; got:\n%s", raw)
 	}
 }
 

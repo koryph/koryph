@@ -186,6 +186,8 @@ OBSERVE
                         burn + reliability rollup across projects
 
 REPO IaC  (desired-state files: .github/rulesets/*.json, .github/repo-settings.json)
+  repo describe [--repo owner/name]
+                        explain every setting in .github IaC and why (with --repo: shows live value)
   repo check [--repo owner/name]
                         diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)
   repo apply [--repo owner/name]
@@ -193,6 +195,8 @@ REPO IaC  (desired-state files: .github/rulesets/*.json, .github/repo-settings.j
 
 POSTURE  (named desired-state profiles — built-in or ~/.koryph/postures/<name>)
   posture list          list built-in and user-defined profiles
+  posture describe <profile> [--repo owner/name] [--param k=v]...
+                        explain every setting a profile enforces and why (with --repo: shows live value)
   posture check <profile> [--repo owner/name] [--param k=v]...
                         diff live GitHub state against profile (exit 1 on drift)
   posture diff <profile> [--repo owner/name] [--param k=v]...

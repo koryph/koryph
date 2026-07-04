@@ -24,6 +24,7 @@ func init() {
 		run:     cmdPosture,
 		subs: []command{
 			{name: "list", summary: "list built-in and user-defined profiles", run: cmdPostureList},
+			{name: "describe", summary: "explain every setting a profile enforces and why", run: cmdPostureDescribe},
 			{name: "check", summary: "diff live GitHub state against a profile (exit 1 on drift)", run: cmdPostureCheck},
 			{name: "diff", summary: "show drift between live state and a profile (always exit 0)", run: cmdPostureDiff},
 			{name: "apply", summary: "show diff then apply a profile to the live GitHub repo", run: cmdPostureApply},
@@ -37,6 +38,7 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 		parentHelp(stdout, "posture", "apply a named desired-state profile to a GitHub repo", []subVerb{
 			{"list", "list built-in and user-defined profiles"},
 			{"list --fragments", "list built-in security-scanner fragments"},
+			{"describe <profile> [--repo owner/name] [--param k=v]...", "explain every setting a profile enforces and why"},
 			{"check <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "diff live GitHub state against profile (exit 1 on drift)"},
 			{"diff <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "show drift between live state and profile (always exit 0)"},
 			{"apply <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "show diff then apply profile to live GitHub repo"},
@@ -47,6 +49,8 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "list":
 		return cmdPostureList(rest, stdout, stderr)
+	case "describe":
+		return cmdPostureDescribe(rest, stdout, stderr)
 	case "check":
 		return cmdPostureCheck(rest, stdout, stderr)
 	case "diff":
@@ -371,6 +375,79 @@ func loadProjectFragments(root, _ string) []string {
 		return nil
 	}
 	return cfg.Posture.Fragments
+}
+
+// cmdPostureDescribe implements `koryph posture describe <profile> [--repo owner/name] [--param k=v]...`
+//
+// It renders the named profile, then prints a human-readable explanation of
+// every managed setting and ruleset rule: the target value and the security
+// rationale for each entry.  When --repo is given, the live GitHub value is
+// also shown beside each entry with a "no change / WOULD CHANGE" marker.
+func cmdPostureDescribe(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("posture describe", stderr)
+	repo := fs.String("repo", "", "repository in owner/name form — when given, shows live value per setting")
+	var rawParams multiFlag
+	fs.Var(&rawParams, "param", "profile parameter as key=value (repeatable, e.g. --param required_checks=\"pre-commit,make gate\")")
+	setUsage(fs, stdout,
+		"explain every setting a profile enforces and why",
+		"<profile> [--repo owner/name] [--param k=v]...")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if len(pos) < 1 {
+		return usageErr(stderr, "posture describe: <profile> is required")
+	}
+	profileName := pos[0]
+
+	params, err := parseParams(rawParams)
+	if err != nil {
+		return usageErr(stderr, "posture describe: "+err.Error())
+	}
+
+	ctx := context.Background()
+	ghBin := posture.GHBin()
+	home := paths.KoryphHome()
+
+	// Load the manifest for the profile description and any manifest-level
+	// rationale overrides.
+	builtins, _ := posture.ListBuiltins()
+	user, _ := posture.ListUserProfiles(home)
+	var manifest posture.Manifest
+	for _, e := range append(user, builtins...) { // user profiles take precedence
+		if e.Name == profileName {
+			manifest = e.Manifest
+			break
+		}
+	}
+	if manifest.Name == "" {
+		fmt.Fprintf(stderr, "koryph: profile %q not found\n", profileName)
+		return 1
+	}
+
+	// Render the profile to a temp directory.
+	profileSrc, cleanup, err := posture.RenderProfile(profileName, params, home)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	defer cleanup()
+
+	// Resolve the repo slug when --repo was given (or skip live comparison).
+	repoSlug := ""
+	if *repo != "" {
+		repoSlug, err = resolveRepo(ctx, ghBin, *repo)
+		if err != nil {
+			return fail(stderr, err)
+		}
+	}
+
+	desc, err := posture.DescribeSource(ctx, ghBin, profileSrc, repoSlug, manifest.Descriptions)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	posture.PrintDescription(stdout, desc, manifest.Name, manifest.Description)
+	return 0
 }
 
 // parseParams converts raw "key=value" strings into a map.

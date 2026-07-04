@@ -187,10 +187,12 @@ func normalizeRuleset(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}
-	// Strip volatile server-assigned fields.
+	// Strip volatile server-assigned fields and describe-only metadata fields.
 	for _, k := range []string{
 		"id", "source", "source_type", "created_at", "updated_at",
 		"node_id", "_links", "current_user_can_bypass",
+		// Describe-only metadata (describe.go): never compare these.
+		"_rationale", "_rule_descriptions",
 	} {
 		delete(m, k)
 	}

@@ -19,6 +19,7 @@ func init() {
 		summary: "check or apply .github IaC (rulesets, repo settings)",
 		run:     cmdRepo,
 		subs: []command{
+			{name: "describe", summary: "explain every setting in .github IaC and why", run: cmdRepoDescribe},
 			{name: "check", summary: "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)", run: cmdRepoCheck},
 			{name: "apply", summary: "apply .github IaC (rulesets, repo settings) to the live repo", run: cmdRepoApply},
 		},
@@ -29,6 +30,7 @@ func init() {
 func cmdRepo(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "repo", "check or apply .github IaC (rulesets, repo settings)", []subVerb{
+			{"describe [--repo owner/name]", "explain every setting in .github IaC and why"},
 			{"check [--repo owner/name]", "diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)"},
 			{"apply [--repo owner/name]", "apply .github IaC (rulesets, repo settings) to the live repo"},
 			{"rollback [--repo owner/name] [--to <timestamp>|latest]", "roll back to a pre-apply snapshot"},
@@ -37,6 +39,8 @@ func cmdRepo(args []string, stdout, stderr io.Writer) int {
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
+	case "describe":
+		return cmdRepoDescribe(rest, stdout, stderr)
 	case "check":
 		return cmdRepoCheck(rest, stdout, stderr)
 	case "apply":
@@ -46,6 +50,57 @@ func cmdRepo(args []string, stdout, stderr io.Writer) int {
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown repo subcommand %q", sub))
 	}
+}
+
+// cmdRepoDescribe implements `koryph repo describe [--repo owner/name]`.
+//
+// It reads desired state from .github/rulesets/*.json and
+// .github/repo-settings.json in the current working directory and prints
+// a human-readable explanation of every managed setting and ruleset rule:
+// the target value and the security rationale for each entry.
+// When --repo is given, the live GitHub value is also shown beside each
+// entry with a "no change / WOULD CHANGE" marker.
+func cmdRepoDescribe(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("repo describe", stderr)
+	repo := fs.String("repo", "", "repository in owner/name form — when given, shows live value per setting")
+	setUsage(fs, stdout,
+		"explain every setting in .github IaC and why",
+		"[--repo owner/name]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+
+	ctx := context.Background()
+	ghBin := posture.GHBin()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	src := posture.LocalSource{Root: cwd}
+
+	// Resolve repo slug only when --repo is given.
+	repoSlug := ""
+	if *repo != "" {
+		repoSlug, err = resolveRepo(ctx, ghBin, *repo)
+		if err != nil {
+			return fail(stderr, err)
+		}
+	}
+
+	desc, err := posture.DescribeSource(ctx, ghBin, src, repoSlug, nil)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	if len(desc.Settings) == 0 && len(desc.Rulesets) == 0 {
+		fmt.Fprintln(stdout, "No .github IaC found in current directory.")
+		fmt.Fprintln(stdout, "Expected .github/repo-settings.json and/or .github/rulesets/*.json")
+		return 0
+	}
+
+	posture.PrintDescription(stdout, desc, "", "")
+	return 0
 }
 
 // cmdRepoCheck implements `koryph repo check [--repo owner/name]`.

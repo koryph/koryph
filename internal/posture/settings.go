@@ -19,6 +19,11 @@ type repoSettingsFile struct {
 	VulnerabilityAlerts *bool           `json:"vulnerability_alerts"`
 	ActionsWorkflow     json.RawMessage `json:"actions_workflow"`
 	Unmanaged           []string        `json:"unmanaged"`
+	// Descriptions maps setting field names to human-readable security rationale.
+	// Used by "posture describe" and "repo describe"; ignored by check/apply.
+	// Profile authors can populate this to make their profiles self-documenting.
+	// Built-in fallback rationale exists in posture.builtinSettingRationale.
+	Descriptions map[string]string `json:"descriptions,omitempty"`
 }
 
 // CheckSettings compares each managed section of the desired-state file
