@@ -53,6 +53,81 @@ func writeDemand(t *testing.T, dir string, d govern.Demand) {
 	}
 }
 
+// --- circuit breaker (koryph-2im.11) ---
+
+func TestBreakerNotConfiguredOK(t *testing.T) {
+	home := fabricate(t)
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameBreaker)
+	if f.Level != LevelOK {
+		t.Errorf("breaker level=%s, want ok when governor.json absent", f.Level)
+	}
+}
+
+func TestBreakerAdaptiveOffOK(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorConfig(t, home, govern.Config{MaxGlobalAgents: 6})
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameBreaker)
+	if f.Level != LevelOK {
+		t.Errorf("breaker level=%s, want ok when adaptive is off", f.Level)
+	}
+}
+
+func TestBreakerClosedOK(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 4,
+	})
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameBreaker)
+	if f.Level != LevelOK {
+		t.Errorf("breaker level=%s, want ok when closed", f.Level)
+	}
+}
+
+func TestBreakerOpenWarns(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1,
+		BreakerState: "open",
+	})
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameBreaker)
+	if f.Level != LevelWarn {
+		t.Errorf("breaker level=%s, want warn when open", f.Level)
+	}
+}
+
+func TestBreakerHalfOpenWarns(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1,
+		BreakerState: "half-open", ProbeProject: "p", ProbeBead: "b1",
+	})
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameBreaker)
+	if f.Level != LevelWarn {
+		t.Errorf("breaker level=%s, want warn when half-open", f.Level)
+	}
+}
+
+func TestBreakerOpenFlappingMentionsFlapping(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorConfig(t, home, govern.Config{
+		MaxGlobalAgents: 4, Adaptive: true, HardMax: 8, DynamicCap: 1,
+		BreakerState: "open", BreakerReopenCount: 2,
+	})
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameBreaker)
+	if f.Level != LevelWarn {
+		t.Errorf("breaker level=%s, want warn", f.Level)
+	}
+	if !strings.Contains(f.Message, "flapping") {
+		t.Errorf("breaker message = %q, want it to call out flapping at reopen count >=2", f.Message)
+	}
+}
+
 // --- layout ---
 
 func TestLayoutOK(t *testing.T) {

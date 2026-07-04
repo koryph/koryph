@@ -6,6 +6,7 @@ package govern
 import (
 	"encoding/json"
 	"errors"
+	mathrand "math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +36,21 @@ type Store struct {
 	RotateWindow time.Duration
 	DemandTTL    time.Duration
 	LeaseTTL     time.Duration
+
+	// ProbeTimeout bounds the circuit breaker's half-open probe (koryph-2im.11):
+	// a probe lease that is gone (crashed, or the engine that dispatched it
+	// died) without ever going through Release's clean-close path or
+	// ReportRateLimit's re-open path is presumed failed once this much time has
+	// elapsed since it was admitted — see pruneCrashedProbe. Defaults to
+	// LeaseTTL-scale generosity (long enough that a legitimately slow probe
+	// agent is never mistaken for a crash).
+	ProbeTimeout time.Duration
+
+	// Jitter returns a value in [-0.5, 0.5) for dispatch smoothing's ±50%
+	// spread (koryph-2im.11); overridable for deterministic tests. Defaults to
+	// a process-global math/rand source — jitter need only be unpredictable
+	// enough to avoid a thundering herd, not cryptographically random.
+	Jitter func() float64
 }
 
 // NewStore returns a Store rooted at the current KORYPH_HOME.
@@ -48,6 +64,8 @@ func NewStore() *Store {
 		RotateWindow: time.Minute,
 		DemandTTL:    10 * time.Minute,
 		LeaseTTL:     24 * time.Hour,
+		ProbeTimeout: 30 * time.Minute,
+		Jitter:       func() float64 { return mathrand.Float64() - 0.5 },
 	}
 }
 
@@ -100,21 +118,61 @@ func (s *Store) DropDemand(project string) error {
 // computes the caller's fair share, and grants iff the cap has room AND either
 // the caller is under its fair share or every other demander already holds its
 // share (work-conserving top-up). Returns whether a slot was granted.
+//
+// When the AIMD overlay is Adaptive, koryph-2im.11's circuit breaker and
+// dispatch smoothing gate admission BEFORE the cap/fair-share checks below:
+// a fully-open breaker denies everything (I5 holds — this only refuses a NEW
+// lease, never revokes one already granted); a half-open breaker admits
+// exactly one lease as the probe (the flock serializes concurrent callers, so
+// exactly one wins the race) and nothing else until it resolves; closed
+// admission is further spaced by the jittered minimum dispatch interval.
 func (s *Store) Acquire(l Lease) (bool, error) {
 	granted := false
 	err := s.withLock(func() error {
 		if err := s.prune(); err != nil {
 			return err
 		}
-		// EffectiveCap (koryph-2im.4): the static operator cap when the AIMD
-		// overlay is off (byte-for-byte the prior s.Cap() admission), or the
-		// probed/backed-off dynamic cap when adaptive is enabled. Used for both
-		// the global-full check and the fair-share denominator below, so the
-		// two stay consistent with each other.
-		cap, err := s.effectiveCapLocked()
+		// loadAndProbeLocked (koryph-2im.4/2im.11): the static operator cap
+		// when the AIMD overlay is off (byte-for-byte the prior s.Cap()
+		// admission via c.EffectiveCap() below), or the probed/backed-off
+		// dynamic cap — plus current settle/breaker/smoothing state — when
+		// adaptive is enabled.
+		c, err := s.loadAndProbeLocked()
 		if err != nil {
 			return err
 		}
+		now := s.Now()
+
+		if c.Adaptive {
+			switch c.BreakerState {
+			case "open":
+				return nil // deny: zero admission machine-wide while open
+			case "half-open":
+				if c.ProbeProject != "" || c.ProbeBead != "" {
+					return nil // a probe is already outstanding; deny everyone else
+				}
+				c.ProbeProject = l.Project
+				c.ProbeBead = l.Bead
+				c.ProbeAdmittedAt = now.UTC().Format(time.RFC3339)
+				c.LastAdmitAt = c.ProbeAdmittedAt
+				if err := s.grantLease(l, now); err != nil {
+					return err
+				}
+				granted = true
+				return fsx.WriteJSONAtomic(s.cfgPath, c) // persist the probe claim
+			}
+
+			// Dispatch smoothing (koryph-2im.11): closed-state admission only —
+			// the probe above is a single, deliberate dispatch, not part of a
+			// burst a spacing rule needs to defend against. A denial here must
+			// NOT touch LastAdmitAt (smoothingDenies reads it fresh on the
+			// engine's next refill-tick retry).
+			if smoothingDenies(c, now, s.jitter()) {
+				return nil
+			}
+		}
+
+		cap := c.EffectiveCap()
 		leases, err := s.leases()
 		if err != nil {
 			return err
@@ -135,19 +193,41 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 			return nil
 		}
 
-		if l.AcquiredAt == "" {
-			l.AcquiredAt = s.Now().UTC().Format(time.RFC3339)
-		}
-		if err := os.MkdirAll(s.slotsDir, 0o755); err != nil {
-			return err
-		}
-		if err := fsx.WriteJSONAtomic(s.leasePath(l.Project, l.Bead), l); err != nil {
+		if err := s.grantLease(l, now); err != nil {
 			return err
 		}
 		granted = true
+
+		if c.Adaptive {
+			c.LastAdmitAt = now.UTC().Format(time.RFC3339)
+			if err := fsx.WriteJSONAtomic(s.cfgPath, c); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	return granted, err
+}
+
+// grantLease writes l's lease file, stamping AcquiredAt if unset. Callers
+// must already hold the store's flock and have already decided admission.
+func (s *Store) grantLease(l Lease, now time.Time) error {
+	if l.AcquiredAt == "" {
+		l.AcquiredAt = now.UTC().Format(time.RFC3339)
+	}
+	if err := os.MkdirAll(s.slotsDir, 0o755); err != nil {
+		return err
+	}
+	return fsx.WriteJSONAtomic(s.leasePath(l.Project, l.Bead), l)
+}
+
+// jitter returns Store.Jitter() when set, else a process-global math/rand
+// source (koryph-2im.11's dispatch-smoothing spread).
+func (s *Store) jitter() float64 {
+	if s.Jitter != nil {
+		return s.Jitter()
+	}
+	return mathrand.Float64() - 0.5
 }
 
 // Hold unconditionally writes (or updates) a lease WITHOUT a cap check. It is
@@ -171,13 +251,31 @@ func (s *Store) Hold(l Lease) error {
 
 // Release frees the slot held by (project, bead). A missing lease is not an
 // error (idempotent / already pruned).
+//
+// Circuit breaker (koryph-2im.11): releasing the half-open probe's own lease
+// WITHOUT a prior rate-limit report for it (ReportRateLimit would already
+// have re-opened the breaker and cleared the probe identity — see
+// applyRateLimit) is the "clean" signal that closes the breaker and resumes
+// AIMD from DynamicCap=1. A probe that never reaches Release at all (crashed,
+// or its owning engine died) is instead resolved by pruneCrashedProbe's
+// timeout fallback.
 func (s *Store) Release(project, bead string) error {
 	return s.withLock(func() error {
 		err := os.Remove(s.leasePath(project, bead))
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
-		return err
+
+		var c Config
+		if rerr := fsx.ReadJSON(s.cfgPath, &c); rerr == nil &&
+			c.Adaptive && c.BreakerState == "half-open" && bead != "" &&
+			project == c.ProbeProject && bead == c.ProbeBead {
+			closeBreaker(&c, s.Now())
+			if werr := fsx.WriteJSONAtomic(s.cfgPath, c); werr != nil {
+				return werr
+			}
+		}
+		return nil
 	})
 }
 
@@ -255,7 +353,42 @@ func (s *Store) prune() error {
 			_ = os.Remove(filepath.Join(s.demandDir, name))
 		}
 	}
-	return nil
+	return s.pruneCrashedProbe()
+}
+
+// pruneCrashedProbe resolves a half-open circuit breaker (koryph-2im.11)
+// whose probe lease is gone — the agent pid died (pruned above, or never
+// launched), or its owning engine crashed before ever calling Release/
+// ReportRateLimit for it — without EITHER of the two definitive signals
+// (Release's clean-close, ReportRateLimit's re-open) ever arriving. Neither
+// signal can be inferred from "the lease file is gone" alone (a legitimate
+// clean Release also removes it), so this waits out ProbeTimeout before
+// deciding, and then conservatively RE-OPENS (doubled break) rather than
+// closing — assuming failure is the safe direction; a spurious re-open only
+// costs another wait, a spurious close could resume full admission on a
+// still-throttled account. This is the "cannot wedge the breaker half-open
+// forever" fallback the L5b design calls for.
+func (s *Store) pruneCrashedProbe() error {
+	var c Config
+	if err := fsx.ReadJSON(s.cfgPath, &c); err != nil {
+		return nil // absent/corrupt: checkGovernorConfig-style checks own this
+	}
+	if !c.Adaptive || c.BreakerState != "half-open" || c.ProbeProject == "" {
+		return nil
+	}
+	if _, err := os.Stat(s.leasePath(c.ProbeProject, c.ProbeBead)); err == nil {
+		return nil // probe lease still present — not resolved yet
+	}
+	timeout := s.ProbeTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	admitted := parseTime(c.ProbeAdmittedAt)
+	if admitted.IsZero() || s.Now().Sub(admitted) < timeout {
+		return nil // could still be mid-flight toward a normal Release/report
+	}
+	openBreaker(&c, s.Now(), true)
+	return fsx.WriteJSONAtomic(s.cfgPath, c)
 }
 
 // expired reports whether ts (RFC3339) is older than ttl. An unparseable

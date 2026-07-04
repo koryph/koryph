@@ -109,3 +109,46 @@ func TestGovernorUnknownSubcommand(t *testing.T) {
 		t.Errorf("code=%d stderr=%q, want usage error", code, errs)
 	}
 }
+
+// TestGovernorSetL5bFlagsPersistAndShow proves koryph-2im.11: --settle-sec/
+// --break-sec/--min-dispatch-interval persist under --adaptive and surface in
+// `governor show` (closed breaker, no active settle, the configured
+// smoothing interval).
+func TestGovernorSetL5bFlagsPersistAndShow(t *testing.T) {
+	isolate(t)
+	code, out, _ := runCmd("governor", "set", "--max-global", "4", "--adaptive",
+		"--settle-sec", "30", "--break-sec", "60", "--min-dispatch-interval", "1")
+	if code != 0 {
+		t.Fatalf("set: code %d out %q", code, out)
+	}
+
+	_, out, _ = runCmd("governor", "show")
+	for _, want := range []string{
+		"adaptive: on",
+		"settle: not active",
+		"breaker: closed",
+		"smoothing: min dispatch interval 1s",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("governor show missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestGovernorSetL5bFlagsDefaultWhenOmitted proves the three L5b flags
+// default (this package's documented constants) rather than persisting 0
+// when the operator omits them.
+func TestGovernorSetL5bFlagsDefaultWhenOmitted(t *testing.T) {
+	isolate(t)
+	if code, out, _ := runCmd("governor", "set", "--max-global", "4", "--adaptive"); code != 0 {
+		t.Fatalf("set --adaptive: code %d out %q", code, out)
+	}
+	_, out, _ := runCmd("governor", "show")
+	wantInterval := fmt.Sprintf("smoothing: min dispatch interval %ds", govern.DefaultMinDispatchIntervalSeconds)
+	if !strings.Contains(out, wantInterval) {
+		t.Errorf("governor show missing default smoothing interval %q:\n%s", wantInterval, out)
+	}
+	if !strings.Contains(out, "breaker: closed") {
+		t.Errorf("governor show missing closed breaker:\n%s", out)
+	}
+}

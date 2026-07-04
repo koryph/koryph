@@ -121,6 +121,7 @@ func Run(opts Options) (*Report, error) {
 	r.add(checkRegistry(opts))
 	r.add(checkGovernorConfig(opts))
 	r.add(checkAdaptiveCapPinned(opts))
+	r.add(checkCircuitBreaker(opts))
 	r.addAll(checkZombieLeases(opts))
 	r.addAll(checkStaleDemand(opts))
 	r.addAll(checkQuotaCalibration(opts))
@@ -149,6 +150,7 @@ const checkNameBinaries = "binaries"
 const checkNameRegistry = "registry"
 const checkNameGovernor = "governor"
 const checkNameAdaptiveCap = "adaptive-cap"
+const checkNameBreaker = "circuit-breaker"
 const checkNameZombies = "zombie-leases"
 const checkNameDemand = "stale-demand"
 const checkNameQuota = "quota-calibration"
@@ -306,6 +308,46 @@ func checkAdaptiveCapPinned(opts Options) Finding {
 			"adaptive: dynamic cap pinned at %d for >%v since the last decrease (%s, %d rate-limit event(s) total) — "+
 				"the account may be persistently rate-limited, or --hard-max (%d) is too low to recover",
 			cfg.DynamicCap, adaptiveCapPinnedThreshold, cfg.LastDecreaseAt, cfg.RateLimitEvents, cfg.HardMax)}
+}
+
+// breakerFlapReopenThreshold is how many CONSECUTIVE re-opens (a half-open
+// probe that itself rate-limited) checkCircuitBreaker calls out as
+// "flapping" in its message rather than an ordinary single trip — the
+// counter resets to 0 on a clean close (see govern.closeBreaker), so
+// reaching this threshold while still open means the account has failed
+// several probes in a row without recovering (koryph-2im.11).
+const breakerFlapReopenThreshold = 2
+
+// checkCircuitBreaker flags the koryph-2im.11 circuit breaker sitting open
+// (or half-open) — evidence the account is being persistently rate-limited,
+// admission is 0 machine-wide while it holds. Informational only (warn,
+// never error): the breaker's own exponential backoff already degrades
+// safely on its own; a closed breaker (the steady state) is always OK
+// regardless of how many times it has re-opened in the past, since
+// BreakerReopenCount resets on every clean close.
+func checkCircuitBreaker(opts Options) Finding {
+	path := filepath.Join(opts.home(), "governor.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Absent/unreadable is not this check's concern — checkGovernorConfig
+		// already reports on governor.json's readability.
+		return Finding{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker not configured"}
+	}
+	var cfg govern.Config
+	if jerr := json.Unmarshal(data, &cfg); jerr != nil || !cfg.Adaptive {
+		return Finding{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker off (adaptive overlay off)"}
+	}
+
+	if cfg.BreakerState != "open" && cfg.BreakerState != "half-open" {
+		return Finding{Check: checkNameBreaker, Level: LevelOK, Message: "circuit breaker closed"}
+	}
+	flap := ""
+	if cfg.BreakerReopenCount >= breakerFlapReopenThreshold {
+		flap = " — flapping: it has re-opened repeatedly without a clean close"
+	}
+	return Finding{Check: checkNameBreaker, Level: LevelWarn,
+		Message: fmt.Sprintf("circuit breaker %s (reopen count %d)%s — admission is 0 machine-wide while it holds",
+			cfg.BreakerState, cfg.BreakerReopenCount, flap)}
 }
 
 // checkZombieLeases scans governor slot files for leases whose PID is dead.

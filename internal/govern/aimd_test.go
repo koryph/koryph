@@ -77,15 +77,19 @@ func TestApplyRateLimitHalvesFromVariousCaps(t *testing.T) {
 		{"8 -> 4", 8, 16, 4},
 		{"5 -> 2 (integer division)", 5, 10, 2},
 		{"2 -> 1", 2, 4, 1},
-		{"1 -> 1 (floor)", 1, 4, 1},
-		{"0 -> 1 (floor, defensive)", 0, 4, 1},
+		// startCap<=1 (already at the floor) is NOT exercised here: per
+		// koryph-2im.11 that trips the circuit breaker instead of halving —
+		// see TestBreakerOpensOnRateLimitAtFloor.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := &Config{Adaptive: true, DynamicCap: tc.startCap, HardMax: tc.hardMax}
-			decreased := applyRateLimit(c, epoch0)
+			decreased, opened := applyRateLimit(c, "p", "b1", epoch0)
 			if !decreased {
-				t.Fatal("applyRateLimit() = false, want true (first event, no cooldown)")
+				t.Fatal("applyRateLimit() = false, want true (first event, not settling)")
+			}
+			if opened {
+				t.Error("breaker should not open when the cap lands above the floor")
 			}
 			if c.DynamicCap != tc.wantHalved {
 				t.Errorf("DynamicCap after halve = %d, want %d", c.DynamicCap, tc.wantHalved)
@@ -100,31 +104,38 @@ func TestApplyRateLimitHalvesFromVariousCaps(t *testing.T) {
 	}
 }
 
-func TestApplyRateLimitCooldownSuppressesDoubleHalve(t *testing.T) {
+// TestApplyRateLimitSettleSuppressesDoubleHalve proves koryph-2im.11's settle
+// window subsumes the old 60s decrease cooldown: a second event arriving
+// inside the (now 120s default) freeze is counted but not re-applied, and a
+// third event AFTER settle expires halves again.
+func TestApplyRateLimitSettleSuppressesDoubleHalve(t *testing.T) {
 	c := &Config{Adaptive: true, DynamicCap: 8, HardMax: 16}
 
-	if !applyRateLimit(c, epoch0) {
+	if decreased, _ := applyRateLimit(c, "p", "b1", epoch0); !decreased {
 		t.Fatal("first event should decrease")
 	}
 	if c.DynamicCap != 4 {
 		t.Fatalf("DynamicCap = %d, want 4", c.DynamicCap)
 	}
+	if !inSettle(*c, epoch0.Add(30*time.Second)) {
+		t.Fatal("expected the store to be settling 30s after a decrease (default 120s settle)")
+	}
 
-	// A second event 30s later (inside the 60s cooldown) is counted but must
-	// NOT re-halve.
-	if applyRateLimit(c, epoch0.Add(30*time.Second)) {
-		t.Error("event inside cooldown should not decrease")
+	// A second event 30s later (inside the 120s settle window) is counted but
+	// must NOT re-halve.
+	if decreased, _ := applyRateLimit(c, "p", "b1", epoch0.Add(30*time.Second)); decreased {
+		t.Error("event inside settle should not decrease")
 	}
 	if c.DynamicCap != 4 {
-		t.Errorf("DynamicCap after cooldown-suppressed event = %d, want unchanged 4", c.DynamicCap)
+		t.Errorf("DynamicCap after settle-suppressed event = %d, want unchanged 4", c.DynamicCap)
 	}
 	if c.RateLimitEvents != 2 {
 		t.Errorf("RateLimitEvents = %d, want 2 (both events counted)", c.RateLimitEvents)
 	}
 
-	// A third event after the cooldown elapses halves again.
-	if !applyRateLimit(c, epoch0.Add(61*time.Second)) {
-		t.Error("event after cooldown should decrease")
+	// A third event after settle elapses halves again.
+	if decreased, _ := applyRateLimit(c, "p", "b1", epoch0.Add(121*time.Second)); !decreased {
+		t.Error("event after settle expiry should decrease")
 	}
 	if c.DynamicCap != 2 {
 		t.Errorf("DynamicCap after second halve = %d, want 2", c.DynamicCap)
@@ -139,8 +150,8 @@ func TestApplyRateLimitCountsEvenWhenAdaptiveOff(t *testing.T) {
 	// but the event counter is still useful observability (an operator can see
 	// "you've been rate-limited N times" before ever turning adaptive on).
 	c := &Config{MaxGlobalAgents: 5}
-	if applyRateLimit(c, epoch0) {
-		t.Error("applyRateLimit() with Adaptive=false should never decrease")
+	if decreased, opened := applyRateLimit(c, "p", "b1", epoch0); decreased || opened {
+		t.Error("applyRateLimit() with Adaptive=false should never decrease or open the breaker")
 	}
 	if c.DynamicCap != 0 {
 		t.Errorf("DynamicCap = %d, want untouched 0", c.DynamicCap)
@@ -199,27 +210,30 @@ func TestApplyProbeNoStepsBeforeInterval(t *testing.T) {
 	}
 }
 
-func TestApplyProbeResetsClockAfterDecrease(t *testing.T) {
-	// A decrease more recent than the last probe step must reset the probe's
-	// elapsed-time anchor — "no rate-limit events since" the design calls for
-	// falls out of taking max(LastDecreaseAt, LastProbeAt).
+func TestApplyProbeAnchorsOnSettleExpiryNotTheChangeItself(t *testing.T) {
+	// koryph-2im.11: the additive-increase quiet-clock starts at SETTLE
+	// EXPIRY, not at the change (decrease) timestamp itself — a decrease at
+	// epoch0+2min with a 120s settle freezes growth until epoch0+4min, not
+	// epoch0+2min+5min as the pre-L5b (decrease-anchored) semantics would.
+	settleUntil := epoch0.Add(2*time.Minute + 120*time.Second) // epoch0+4min
 	c := &Config{
 		Adaptive:       true,
 		DynamicCap:     2,
 		HardMax:        8,
 		LastProbeAt:    epoch0.Format(time.RFC3339),
 		LastDecreaseAt: epoch0.Add(2 * time.Minute).Format(time.RFC3339),
+		SettleUntil:    settleUntil.Format(time.RFC3339),
 	}
-	// 3 minutes after epoch0 is only 1 minute past the decrease ⇒ no growth.
+	// Still inside the settle window ⇒ frozen, no growth.
 	if changed := applyProbe(c, epoch0.Add(3*time.Minute)); changed {
-		t.Error("applyProbe() should not grow within 5 minutes of the last decrease")
+		t.Error("applyProbe() should not grow before settle expiry")
 	}
 	if c.DynamicCap != 2 {
 		t.Errorf("DynamicCap = %d, want unchanged 2", c.DynamicCap)
 	}
-	// A full interval past the DECREASE (not the stale probe timestamp) grows.
-	if !applyProbe(c, epoch0.Add(2*time.Minute+5*time.Minute)) {
-		t.Error("applyProbe() should grow once 5 minutes have elapsed since the decrease")
+	// A full probeInterval past SETTLE EXPIRY (not the decrease itself) grows.
+	if !applyProbe(c, settleUntil.Add(5*time.Minute)) {
+		t.Error("applyProbe() should grow once 5 minutes have elapsed since settle expiry")
 	}
 	if c.DynamicCap != 3 {
 		t.Errorf("DynamicCap = %d, want 3", c.DynamicCap)
@@ -256,7 +270,7 @@ func TestStoreSetAdaptiveCapAndEffectiveCap(t *testing.T) {
 	now := epoch0
 	s.Now = func() time.Time { return now }
 
-	if err := s.SetAdaptiveCap(4, 0); err != nil { // hardMax 0 ⇒ default 2x
+	if err := s.SetAdaptiveCap(4, 0, 0, 0, 0); err != nil { // hardMax 0 ⇒ default 2x
 		t.Fatal(err)
 	}
 	if got := s.EffectiveCap(); got != 4 {
@@ -275,10 +289,10 @@ func TestStoreReportRateLimitHalvesSharedCap(t *testing.T) {
 	s := newTestStore(t)
 	now := epoch0
 	s.Now = func() time.Time { return now }
-	if err := s.SetAdaptiveCap(8, 16); err != nil {
+	if err := s.SetAdaptiveCap(8, 16, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReportRateLimit(now); err != nil {
+	if err := s.ReportRateLimit("p", "b1", now); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.EffectiveCap(); got != 4 {
@@ -299,7 +313,11 @@ func TestStoreAcquireUsesEffectiveCapNotStaticCap(t *testing.T) {
 	s := newTestStore(t)
 	now := epoch0
 	s.Now = func() time.Time { return now }
-	if err := s.SetAdaptiveCap(2, 6); err != nil {
+	// This test is about fair-share/probe-cap growth, not dispatch smoothing
+	// (koryph-2im.11) — neutralize the jittered spacing so back-to-back
+	// Acquire calls at the same instant are not denied for spacing.
+	s.Jitter = func() float64 { return -1 }
+	if err := s.SetAdaptiveCap(2, 6, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -342,7 +360,40 @@ func TestStoreEffectiveCapCompatibleWithOldStore(t *testing.T) {
 
 func TestSetAdaptiveCapRejectsNonPositive(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.SetAdaptiveCap(0, 0); err == nil {
+	if err := s.SetAdaptiveCap(0, 0, 0, 0, 0); err == nil {
 		t.Error("SetAdaptiveCap(0, ...) should error")
+	}
+}
+
+// TestSetAdaptiveCapAppliesL5bDefaults proves koryph-2im.11's settle/break/
+// smoothing knobs default when omitted (<=0) and persist when given.
+func TestSetAdaptiveCapAppliesL5bDefaults(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetAdaptiveCap(4, 0, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.AIMDStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.SettleSeconds != DefaultSettleSeconds {
+		t.Errorf("SettleSeconds = %d, want default %d", status.SettleSeconds, DefaultSettleSeconds)
+	}
+	if status.BreakSeconds != DefaultBreakSeconds {
+		t.Errorf("BreakSeconds = %d, want default %d", status.BreakSeconds, DefaultBreakSeconds)
+	}
+	if status.MinDispatchIntervalSeconds != DefaultMinDispatchIntervalSeconds {
+		t.Errorf("MinDispatchIntervalSeconds = %d, want default %d", status.MinDispatchIntervalSeconds, DefaultMinDispatchIntervalSeconds)
+	}
+
+	if err := s.SetAdaptiveCap(4, 0, 30, 60, 1); err != nil {
+		t.Fatal(err)
+	}
+	status, err = s.AIMDStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.SettleSeconds != 30 || status.BreakSeconds != 60 || status.MinDispatchIntervalSeconds != 1 {
+		t.Errorf("explicit L5b knobs not persisted: %+v", status)
 	}
 }
