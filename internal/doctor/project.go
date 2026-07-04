@@ -83,6 +83,13 @@ type ProjectOptions struct {
 	// bots. nil means: call bot.CheckCredentials() against the real filesystem.
 	// Inject a fake in tests to avoid touching ~/.koryph/bots/.
 	BotCredentialCheck func() ([]bot.CredentialFinding, error)
+
+	// PostureDriftCheck returns whether the live GitHub repo has posture drift
+	// from the given profile. Return (false, nil) when no drift, (true, nil) on
+	// drift, and (_, err) on failure (doctor degrades gracefully on error).
+	// nil means: call the real posture check functions via the gh CLI.
+	// Inject a fake in tests to avoid gh network calls.
+	PostureDriftCheck func(repoRoot string, cfg *project.PostureConfig) (bool, error)
 }
 
 func (o *ProjectOptions) home() string {
@@ -213,6 +220,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.addAll(checkOrphanWorktrees(opts, repoRoot, cfg))
 	r.addAll(checkAssetDrift(opts, repoRoot))
 	r.addAll(checkReleaseInfra(opts, repoRoot, cfg))
+	r.add(checkPostureDrift(opts, repoRoot, cfg))
 
 	for _, f := range r.Findings {
 		if f.Fixed {

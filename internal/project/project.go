@@ -182,6 +182,27 @@ type RuntimeConfig struct {
 	ModelMap map[string]string `json:"model_map,omitempty"`
 }
 
+// PostureConfig is the optional desired-state posture sub-block of
+// koryph.project.json. When set, koryph doctor --project reports drift between
+// the live GitHub repo and the named profile as WARN, with the exact
+// koryph posture apply command to remediate.
+//
+// `koryph project add` offers to populate this block interactively using the
+// default profile (oss-solo-maintainer); --posture <name> / --no-posture
+// control non-interactive mode.  A future `koryph new` command (koryph-om7,
+// HELD) will populate this block unconditionally on freshly created repos;
+// leave the field as the resolution point for that work.
+type PostureConfig struct {
+	// Profile is the named posture profile, e.g. "oss-solo-maintainer".
+	// Must match a built-in profile name (koryph posture list) or a user
+	// profile under ~/.koryph/postures/.
+	Profile string `json:"profile"`
+	// Parameters maps profile parameter names to their values, e.g.
+	// {"required_checks": "pre-commit,make gate"}.  Omit or set to {} to
+	// use the profile's defaults for all parameters.
+	Parameters map[string]string `json:"parameters,omitempty"`
+}
+
 // Config is the per-project adapter.
 type Config struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -319,6 +340,16 @@ type Config struct {
 	// Exactly one build mode (Build.Goreleaser or Build.Commands) must be
 	// set when this block is present (enforced by Validate).
 	Release *ReleaseConfig `json:"release,omitempty"`
+
+	// Posture, when non-nil, declares the desired-state posture profile for
+	// this project's GitHub repository. koryph doctor --project reports any
+	// drift between the live repo and the named profile as WARN, with the
+	// exact koryph posture apply command to remediate.
+	//
+	// Managed by `koryph project add` (interactive offer) and the future
+	// `koryph new` command (koryph-om7, HELD).  Nil means no profile is
+	// declared and the drift check is silently skipped.
+	Posture *PostureConfig `json:"posture,omitempty"`
 }
 
 // Default returns a conservative baseline config.
@@ -416,6 +447,9 @@ func (c *Config) Validate() error {
 	if err := validateRelease(c.Release); err != nil {
 		return err
 	}
+	if err := validatePosture(c.Posture); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -511,6 +545,33 @@ func validateRelease(r *ReleaseConfig) error {
 		return fmt.Errorf("release.build: only one build mode may be set (goreleaser or commands, not both)")
 	case !hasGoreleaser && !hasCommands:
 		return fmt.Errorf("release.build: exactly one build mode is required (goreleaser or commands)")
+	}
+	return nil
+}
+
+// PostureApplyCmd returns the exact shell command that would bring the live
+// GitHub repo into conformance with the posture block, for use in doctor
+// WARN messages. Returns an empty string when PostureConfig is nil.
+func (p *PostureConfig) PostureApplyCmd() string {
+	if p == nil {
+		return ""
+	}
+	cmd := "koryph posture apply " + p.Profile
+	for k, v := range p.Parameters {
+		cmd += " --param " + k + "=" + v
+	}
+	return cmd
+}
+
+// validatePosture enforces the posture block contract when non-nil:
+// Profile must be non-empty (a specific profile name is required; the drift
+// check cannot operate without one).
+func validatePosture(p *PostureConfig) error {
+	if p == nil {
+		return nil
+	}
+	if strings.TrimSpace(p.Profile) == "" {
+		return fmt.Errorf("posture.profile is required when posture block is present")
 	}
 	return nil
 }

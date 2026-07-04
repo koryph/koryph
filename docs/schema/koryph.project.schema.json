@@ -110,6 +110,27 @@
       ],
       "description": "PipelineStage is one post-implement stage in the project pipeline."
     },
+    "PostureConfig": {
+      "properties": {
+        "profile": {
+          "type": "string",
+          "description": "Profile is the named posture profile, e.g. \"oss-solo-maintainer\".\nMust match a built-in profile name (koryph posture list) or a user\nprofile under ~/.koryph/postures/."
+        },
+        "parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Parameters maps profile parameter names to their values, e.g.\n{\"required_checks\": \"pre-commit,make gate\"}.  Omit or set to {} to\nuse the profile's defaults for all parameters."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "profile"
+      ],
+      "description": "PostureConfig is the optional desired-state posture sub-block of koryph.project.json."
+    },
     "ReleaseBuildConfig": {
       "properties": {
         "goreleaser": {
@@ -416,6 +437,10 @@
     "release": {
       "$ref": "#/$defs/ReleaseConfig",
       "description": "Release, when non-nil, configures the project's release pipeline\n(managed by `koryph release setup`). It drives template rendering for\nthe caller GitHub Actions workflow and the release-please config.\nExactly one build mode (Build.Goreleaser or Build.Commands) must be\nset when this block is present (enforced by Validate)."
+    },
+    "posture": {
+      "$ref": "#/$defs/PostureConfig",
+      "description": "Posture, when non-nil, declares the desired-state posture profile for\nthis project's GitHub repository. koryph doctor --project reports any\ndrift between the live repo and the named profile as WARN, with the\nexact koryph posture apply command to remediate.\n\nManaged by `koryph project add` (interactive offer) and the future\n`koryph new` command (koryph-om7, HELD).  Nil means no profile is\ndeclared and the drift check is silently skipped."
     }
   },
   "additionalProperties": false,
