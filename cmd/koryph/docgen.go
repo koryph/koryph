@@ -169,7 +169,8 @@ func renderCLIDoc(w io.Writer, warnOut io.Writer) {
 	for _, ev := range envVars {
 		p("| `%s` | %s |\n", ev.name, escape(ev.desc))
 	}
-	p("\n")
+	// No trailing blank line — end-of-file is the final newline after the
+	// last table row, matching what the pre-commit end-of-file-fixer enforces.
 }
 
 // renderCommandSection writes one command's section to w.
