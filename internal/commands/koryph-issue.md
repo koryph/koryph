@@ -17,12 +17,17 @@ Do this:
    - Prefer the **narrowest honest key** the `area_map` offers — broad catch-all areas serialize everything that shares them.
    - If the bead only **reads** an area (docs about it, tests over fixtures, analysis), declare that with `fp:read:<token>` — readers co-run with each other; only writers exclude.
    - If the footprint can't be expressed with the `area_map`, use explicit `fp:<token>` labels, or leave it unlabeled (it serializes safely) and note that.
-4. Run `bd create` with:
+4. **Dedup before creating** (mandatory): `bd children <epic-id>` on the
+   target epic and `bd search "<keywords>"` on the title's scope words.
+   `bd ready` is NOT a dedup check — blocked/deferred beads are invisible
+   there and are exactly the duplicates that resurrect and collide in
+   flight. If an existing bead overlaps, update or unblock it instead.
+5. Run `bd create` with:
    - a clear `--title`,
    - a `--description` that states *why* the issue exists and what "done" looks like,
    - `--validate` so required sections are enforced,
    - the `area:*`/`fp:*` labels from step 3 (repeat `--label` per label),
    - `--label refactor-core` **only** if the work changes the koryph engine's own dispatch/merge/governor loop or a protected path (those are never loop-dispatched, so their footprint labels are advisory).
-5. Show the result with `bd show <id>` and report the new id.
+6. Show the result with `bd show <id>` and report the new id.
 
 Do **not** start implementing the issue — this command only files it.

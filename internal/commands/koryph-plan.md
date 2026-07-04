@@ -36,9 +36,13 @@ whatever runtime you are (codex, cursor, grok build, ...).
 
 1. **Ingest.** Read the design doc (or the inline text in `$ARGUMENTS`).
    Read `project_id` and `area_map` from `koryph.project.json` at the repo
-   root. Run `bd ready` and `bd list` (scoped to the design's area, if
-   large) to see what already exists — never file a duplicate of a bead
-   that already covers the same work.
+   root. Then run the MANDATORY dedup sweep for every bead you are about to
+   create: `bd children <epic-id>` on the target epic (shows ALL states) and
+   `bd search "<keywords>"` on scope words from the title. `bd ready` is NOT
+   a dedup check — dependency-blocked and deferred beads are invisible
+   there, and those are exactly the duplicates that come back to life later
+   and collide in flight. If an existing bead overlaps, update or unblock it
+   instead of creating a new one.
 
 2. **Decompose.** One bead per single-agent-sized unit of work, typed
    `task`/`bug`/`chore` — the **only** types the wave loop dispatches. Use
