@@ -18,6 +18,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -376,6 +377,23 @@ func (a App) doRefresh() tea.Cmd {
 			return errMsg{err}
 		}
 		return snapshotMsg(snap)
+	}
+}
+
+// doFetchDetail returns a Cmd that calls BeadDetail asynchronously on the
+// active provider (if it implements DetailProvider) and delivers the result
+// as a detailReadyMsg.
+func (a App) doFetchDetail(beadID string) tea.Cmd {
+	p := a.providers[a.projectIdx]
+	dp, ok := p.(cockpit.DetailProvider)
+	if !ok {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		snap := dp.BeadDetail(ctx, beadID, time.Now())
+		return detailReadyMsg{snap: snap}
 	}
 }
 

@@ -17,6 +17,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -41,6 +42,7 @@ type detailRow struct {
 	id        string // bead ID this row points to
 	label     string // "dep" or "rdep"
 	isBlocker bool   // true when dep is not yet closed (blocks this bead)
+	zoneID    string // stable zone ID for mouse-click hit testing
 }
 
 // detailModel is the Bubble Tea model for the Detail tab.
@@ -135,17 +137,19 @@ func (m *detailModel) Resize(w, h int) {
 // Deps (blockers for this bead) come first, then reverse-deps.
 func (m *detailModel) rebuildRows() {
 	m.rows = nil
-	for _, dep := range m.detail.Deps {
+	for i, dep := range m.detail.Deps {
 		m.rows = append(m.rows, detailRow{
 			id:        dep,
 			label:     "dep",
 			isBlocker: true, // forward dep = this bead is blocked by it
+			zoneID:    fmt.Sprintf("%sdep-%d", m.zonePrefix, i),
 		})
 	}
-	for _, rdep := range m.detail.ReverseDeps {
+	for i, rdep := range m.detail.ReverseDeps {
 		m.rows = append(m.rows, detailRow{
-			id:    rdep,
-			label: "rdep",
+			id:     rdep,
+			label:  "rdep",
+			zoneID: fmt.Sprintf("%srdep-%d", m.zonePrefix, i),
 		})
 	}
 	if m.cursor >= len(m.rows) {
@@ -153,17 +157,49 @@ func (m *detailModel) rebuildRows() {
 	}
 }
 
-// refreshLog re-reads the log file and updates the viewport content.
+// logTailBytes is the maximum number of bytes read from a log file on each
+// refresh tick. Caps the read at 32 KB to avoid re-reading arbitrarily large
+// files on every 100 ms interval.
+const logTailBytes = 32 * 1024
+
+// refreshLog re-reads the tail of the log file and updates the viewport.
 func (m *detailModel) refreshLog() {
 	if m.detail.LogPath == "" {
 		return
 	}
-	data, err := os.ReadFile(m.detail.LogPath)
+	f, err := os.Open(m.detail.LogPath)
 	if err != nil {
 		m.logVP.SetContent(fmt.Sprintf("(log unavailable: %v)", err))
 		return
 	}
-	m.logVP.SetContent(string(data))
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		m.logVP.SetContent(fmt.Sprintf("(log stat error: %v)", err))
+		return
+	}
+	size := fi.Size()
+	offset := size - logTailBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > 0 {
+		if _, err = f.Seek(offset, io.SeekStart); err != nil {
+			m.logVP.SetContent(fmt.Sprintf("(log seek error: %v)", err))
+			return
+		}
+	}
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		m.logVP.SetContent(fmt.Sprintf("(log read error: %v)", err))
+		return
+	}
+	content := string(buf)
+	if offset > 0 {
+		content = "[\u2026truncated\u2026]\n" + content
+	}
+	m.logVP.SetContent(content)
 	if m.logFollow {
 		m.logVP.GotoBottom()
 	}
@@ -242,8 +278,7 @@ func (m *detailModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	case tea.MouseMsg:
 		// Check if any dep/rdep zone was clicked.
 		for i, row := range m.rows {
-			rid := fmt.Sprintf("%s%s-%d", m.zonePrefix, row.label, i)
-			zi := zone.Get(rid)
+			zi := zone.Get(row.zoneID)
 			if zi != nil && zi.InBounds(msg) {
 				m.cursor = i
 			}
@@ -360,13 +395,12 @@ func (m *detailModel) View() string {
 	if len(d.Deps) > 0 {
 		b.WriteString(sectionStyle.Render("Depends on") + "\n")
 		for i, dep := range d.Deps {
-			rid := fmt.Sprintf("%sdep-%d", m.zonePrefix, i)
 			rowStr := fmt.Sprintf("  ← %s", dep)
 			var rendered string
 			if depOffset+i == m.cursor {
-				rendered = zone.Mark(rid, selectedStyle.Render(rowStr))
+				rendered = zone.Mark(m.rows[i].zoneID, selectedStyle.Render(rowStr))
 			} else {
-				rendered = zone.Mark(rid, blockerStyle.Render(rowStr))
+				rendered = zone.Mark(m.rows[i].zoneID, blockerStyle.Render(rowStr))
 			}
 			b.WriteString(rendered + "\n")
 		}
@@ -377,13 +411,12 @@ func (m *detailModel) View() string {
 	if len(d.ReverseDeps) > 0 {
 		b.WriteString(sectionStyle.Render("Blocked by this") + "\n")
 		for i, rdep := range d.ReverseDeps {
-			rid := fmt.Sprintf("%srdep-%d", m.zonePrefix, i)
 			rowStr := fmt.Sprintf("  → %s", rdep)
 			var rendered string
 			if depOffset+i == m.cursor {
-				rendered = zone.Mark(rid, selectedStyle.Render(rowStr))
+				rendered = zone.Mark(m.rows[depOffset+i].zoneID, selectedStyle.Render(rowStr))
 			} else {
-				rendered = zone.Mark(rid, rdepStyle.Render(rowStr))
+				rendered = zone.Mark(m.rows[depOffset+i].zoneID, rdepStyle.Render(rowStr))
 			}
 			b.WriteString(rendered + "\n")
 		}

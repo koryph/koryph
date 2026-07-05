@@ -393,6 +393,9 @@ func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time
 		break // one slot per beadID in current run
 	}
 
+	// d.Acceptance is intentionally left empty: the bd CLI does not expose
+	// acceptance criteria as a separate JSON field. The View guards on non-empty,
+	// so this is safe.
 	return d
 }
 
