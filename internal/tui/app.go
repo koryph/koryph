@@ -36,8 +36,13 @@ import (
 )
 
 const (
-	// refreshInterval is the poll period for snapshot refreshes.
+	// refreshInterval is the poll period for snapshot refreshes when agents are
+	// running — below the 150 ms perceived-latency target from the design doc.
 	refreshInterval = 100 * time.Millisecond
+
+	// idleRefreshInterval is the poll period when no slots are running or
+	// dispatching. Throttling to 1 s keeps CPU usage negligible when idle.
+	idleRefreshInterval = 1 * time.Second
 
 	// minWidth / minHeight define the smallest terminal the TUI supports.
 	minWidth  = 80
@@ -169,7 +174,7 @@ func NewApp(providers []cockpit.Provider, readOnly bool) *App {
 
 // Init implements tea.Model. It emits the first tick to kick off polling.
 func (a App) Init() tea.Cmd {
-	return tick()
+	return a.adaptiveTick()
 }
 
 // Update implements tea.Model.
@@ -232,7 +237,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.help.Width = a.width
 
 	case tickMsg:
-		cmds = append(cmds, a.doRefresh(), tick())
+		cmds = append(cmds, a.doRefresh(), a.adaptiveTick())
 
 	case snapshotMsg:
 		a.snap = cockpit.Snapshot(msg)
@@ -529,12 +534,19 @@ func (a App) doDrain() tea.Cmd {
 }
 
 // doRefresh returns a Cmd that reads a fresh snapshot from the active provider.
+// When the new snapshot is semantically identical to the previous one
+// (snapshotUnchanged), it returns nil — BubbleTea drops nil messages,
+// suppressing an unnecessary re-render.
 func (a App) doRefresh() tea.Cmd {
 	p := a.providers[a.projectIdx]
+	prev := a.snap // captured by value for change detection
 	return func() tea.Msg {
 		snap, err := p.Refresh()
 		if err != nil {
 			return errMsg{err}
+		}
+		if snapshotUnchanged(prev, snap) {
+			return nil // nothing changed — suppress re-render
 		}
 		return snapshotMsg(snap)
 	}
@@ -557,11 +569,52 @@ func (a App) doFetchDetail(beadID string) tea.Cmd {
 	}
 }
 
-// tick returns a Cmd that fires a tickMsg after refreshInterval.
-func tick() tea.Cmd {
-	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
+// isIdle reports whether the project currently has no running or dispatching
+// agents. Used to throttle the refresh interval when nothing is in flight.
+func (a App) isIdle() bool {
+	for _, sl := range a.snap.Slots {
+		if sl.Stage == "running" || sl.Stage == "dispatching" {
+			return false
+		}
+	}
+	return true
+}
+
+// adaptiveTick returns a Cmd that fires a tickMsg after refreshInterval when
+// agents are running, or idleRefreshInterval when the project is idle. This
+// keeps CPU usage low when no slots are active.
+func (a App) adaptiveTick() tea.Cmd {
+	interval := refreshInterval
+	if a.isIdle() {
+		interval = idleRefreshInterval
+	}
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// snapshotUnchanged reports whether next is semantically identical to prev for
+// TUI rendering purposes. CapturedAt is intentionally excluded — it changes
+// every tick even when no data has changed.
+func snapshotUnchanged(prev, next cockpit.Snapshot) bool {
+	if prev.RunID != next.RunID || prev.RunStatus != next.RunStatus || prev.Wave != next.Wave {
+		return false
+	}
+	if len(prev.Slots) != len(next.Slots) {
+		return false
+	}
+	for i := range prev.Slots {
+		ps, ns := prev.Slots[i], next.Slots[i]
+		if ps.PhaseID != ns.PhaseID || ps.Stage != ns.Stage ||
+			ps.StatusLine != ns.StatusLine || ps.StatusJSON != ns.StatusJSON ||
+			ps.Attempt != ns.Attempt {
+			return false
+		}
+	}
+	if len(prev.Events.Events) != len(next.Events.Events) {
+		return false
+	}
+	return true
 }
 
 // headerHeight is the number of fixed rows above the content area:
