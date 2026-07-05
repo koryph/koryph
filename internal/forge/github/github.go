@@ -45,7 +45,8 @@ func init() {
 // The zero value is valid and satisfies all interface methods; methods that
 // need a project config (CI().Render("caller")) return an error when rc is nil.
 type Provider struct {
-	rc *project.ReleaseConfig // optional; required for CI().Render
+	rc      *project.ReleaseConfig // optional; required for CI().Render("caller")
+	gateCmd string                 // optional; gate command for CI().Render("gate"), default "make gate"
 }
 
 // Option is a functional option for [New].
@@ -55,6 +56,12 @@ type Option func(*Provider)
 // [CIService.Render]("caller") can produce the caller workflow.
 func WithReleaseConfig(rc *project.ReleaseConfig) Option {
 	return func(p *Provider) { p.rc = rc }
+}
+
+// WithGateCommand overrides the gate command used by [CIService.Render]("gate").
+// The default when this option is not supplied is "make gate".
+func WithGateCommand(cmd string) Option {
+	return func(p *Provider) { p.gateCmd = cmd }
 }
 
 // New constructs a GitHub [Provider] with the supplied options. Use this (not
@@ -108,7 +115,7 @@ func (p *Provider) Releases() forge.ReleaseService { return &githubReleaseSvc{} 
 
 // CI returns a [forge.CIService] that renders GitHub Actions pipeline assets
 // using internal/release templates.
-func (p *Provider) CI() forge.CIService { return &githubCISvc{rc: p.rc} }
+func (p *Provider) CI() forge.CIService { return &githubCISvc{rc: p.rc, gateCmd: p.gateCmd} }
 
 // Bot returns a [forge.BotService] backed by the GitHub App API.
 func (p *Provider) Bot() forge.BotService { return &githubBotSvc{} }

@@ -63,7 +63,8 @@ func init() {
 // The zero value is valid and satisfies all interface methods; methods that
 // need a project config (CI().Render("release")) return an error when rc is nil.
 type Provider struct {
-	rc *project.ReleaseConfig // optional; required for CI().Render("release")
+	rc      *project.ReleaseConfig // optional; required for CI().Render("release")
+	gateCmd string                 // optional; gate command for CI().Render("gate"), default "make gate"
 }
 
 // Option is a functional option for [New].
@@ -73,6 +74,12 @@ type Option func(*Provider)
 // [CIService.Render]("release") can produce the release pipeline.
 func WithReleaseConfig(rc *project.ReleaseConfig) Option {
 	return func(p *Provider) { p.rc = rc }
+}
+
+// WithGateCommand overrides the gate command used by [CIService.Render]("gate").
+// The default when this option is not supplied is "make gate".
+func WithGateCommand(cmd string) Option {
+	return func(p *Provider) { p.gateCmd = cmd }
 }
 
 // New constructs a GitLab [Provider] with the supplied options. Use this (not
@@ -129,8 +136,9 @@ func (p *Provider) Releases() forge.ReleaseService { return &stubReleaseSvc{} }
 
 // CI returns a [forge.CIService] that renders GitLab CI/CD pipeline assets.
 // Render("release") requires a non-nil ReleaseConfig; build the provider with
-// [WithReleaseConfig]. Render("docs") does not require a ReleaseConfig.
-func (p *Provider) CI() forge.CIService { return &gitlabCISvc{rc: p.rc} }
+// [WithReleaseConfig]. Render("docs") and Render("gate") do not require a
+// ReleaseConfig.
+func (p *Provider) CI() forge.CIService { return &gitlabCISvc{rc: p.rc, gateCmd: p.gateCmd} }
 
 // Bot returns a [forge.BotService] backed by the GitLab access-token flow.
 func (p *Provider) Bot() forge.BotService { return &gitlabBotSvc{} }

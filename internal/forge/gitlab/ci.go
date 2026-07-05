@@ -20,12 +20,26 @@ var embeddedReleasePipelineTmpl string
 //go:embed docs-pipeline.yml.tmpl
 var embeddedDocsPipelineTmpl string
 
+//go:embed gate-pipeline.yml.tmpl
+var embeddedGatePipelineTmpl string
+
+// defaultGateCmd is the gate command used when none is specified.
+const defaultGateCmd = "make gate"
+
 // gitlabCISvc implements [forge.CIService] for GitLab CI/CD.
 //
 // It renders forge-appropriate .gitlab-ci.yml pipeline assets using embedded
-// templates. The rc field is required for the "release" kind.
+// templates. The rc field is required for the "release" kind; gateCmd is
+// optional (defaults to [defaultGateCmd]) for the "gate" kind.
 type gitlabCISvc struct {
-	rc *project.ReleaseConfig
+	rc      *project.ReleaseConfig
+	gateCmd string // empty means use defaultGateCmd
+}
+
+// gitlabGateTemplateData is the view-model passed to the gate pipeline template.
+type gitlabGateTemplateData struct {
+	// GateCmd is the shell command that runs the project's green gate.
+	GateCmd string
 }
 
 // gitlabTemplateData is the view-model passed to the GitLab CI templates.
@@ -64,6 +78,10 @@ var ciTemplateFuncs = template.FuncMap{
 //   - "docs" — the .gitlab-ci.yml for the GitLab Pages docs-publish pipeline.
 //     Does not require a ReleaseConfig.
 //
+//   - "gate" — the .gitlab-ci.yml green gate stage that runs the project's gate
+//     command on every push and merge request. The gate command defaults to
+//     "make gate"; override it with [WithGateCommand].
+//
 // All other kinds return [forge.ErrUnsupported].
 func (s *gitlabCISvc) Render(kind string) ([]byte, error) {
 	switch kind {
@@ -71,6 +89,8 @@ func (s *gitlabCISvc) Render(kind string) ([]byte, error) {
 		return s.renderRelease()
 	case "docs":
 		return s.renderDocs()
+	case "gate":
+		return s.renderGate()
 	default:
 		return nil, fmt.Errorf("gitlab CI: Render(%q): %w", kind, forge.ErrUnsupported)
 	}
@@ -98,6 +118,21 @@ func (s *gitlabCISvc) renderDocs() ([]byte, error) {
 	b, err := renderCITemplate("docs-pipeline.yml", embeddedDocsPipelineTmpl, nil)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab CI: render docs pipeline: %w", err)
+	}
+	return b, nil
+}
+
+// renderGate renders the green gate pipeline from the embedded template.
+// The gate command defaults to [defaultGateCmd] when none was supplied.
+func (s *gitlabCISvc) renderGate() ([]byte, error) {
+	cmd := s.gateCmd
+	if cmd == "" {
+		cmd = defaultGateCmd
+	}
+	td := gitlabGateTemplateData{GateCmd: cmd}
+	b, err := renderCITemplate("gate-pipeline.yml", embeddedGatePipelineTmpl, td)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab CI: render gate pipeline: %w", err)
 	}
 	return b, nil
 }

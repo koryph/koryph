@@ -378,6 +378,9 @@ type CIService interface {
 	// Render returns the content of a forge-native pipeline asset.
 	//
 	// Known kinds:
+	//   - "gate":    green gate pipeline / workflow — runs the project's gate
+	//     command on push and PR/MR; gate command defaults to "make gate" and
+	//     is overridden via the provider's WithGateCommand option.
 	//   - "docs":    documentation-publish pipeline / workflow
 	//   - "release": release-train pipeline / caller workflow
 	//   - "caller":  reusable release-train caller snippet

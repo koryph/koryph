@@ -230,6 +230,89 @@ func TestCIRender_Docs(t *testing.T) {
 	}
 }
 
+// ---------- CIService — gate kind --------------------------------------------
+
+// TestCIRender_Gate_DefaultCommand verifies the gate pipeline renders with the
+// default gate command ("make gate") when no override is supplied.
+func TestCIRender_Gate_DefaultCommand(t *testing.T) {
+	p := gitlabforge.New() // no gate command — should default to "make gate"
+	got, err := p.CI().Render("gate")
+	if err != nil {
+		t.Fatalf("Render(\"gate\"): %v", err)
+	}
+	s := string(got)
+
+	// REUSE-IgnoreStart
+	wantFragments := []string{
+		// Pipeline stages
+		"stages:",
+		"- gate",
+		// Job definition
+		"gate:",
+		"stage: gate",
+		// Triggers: push and MR
+		"push",
+		"merge_request_event",
+		// Default gate command
+		"make gate",
+		// SPDX header (split to avoid REUSE scanner false-positive on the test source)
+		"SPDX-License-Identifier: " + "Apache-2.0",
+	}
+	// REUSE-IgnoreEnd
+	for _, frag := range wantFragments {
+		if !strings.Contains(s, frag) {
+			t.Errorf("Render(\"gate\") default: missing fragment %q\nfull output:\n%s", frag, s)
+		}
+	}
+}
+
+// TestCIRender_Gate_CustomCommand verifies that WithGateCommand threads the
+// override into the rendered pipeline.
+func TestCIRender_Gate_CustomCommand(t *testing.T) {
+	const customCmd = "go test ./... && golangci-lint run"
+	p := gitlabforge.New(gitlabforge.WithGateCommand(customCmd))
+	got, err := p.CI().Render("gate")
+	if err != nil {
+		t.Fatalf("Render(\"gate\") custom command: %v", err)
+	}
+	s := string(got)
+
+	if !strings.Contains(s, customCmd) {
+		t.Errorf("Render(\"gate\") custom: gate command %q missing from output\ngot:\n%s", customCmd, s)
+	}
+	// Default "make gate" must NOT appear when overridden.
+	if strings.Contains(s, "make gate") {
+		t.Error("Render(\"gate\") custom: default 'make gate' must be absent when a custom command is supplied")
+	}
+}
+
+// TestCIRender_Gate_IsIdempotent verifies that calling Render("gate") twice
+// with the same provider produces byte-identical output.
+func TestCIRender_Gate_IsIdempotent(t *testing.T) {
+	p := gitlabforge.New()
+	first, err := p.CI().Render("gate")
+	if err != nil {
+		t.Fatalf("first Render(\"gate\"): %v", err)
+	}
+	second, err := p.CI().Render("gate")
+	if err != nil {
+		t.Fatalf("second Render(\"gate\"): %v", err)
+	}
+	if string(first) != string(second) {
+		t.Error("Render(\"gate\") is not idempotent: two calls returned different output")
+	}
+}
+
+// TestCIRender_Gate_DoesNotRequireReleaseConfig verifies that the "gate" kind
+// works without a ReleaseConfig (unlike "release").
+func TestCIRender_Gate_DoesNotRequireReleaseConfig(t *testing.T) {
+	p := gitlabforge.New() // no ReleaseConfig
+	_, err := p.CI().Render("gate")
+	if err != nil {
+		t.Errorf("Render(\"gate\") without ReleaseConfig: expected nil error, got %v", err)
+	}
+}
+
 // ---------- CIService — unknown kind -----------------------------------------
 
 // TestCIRender_UnknownKind verifies that an unknown kind wraps ErrUnsupported.
