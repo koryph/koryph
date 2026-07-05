@@ -5,6 +5,7 @@ package cockpit
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/koryph/koryph/internal/beads"
@@ -22,8 +23,11 @@ const (
 // and its snapshot is delivered via Snapshot.Graph so that multiple TUI tabs
 // (queue, detail) share a single read without independently calling bd.
 //
-// GraphProvider is NOT goroutine-safe; callers must serialise Refresh calls.
+// GraphProvider is goroutine-safe; Refresh holds mu for the duration of any
+// cache miss so concurrent callers (the 100 ms tick and the async BeadDetail
+// goroutine) do not race on g.cache / g.at.
 type GraphProvider struct {
+	mu    sync.Mutex
 	bd    *beads.Adapter
 	ttl   time.Duration
 	cache GraphSnapshot
@@ -51,6 +55,9 @@ func NewGraphProvider(repoRoot string, ttl time.Duration) *GraphProvider {
 // (which may be the zero value on the first call). The caller can detect a
 // zero snapshot via GraphSnapshot.NodeCount == 0.
 func (g *GraphProvider) Refresh(ctx context.Context, now time.Time) GraphSnapshot {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if !g.at.IsZero() && now.Sub(g.at) < g.ttl {
 		return g.cache
 	}
