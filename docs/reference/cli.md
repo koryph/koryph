@@ -92,6 +92,9 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph completion bash`](#koryph-completion-bash) | print the bash completion script |
 | ↳ [`koryph completion zsh`](#koryph-completion-zsh) | print the zsh completion script |
 | ↳ [`koryph completion install`](#koryph-completion-install) | install the completion script to the standard location |
+| [`koryph ci`](#koryph-ci) | render and install forge-native CI pipeline assets |
+| ↳ [`koryph ci setup`](#koryph-ci-setup) | render and install CI assets into the project |
+| ↳ [`koryph ci check`](#koryph-ci-check) | report drift between installed CI assets and current Render output |
 | [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
 | ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail |
@@ -1052,6 +1055,41 @@ install the completion script to the standard location
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--shell` | string |  | target shell: bash\|zsh (default: detect from $SHELL) |
+
+
+---
+
+## `koryph ci` { #koryph-ci }
+
+render and install forge-native CI pipeline assets
+
+**See also:** [Ci setup](../user-guide/ci-setup)
+
+Run `koryph ci <subcommand> -h` for subcommand flags.
+
+## `koryph ci setup` { #koryph-ci-setup }
+
+render and install CI assets into the project
+
+**See also:** [Ci setup](../user-guide/ci-setup)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--gate-cmd` | string |  | override the gate command (default: make gate) |
+| `--kind` | string | `gate` | CI asset kind(s) to install: gate, scanner, or all |
+| `--project` | string |  | project id |
+
+## `koryph ci check` { #koryph-ci-check }
+
+report drift between installed CI assets and current Render output
+
+**See also:** [Ci setup](../user-guide/ci-setup)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--gate-cmd` | string |  | override the gate command (default: make gate) |
+| `--kind` | string | `gate` | CI asset kind(s) to check: gate, scanner, or all |
+| `--project` | string |  | project id |
 
 
 ---
