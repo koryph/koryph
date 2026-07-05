@@ -348,6 +348,7 @@ func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time
 		d.Deps = deps
 	}
 	// Reverse deps: find all nodes that list beadID as a dependency.
+	// Sort for stable display order (map iteration is nondeterministic).
 	for nodeID, nodeDeps := range gSnap.Deps {
 		for _, dep := range nodeDeps {
 			if dep == beadID {
@@ -356,6 +357,7 @@ func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time
 			}
 		}
 	}
+	sort.Strings(d.ReverseDeps)
 
 	// --- slot-derived fields --------------------------------------------------
 	run, err := p.ls.LoadLatest()
