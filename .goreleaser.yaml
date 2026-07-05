@@ -136,7 +136,12 @@ homebrew_casks:
     license: "Apache-2.0"
     # Guard: skip (not fail) when HOMEBREW_TAP_GITHUB_TOKEN is absent.
     # When the token is present, "auto" skips pre-releases and snapshots.
-    skip_upload: '{{ if eq (env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}auto{{ end }}'
+    # NB: the `env` template FUNCTION is NOT available in the skip_upload
+    # field's template context (it works in `token:` above but errors here
+    # with `function "env" not defined` — the exact failure that blocked the
+    # v0.7.0 release). `index .Env "KEY"` is available in every context and
+    # returns "" for an unset key (unlike `.Env.KEY`, which panics).
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}auto{{ end }}'
     # Shell completions: calls `koryph completion bash` / `koryph completion zsh`
     # at install time and writes the output to Homebrew's completion dirs.
     generate_completions_from_executable:
