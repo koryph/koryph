@@ -36,3 +36,6 @@ result-*
 .beads-credential-key
 .beads/proxieddb/
 /.cache/
+
+# Orchestrator-generated ephemeral files
+CONFLICT.md
