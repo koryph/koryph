@@ -39,3 +39,6 @@ result-*
 
 # Engine-written conflict note in agent worktrees (resolve-and-retry aid)
 CONFLICT.md
+
+# koryph project-local state (posture snapshots, epic-review verdicts) — never committed
+.koryph/
