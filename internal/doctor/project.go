@@ -18,6 +18,7 @@ import (
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/bot"
 	"github.com/koryph/koryph/internal/commands"
+	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/posture"
@@ -112,6 +113,15 @@ type ProjectOptions struct {
 	// on error. nil means: call beads.Adapter.List and filter for type "epic".
 	// Inject a fake in tests to avoid spawning bd.
 	ListEpics func(repoRoot string) ([]beads.Issue, error)
+
+	// CIService overrides the forge CIService used for gate pipeline rendering
+	// (test seam). When set, forge remote detection is skipped entirely; the
+	// injected service is used to call Render("gate") directly. Inject a fake
+	// CIService in tests to avoid running git remote commands and to exercise
+	// the present/drifted/current paths with a service that actually supports
+	// Render("gate"). nil means: detect the forge via git remote and use the
+	// real forge CIService.
+	CIService forge.CIService
 }
 
 func (o *ProjectOptions) home() string {
@@ -247,6 +257,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.addAll(checkFragmentDrift(opts, repoRoot, cfg))
 	r.add(checkForge(cfg))
 	r.addAll(checkEpicValidations(opts, repoRoot))
+	r.add(checkCIGatePipeline(opts, repoRoot, cfg))
 
 	for _, f := range r.Findings {
 		if f.Fixed {

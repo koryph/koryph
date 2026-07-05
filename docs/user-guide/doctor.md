@@ -129,6 +129,31 @@ review and remove manually:
 git worktree remove --force path/to/orphan
 ```
 
+### ci-assets
+Checks whether the koryph gate pipeline CI workflow is installed and up to
+date with the current template rendering.
+
+The check is **skipped** (ok) when the project has no recognisable forge
+remote (not a GitHub repository or no git remote configured).
+
+When the gate pipeline is **absent** or its content **drifted** from what
+`koryph ci setup` would render, the finding is a **warning** with the exact
+remediation command:
+
+```
+koryph ci setup --project <id>
+```
+
+When the installed file matches the current template the finding is **ok**.
+
+The gate pipeline path is `.github/workflows/koryph-gate.yml` for GitHub
+projects. Install or update it with:
+
+```
+koryph ci setup --project <id>
+koryph ci setup --project <id> --force   # overwrite a locally modified file
+```
+
 ## JSON output
 
 ```json

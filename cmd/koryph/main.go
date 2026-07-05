@@ -145,6 +145,10 @@ OPERATE
                         verify branch commit signatures against the default branch (exit 1 on any bad)
   sign blob --project ID <path>
                         cosign sign-blob an artifact via the vault key (writes <path>.sig)
+  ci setup --project ID [--force]
+                        render and install the koryph gate pipeline
+                        (.github/workflows/koryph-gate.yml) into the project from its gate
+                        commands; re-run to update after changing koryph.project.json
   release setup --project ID [--mode goreleaser|commands] [--version V]
                         render and install the caller release workflow, release-please-config.json,
                         and .release-please-manifest.json into the project; --mode selects the
