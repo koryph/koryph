@@ -36,3 +36,6 @@ result-*
 .beads-credential-key
 .beads/proxieddb/
 /.cache/
+
+# Engine-written conflict note in agent worktrees (resolve-and-retry aid)
+CONFLICT.md
