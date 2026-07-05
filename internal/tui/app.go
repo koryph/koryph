@@ -222,6 +222,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					dr.SetDetail(a.snap.Detail)
 				}
 			}
+			// Fetch fresh detail asynchronously (provider may have newer data
+			// than the last Refresh snapshot; also covers the case where
+			// snap.Detail.BeadID != msg.beadID, i.e. first navigation).
+			cmds = append(cmds, a.doFetchDetail(msg.beadID))
 		}
 
 	case detailReadyMsg:
