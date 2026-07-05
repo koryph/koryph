@@ -611,10 +611,7 @@ func snapshotUnchanged(prev, next cockpit.Snapshot) bool {
 			return false
 		}
 	}
-	if len(prev.Events.Events) != len(next.Events.Events) {
-		return false
-	}
-	return true
+	return len(prev.Events.Events) == len(next.Events.Events)
 }
 
 // headerHeight is the number of fixed rows above the content area:
