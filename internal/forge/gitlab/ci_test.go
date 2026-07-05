@@ -327,16 +327,27 @@ func TestCIRender_UnknownKind(t *testing.T) {
 	}
 }
 
-// TestCIRender_CallerUnsupported verifies that the GitHub-specific "caller"
-// kind is not supported on the GitLab provider.
-func TestCIRender_CallerUnsupported(t *testing.T) {
+// TestCIRender_Caller_IsReleasePipeline verifies that the "caller" kind on the
+// GitLab provider returns the full release pipeline — the GitLab equivalent of
+// GitHub's thin workflow_call snippet. Both kinds must produce identical bytes.
+func TestCIRender_Caller_IsReleasePipeline(t *testing.T) {
 	p := gitlabforge.New(gitlabforge.WithReleaseConfig(goreleaserRC()))
-	_, err := p.CI().Render("caller")
-	if err == nil {
-		t.Fatal("Render(\"caller\") on GitLab: expected ErrUnsupported, got nil")
+
+	callerOut, err := p.CI().Render("caller")
+	if err != nil {
+		t.Fatalf("Render(\"caller\") on GitLab: %v", err)
 	}
-	if !errors.Is(err, forge.ErrUnsupported) {
-		t.Errorf("Render(\"caller\") on GitLab: want ErrUnsupported, got %v", err)
+	releaseOut, err := p.CI().Render("release")
+	if err != nil {
+		t.Fatalf("Render(\"release\") on GitLab: %v", err)
+	}
+	if string(callerOut) != string(releaseOut) {
+		t.Errorf("Render(\"caller\") and Render(\"release\") must be byte-identical on GitLab:\ncaller:\n%s\nrelease:\n%s",
+			callerOut, releaseOut)
+	}
+	// "caller" output must contain GitLab pipeline content (not GitHub workflow_call syntax).
+	if !strings.Contains(string(callerOut), "compute-version:") {
+		t.Error("Render(\"caller\") on GitLab: expected GitLab release pipeline content (compute-version: job)")
 	}
 }
 

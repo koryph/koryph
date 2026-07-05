@@ -11,7 +11,6 @@ import (
 	"github.com/koryph/koryph/internal/forge"
 	githubforge "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/project"
-	"github.com/koryph/koryph/internal/release"
 )
 
 // ---------- registration ------------------------------------------------------
@@ -267,30 +266,6 @@ func TestCIRender_Gate_GateCommandDoesNotRequireReleaseConfig(t *testing.T) {
 	_, err := p.CI().Render("gate")
 	if err != nil {
 		t.Errorf("Render(\"gate\") without ReleaseConfig: expected nil error, got %v", err)
-	}
-}
-
-// TestCIRender_Identity verifies that calling CI().Render("caller") via the
-// GitHub forge produces byte-identical output to calling
-// release.RenderCallerWorkflow directly — the "behaviour-identical extraction"
-// acceptance criterion.
-func TestCIRender_Identity(t *testing.T) {
-	for _, rc := range []*project.ReleaseConfig{goreleaserRC(), commandsRC()} {
-		p := githubforge.New(githubforge.WithReleaseConfig(rc))
-		forgeOut, err := p.CI().Render("caller")
-		if err != nil {
-			t.Fatalf("forge CI.Render: %v", err)
-		}
-
-		directOut, err := release.RenderCallerWorkflow(rc)
-		if err != nil {
-			t.Fatalf("direct RenderCallerWorkflow: %v", err)
-		}
-
-		if string(forgeOut) != string(directOut) {
-			t.Errorf("CI().Render(\"caller\") differs from release.RenderCallerWorkflow:\nforge:\n%s\ndirect:\n%s",
-				forgeOut, directOut)
-		}
 	}
 }
 

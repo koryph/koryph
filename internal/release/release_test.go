@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	gitlabforge "github.com/koryph/koryph/internal/forge/gitlab"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/release"
 )
@@ -188,5 +189,57 @@ func TestSetup_DefaultArtifactsDir(t *testing.T) {
 	}
 	if !strings.Contains(string(wf), `artifacts_dir: "dist"`) {
 		t.Error("workflow should default artifacts_dir to dist when not set")
+	}
+}
+
+// TestSetupForge_GitLabCI verifies that SetupForge with a GitLab CI service
+// installs the GitLab release pipeline (not the GitHub Actions caller workflow).
+// This is the forge-seam acceptance test: release setup must produce
+// forge-appropriate content when called with a non-GitHub CI service —
+// no forge-specific branching occurs inside internal/release.
+func TestSetupForge_GitLabCI(t *testing.T) {
+	root := t.TempDir()
+	rc := goreleaserConfig()
+	ci := gitlabforge.New(gitlabforge.WithReleaseConfig(rc)).CI()
+	res, err := release.SetupForge(root, rc, "0.3.0", ci)
+	if err != nil {
+		t.Fatalf("SetupForge(gitlab): %v", err)
+	}
+
+	wf, err := os.ReadFile(res.WorkflowPath)
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	s := string(wf)
+
+	// The GitLab release pipeline must NOT contain GitHub Actions workflow_call
+	// syntax — it is a full pipeline, not a thin caller snippet.
+	if strings.Contains(s, "koryph/koryph/.github/workflows/release-train.yml@main") {
+		t.Error("GitLab pipeline must not contain GitHub Actions workflow_call reference")
+	}
+	// Must contain core GitLab release pipeline jobs.
+	for _, frag := range []string{"compute-version:", "release-mr:", "tag-release:"} {
+		if !strings.Contains(s, frag) {
+			t.Errorf("GitLab pipeline missing expected job %q", frag)
+		}
+	}
+
+	// Release-please config and manifest are still rendered forge-neutrally.
+	cfg, err := os.ReadFile(res.ConfigPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(cfg), `"release-type": "go"`) {
+		t.Error("config missing release-type go")
+	}
+	if !res.ManifestCreated {
+		t.Error("ManifestCreated should be true on first setup")
+	}
+
+	// Workflow path is a known location within the temp root (currently the
+	// GitHub-conventional path; a forge-aware path refactor is a follow-up).
+	wantSuffix := filepath.Join(".github", "workflows", "release.yml")
+	if !strings.HasSuffix(res.WorkflowPath, wantSuffix) {
+		t.Errorf("WorkflowPath = %q, want suffix %q", res.WorkflowPath, wantSuffix)
 	}
 }

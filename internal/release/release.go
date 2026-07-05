@@ -2,23 +2,23 @@
 // Copyright (c) 2026 The Koryph Developers
 
 // Package release implements `koryph release setup`: rendering and installing
-// the caller GitHub Actions workflow and release-please config/manifest files
+// the forge-specific release pipeline and release-please config/manifest files
 // into a target project.
 //
-// Templates ship as embedded assets and are rendered against a templateData
-// struct derived from the project's ReleaseConfig. The installed files are:
+// The caller workflow (or equivalent forge pipeline) is rendered via the
+// project's forge CI service ([forge.CIService].Render("caller")), keeping
+// the forge seam sealed. The release-please config and manifest are rendered
+// from templates embedded in this package.
 //
-//   - .github/workflows/release.yml     — caller workflow (workflow_call into
-//     koryph/koryph/.github/workflows/release-train.yml@main)
+// Files installed by [Setup] (GitHub default):
+//
+//   - .github/workflows/release.yml     — caller workflow rendered by the
+//     GitHub forge provider
 //   - release-please-config.json        — release-please package config
 //   - .release-please-manifest.json     — initial version manifest (only when
 //     the file does not yet exist, never overwritten)
 //
-// The reusable release-train.yml workflow (koryph-0vf.3, .github/workflows/
-// release-train.yml) is the callee referenced by the rendered caller
-// workflow. Its `on.workflow_call.inputs` names are a contract with the
-// `with:` keys rendered by caller-workflow.yml.tmpl below — keep both in
-// lockstep.
+// For other forge providers use [SetupForge] with the appropriate [forge.CIService].
 package release
 
 import (
@@ -32,15 +32,10 @@ import (
 	"text/template"
 
 	"github.com/koryph/koryph/internal/forge"
+	githubforge "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/project"
 )
-
-// EmbeddedWorkflowTmpl is the caller workflow template source (exported for
-// testing).
-//
-//go:embed caller-workflow.yml.tmpl
-var EmbeddedWorkflowTmpl string
 
 // EmbeddedConfigTmpl is the release-please config template source (exported
 // for testing).
@@ -54,7 +49,9 @@ var EmbeddedConfigTmpl string
 //go:embed release-please-manifest.json.tmpl
 var EmbeddedManifestTmpl string
 
-// templateData is the view-model passed to all three templates.
+// templateData is the view-model passed to the release-please config and
+// manifest templates. The caller workflow template is owned by the GitHub forge
+// provider (internal/forge/github); it uses its own view-model there.
 type templateData struct {
 	// Type is the release-please release type (e.g. "go", "simple").
 	Type string
@@ -101,10 +98,10 @@ type SetupResult struct {
 }
 
 // Setup renders and installs the release pipeline files into repoRoot using
-// the project's release block. It:
+// the project's release block via the default GitHub forge provider. It:
 //
 //  1. Validates that rc is non-nil.
-//  2. Renders caller-workflow.yml from the embedded template.
+//  2. Renders the caller workflow via the GitHub forge CI service.
 //  3. Renders release-please-config.json from the embedded template.
 //  4. Creates .release-please-manifest.json only if it does not exist yet.
 //  5. Returns a SetupResult with paths and remaining HUMAN steps.
@@ -113,23 +110,35 @@ type SetupResult struct {
 // never overwritten — the human operator manages it from the first release
 // onwards.
 //
-// To use the forge-mediated CI rendering path (e.g. for forge portability
-// tests), call [SetupForge] with a non-nil [forge.CIService] instead.
+// For non-GitHub forge providers use [SetupForge] with the appropriate
+// [forge.CIService] (e.g. a GitLab provider's CI service).
 func Setup(repoRoot string, rc *project.ReleaseConfig, initialVersion string) (*SetupResult, error) {
-	return SetupForge(repoRoot, rc, initialVersion, nil)
+	if rc == nil {
+		return nil, fmt.Errorf("release: project has no release block; add one to koryph.project.json first")
+	}
+	ci := githubforge.New(githubforge.WithReleaseConfig(rc)).CI()
+	return SetupForge(repoRoot, rc, initialVersion, ci)
 }
 
-// SetupForge is the forge-mediated variant of [Setup]. When ci is non-nil,
-// the caller workflow bytes are produced by ci.Render("caller") instead of
-// the embedded template; all other behaviour is identical. Pass nil for ci
-// to use the embedded template directly (same as [Setup]).
+// SetupForge is the forge-mediated variant of [Setup]. The ci parameter must
+// be non-nil; use [Setup] for the default GitHub provider.
+//
+// ci.Render("caller") is called to produce the forge-native caller workflow
+// bytes. For GitHub this renders the GitHub Actions workflow_call snippet;
+// for GitLab ci.Render("caller") returns the full release pipeline. All other
+// behaviour (release-please config/manifest rendering, atomic file writes) is
+// forge-neutral.
 //
 // This is the consumption point for [forge.CIService] within internal/release:
-// GitHub-specific (and future GitLab-specific) callers supply the CI service
-// from their forge provider, keeping the forge seam sealed.
+// GitHub-specific (and GitLab-specific) callers supply the CI service from
+// their forge provider, keeping the forge seam sealed and eliminating any
+// forge-specific branching within this package.
 func SetupForge(repoRoot string, rc *project.ReleaseConfig, initialVersion string, ci forge.CIService) (*SetupResult, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("release: project has no release block; add one to koryph.project.json first")
+	}
+	if ci == nil {
+		return nil, fmt.Errorf("release: SetupForge: forge CI service required; use Setup for the default GitHub provider")
 	}
 	if initialVersion == "" {
 		initialVersion = "0.0.0"
@@ -137,21 +146,12 @@ func SetupForge(repoRoot string, rc *project.ReleaseConfig, initialVersion strin
 
 	td := buildTemplateData(rc, initialVersion)
 
-	// Render the caller workflow — via the forge CI service when provided,
-	// or the embedded template when ci is nil (backward-compatible path).
-	var wfBytes []byte
-	var err error
-	if ci != nil {
-		wfBytes, err = ci.Render("caller")
-		if err != nil {
-			return nil, fmt.Errorf("release: forge CI render workflow: %w", err)
-		}
-	} else {
-		wfBytes, err = renderTemplate("caller-workflow.yml", EmbeddedWorkflowTmpl, td)
-		if err != nil {
-			return nil, fmt.Errorf("release: render workflow: %w", err)
-		}
+	// Render the caller workflow via the forge CI service.
+	wfBytes, err := ci.Render("caller")
+	if err != nil {
+		return nil, fmt.Errorf("release: forge CI render workflow: %w", err)
 	}
+
 	cfgBytes, err := renderTemplate("release-please-config.json", EmbeddedConfigTmpl, td)
 	if err != nil {
 		return nil, fmt.Errorf("release: render config: %w", err)
@@ -203,6 +203,8 @@ func SetupForge(repoRoot string, rc *project.ReleaseConfig, initialVersion strin
 }
 
 // buildTemplateData derives the template view-model from a ReleaseConfig.
+// This view-model is used for the release-please config and manifest templates;
+// the caller workflow template is owned by the forge provider.
 func buildTemplateData(rc *project.ReleaseConfig, version string) templateData {
 	td := templateData{
 		Type:         rc.Type,
@@ -256,16 +258,19 @@ func prettifyJSON(src []byte) ([]byte, error) {
 	return append(out, '\n'), nil
 }
 
-// RenderCallerWorkflow renders the caller workflow template against rc and
-// returns the raw YAML bytes. This is exported so the doctor package can
-// compare the installed .github/workflows/release.yml against the current
-// template without re-running the full setup flow.
+// RenderCallerWorkflow renders the caller workflow for the project's GitHub
+// forge CI service and returns the raw YAML bytes. This is exported so the
+// doctor package can compare the installed .github/workflows/release.yml
+// against the current Render output without re-running the full setup flow.
+//
+// The rendering is delegated to [forge.CIService.Render]("caller") on the
+// GitHub provider, so the output is always identical to what [Setup] would
+// install.
 func RenderCallerWorkflow(rc *project.ReleaseConfig) ([]byte, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("release: RenderCallerWorkflow: ReleaseConfig is nil")
 	}
-	td := buildTemplateData(rc, "")
-	return renderTemplate("caller-workflow.yml", EmbeddedWorkflowTmpl, td)
+	return githubforge.New(githubforge.WithReleaseConfig(rc)).CI().Render("caller")
 }
 
 // humanSteps returns the ordered list of actions a human operator must

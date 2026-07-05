@@ -75,6 +75,12 @@ var ciTemplateFuncs = template.FuncMap{
 //     token, gate-before-tag, assemble-then-create artifact upload, cosign
 //     keyless signing. Requires a non-nil ReleaseConfig.
 //
+//   - "caller" — alias for "release" on the GitLab provider. On GitHub
+//     "caller" renders a thin workflow_call snippet that delegates to the
+//     shared release-train workflow; on GitLab the entire release pipeline is
+//     the equivalent asset, so "caller" and "release" are the same kind.
+//     Requires a non-nil ReleaseConfig.
+//
 //   - "docs" — the .gitlab-ci.yml for the GitLab Pages docs-publish pipeline.
 //     Does not require a ReleaseConfig.
 //
@@ -85,7 +91,9 @@ var ciTemplateFuncs = template.FuncMap{
 // All other kinds return [forge.ErrUnsupported].
 func (s *gitlabCISvc) Render(kind string) ([]byte, error) {
 	switch kind {
-	case "release":
+	case "release", "caller":
+		// "caller" on GitLab is the full release pipeline — there is no separate
+		// thin caller snippet as on GitHub, so "caller" and "release" are equivalent.
 		return s.renderRelease()
 	case "docs":
 		return s.renderDocs()

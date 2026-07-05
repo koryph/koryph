@@ -7,12 +7,15 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"strings"
 	"text/template"
 
 	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/project"
-	"github.com/koryph/koryph/internal/release"
 )
+
+//go:embed caller-workflow.yml.tmpl
+var embeddedCallerWorkflowTmpl string
 
 //go:embed gate-workflow.yml.tmpl
 var embeddedGateWorkflowTmpl string
@@ -22,13 +25,44 @@ const defaultGateCmd = "make gate"
 
 // githubCISvc implements [forge.CIService] for GitHub Actions.
 //
-// It renders forge-appropriate CI/CD pipeline asset files using the
-// internal/release template system. The rc field must be non-nil for the
-// "caller" kind; gateCmd is optional (defaults to [defaultGateCmd]) for the
-// "gate" kind.
+// It renders forge-appropriate CI/CD pipeline asset files using embedded
+// templates. The rc field must be non-nil for the "caller" kind; gateCmd is
+// optional (defaults to [defaultGateCmd]) for the "gate" kind.
 type githubCISvc struct {
 	rc      *project.ReleaseConfig
 	gateCmd string // empty means use defaultGateCmd
+}
+
+// callerWorkflowData is the view-model passed to the caller-workflow template.
+//
+// Field names must match the {{.Field}} references in caller-workflow.yml.tmpl.
+// The Version field from the manifest template is intentionally absent here —
+// the caller workflow template does not reference it.
+type callerWorkflowData struct {
+	// Type is the release-please release type (e.g. "go", "simple").
+	Type string
+	// ExtraFiles is the list of additional version-bearing files.
+	ExtraFiles []string
+	// ArtifactsDir is the build artifact directory (default "dist").
+	ArtifactsDir string
+	// BuildMode is "goreleaser" or "commands".
+	BuildMode string
+	// GoreleaserVersion is the goreleaser action version constraint; empty
+	// when build mode is "commands".
+	GoreleaserVersion string
+	// BuildCommands is the ordered shell command list; empty when build mode
+	// is "goreleaser".
+	BuildCommands []string
+	// SBOM enables SBOM generation in the caller workflow.
+	SBOM bool
+	// Provenance enables SLSA provenance in the caller workflow.
+	Provenance bool
+}
+
+// callerTemplateFuncs provides helpers available in the caller-workflow template.
+var callerTemplateFuncs = template.FuncMap{
+	// join concatenates ss with sep (mirrors strings.Join).
+	"join": func(ss []string, sep string) string { return strings.Join(ss, sep) },
 }
 
 // githubGateTemplateData is the view-model passed to the gate workflow template.
@@ -61,18 +95,50 @@ func (s *githubCISvc) Render(kind string) ([]byte, error) {
 	}
 }
 
-// renderCaller renders the release-train caller workflow from the project's
-// ReleaseConfig using the internal/release embedded template.
+// renderCaller renders the release-train caller workflow from the embedded
+// caller-workflow.yml.tmpl template and the project's ReleaseConfig.
 func (s *githubCISvc) renderCaller() ([]byte, error) {
 	if s.rc == nil {
 		return nil, fmt.Errorf("github CI: Render(\"caller\"): release config required; " +
 			"build the provider with github.WithReleaseConfig(rc)")
 	}
-	b, err := release.RenderCallerWorkflow(s.rc)
+	td := buildCallerWorkflowData(s.rc)
+	tmpl, err := template.New("caller-workflow.yml").Funcs(callerTemplateFuncs).Parse(embeddedCallerWorkflowTmpl)
 	if err != nil {
+		return nil, fmt.Errorf("github CI: parse caller workflow template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, td); err != nil {
 		return nil, fmt.Errorf("github CI: render caller workflow: %w", err)
 	}
-	return b, nil
+	return buf.Bytes(), nil
+}
+
+// buildCallerWorkflowData derives the caller-workflow view-model from a
+// ReleaseConfig.
+func buildCallerWorkflowData(rc *project.ReleaseConfig) callerWorkflowData {
+	td := callerWorkflowData{
+		Type:         rc.Type,
+		ExtraFiles:   rc.ExtraFiles,
+		ArtifactsDir: rc.ArtifactsDir,
+		SBOM:         rc.SBOM,
+		Provenance:   rc.Provenance,
+	}
+	if td.ArtifactsDir == "" {
+		td.ArtifactsDir = "dist"
+	}
+	if rc.Build.Goreleaser != nil {
+		td.BuildMode = "goreleaser"
+		v := rc.Build.Goreleaser.Version
+		if v == "" {
+			v = "~> v2"
+		}
+		td.GoreleaserVersion = v
+	} else {
+		td.BuildMode = "commands"
+		td.BuildCommands = rc.Build.Commands
+	}
+	return td
 }
 
 // renderGate renders the green gate workflow from the embedded template.
