@@ -94,6 +94,11 @@ type App struct {
 	// prevTabIdx is the tab index that was active before opening the Detail tab.
 	// Restored when detailBackMsg is received.
 	prevTabIdx int
+
+	// pendingBeadID is the beadID for which an async fetch is in flight.
+	// detailReadyMsg is discarded if its snap.BeadID does not match this field,
+	// preventing a stale late-arriving fetch from clobbering a newer selection.
+	pendingBeadID string
 }
 
 // NewApp creates and initialises the App model.
@@ -225,17 +230,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Fetch fresh detail asynchronously (provider may have newer data
 			// than the last Refresh snapshot; also covers the case where
 			// snap.Detail.BeadID != msg.beadID, i.e. first navigation).
+			a.pendingBeadID = msg.beadID
 			cmds = append(cmds, a.doFetchDetail(msg.beadID))
 		}
 
 	case detailReadyMsg:
-		if a.detailTabIdx >= 0 {
+		// Discard stale results from a previously-selected bead; only apply
+		// the detail if it matches the most-recently-requested beadID.
+		if a.detailTabIdx >= 0 && msg.snap.BeadID == a.pendingBeadID {
 			if dr, ok := a.tabs[a.detailTabIdx].(interface {
 				SetDetail(cockpit.BeadDetailSnapshot)
 			}); ok {
 				dr.SetDetail(msg.snap)
 			}
 		}
+
+	case tea.MouseMsg:
+		// Route mouse events to the active tab so dep-row click handling in
+		// the Detail tab (and any future tab) is reachable.
+		var cmd tea.Cmd
+		a, cmd = a.updateActiveTab(msg)
+		cmds = append(cmds, cmd)
 
 	case detailBackMsg:
 		// Return to the tab that was active before the detail panel was opened.
