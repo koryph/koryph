@@ -240,10 +240,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.doRefresh(), a.adaptiveTick())
 
 	case snapshotMsg:
+		wasIdle := a.isIdle()
 		a.snap = cockpit.Snapshot(msg)
 		a.lastError = ""
 		for i := range a.tabs {
 			a.tabs[i].SetSnapshot(a.snap)
+		}
+		// Idle→active transition: the previously-queued slow tick may not fire
+		// for up to idleRefreshInterval. Schedule a fast tick now so the threads
+		// and status bar start updating at refreshInterval immediately.
+		if wasIdle && !a.isIdle() {
+			cmds = append(cmds, a.adaptiveTick())
 		}
 
 	case errMsg:
@@ -596,10 +603,18 @@ func (a App) adaptiveTick() tea.Cmd {
 // snapshotUnchanged reports whether next is semantically identical to prev for
 // TUI rendering purposes. CapturedAt is intentionally excluded — it changes
 // every tick even when no data has changed.
+//
+// The sub-snapshot ComputedAt fields (Burndown, Graph, Efficiency, Queue) act
+// as cache-epoch stamps: they advance whenever the provider's TTL fires and
+// new data is assembled. Comparing them is intentionally coarse — a false-
+// positive re-render is cheap and safe; a false-negative (missing an update to
+// Burndown/Queue/Efficiency/Graph) is not.
 func snapshotUnchanged(prev, next cockpit.Snapshot) bool {
+	// Top-level run state.
 	if prev.RunID != next.RunID || prev.RunStatus != next.RunStatus || prev.Wave != next.Wave {
 		return false
 	}
+	// Slots: count, identity, and per-slot status fields.
 	if len(prev.Slots) != len(next.Slots) {
 		return false
 	}
@@ -611,7 +626,59 @@ func snapshotUnchanged(prev, next cockpit.Snapshot) bool {
 			return false
 		}
 	}
-	return len(prev.Events.Events) == len(next.Events.Events)
+	// Sub-snapshot cache epochs. These change whenever the provider's TTL fires
+	// so any freshly-assembled Burndown/Graph/Efficiency/Queue data propagates.
+	if !prev.Burndown.ComputedAt.Equal(next.Burndown.ComputedAt) {
+		return false
+	}
+	if !prev.Graph.ComputedAt.Equal(next.Graph.ComputedAt) {
+		return false
+	}
+	if !prev.Efficiency.ComputedAt.Equal(next.Efficiency.ComputedAt) {
+		return false
+	}
+	if !prev.Queue.ComputedAt.Equal(next.Queue.ComputedAt) {
+		return false
+	}
+	// Governor: compare total leases (agent starts/stops) and effective dynamic
+	// cap (AIMD adjustments) — the two values shown in the status bar and the
+	// Efficiency tab's governor section.
+	if governorLeases(prev.Governor) != governorLeases(next.Governor) ||
+		governorDynamic(prev.Governor) != governorDynamic(next.Governor) {
+		return false
+	}
+	// Events: length check plus last-event identity check for the at-capacity
+	// rotation case: when len == eventsRingMax the oldest event is dropped and
+	// the newest changes, keeping the length constant but the content stale.
+	if len(prev.Events.Events) != len(next.Events.Events) {
+		return false
+	}
+	if n := len(next.Events.Events); n > 0 {
+		pe := prev.Events.Events[n-1]
+		ne := next.Events.Events[n-1]
+		if !pe.Time.Equal(ne.Time) || pe.Kind != ne.Kind {
+			return false
+		}
+	}
+	return true
+}
+
+// governorLeases returns the total number of active leases across all pools.
+func governorLeases(g cockpit.GovernorSnapshot) int {
+	total := 0
+	for _, p := range g.Pools {
+		total += p.Leases
+	}
+	return total
+}
+
+// governorDynamic returns the sum of effective dynamic caps across all pools.
+func governorDynamic(g cockpit.GovernorSnapshot) int {
+	total := 0
+	for _, p := range g.Pools {
+		total += p.Dynamic
+	}
+	return total
 }
 
 // headerHeight is the number of fixed rows above the content area:
