@@ -145,23 +145,48 @@ func redactJSONLine(line []byte) ([]byte, bool) {
 	return out, true
 }
 
-// redactMap recursively applies redaction to a map's string values.
+// redactMap recursively applies redaction to a map's values.
 // The function mirrors the slog-level RedactRecord logic but operates on
 // a decoded map (used for export re-verification).
+//
+// IsSecretKey is checked first, before the type switch, so secret-keyed
+// fields of any type (strings, arrays, nested objects) are fully redacted.
 func redactMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
+		if IsSecretKey(k) {
+			out[k] = Redacted
+			continue
+		}
 		switch val := v.(type) {
 		case string:
-			if IsSecretKey(k) {
-				out[k] = Redacted
-			} else {
-				out[k] = RedactValue(val)
-			}
+			out[k] = RedactValue(val)
 		case map[string]any:
 			out[k] = redactMap(val)
+		case []any:
+			out[k] = redactSlice(val)
 		default:
 			out[k] = v
+		}
+	}
+	return out
+}
+
+// redactSlice applies redaction to each element of a JSON array value.
+// String elements are pattern-scanned; nested maps are recursively redacted;
+// nested slices are recursively handled; scalars pass through unchanged.
+func redactSlice(s []any) []any {
+	out := make([]any, len(s))
+	for i, elem := range s {
+		switch val := elem.(type) {
+		case string:
+			out[i] = RedactValue(val)
+		case map[string]any:
+			out[i] = redactMap(val)
+		case []any:
+			out[i] = redactSlice(val)
+		default:
+			out[i] = val
 		}
 	}
 	return out

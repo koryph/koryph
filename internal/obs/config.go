@@ -22,8 +22,11 @@ type Config struct {
 	// "text" (human-readable, default) or "json".
 	Format string `json:"format,omitempty"`
 
-	// OTELEndpoint, when non-empty, enables OTLP export to the given gRPC
-	// endpoint (e.g. "localhost:4317"). Overridden by KORYPH_OTEL_ENDPOINT.
+	// OTELEndpoint, when non-empty, enables OTLP/HTTP JSON export to the given
+	// endpoint (e.g. "https://collector.internal:4318").  The implementation
+	// speaks OTLP/HTTP on /v1/logs (default port 4318), not gRPC.  Prefer an
+	// https:// scheme for any non-localhost collector — plain http:// sends
+	// telemetry in cleartext.  Overridden by KORYPH_OTEL_ENDPOINT.
 	OTELEndpoint string `json:"otel_endpoint,omitempty"`
 
 	// Components holds per-component level overrides. Keys are component

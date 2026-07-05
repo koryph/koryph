@@ -110,6 +110,60 @@ func TestExportRunMissingDir(t *testing.T) {
 	}
 }
 
+// TestRedactMapSecretKeyedArray verifies the blocking fix: a secret-keyed field
+// whose value is a JSON array (e.g. "authorization":["Bearer tok"]) must be
+// fully redacted, not passed through unredacted.
+func TestRedactMapSecretKeyedArray(t *testing.T) {
+	m := map[string]any{
+		"msg": "outbound request",
+		// Secret key with an array value — the blocking finding.
+		"authorization": []any{"Bearer sk-supersecret"},
+		// Secret key with a non-array, non-string value.
+		"token": 12345,
+		// Non-secret key with an array that contains string values.
+		"tags": []any{"engine", "run-1"},
+	}
+	out := redactMap(m)
+
+	if out["msg"] != "outbound request" {
+		t.Errorf("msg = %v", out["msg"])
+	}
+	// Secret-keyed array must be replaced with Redacted, not passed through.
+	if out["authorization"] != Redacted {
+		t.Errorf("authorization = %v, want %q (blocking fix for secret-keyed array)", out["authorization"], Redacted)
+	}
+	// Secret-keyed numeric value must also be redacted.
+	if out["token"] != Redacted {
+		t.Errorf("token = %v, want %q (blocking fix for secret-keyed non-string)", out["token"], Redacted)
+	}
+	// Non-secret key: array elements should be string-scanned for secrets, not blanket-redacted.
+	tags, ok := out["tags"].([]any)
+	if !ok {
+		t.Fatalf("tags is not []any: %T", out["tags"])
+	}
+	if len(tags) != 2 {
+		t.Errorf("tags len = %d, want 2", len(tags))
+	}
+}
+
+func TestRedactSliceNestedMap(t *testing.T) {
+	// Array element is a map that contains a secret key.
+	s := []any{
+		map[string]any{"password": "hunter2", "safe": "val"},
+	}
+	out := redactSlice(s)
+	inner, ok := out[0].(map[string]any)
+	if !ok {
+		t.Fatalf("element 0 is not map: %T", out[0])
+	}
+	if inner["password"] != Redacted {
+		t.Errorf("inner.password = %v, want %q", inner["password"], Redacted)
+	}
+	if inner["safe"] != "val" {
+		t.Errorf("inner.safe = %v, want val", inner["safe"])
+	}
+}
+
 func TestRedactMapNestedSecret(t *testing.T) {
 	m := map[string]any{
 		"msg":   "hello",

@@ -18,9 +18,12 @@ import (
 // OTLPHTTPHandler exports log records to an OTLP/HTTP JSON endpoint
 // (default port 4318, path /v1/logs).  Records are batched in memory and
 // flushed periodically (every 5 s) or when the batch reaches 100 records.
-// Close must be called to flush the final batch and stop the flush goroutine.
+// Close must be called to flush the final batch and stop the flush goroutine;
+// calling Close more than once is safe (subsequent calls are no-ops).
 //
 // When otel_endpoint does not include a scheme it is assumed to be HTTP.
+// Use an https:// scheme for non-localhost collectors; plain http:// sends
+// telemetry in cleartext.
 // The path /v1/logs is always appended unless the endpoint already ends with
 // /v1/logs.
 //
@@ -35,6 +38,7 @@ type OTLPHTTPHandler struct {
 
 	flushC chan struct{}
 	done   chan struct{}
+	once   sync.Once // guards close(done)
 }
 
 // otlpLogRecord is the OTLP LogRecord wire type (JSON subset used here).
@@ -96,7 +100,8 @@ func severityNumber(level slog.Level) int {
 }
 
 // normaliseEndpoint ensures the endpoint has an HTTP scheme and ends with
-// /v1/logs.
+// /v1/logs.  A bare host (no scheme) is treated as http://; use an explicit
+// https:// scheme for any non-localhost collector to avoid cleartext export.
 func normaliseEndpoint(ep string) string {
 	if !strings.HasPrefix(ep, "http://") && !strings.HasPrefix(ep, "https://") {
 		ep = "http://" + ep
@@ -159,20 +164,56 @@ func (h *OTLPHTTPHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
+// WithAttrs returns a new handler that prepends attrs to every log record.
+// The returned handler shares the same batch queue and background goroutine
+// as h, so Close must still be called on the original OTLPHTTPHandler.
 func (h *OTLPHTTPHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	// OTLPHTTPHandler is not attr-stateful; return self for simplicity.
-	// A production implementation would pre-encode attrs into the batch.
-	return h
+	cp := make([]slog.Attr, len(attrs))
+	copy(cp, attrs)
+	return &otlpWithAttrs{OTLPHTTPHandler: h, attrs: cp}
 }
 
 func (h *OTLPHTTPHandler) WithGroup(_ string) slog.Handler { return h }
 
 // Close flushes any pending batch and stops the background goroutine.
+// Safe to call more than once; subsequent calls are no-ops.
 func (h *OTLPHTTPHandler) Close() error {
-	close(h.done)
+	h.once.Do(func() { close(h.done) })
 	h.flush()
 	return nil
 }
+
+// otlpWithAttrs is returned by WithAttrs.  It wraps OTLPHTTPHandler and
+// prepends the scoped attrs to every Handle call, preserving correlation
+// context (component, run_id, etc.) in every exported record.
+type otlpWithAttrs struct {
+	*OTLPHTTPHandler
+	attrs []slog.Attr
+}
+
+func (w *otlpWithAttrs) Enabled(ctx context.Context, level slog.Level) bool {
+	return w.OTLPHTTPHandler.Enabled(ctx, level)
+}
+
+// Handle prepends the scoped attrs then delegates to the shared handler.
+func (w *otlpWithAttrs) Handle(ctx context.Context, r slog.Record) error {
+	nr := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	nr.AddAttrs(w.attrs...)
+	r.Attrs(func(a slog.Attr) bool {
+		nr.AddAttrs(a)
+		return true
+	})
+	return w.OTLPHTTPHandler.Handle(ctx, nr)
+}
+
+func (w *otlpWithAttrs) WithAttrs(attrs []slog.Attr) slog.Handler {
+	merged := make([]slog.Attr, len(w.attrs)+len(attrs))
+	copy(merged, w.attrs)
+	copy(merged[len(w.attrs):], attrs)
+	return &otlpWithAttrs{OTLPHTTPHandler: w.OTLPHTTPHandler, attrs: merged}
+}
+
+func (w *otlpWithAttrs) WithGroup(_ string) slog.Handler { return w }
 
 func (h *OTLPHTTPHandler) flushLoop() {
 	ticker := time.NewTicker(5 * time.Second)
