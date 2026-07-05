@@ -372,4 +372,4 @@ The bottom line of the TUI shows:
 - `koryph nudge` — nudge a bead from the CLI (supports queued beads).
 - `koryph drain` — request a graceful wind-down from the CLI.
 - [IDE cockpit vs terminal cockpit](../ide-integration.md#4-terminal-cockpit-vs-vs-code-cockpit)
-- [Design document](../designs/2026-07-tui-cockpit.md)
+- [Design document](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-tui-cockpit.md)
