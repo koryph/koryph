@@ -60,6 +60,33 @@ graph the *only* source of ready work, koryph removes the drift entirely: an
 agent cannot start a bead whose dependencies are open, because such a bead is
 not on the frontier it was handed.
 
+## Epic lifecycle
+
+An *epic* is a container bead that organizes a cluster of `task`, `bug`, and
+`chore` children. Epics themselves never dispatch; the loop works through
+their children. When the last child closes, the loop runs a
+**whole-epic validation** — a two-lens review of everything that shipped
+under the epic:
+
+1. **Completeness** — did the union meet the epic's design goals in letter
+   and spirit? Gaps become new child beads; the loop dispatches them as a
+   follow-up round.
+2. **Structural health** — code duplication, dependency violations, and
+   library-shaped code stranded in leaf packages that only emerge when the
+   whole epic is visible. Findings become standalone `validation:structural`
+   beads that never block the epic.
+
+After a passing verdict the engine files a `validation:docs` child bead so
+documentation is written against the settled implementation. When that bead
+closes (or immediately, if `docs_update` is disabled), the epic closes.
+Epics that exhaust `max_rounds` without a passing verdict are labeled
+`validation:parked` for operator triage. Label an epic `no-validate` to
+skip validation and the docs stage entirely.
+
+See [Epic validation](../user-guide/epic-validation.md) for the full
+lifecycle diagram, configuration reference, and the `koryph epic validate`
+backfill command.
+
 ## Operate it
 
 - [Running waves](../user-guide/running-waves.md) — dispatching from the

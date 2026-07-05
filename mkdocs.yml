@@ -60,6 +60,7 @@ nav:
       - Verifying a release: user-guide/supply-chain.md
       - Collaboration: user-guide/collaboration.md
       - Intake: user-guide/intake.md
+      - Epic validation: user-guide/epic-validation.md
       - Doctor: user-guide/doctor.md
       - IDE integration: ide-integration.md
   - Developer guide:
