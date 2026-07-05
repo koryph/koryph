@@ -404,7 +404,7 @@ type wireIssue struct {
 	Labels          []string     `json:"labels"`
 	DependencyCount int          `json:"dependency_count"`
 	DependentCount  int          `json:"dependent_count"`
-	ParentID        string       `json:"parent_id"`
+	ParentID        string       `json:"parent"` // bd's wire key is "parent", not "parent_id"
 }
 
 func (w wireIssue) toIssue() Issue {

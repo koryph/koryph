@@ -27,7 +27,7 @@ case "$1" in
     ;;
   ready)
     # JSON array, integer priority, one issue with null labels.
-    printf '[{"id":"a-1","title":"Alpha","status":"open","priority":1,"issue_type":"task","labels":["fp:go:api"],"parent_id":"epic-1"},{"id":"a-2","title":"Beta","status":"open","priority":0,"issue_type":"task","labels":null}]'
+    printf '[{"id":"a-1","title":"Alpha","status":"open","priority":1,"issue_type":"task","labels":["fp:go:api"],"parent":"epic-1"},{"id":"a-2","title":"Beta","status":"open","priority":0,"issue_type":"task","labels":null}]'
     ;;
   show)
     # {"issue":{...}} envelope, string priority "P2", non-empty notes (a

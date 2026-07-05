@@ -56,7 +56,11 @@ type Issue struct {
 	Labels          []string `json:"labels"`
 	DependencyCount int      `json:"dependency_count,omitempty"`
 	DependentCount  int      `json:"dependent_count,omitempty"`
-	ParentID        string   `json:"parent_id,omitempty"`
+	// ParentID is bd's parent linkage. bd emits the key as "parent" in both
+	// `bd show --json` and `bd ready --json` (NOT "parent_id" — that key is
+	// always null; live repro 2026-07-05, first consumer koryph-wo0.4's
+	// epic-validation trigger).
+	ParentID string `json:"parent,omitempty"`
 }
 
 // ReadyOpts scopes the ready-frontier query.
