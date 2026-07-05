@@ -110,3 +110,47 @@ Two edges to know:
   `koryph/<project>/<bead>/a<attempt>` — visible in the session picker of
   a window running on that same account (and via `claude agents`), not in
   windows on the other account.
+
+## 4. Terminal cockpit vs VS Code cockpit
+
+Koryph ships two live-data cockpits that share the same `internal/cockpit`
+data layer. They are complementary, not competing — pick the one that fits
+the context:
+
+| | Terminal cockpit (`koryph tui`) | VS Code cockpit (extension koryph-ew2) |
+|---|---|---|
+| **Access** | Any terminal, SSH, headless | VS Code window |
+| **Zero-install** | Yes — ships with `koryph` binary | Must build from source until marketplace publication |
+| **Tabs** | Threads, Burndown, Events, Efficiency, Queue, Detail | Thread tree view (more panels planned) |
+| **Write actions** | Nudge (`n`), Drain (`D`) | Dispatch/drain controls (planned) |
+| **Read-only mode** | `--read-only` flag | N/A (not yet implemented) |
+| **SSH / headless** | Full support | Requires VS Code remote extension |
+| **Best for** | Monitoring over SSH, CI dashboards, full-lifecycle ops | Staying in the editor while agents run |
+
+### Shared data layer
+
+Both cockpits are backed by `internal/cockpit` (`cockpit.Provider` /
+`cockpit.Snapshot`). The provider reads from:
+
+- The project's **run ledger** (`.plan-logs/<project>/<run>/`) for slot
+  state, events, and cost data.
+- The **beads DB** (`refs/dolt/data`) for queue topology, epic membership,
+  and velocity history.
+- The **governor state file** for pool caps, AIMD state, and breaker status.
+- The **quota ledger** for window spend and ceiling.
+
+Because both cockpits call the same `Refresh()` and `BeadDetail()` methods,
+a number visible in the terminal tab is the same number the VS Code panel
+would show for the same project — there is no separate sync path.
+
+### Choosing between them
+
+- **Ops from a remote machine** (SSH, paired session, CI observer): use
+  `koryph tui`. It has no GUI dependency and the full six-tab surface.
+- **Staying in the editor**: use the VS Code extension. It keeps bead status
+  visible in the editor sidebar without a separate terminal window.
+- **Both at once**: they coexist without conflict. Both are read-mostly;
+  write actions (nudge/drain) are serialised by the ledger layer so a drain
+  from the TUI and a drain from the extension produce one sentinel, not two.
+
+See [tui.md](user-guide/tui.md) for the full terminal cockpit reference.
