@@ -35,7 +35,7 @@ func init() {
 	registerTab(TabDef{
 		Name:  "Efficiency",
 		Order: 3,
-		New:   func(theme Theme) TabModel { return newEfficiencyModel(theme) },
+		New:   func(theme Theme, _ bool) TabModel { return newEfficiencyModel(theme) },
 	})
 }
 
@@ -58,6 +58,9 @@ func newEfficiencyModel(theme Theme) *efficiencyModel {
 
 // Init implements TabModel.
 func (m *efficiencyModel) Init() tea.Cmd { return nil }
+
+// IsCapturingInput implements TabModel. Efficiency tab has no text inputs.
+func (m *efficiencyModel) IsCapturingInput() bool { return false }
 
 // Update implements TabModel (no scroll in this tab for v1).
 func (m *efficiencyModel) Update(_ tea.Msg) (TabModel, tea.Cmd) {

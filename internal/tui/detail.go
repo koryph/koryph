@@ -32,8 +32,8 @@ import (
 func init() {
 	registerTab(TabDef{
 		Name:  "Detail",
-		Order: 2,
-		New:   func(theme Theme) TabModel { return newDetailModel(theme) },
+		Order: 99,
+		New:   func(theme Theme, _ bool) TabModel { return newDetailModel(theme) },
 	})
 }
 
@@ -93,6 +93,9 @@ func newDetailModel(theme Theme) *detailModel {
 
 // Init implements TabModel.
 func (m *detailModel) Init() tea.Cmd { return nil }
+
+// IsCapturingInput implements TabModel. Detail tab has no text inputs.
+func (m *detailModel) IsCapturingInput() bool { return false }
 
 // SetBead sets the focused bead ID and clears stale detail.
 // Called by App when showDetailMsg is received.

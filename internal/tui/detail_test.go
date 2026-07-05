@@ -55,7 +55,7 @@ func newDetailSnap() cockpit.Snapshot {
 func TestDetailRendersFields(t *testing.T) {
 	snap := newDetailSnap()
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -79,7 +79,7 @@ func TestDetailRendersFields(t *testing.T) {
 func TestDetailShowsDepLinks(t *testing.T) {
 	snap := newDetailSnap()
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -101,7 +101,7 @@ func TestDetailShowsDepLinks(t *testing.T) {
 func TestDetailNoBeadSelected(t *testing.T) {
 	// Use a snap with no bead detail so the Detail tab shows placeholder.
 	p := &staticProvider{id: "proj-1", snap: newTestSnap()}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -111,7 +111,9 @@ func TestDetailNoBeadSelected(t *testing.T) {
 		return strings.Contains(string(bts), "Threads")
 	})
 
-	// Tab to Detail tab (Tab once → Burndown, Tab again → Detail).
+	// Tab to Detail tab (Threads→Burndown→Events→Efficiency→Detail).
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 
@@ -126,7 +128,7 @@ func TestDetailNoBeadSelected(t *testing.T) {
 func TestDetailDepNavigation(t *testing.T) {
 	snap := newDetailSnap()
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -136,7 +138,9 @@ func TestDetailDepNavigation(t *testing.T) {
 		return strings.Contains(string(bts), "Threads")
 	})
 
-	// Navigate to the Detail tab via Tab key (Threads→Burndown→Detail).
+	// Navigate to the Detail tab via Tab key (Threads→Burndown→Events→Efficiency→Detail).
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 
@@ -145,10 +149,9 @@ func TestDetailDepNavigation(t *testing.T) {
 	})
 
 	// Switch back to Threads and press Enter to open detail for abc-1.
-	// Detail → Efficiency → Queue → Threads (wraps): the merged tab set is
-	// Threads(0) Burndown(1) Detail(2) Efficiency(3) Queue(4).
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	// Detail is registered last (Order 99), so one Tab wraps to Threads.
+	// Full set: Threads(0) Burndown(1) Events(2) Efficiency(3) Queue(4)
+	// Detail(99).
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	waitFor(t, tm, func(bts []byte) bool {
 		return strings.Contains(string(bts), "Add widget support")
@@ -171,7 +174,7 @@ func TestDetailDepNavigation(t *testing.T) {
 func TestDetailBackstack(t *testing.T) {
 	snap := newDetailSnap()
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -201,7 +204,7 @@ func TestDetailBackstack(t *testing.T) {
 func TestDetailBlockerHighlight(t *testing.T) {
 	snap := newDetailSnap()
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
@@ -225,7 +228,7 @@ func TestDetailLogTail(t *testing.T) {
 	// Point the detail at a log file that exists (use /dev/null for portability).
 	snap.Detail.LogPath = "/dev/null"
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
