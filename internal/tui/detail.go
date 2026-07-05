@@ -197,6 +197,11 @@ func (m *detailModel) refreshLog() {
 	}
 	content := string(buf)
 	if offset > 0 {
+		// Align to a newline boundary so the first visible line is not a
+		// partial UTF-8 sequence or mid-line fragment from the seek offset.
+		if nl := strings.IndexByte(content, '\n'); nl >= 0 {
+			content = content[nl+1:]
+		}
 		content = "[\u2026truncated\u2026]\n" + content
 	}
 	m.logVP.SetContent(content)
