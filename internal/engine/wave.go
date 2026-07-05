@@ -17,6 +17,7 @@ import (
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
+	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/modelroute"
@@ -642,8 +643,16 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		return
 	}
 
+	// Auto-filed docs-update beads (epic validation §4b, label validation:docs)
+	// dispatch as the docs stage: PersonaFor(StageDocs) routes them to the
+	// docs-author persona instead of the implementer. Everything else stays
+	// implement-stage.
+	stage := modelroute.StageImplement
+	if q.issue.HasLabel(epicreview.LabelDocs) {
+		stage = modelroute.StageDocs
+	}
 	res, err := modelroute.Resolve(modelroute.Req{
-		Stage:         modelroute.StageImplement,
+		Stage:         stage,
 		Labels:        q.issue.Labels,
 		RunDefault:    r.opts.DefaultModel,
 		AllowedModels: r.rec.AllowedModels,

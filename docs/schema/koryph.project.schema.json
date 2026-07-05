@@ -2,6 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://koryph.dev/schemas/config",
   "$defs": {
+    "EpicDocsUpdateConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enabled gates the docs-update stage (default true). When false a met\nverdict closes the epic immediately per auto_close."
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Labels are stamped on the auto-filed docs bead alongside\nvalidation:docs (default [\"area:docs\"]; fp:docs-nav is koryph's own\naddition — its nav block is a shared write)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "EpicDocsUpdateConfig is the docs_update sub-block of epic_validation."
+    },
     "EpicValidationConfig": {
       "properties": {
         "enabled": {
@@ -31,6 +49,10 @@
         "structural_parent": {
           "type": "string",
           "description": "StructuralParent, when non-empty, is the bead ID of the epic (or\nstandalone container bead) under which structural follow-up beads are\nfiled. When empty (default) structural findings stand alone as top-level\nbeads."
+        },
+        "docs_update": {
+          "$ref": "#/$defs/EpicDocsUpdateConfig",
+          "description": "DocsUpdate configures the post-validation documentation stage (design\n§4b): on a met verdict the engine files one docs-update child bead and\nthe epic closes when it merges. Nil resolves to the documented defaults\nvia EffectiveDocsUpdate()."
         }
       },
       "additionalProperties": false,

@@ -127,5 +127,14 @@
     "parameters": {
       "required_checks": "pre-commit,make gate"
     }
+  },
+  "epic_validation": {
+    "structural_parent": "koryph-qta",
+    "docs_update": {
+      "labels": [
+        "area:docs",
+        "fp:docs-nav"
+      ]
+    }
   }
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -218,6 +219,10 @@ func TestEpicValidateMetClosesEpic(t *testing.T) {
 	t.Setenv("KORYPH_CLAUDE_BIN", claudeBin)
 
 	rec := registerEpicProject(t, "proj-met")
+	// Disable the docs-update stage: this test covers the direct-close path
+	// (docs_update disabled -> met closes per auto_close default true).
+	docsOff := false
+	writeProjConfig(t, rec.Root, nil, &docsOff)
 
 	code, out, _ := runCmd("epic", "validate", "my-epic-1", "--project", rec.ProjectID)
 	if code != 0 {
@@ -233,7 +238,7 @@ func TestEpicValidateMetClosesEpic(t *testing.T) {
 		t.Fatal("read argv log:", err)
 	}
 	calls := string(argv)
-	if !strings.Contains(calls, "close") {
+	if !strings.Contains(calls, "close my-epic-1") {
 		t.Errorf("bd close not called; argv log: %s", calls)
 	}
 	if !strings.Contains(calls, "update") {
@@ -252,7 +257,8 @@ func TestEpicValidateMetAutoCloseFalse(t *testing.T) {
 	rec := registerEpicProject(t, "proj-autoclose-false")
 	// Write a project config with auto_close=false.
 	autoCloseFalse := false
-	writeProjConfig(t, rec.Root, &autoCloseFalse)
+	docsOff2 := false
+	writeProjConfig(t, rec.Root, &autoCloseFalse, &docsOff2)
 
 	code, out, _ := runCmd("epic", "validate", "my-epic-1", "--project", rec.ProjectID)
 	if code != 0 {
@@ -261,7 +267,7 @@ func TestEpicValidateMetAutoCloseFalse(t *testing.T) {
 	// Should label, not close.
 	argv, _ := os.ReadFile(argsLog)
 	calls := string(argv)
-	if strings.Contains(calls, "close") {
+	if strings.Contains(calls, "close my-epic-1") {
 		t.Errorf("bd close should NOT be called when auto_close=false; argv log: %s", calls)
 	}
 	if !strings.Contains(calls, "add-label") {
@@ -269,6 +275,41 @@ func TestEpicValidateMetAutoCloseFalse(t *testing.T) {
 	}
 	if !strings.Contains(out, "auto_close=false") {
 		t.Errorf("stdout should mention auto_close=false; got: %s", out)
+	}
+}
+
+func TestEpicValidateMetFilesDocsBead(t *testing.T) {
+	isolate(t)
+	argsLog := installEpicFakeBD(t)
+
+	verdictJSON := `{"met":true,"summary":"All goals met."}`
+	claudeBin := epicFakeClaude(t, wrapVerdict(verdictJSON))
+	t.Setenv("KORYPH_CLAUDE_BIN", claudeBin)
+
+	rec := registerEpicProject(t, "proj-met-docs")
+	// No project config: docs_update defaults to enabled (design 4b) — met
+	// labels validation:passed and files the docs bead; the epic is NOT
+	// closed until the docs bead merges.
+	code, out, _ := runCmd("epic", "validate", "my-epic-1", "--project", rec.ProjectID)
+	if code != 0 {
+		t.Errorf("code = %d, want 0 for met verdict", code)
+	}
+	argv, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal("read argv log:", err)
+	}
+	calls := string(argv)
+	if strings.Contains(calls, "close my-epic-1") {
+		t.Errorf("epic must NOT close while the docs bead is open; argv log: %s", calls)
+	}
+	if !strings.Contains(calls, "add-label validation:passed") {
+		t.Errorf("validation:passed label missing; argv log: %s", calls)
+	}
+	if !strings.Contains(calls, "validation:docs") {
+		t.Errorf("docs bead with validation:docs label not created; argv log: %s", calls)
+	}
+	if !strings.Contains(out, "docs bead") {
+		t.Errorf("stdout should mention the docs bead; got: %s", out)
 	}
 }
 
@@ -466,7 +507,7 @@ func TestEpicValidateRoundFlag(t *testing.T) {
 
 func TestDetectNextRoundEmpty(t *testing.T) {
 	dir := t.TempDir()
-	got := detectNextRound(dir, "my-epic")
+	got := epicreview.DetectNextRound(dir, "my-epic")
 	if got != 1 {
 		t.Errorf("detectNextRound empty dir = %d, want 1", got)
 	}
@@ -483,14 +524,14 @@ func TestDetectNextRoundWithPriorFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := detectNextRound(dir, "my-epic")
+	got := epicreview.DetectNextRound(dir, "my-epic")
 	if got != 3 {
 		t.Errorf("detectNextRound = %d, want 3", got)
 	}
 }
 
 func TestDetectNextRoundMissingDir(t *testing.T) {
-	got := detectNextRound("/nonexistent/dir", "my-epic")
+	got := epicreview.DetectNextRound("/nonexistent/dir", "my-epic")
 	if got != 1 {
 		t.Errorf("detectNextRound missing dir = %d, want 1", got)
 	}
@@ -498,7 +539,7 @@ func TestDetectNextRoundMissingDir(t *testing.T) {
 
 func TestLoadPriorVerdictsEmpty(t *testing.T) {
 	dir := t.TempDir()
-	got := loadPriorVerdicts(dir, "my-epic", 1)
+	got := epicreview.LoadPriorVerdicts(dir, "my-epic", 1)
 	if len(got) != 0 {
 		t.Errorf("loadPriorVerdicts round 1 = %v, want empty", got)
 	}
@@ -513,7 +554,7 @@ func TestLoadPriorVerdictsReadsRounds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := loadPriorVerdicts(dir, "my-epic", 3) // asking for round 3 → reads 1+2
+	got := epicreview.LoadPriorVerdicts(dir, "my-epic", 3) // asking for round 3 → reads 1+2
 	if len(got) != 2 {
 		t.Fatalf("loadPriorVerdicts = %v, want 2 entries", got)
 	}
@@ -532,7 +573,7 @@ func TestLoadPriorVerdictsSkipsMissingRound(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"round":2}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := loadPriorVerdicts(dir, "my-epic", 3)
+	got := epicreview.LoadPriorVerdicts(dir, "my-epic", 3)
 	if len(got) != 1 {
 		t.Fatalf("loadPriorVerdicts = %v, want 1 entry (round 2 only)", got)
 	}
@@ -542,10 +583,14 @@ func TestLoadPriorVerdictsSkipsMissingRound(t *testing.T) {
 
 // writeProjConfig writes a minimal but valid koryph.project.json with the
 // given epic_validation.auto_close setting.
-func writeProjConfig(t *testing.T, root string, autoClose *bool) {
+func writeProjConfig(t *testing.T, root string, autoClose, docsEnabled *bool) {
 	t.Helper()
+	type docsCfg struct {
+		Enabled *bool `json:"enabled,omitempty"`
+	}
 	type evCfg struct {
-		AutoClose *bool `json:"auto_close,omitempty"`
+		AutoClose  *bool    `json:"auto_close,omitempty"`
+		DocsUpdate *docsCfg `json:"docs_update,omitempty"`
 	}
 	type cfg struct {
 		SchemaVersion  int      `json:"schema_version"`
@@ -562,6 +607,9 @@ func writeProjConfig(t *testing.T, root string, autoClose *bool) {
 		Gate:           []string{"true"}, // at least one gate command required
 		MergePolicy:    "manual",
 		EpicValidation: evCfg{AutoClose: autoClose},
+	}
+	if docsEnabled != nil {
+		c.EpicValidation.DocsUpdate = &docsCfg{Enabled: docsEnabled}
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

@@ -49,12 +49,14 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			return r.interrupted()
 		}
 		r.patrolIfDue(ctx)
+		r.drainEpicResults(ctx)
 
 		gate := r.governorGate(ctx)
 		if gate.paused {
 			return gate.outcome, nil
 		}
 		allowDispatch := gate.allowDispatch
+		r.maybeStartEpicValidation(ctx, allowDispatch)
 		level, calibrated, usage, budgetHit := gate.level, gate.calibrated, gate.usage, gate.budgetHit
 		width := gate.width
 
@@ -108,7 +110,8 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		// frontier reports "drained" even while draining/stopped — mirrors
 		// waveLoop, where drain (unlike stop) still scans and can find
 		// nothing left to do.
-		if scanned && eligible == 0 && len(active) == 0 && len(w.Items) == 0 {
+		if scanned && eligible == 0 && len(active) == 0 && len(w.Items) == 0 &&
+			r.epicInFlight == "" {
 			r.run.Status = ledger.RunDrained
 			_ = r.store.FinalizeRun(r.run)
 			r.dropDemand() // withdraw from the fair-share denominator
@@ -120,7 +123,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		// per-run budget cap and the quota governor both land here. (Operator
 		// drain with nothing active already returned via gate.paused above; this
 		// is defensive so the reason is never mislabeled quota-* if it weren't.)
-		if !allowDispatch && len(active) == 0 {
+		if !allowDispatch && len(active) == 0 && r.epicInFlight == "" {
 			reason := "quota-" + string(level)
 			if budgetHit {
 				reason = "budget-cap"

@@ -555,6 +555,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		})
 		r.checkpointSlot(sl, "merged")
 		_ = r.adapter.Close(ctx, sl.PhaseID, "merged: "+res.MergedSHA)
+		r.noteEpicCandidate(ctx, sl.PhaseID)
 		_ = r.reg.Audit(registry.Event{
 			Kind:      "merge",
 			ProjectID: r.opts.ProjectID,

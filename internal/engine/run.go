@@ -16,6 +16,7 @@ import (
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
+	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/obs"
@@ -96,6 +97,13 @@ type runner struct {
 	// reportedSkips dedups structural-skip warnings so each non-dispatchable
 	// ready bead is surfaced once per run, not every wave (koryph-6g2.1).
 	reportedSkips map[string]bool
+
+	// Epic validation state (koryph-wo0.4, design §2/§4b). In-memory only:
+	// `koryph epic validate` is the crash-recovery path.
+	epicPending    map[string]bool                                           // epic id → completion candidate
+	epicInFlight   string                                                    // epic id currently validating ("" = none)
+	epicResults    chan epicValidationResult                                 // validator goroutine → tick loop
+	epicValidateFn func(context.Context, epicreview.Opts) epicreview.Verdict // test seam; nil = epicreview.Validate
 
 	// Billing for the current wave (refreshed by the governor each wave).
 	billing account.BillingMode

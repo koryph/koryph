@@ -56,11 +56,16 @@ engine: parent epic open? ──no──▶ done
 any sibling open/in_progress/blocked? ──yes──▶ done (wait)
       │ no
       ▼
+epic already validation:passed? ──yes──▶ close epic (docs bead was
+      │ no                               the last child; see §4b)
+      ▼
 enqueue epic-validation (one at a time per project)
       │
       ▼
-validator verdict ──met──▶ note + close epic (auto_close)
-      │ gaps
+validator verdict ──met──▶ label validation:passed + file the DOCS
+      │ gaps               UPDATE child bead (§4b); epic closes when
+      │                    it merges (docs_update disabled → close
+      │                    immediately per auto_close)
       ▼
 engine files follow-up child beads (round N+1 label)
 epic stays open → loop dispatches follow-ups → last one closes
@@ -152,11 +157,14 @@ docs/architecture.md.
 
 ## 4. Acting on the verdict (engine, deterministic)
 
-- **met** → append the summary as an epic note, close the epic with reason
-  `validated round N`. `auto_close` is configurable; default **true** —
-  a clean validation IS the epic's completion. With `auto_close: false`
-  the epic gets the note plus label `validation:passed` and closure stays
-  an operator act.
+- **met** → append the summary as an epic note, label the epic
+  `validation:passed`, and file the **docs update bead** (§4b). The epic
+  closes with reason `validated round N` when that bead merges (the
+  post-close completion check sees `validation:passed` + all children
+  terminal and closes WITHOUT re-validating). With `docs_update`
+  disabled, close immediately per `auto_close` (default **true** — a
+  clean validation IS the epic's completion; `auto_close: false` leaves
+  closure an operator act).
 - **gaps** → the engine (not the agent) files each gap as a child bead of
   the epic via `bd create --validate`, applying the validator's labels
   verbatim, wiring `depends_on` edges, and labeling every follow-up
@@ -180,6 +188,35 @@ docs/architecture.md.
 Follow-up beads are ordinary dispatch-shaped beads: the running loop picks
 them up in the next refill with no special casing.
 
+## 4b. The docs update stage (after validation passes)
+
+Validation proves the implementation is settled; only THEN are docs
+written — never against a moving target, and never before gap
+follow-ups land (a gap round resets the clock: docs are filed only on
+the round that returns `met`).
+
+- On `met`, the engine files ONE final child bead: "docs: epic
+  <id> documentation update", labeled `validation:docs` +
+  `docs_update.labels` from config (koryph: `area:docs` +
+  `fp:docs-nav`). Its description instructs the agent to **review the
+  epic's implementation (design doc + every child's merge SHA) and
+  update all documentation the epic's changes touch, following the
+  project's existing documentation structure and conventions** — koryph
+  does not specify how documentation is implemented or rendered, so the
+  bead prescribes the outcome, not the mechanism.
+- The docs bead is an ordinary loop bead: worktree, green gate, per-bead
+  review, merge — no bespoke agent path. Dedup guard: skip filing when
+  an open `validation:docs` child already exists.
+- **Persona routing**: the engine dispatches `validation:docs`-labeled
+  beads as `StageDocs` instead of `StageImplement` —
+  `modelroute.PersonaFor` already maps StageDocs to
+  `koryph-feature-docs-author` (tier standard); the mapping exists today
+  with nothing routing to it. Projects override via their Stages map.
+- When the docs bead closes, the completion check fires again, sees
+  `validation:passed`, and closes the epic — no re-validation round.
+- A parked/failed docs bead holds the epic open and surfaces through the
+  normal park/health-patrol channels.
+
 ## 5. Configuration
 
 `koryph.project.json`:
@@ -192,13 +229,20 @@ them up in the next refill with no special casing.
   "max_rounds": 2,
   "auto_close": true,
   "timeout_seconds": 420,
-  "structural_parent": "koryph-qta"
+  "structural_parent": "koryph-qta",
+  "docs_update": {
+    "enabled": true,
+    "labels": ["area:docs", "fp:docs-nav"]
+  }
 }
 ```
 
-Defaults apply when the block is absent. `enabled` gates only the in-loop
-trigger; `koryph epic validate` works regardless (explicit operator act).
-Per-epic opt-out: label `no-validate`.
+Defaults apply when the block is absent. `docs_update` defaults to
+enabled with labels `["area:docs"]` — `fp:docs-nav` is koryph's own
+addition (its nav block is a shared write). `enabled` gates only the
+in-loop trigger; `koryph epic validate` works regardless (explicit
+operator act). Per-epic opt-out: label `no-validate` (skips validation
+AND the docs stage).
 
 ## 6. Non-goals
 

@@ -227,6 +227,41 @@ type EpicValidationConfig struct {
 	// filed. When empty (default) structural findings stand alone as top-level
 	// beads.
 	StructuralParent string `json:"structural_parent,omitempty"`
+
+	// DocsUpdate configures the post-validation documentation stage (design
+	// §4b): on a met verdict the engine files one docs-update child bead and
+	// the epic closes when it merges. Nil resolves to the documented defaults
+	// via EffectiveDocsUpdate().
+	DocsUpdate *EpicDocsUpdateConfig `json:"docs_update,omitempty"`
+}
+
+// EpicDocsUpdateConfig is the docs_update sub-block of epic_validation.
+type EpicDocsUpdateConfig struct {
+	// Enabled gates the docs-update stage (default true). When false a met
+	// verdict closes the epic immediately per auto_close.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Labels are stamped on the auto-filed docs bead alongside
+	// validation:docs (default ["area:docs"]; fp:docs-nav is koryph's own
+	// addition — its nav block is a shared write).
+	Labels []string `json:"labels,omitempty"`
+}
+
+// EffectiveDocsUpdate resolves the docs_update sub-block with defaults; safe
+// on a nil receiver and a nil sub-block.
+func (c *EpicValidationConfig) EffectiveDocsUpdate() EpicDocsUpdateConfig {
+	var out EpicDocsUpdateConfig
+	if c != nil && c.DocsUpdate != nil {
+		out = *c.DocsUpdate
+	}
+	if out.Enabled == nil {
+		t := true
+		out.Enabled = &t
+	}
+	if len(out.Labels) == 0 {
+		out.Labels = []string{"area:docs"}
+	}
+	return out
 }
 
 const (

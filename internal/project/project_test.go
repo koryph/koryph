@@ -103,6 +103,10 @@ func fullConfig() *Config {
 			AutoClose:        boolPtr(true),
 			TimeoutSeconds:   300,
 			StructuralParent: "koryph-qta",
+			DocsUpdate: &EpicDocsUpdateConfig{
+				Enabled: boolPtr(true),
+				Labels:  []string{"area:docs"},
+			},
 		},
 	}
 }
@@ -110,6 +114,27 @@ func fullConfig() *Config {
 // boolPtr returns a pointer to the given bool value for use in struct literals
 // where *bool fields must be explicitly set.
 func boolPtr(b bool) *bool { return &b }
+
+// TestEpicDocsUpdate_Defaults locks the documented docs_update defaults: an
+// absent sub-block (and an absent parent block) resolves to enabled with
+// labels ["area:docs"] (design 4b/5).
+func TestEpicDocsUpdate_Defaults(t *testing.T) {
+	var nilCfg *EpicValidationConfig
+	d := nilCfg.EffectiveDocsUpdate()
+	if d.Enabled == nil || !*d.Enabled {
+		t.Error("absent docs_update must default to enabled")
+	}
+	if len(d.Labels) != 1 || d.Labels[0] != "area:docs" {
+		t.Errorf("default labels = %v, want [area:docs]", d.Labels)
+	}
+
+	off := false
+	c := &EpicValidationConfig{DocsUpdate: &EpicDocsUpdateConfig{Enabled: &off, Labels: []string{"x"}}}
+	d = c.EffectiveDocsUpdate()
+	if *d.Enabled || len(d.Labels) != 1 || d.Labels[0] != "x" {
+		t.Errorf("explicit docs_update not round-tripped: %+v", d)
+	}
+}
 
 // TestConfig_AllFieldsPopulated fails loudly if fullConfig leaves any field at
 // its zero value. This is the coverage forcing-function: adding a field to

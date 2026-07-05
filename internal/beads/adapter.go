@@ -156,6 +156,14 @@ func (a *Adapter) AddLabel(ctx context.Context, id, label string) error {
 	return err
 }
 
+// DepAdd wires "id depends on blockedBy" via `bd dep add <id> --blocked-by
+// <blockedBy>`. Used by the epic-validation act layer to wire gap-bead
+// sibling edges after all siblings exist (forward references included).
+func (a *Adapter) DepAdd(ctx context.Context, id, blockedBy string) error {
+	_, err := a.run(ctx, "dep", "add", id, "--blocked-by", blockedBy)
+	return err
+}
+
 // Comment posts a comment via `bd comment <id> <text>`.
 //
 // NOTE: bd's comment verb varies across builds (`bd comment` vs

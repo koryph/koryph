@@ -106,6 +106,20 @@ func logSlotMerged(runID, project, beadID, sha string, costUSD float64) {
 	)
 }
 
+// logEpicValidation emits the epic_validation lifecycle event (started,
+// met-closed, met-pending-docs, gaps-filed, degraded, parked,
+// closed-after-docs) — the TUI events tab and `koryph obs tail` consume it
+// with no extra plumbing (design §3, koryph-wo0.4).
+func logEpicValidation(runID, project, epicID string, round int, outcome string) {
+	log.Info("engine.epic_validation",
+		slog.String(obs.KeyRunID, runID),
+		slog.String(obs.KeyProject, project),
+		slog.String(obs.KeyBeadID, epicID),
+		slog.Int("round", round),
+		slog.String("outcome", outcome),
+	)
+}
+
 // logSlotBlocked emits a WARN record when a slot is blocked.
 func logSlotBlocked(beadID, reason string) {
 	log.Warn("engine.slot.blocked",
