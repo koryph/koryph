@@ -38,6 +38,10 @@ import (
 const gateRequeueNote = "gate-failed requeue"
 const mergeErrorRequeueNote = "merge-error requeue"
 
+// conflictRequeueNote marks a slot bounced back to its agent to resolve a
+// rebase conflict in-worktree (CONFLICT.md carries the details; koryph-3as).
+const conflictRequeueNote = "rebase-conflict requeue"
+
 // commitStyleRequeueNote marks a slot bounced once for non-conventional commit
 // subjects; a second commit-style failure blocks instead of looping. Unlike
 // gate/merge above, commit-style stays a single-shot Note-marker dedup — its
@@ -51,8 +55,9 @@ const commitStyleRequeueNote = "commit-style requeue"
 // real race (the base moved twice) now self-heals instead of stranding the
 // bead after just one retry. Both remain bounded by ledger.MaxAttempts.
 const (
-	gateRequeueBudget  = 2
-	mergeRequeueBudget = 2
+	gateRequeueBudget     = 2
+	mergeRequeueBudget    = 2
+	conflictRequeueBudget = 2
 )
 
 // rateLimitedRequeueBudget bounds how many times a slot may requeue on a
@@ -617,12 +622,30 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
 
 	case merge.StatusConflict:
+		// A rebase conflict is the most agent-resolvable merge failure: requeue
+		// so the agent resumes on its branch with CONFLICT.md and resolves it
+		// (koryph-3as). Terminal SlotConflict previously stranded the bead
+		// in_progress — invisible to bd ready — when the run later drained.
+		if sl.ConflictRequeues < conflictRequeueBudget && sl.Attempts < ledger.MaxAttempts {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ConflictRequeues++ })
+			r.progress("bead %s: rebase conflict — requeueing (%d/%d) for in-worktree resolution (see CONFLICT.md)",
+				sl.PhaseID, sl.ConflictRequeues, conflictRequeueBudget)
+			r.requeueSlot(ctx, sl, "", conflictRequeueNote)
+			return true
+		}
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotConflict
-			s.Note = "rebase conflict: " + res.ConflictMD
+			s.Note = "rebase conflict after requeue: " + res.ConflictMD
 		})
 		r.checkpointSlot(sl, "conflict")
-		r.progress("bead %s: rebase conflict (details: %s)", sl.PhaseID, res.ConflictMD)
+		// Reset the bead so the frontier can re-adopt it in a later run — a
+		// terminal conflict slot must never strand the bead in_progress.
+		if err := r.adapter.SetStatus(ctx, sl.PhaseID, "open"); err == nil {
+			_ = r.adapter.Comment(ctx, sl.PhaseID,
+				"engine: rebase conflict unresolved after "+conflictRequeueNote+" budget; bead reset to open — worktree and CONFLICT.md preserved for the next attempt")
+		}
+		r.progress("bead %s: rebase conflict after requeue budget — bead reset to open (details: %s)",
+			sl.PhaseID, res.ConflictMD)
 		logSlotConflict(sl.PhaseID, res.ConflictMD)
 
 	case merge.StatusProtected:

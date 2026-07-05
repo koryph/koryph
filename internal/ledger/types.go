@@ -133,6 +133,10 @@ type Slot struct {
 	// unmarshals them to zero, which behaves exactly like "none spent yet."
 	GateRequeues  int `json:"gate_requeues,omitempty"`
 	MergeRequeues int `json:"merge_requeues,omitempty"`
+	// ConflictRequeues counts rebase-conflict requeues (koryph-3as): a merge
+	// conflict re-dispatches the agent to resolve CONFLICT.md in its own
+	// worktree instead of stranding the bead in a terminal conflict slot.
+	ConflictRequeues int `json:"conflict_requeues,omitempty"`
 
 	ReviewIters  int    `json:"review_iters,omitempty"`
 	DispatchedAt string `json:"dispatched_at,omitempty"`
