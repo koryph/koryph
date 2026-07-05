@@ -101,7 +101,8 @@ type App struct {
 	showHelp  bool
 	keys      KeyMap
 	theme     Theme
-	lastError string
+	lastError string // non-empty on the last failed action or refresh; cleared on next snapshot
+	lastInfo  string // non-empty on the last succeeded action; shown with ✓ (no warning glyph)
 
 	// last snapshot.
 	snap cockpit.Snapshot
@@ -300,9 +301,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actionResultMsg:
 		if msg.Err != nil {
+			// Error: show via the warning channel (⚠); clear any prior success.
 			a.lastError = msg.Err.Error()
+			a.lastInfo = ""
 		} else {
-			a.lastError = msg.Msg
+			// Success: route through the info channel (✓); clear any prior error.
+			a.lastInfo = msg.Msg
+			a.lastError = ""
 		}
 		// Also route to the active tab so it can update its in-tab result display.
 		var cmd tea.Cmd
@@ -419,8 +424,11 @@ func (a App) renderStatusBar() string {
 	}
 
 	errPart := ""
-	if a.lastError != "" {
+	switch {
+	case a.lastError != "":
 		errPart = "  ⚠ " + truncate(a.lastError, 40)
+	case a.lastInfo != "":
+		errPart = "  ✓ " + truncate(a.lastInfo, 40)
 	}
 
 	helpHint := a.theme.HelpKey.Render("?") + a.theme.HelpDesc.Render(" help  ") +

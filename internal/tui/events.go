@@ -18,7 +18,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -484,20 +483,9 @@ func (m *eventsModel) sectionTitle(title string) string {
 	return lipgloss.NewStyle().Foreground(m.theme.Accent).Render(bar)
 }
 
-// levelFor converts an event level to a short coloured label.
-func (m *eventsModel) levelFor(level string) string { //nolint:unused
-	switch level {
-	case "warn":
-		return lipgloss.NewStyle().Foreground(m.theme.Warning).Render("WARN")
-	case "error":
-		return lipgloss.NewStyle().Foreground(m.theme.Error).Render("ERR ")
-	default:
-		return lipgloss.NewStyle().Foreground(m.theme.Done).Render("INFO")
-	}
-}
-
-// Ensure actionResultMsg is handled by updating lastResult when it arrives.
-// The App handles execution; the tab intercepts the result to display it.
+// handleActionResult updates lastResult when an action result arrives.
+// The App handles execution; the tab intercepts the result to display it
+// inline in the footer so operators don't need to look at the status bar.
 func (m *eventsModel) handleActionResult(msg actionResultMsg) {
 	if msg.Err != nil {
 		m.lastResult = "⚠ " + msg.Err.Error()
@@ -505,12 +493,4 @@ func (m *eventsModel) handleActionResult(msg actionResultMsg) {
 		m.lastResult = "✓ " + msg.Msg
 	}
 	// Auto-clear after a few seconds by NOT clearing — it clears on next SetSnapshot.
-}
-
-// ensureEventMsg is a tiny helper to format a zero-Time event.
-func ensureEventMsg(t time.Time) string { //nolint:unused
-	if t.IsZero() {
-		return time.Now().Format("15:04:05")
-	}
-	return t.Format("15:04:05")
 }
