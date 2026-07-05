@@ -120,7 +120,15 @@ whatever runtime you are (codex, cursor, grok build, ...).
 7. **File.** Create the epic, then each child with `--parent <epic-id>`,
    its labels, and `--validate`; wire dependencies per step 4. This part is
    mechanical — running already-decided commands is fine at any model
-   tier. Then have the `koryph-plan-scorer` persona (installed in
+   tier.
+   **If a wave loop is RUNNING against this project, dependency edges
+   must exist the moment a child becomes visible** — a refill can snipe a
+   dispatch-shaped bead in the seconds between `bd create` and `bd dep
+   add`, dispatching a consumer before its producer. Either wire deps
+   atomically at create time (`bd create --deps blocked-by:<producer-id>`)
+   or create dependent children `--status deferred` and flip them open
+   only after all edges are wired. Foundation/root beads (no incoming
+   edges) are safe to create normally. Then have the `koryph-plan-scorer` persona (installed in
    `.claude/agents`) score the plan and apply one iteration of its
    findings. `koryph-plan-scorer` is pinned `tier: frontier` at `effort:
    xhigh` in its own frontmatter — plan validation is scheduler-correctness
