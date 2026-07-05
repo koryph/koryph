@@ -78,7 +78,8 @@ different mechanism that satisfies the same invariant, or documents the gap.
 | SLSA build provenance | ✅ (SLSA generator) | ⚠️ reduced | See **Supply chain** below. |
 
 The design rationale for this split lives in
-[the forge-providers design](../designs/2026-07-forge-providers.md).
+[the forge-providers design](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-forge-providers.md)
+(design docs are kept in-repo, outside the published book).
 
 ---
 

@@ -19,10 +19,11 @@ func init() {
 		name:    "tui",
 		summary: "interactive terminal cockpit (threads, queue, events)",
 		run:     cmdTUI,
-		DocLinks: []string{
-			"user-guide/tui.md",
-			"designs/2026-07-tui-cockpit.md",
-		},
+		// DocLinks intentionally empty until docs/user-guide/tui.md exists
+		// (koryph-9af.6): the reference generator publishes these as links,
+		// design docs are excluded from the published book, and zensical
+		// --strict fails the docs build on any dead link.
+		DocLinks: nil,
 	})
 }
 

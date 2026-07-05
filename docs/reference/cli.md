@@ -1116,7 +1116,7 @@ tail the telemetry JSONL stream in human-readable form
 
 interactive terminal cockpit (threads, queue, events)
 
-**See also:** [Tui](../user-guide/tui) · [2026 07 tui cockpit](../designs/2026-07-tui-cockpit)
+<!-- TODO: add DocLinks to the `tui` command registration in cmd/koryph/ -->
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|

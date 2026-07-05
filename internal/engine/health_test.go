@@ -600,9 +600,23 @@ func TestRunPatrol_AppendsToLedger(t *testing.T) {
 	}
 }
 
+// stubBDOnPath puts a no-op `bd` executable on PATH so patrol's bd-reachable
+// check passes on machines without bd installed (CI runners) — the all-ok
+// assertion below must not depend on the host environment.
+func stubBDOnPath(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "bd")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestRunPatrol_AllOK_NoLedgerEntry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KORYPH_HOME", home)
+	stubBDOnPath(t)
 
 	r := patrolRunner(t)
 	r.runPatrol(t.Context())

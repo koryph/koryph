@@ -57,13 +57,18 @@ clean: ## Remove build and docs artifacts
 
 ##@ Quality
 
+# gofmt walks the raw filesystem (unlike `go vet ./...`, which skips
+# dot-directories), so harness worktrees under .claude/worktrees would be
+# swept in. GO_SRC matches the toolchain's dot-dir behavior.
+GO_SRC = find . -name '*.go' -not -path '*/.*'
+
 .PHONY: fmt
 fmt: ## gofmt all Go sources in place
-	gofmt -w .
+	@$(GO_SRC) -exec gofmt -w {} +
 
 .PHONY: fmt-check
 fmt-check: ## Fail if any Go source is not gofmt-clean
-	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: files above need formatting"; exit 1; }
+	@files="$$($(GO_SRC) -exec gofmt -l {} +)"; test -z "$$files" || { echo "$$files"; echo "gofmt: files above need formatting"; exit 1; }
 
 .PHONY: vet
 vet: ## go vet all packages
