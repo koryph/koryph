@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 The Koryph Developers
+
+package doctor
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/epicreview"
+)
+
+// checkNameEpicValidations is the check name reported in doctor findings for
+// parked and degraded epic validations.
+const checkNameEpicValidations = "epic-validations"
+
+// checkEpicValidations scans all open epics for validation:parked or
+// validation:degraded labels and reports each as a LevelWarn finding with the
+// round number and reason extracted from the epic's notes field.
+//
+// This delivers the "never a black box" surfacing promise from design §4
+// (docs/designs/2026-07-epic-validation.md):
+//
+//   - validation:parked → the epic has exceeded max_rounds and is awaiting
+//     an operator decision; `koryph epic validate <id>` is the recovery verb.
+//   - validation:degraded → the validator infra failed during a round; the
+//     epic carries a degraded note and needs a retry.
+//
+// If bd is unavailable the check returns OK — bd absence is reported by the
+// global doctor checks, not here. An error from the list call is surfaced as
+// a LevelWarn so the gap is visible without being fatal.
+func checkEpicValidations(opts ProjectOptions, repoRoot string) []Finding {
+	listEpics := opts.ListEpics
+	if listEpics == nil {
+		listEpics = defaultListEpics
+	}
+
+	epics, err := listEpics(repoRoot)
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameEpicValidations,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("cannot list epics: %v", err),
+		}}
+	}
+
+	var findings []Finding
+	for _, epic := range epics {
+		if epic.Status == "closed" || epic.Status == "done" {
+			continue
+		}
+		switch {
+		case epic.HasLabel(epicreview.LabelParked):
+			round, reason := parseParkedNote(epic.Notes)
+			findings = append(findings, Finding{
+				Check: checkNameEpicValidations,
+				Level: LevelWarn,
+				Message: fmt.Sprintf(
+					"parked epic: %s %q round=%d reason=%q — run `koryph epic validate %s` to recover",
+					epic.ID, epic.Title, round, reason, epic.ID),
+			})
+		case epic.HasLabel(epicreview.LabelDegraded):
+			round, reason := parseDegradedNote(epic.Notes)
+			findings = append(findings, Finding{
+				Check: checkNameEpicValidations,
+				Level: LevelWarn,
+				Message: fmt.Sprintf(
+					"degraded epic: %s %q round=%d reason=%q — validator infra failure; run `koryph epic validate %s` to retry",
+					epic.ID, epic.Title, round, reason, epic.ID),
+			})
+		}
+	}
+
+	if len(findings) == 0 {
+		return []Finding{{
+			Check:   checkNameEpicValidations,
+			Level:   LevelOK,
+			Message: "no parked or degraded epic validations",
+		}}
+	}
+	return findings
+}
+
+// defaultListEpics queries bd for all open epics in repoRoot.
+// When bd is not on PATH it returns (nil, nil) — bd unavailability
+// is already reported by the global doctor checks.
+func defaultListEpics(repoRoot string) ([]beads.Issue, error) {
+	a := beads.New(repoRoot)
+	if !a.Available() {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	all, err := a.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var epics []beads.Issue
+	for _, iss := range all {
+		if iss.IssueType == "epic" {
+			epics = append(epics, iss)
+		}
+	}
+	return epics, nil
+}
+
+// --- note parsing -----------------------------------------------------------
+
+// reDegradedNote matches lines written by epicreview.Act when a round is
+// degraded (infra failure):
+//
+//	"validation:degraded (round N): <reason>"
+var reDegradedNote = regexp.MustCompile(`validation:degraded \(round (\d+)\):\s*(.+)`)
+
+// reParkedNote matches lines written by engine.parkEpic when the round cap
+// is exceeded:
+//
+//	"validation parked: round N would exceed max_rounds=M. Operator recovery: ..."
+var reParkedNote = regexp.MustCompile(`validation parked: round (\d+) would exceed max_rounds=(\d+)`)
+
+// parseDegradedNote scans the notes field (most-recent line first) and
+// returns the round number and reason from the last
+// "validation:degraded (round N): reason" line. Returns (0, "") when no
+// matching line is found.
+func parseDegradedNote(notes string) (round int, reason string) {
+	lines := strings.Split(notes, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		m := reDegradedNote.FindStringSubmatch(strings.TrimSpace(lines[i]))
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n, strings.TrimSpace(m[2])
+	}
+	return 0, ""
+}
+
+// parseParkedNote scans the notes field (most-recent line first) and returns
+// the round number and a short description from the last
+// "validation parked: round N ..." line. Returns (0, "") when no matching
+// line is found.
+func parseParkedNote(notes string) (round int, reason string) {
+	lines := strings.Split(notes, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		m := reParkedNote.FindStringSubmatch(strings.TrimSpace(lines[i]))
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n, fmt.Sprintf("exceeded max_rounds=%s", m[2])
+	}
+	return 0, ""
+}

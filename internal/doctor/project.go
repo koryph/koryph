@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/agents"
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/bot"
 	"github.com/koryph/koryph/internal/commands"
 	"github.com/koryph/koryph/internal/ledger"
@@ -105,6 +106,12 @@ type ProjectOptions struct {
 	// nil means: call posture.CheckFragmentDrift against the real filesystem.
 	// Inject a fake in tests to avoid touching the working tree.
 	FragmentDriftCheck func(repoRoot string, fragments []string) ([]posture.FragmentDrift, error)
+
+	// ListEpics returns all open epics for the project. Return (nil, nil) when
+	// bd is unavailable; (nil, err) on failure — the check degrades gracefully
+	// on error. nil means: call beads.Adapter.List and filter for type "epic".
+	// Inject a fake in tests to avoid spawning bd.
+	ListEpics func(repoRoot string) ([]beads.Issue, error)
 }
 
 func (o *ProjectOptions) home() string {
@@ -239,6 +246,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.add(checkOrgPostureDrift(opts, repoRoot, cfg))
 	r.addAll(checkFragmentDrift(opts, repoRoot, cfg))
 	r.add(checkForge(cfg))
+	r.addAll(checkEpicValidations(opts, repoRoot))
 
 	for _, f := range r.Findings {
 		if f.Fixed {
