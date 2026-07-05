@@ -62,6 +62,7 @@ nav:
       - Intake: user-guide/intake.md
       - CI pipeline setup: user-guide/ci-setup.md
       - Epic validation: user-guide/epic-validation.md
+      - Observability: user-guide/observability.md
       - Doctor: user-guide/doctor.md
       - IDE integration: ide-integration.md
   - Developer guide:

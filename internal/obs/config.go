@@ -33,6 +33,14 @@ type Config struct {
 	// File, when non-empty, also writes a JSON log to the named path.
 	// The path may use ~ for the home directory.
 	File string `json:"file,omitempty"`
+
+	// TelemetryMaxSizeMB is the maximum size in mebibytes of a single JSONL
+	// telemetry file before it is rotated.  Values ≤ 0 default to 50 MiB.
+	TelemetryMaxSizeMB int `json:"telemetry_max_size_mb,omitempty"`
+
+	// TelemetryRetentionDays is the number of days to retain rotated JSONL
+	// telemetry files.  Values ≤ 0 default to 30 days.
+	TelemetryRetentionDays int `json:"telemetry_retention_days,omitempty"`
 }
 
 // defaultConfig returns the zero-value Config with documented defaults applied.

@@ -140,7 +140,9 @@ func checkObsTelemetryDir(opts Options) Finding {
 }
 
 // checkObsRotation checks for oversized or stale JSONL telemetry files.
-// Thresholds are advisory (50 MB / 30 days); hard rotation ships in §O6.
+// Thresholds match the defaults used by the fileWriter (50 MB / 30 days).
+// Users can tune them via telemetry_max_size_mb / telemetry_retention_days in
+// observability.json; run `koryph obs prune` to remove stale files on demand.
 const (
 	obsRotationMaxBytes = 50 * 1024 * 1024 // 50 MB
 	obsRotationMaxDays  = 30
@@ -181,14 +183,14 @@ func checkObsRotation(opts Options) Finding {
 	switch {
 	case len(oversized) > 0 && len(stale) > 0:
 		return Finding{Check: checkNameObs, Level: LevelWarn,
-			Message: fmt.Sprintf("obs rotation: oversized: [%s]; stale: [%s] (rotation ships in §O6)",
+			Message: fmt.Sprintf("obs rotation: oversized: [%s]; stale: [%s] — run `koryph obs prune` to clean up",
 				strings.Join(oversized, ", "), strings.Join(stale, ", "))}
 	case len(oversized) > 0:
 		return Finding{Check: checkNameObs, Level: LevelWarn,
-			Message: fmt.Sprintf("obs rotation: oversized files: %s (rotation ships in §O6)", strings.Join(oversized, ", "))}
+			Message: fmt.Sprintf("obs rotation: oversized files: %s — run `koryph obs prune` to clean up", strings.Join(oversized, ", "))}
 	case len(stale) > 0:
 		return Finding{Check: checkNameObs, Level: LevelWarn,
-			Message: fmt.Sprintf("obs rotation: stale files: %s (rotation ships in §O6)", strings.Join(stale, ", "))}
+			Message: fmt.Sprintf("obs rotation: stale files: %s — run `koryph obs prune` to clean up", strings.Join(stale, ", "))}
 	default:
 		return Finding{Check: checkNameObs, Level: LevelOK, Message: "obs rotation: healthy"}
 	}

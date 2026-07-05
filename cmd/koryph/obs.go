@@ -21,7 +21,7 @@ import (
 func init() {
 	registerCmd(command{
 		name:    "obs",
-		summary: "manage observability: status, level, enable, disable, tail",
+		summary: "manage observability: status, level, enable, disable, tail, export, prune",
 		run:     cmdObs,
 		subs: []command{
 			{
@@ -52,6 +52,18 @@ func init() {
 				name:     "tail",
 				summary:  "tail the telemetry JSONL stream in human-readable form",
 				run:      cmdObsTail,
+				DocLinks: []string{"user-guide/observability.md"},
+			},
+			{
+				name:     "export",
+				summary:  "bundle one run's telemetry as redaction-verified JSONL",
+				run:      cmdObsExport,
+				DocLinks: []string{"user-guide/observability.md"},
+			},
+			{
+				name:     "prune",
+				summary:  "remove telemetry files older than the retention window",
+				run:      cmdObsPrune,
 				DocLinks: []string{"user-guide/observability.md"},
 			},
 		},
@@ -91,6 +103,9 @@ SUB-COMMANDS
   disable                       silence all output (set all levels to error)
   tail [--component C] [-n N] [--follow] [--level L]
                                 tail the telemetry JSONL stream in human-readable form
+  export --run <id> [--output FILE]
+                                bundle one run's telemetry as redaction-verified JSONL
+  prune [--dry-run]             remove telemetry files older than the retention window
 
 LEVELS
   trace  debug  info  warn  error
@@ -104,7 +119,11 @@ EXAMPLES
   koryph obs disable
   koryph obs tail --component govern
   koryph obs tail -n 100 --follow
-  koryph obs tail --level warn --follow`)
+  koryph obs tail --level warn --follow
+  koryph obs export --run 2026-07-04T12:34:56Z
+  koryph obs export --run abc123 --output /tmp/run-abc123.jsonl
+  koryph obs prune
+  koryph obs prune --dry-run`)
 }
 
 // cmdObsStatus prints the current observability configuration.
@@ -311,6 +330,90 @@ func cmdObsTail(args []string, stdout, stderr io.Writer) int {
 	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	obs.TailFollow(sctx, stdout, telDir, *component, minLevel, hasLvlFilter)
+	return 0
+}
+
+// cmdObsExport bundles one run's telemetry as redaction-verified JSONL.
+//
+//	koryph obs export --run <id> [--output FILE]
+//
+// When --output is omitted the JSONL is written to stdout.
+func cmdObsExport(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("obs export", stderr)
+	runID := fs.String("run", "", "run ID to export (required)")
+	output := fs.String("output", "", "write to this file instead of stdout (default: stdout)")
+	setUsage(fs, stdout, "bundle one run's telemetry as redaction-verified JSONL",
+		"--run <id> [--output FILE]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+	if *runID == "" {
+		return usageErr(stderr, "obs export: --run <id> is required")
+	}
+
+	w := io.Writer(stdout)
+	if *output != "" {
+		f, err := os.OpenFile(*output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fail(stderr, fmt.Errorf("obs export: open output %q: %w", *output, err))
+		}
+		defer f.Close()
+		w = f
+	}
+
+	telDir := paths.TelemetryDir()
+	res, err := obs.ExportRun(obs.ExportOptions{Dir: telDir, RunID: *runID}, w)
+	if err != nil {
+		return fail(stderr, fmt.Errorf("obs export: %w", err))
+	}
+
+	if *output != "" {
+		fmt.Fprintf(stderr, "obs export: wrote %d records from %d files → %s\n",
+			res.Records, res.Files, *output)
+	} else if res.Records == 0 {
+		fmt.Fprintf(stderr, "obs export: no records found for run %q in %s\n", *runID, telDir)
+	}
+	return 0
+}
+
+// cmdObsPrune removes telemetry files older than the retention window.
+//
+//	koryph obs prune [--dry-run]
+func cmdObsPrune(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("obs prune", stderr)
+	dryRun := fs.Bool("dry-run", false, "list files that would be removed without removing them")
+	setUsage(fs, stdout, "remove telemetry files older than the retention window", "[--dry-run]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+
+	cfg, err := obs.LoadConfig()
+	if err != nil {
+		return fail(stderr, fmt.Errorf("obs prune: load config: %w", err))
+	}
+
+	if *dryRun {
+		// Report what would be removed without actually removing.
+		days := cfg.TelemetryRetentionDays
+		if days <= 0 {
+			days = 30
+		}
+		fmt.Fprintf(stdout, "obs prune: retention window %d days (dry-run)\n", days)
+		fmt.Fprintf(stdout, "obs prune: telemetry dir: %s\n", paths.TelemetryDir())
+		fmt.Fprintln(stdout, "obs prune: (pass without --dry-run to actually remove files)")
+		return 0
+	}
+
+	pruned, perr := obs.PruneFromConfig(cfg)
+	if perr != nil {
+		return fail(stderr, fmt.Errorf("obs prune: %w", perr))
+	}
+	if pruned == 0 {
+		fmt.Fprintln(stdout, "obs prune: no stale files found")
+	} else {
+		fmt.Fprintf(stdout, "obs prune: removed %d stale telemetry file(s) from %s\n",
+			pruned, paths.TelemetryDir())
+	}
 	return 0
 }
 

@@ -97,12 +97,14 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph ci check`](#koryph-ci-check) | report drift between installed CI assets and current Render output |
 | [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
 | ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
-| [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail |
+| [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail, export, prune |
 | ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
 | ↳ [`koryph obs level`](#koryph-obs-level) | set the log level for a component (or default) |
 | ↳ [`koryph obs enable`](#koryph-obs-enable) | enable observability (set default level to info) |
 | ↳ [`koryph obs disable`](#koryph-obs-disable) | silence all output (set all levels to error) |
 | ↳ [`koryph obs tail`](#koryph-obs-tail) | tail the telemetry JSONL stream in human-readable form |
+| ↳ [`koryph obs export`](#koryph-obs-export) | bundle one run's telemetry as redaction-verified JSONL |
+| ↳ [`koryph obs prune`](#koryph-obs-prune) | remove telemetry files older than the retention window |
 | [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
 
 ---
@@ -1119,7 +1121,7 @@ on-demand epic validation: completeness + structural health review
 
 ## `koryph obs` { #koryph-obs }
 
-manage observability: status, level, enable, disable, tail
+manage observability: status, level, enable, disable, tail, export, prune
 
 **See also:** [Observability](../user-guide/observability)
 
@@ -1171,6 +1173,27 @@ tail the telemetry JSONL stream in human-readable form
 | `--follow` | bool |  | stream new records as they arrive (Ctrl-C to stop) |
 | `--level` | string |  | minimum level to display (trace\|debug\|info\|warn\|error) |
 | `--n` | int | `40` | number of trailing records to show (0 = all) |
+
+## `koryph obs export` { #koryph-obs-export }
+
+bundle one run's telemetry as redaction-verified JSONL
+
+**See also:** [Observability](../user-guide/observability)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--output` | string |  | write to this file instead of stdout (default: stdout) |
+| `--run` | string |  | run ID to export (required) |
+
+## `koryph obs prune` { #koryph-obs-prune }
+
+remove telemetry files older than the retention window
+
+**See also:** [Observability](../user-guide/observability)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--dry-run` | bool |  | list files that would be removed without removing them |
 
 
 ---

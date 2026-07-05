@@ -104,6 +104,13 @@ The scheduler's footprint model turns architectural coupling into an
 counts. That inversion is the point: instead of a coupling opinion, you
 get a coupling measurement.
 
+> **Note:** the `grep` in step 2 is the baseline approach, available from day
+> one against the JSONL files in `~/.koryph/telemetry/`.  The structured
+> `engine.bead.deferred` events carry a `deferral_token` field so the same
+> query can be expressed with jq or DuckDB once telemetry accumulates.  See
+> [Observability → Diagnosing parallelism ceilings](../user-guide/observability.md#diagnosing-parallelism-ceilings)
+> for ready-to-run jq and DuckDB queries that replace the grep.
+
 ## Estimator accuracy: telemetry-driven self-tuning (koryph-6bl)
 
 The same principle applies to cost estimation. Before koryph-6bl the

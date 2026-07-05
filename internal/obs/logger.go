@@ -142,7 +142,7 @@ func For(component string) *slog.Logger {
 	if reg == nil {
 		// Lazy bootstrap: load config from disk, fall back to defaults.
 		cfg, _ := LoadConfig()
-		root := buildConsoleHandler(cfg, os.Stderr)
+		root := BuildPipeline(cfg, os.Stderr, "")
 		defaultMu.Lock()
 		if defaultRegistry == nil {
 			defaultRegistry = buildRegistry(cfg, root)
@@ -195,4 +195,44 @@ func buildConsoleHandler(cfg Config, w *os.File) slog.Handler {
 	default:
 		return NewTextHandler(w, level)
 	}
+}
+
+// BuildPipeline constructs the full handler pipeline from cfg:
+//   - A console handler writing to w (text or JSON per cfg.Format).
+//   - A telemetry JSONL file handler writing to telDir (or the canonical
+//     telemetry directory when telDir is empty).  On failure the file handler
+//     is silently skipped so telemetry is always best-effort.
+//   - When cfg.OTELEndpoint is non-empty, an OTLP/HTTP JSON handler that
+//     forwards records to that endpoint.
+//
+// The returned pipeline is NOT wrapped in RedactingHandler; callers that use
+// Init / ReInit receive a bare pipeline.  buildRegistry adds the redaction
+// layer after this call.
+func BuildPipeline(cfg Config, w *os.File, telDir string) slog.Handler {
+	console := buildConsoleHandler(cfg, w)
+
+	var handlers []slog.Handler
+	handlers = append(handlers, console)
+
+	// Telemetry file handler.
+	if telDir == "" {
+		telDir = telemetryDirPath()
+	}
+	maxBytes := int64(cfg.TelemetryMaxSizeMB) * 1024 * 1024
+	if maxBytes <= 0 {
+		maxBytes = 50 * 1024 * 1024
+	}
+	fh := newFileJSONHandler(telDir, maxBytes, cfg.defaultSlogLevel())
+	handlers = append(handlers, fh)
+
+	// Optional OTLP/HTTP forwarding.
+	if cfg.OTELEndpoint != "" {
+		oh := NewOTLPHTTPHandler(cfg.OTELEndpoint, cfg.defaultSlogLevel())
+		handlers = append(handlers, oh)
+	}
+
+	if len(handlers) == 1 {
+		return handlers[0]
+	}
+	return NewMultiHandler(handlers...)
 }
