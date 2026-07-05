@@ -226,10 +226,13 @@ func TestAppQueueTab(t *testing.T) {
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
 
-	// Navigate to the Queue tab (tab twice: Threads → Burndown → Queue).
+	// Navigate to the Queue tab (tab 4×: Threads→Burndown→Detail→Efficiency→Queue).
+	// Tab order: Threads(0) Burndown(1) Detail(2) Efficiency(3) Queue(4).
 	waitFor(t, tm, func(bts []byte) bool {
 		return strings.Contains(string(bts), "Threads")
 	})
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 

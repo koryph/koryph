@@ -145,8 +145,9 @@ func TestDetailDepNavigation(t *testing.T) {
 	})
 
 	// Switch back to Threads and press Enter to open detail for abc-1.
-	// Detail → Efficiency → Threads (wraps): the merged tab set is
-	// Threads(0) Burndown(1) Detail(2) Efficiency(3).
+	// Detail → Efficiency → Queue → Threads (wraps): the merged tab set is
+	// Threads(0) Burndown(1) Detail(2) Efficiency(3) Queue(4).
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
 	waitFor(t, tm, func(bts []byte) bool {

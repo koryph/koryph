@@ -34,7 +34,7 @@ import (
 func init() {
 	registerTab(TabDef{
 		Name:  "Queue",
-		Order: 2,
+		Order: 4,
 		New:   func(theme Theme) TabModel { return newQueueModel(theme) },
 	})
 }
@@ -605,33 +605,6 @@ func (m *queueModel) sectionTitle(title string) string {
 		bar = bar[:m.width]
 	}
 	return lipgloss.NewStyle().Foreground(m.theme.Accent).Render(bar)
-}
-
-// wrapText wraps text to maxWidth runes per line, splitting on spaces.
-func wrapText(text string, maxWidth int) []string {
-	if maxWidth < 10 {
-		maxWidth = 10
-	}
-	var lines []string
-	words := strings.Fields(text)
-	var cur strings.Builder
-	for _, w := range words {
-		if cur.Len() > 0 && cur.Len()+1+len(w) > maxWidth {
-			lines = append(lines, cur.String())
-			cur.Reset()
-		}
-		if cur.Len() > 0 {
-			cur.WriteByte(' ')
-		}
-		cur.WriteString(w)
-	}
-	if cur.Len() > 0 {
-		lines = append(lines, cur.String())
-	}
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-	return lines
 }
 
 // max0 returns n if n >= 0, else 0.
