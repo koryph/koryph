@@ -31,7 +31,7 @@ import (
 // `x-release-please-version` annotation comment below. Do not remove that
 // annotation or move the version off this line — see
 // docs/developer-guide/releasing.md.
-const Engine = "0.6.0" // x-release-please-version
+const Engine = "0.7.0" // x-release-please-version
 
 // parse splits a semantic version into major/minor/patch (missing parts = 0).
 func parse(v string) (maj, min, pat int, err error) {
