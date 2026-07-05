@@ -54,6 +54,10 @@ type showDetailMsg struct{ beadID string }
 // detailReadyMsg delivers a freshly-assembled BeadDetailSnapshot.
 type detailReadyMsg struct{ snap cockpit.BeadDetailSnapshot }
 
+// detailBackMsg is emitted by the Detail tab to request returning to the
+// tab that was active before the detail panel was opened.
+type detailBackMsg struct{}
+
 // App is the root Bubble Tea model for the koryph terminal cockpit.
 type App struct {
 	// providers is the list of cockpit providers, one per project. The active
@@ -85,6 +89,10 @@ type App struct {
 	// detailTabIdx is the index of the Detail tab in tabs (set in NewApp).
 	// -1 means no Detail tab is registered.
 	detailTabIdx int
+
+	// prevTabIdx is the tab index that was active before opening the Detail tab.
+	// Restored when detailBackMsg is received.
+	prevTabIdx int
 }
 
 // NewApp creates and initialises the App model.
@@ -197,6 +205,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case showDetailMsg:
 		// Switch to the Detail tab and push the beadID into it.
 		if a.detailTabIdx >= 0 {
+			a.prevTabIdx = a.activeTab
 			a.activeTab = a.detailTabIdx
 			a.resizeTabs()
 			if setter, ok := a.tabs[a.detailTabIdx].(interface {
@@ -222,6 +231,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				dr.SetDetail(msg.snap)
 			}
 		}
+
+	case detailBackMsg:
+		// Return to the tab that was active before the detail panel was opened.
+		a.activeTab = a.prevTabIdx
+		a.resizeTabs()
 	}
 
 	return a, tea.Batch(cmds...)

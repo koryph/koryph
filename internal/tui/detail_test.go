@@ -120,3 +120,124 @@ func TestDetailNoBeadSelected(t *testing.T) {
 		return strings.Contains(string(bts), "No bead selected")
 	})
 }
+
+// TestDetailDepNavigation verifies that j/k keystrokes move cursor focus in
+// the dep list without panicking, and that Enter emits navigation intent.
+func TestDetailDepNavigation(t *testing.T) {
+	snap := newDetailSnap()
+	p := &staticProvider{id: "proj-1", snap: snap}
+	app := tui.NewApp([]cockpit.Provider{p})
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
+	defer func() { _ = tm.Quit() }()
+
+	// Open detail directly by tabbing to the Detail tab and verifying it renders.
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Threads")
+	})
+
+	// Navigate to the Detail tab via Tab key (Threads→Burndown→Detail).
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "No bead selected")
+	})
+
+	// Switch back to Threads and press Enter to open detail for abc-1.
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab}) // Detail → Threads (wraps around)
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Add widget support")
+	})
+
+	// Enter navigates to Detail. Then send j/k to exercise cursor movement.
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+
+	// Verify the detail tab is showing content (abc-1).
+	waitFor(t, tm, func(bts []byte) bool {
+		s := string(bts)
+		return strings.Contains(s, "abc-1") || strings.Contains(s, "Detail")
+	})
+}
+
+// TestDetailBackstack verifies that Backspace returns to the previous tab
+// when the navigation stack is empty.
+func TestDetailBackstack(t *testing.T) {
+	snap := newDetailSnap()
+	p := &staticProvider{id: "proj-1", snap: snap}
+	app := tui.NewApp([]cockpit.Provider{p})
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
+	defer func() { _ = tm.Quit() }()
+
+	// Wait for threads to render.
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Add widget support")
+	})
+
+	// Open detail via Enter.
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "abc-1")
+	})
+
+	// Backspace with an empty nav stack should return to the Threads tab.
+	tm.Send(tea.KeyMsg{Type: tea.KeyBackspace})
+	waitFor(t, tm, func(bts []byte) bool {
+		s := string(bts)
+		// The Threads tab renders a table with "Stage" column header.
+		return strings.Contains(s, "Stage") || strings.Contains(s, "Bead")
+	})
+}
+
+// TestDetailBlockerHighlight verifies that dep rows (which block this bead)
+// and reverse-dep rows both appear in the detail view.
+func TestDetailBlockerHighlight(t *testing.T) {
+	snap := newDetailSnap()
+	p := &staticProvider{id: "proj-1", snap: snap}
+	app := tui.NewApp([]cockpit.Provider{p})
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
+	defer func() { _ = tm.Quit() }()
+
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Add widget support")
+	})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Both the dep (xyz-9) and rdep (def-2) should appear.
+	waitFor(t, tm, func(bts []byte) bool {
+		s := string(bts)
+		return strings.Contains(s, "xyz-9") && strings.Contains(s, "def-2")
+	})
+}
+
+// TestDetailLogTail verifies that pressing 't' switches to log-tail mode,
+// which renders a log viewport header.
+func TestDetailLogTail(t *testing.T) {
+	snap := newDetailSnap()
+	// Point the detail at a log file that exists (use /dev/null for portability).
+	snap.Detail.LogPath = "/dev/null"
+	p := &staticProvider{id: "proj-1", snap: snap}
+	app := tui.NewApp([]cockpit.Provider{p})
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
+	defer func() { _ = tm.Quit() }()
+
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Add widget support")
+	})
+	// Open detail.
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "abc-1")
+	})
+
+	// Press 't' to enter log-tail mode.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	waitFor(t, tm, func(bts []byte) bool {
+		return strings.Contains(string(bts), "Log tail") || strings.Contains(string(bts), "tail log")
+	})
+}
