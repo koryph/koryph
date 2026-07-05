@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/account"
+	"github.com/koryph/koryph/internal/agentjson"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
 )
@@ -149,36 +150,20 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 		return degradedReason("reviewer spawn error: " + err.Error())
 	}
 	if res.ExitCode != 0 {
-		return degradedReason(fmt.Sprintf("reviewer exit %d: %s", res.ExitCode, strings.TrimSpace(tail(res.Stderr, 300))))
+		return degradedReason(fmt.Sprintf("reviewer exit %d: %s", res.ExitCode, strings.TrimSpace(agentjson.Tail(res.Stderr, 300))))
 	}
 
 	// The CLI emits a result envelope; its "result" field holds the model
 	// text, which should itself be strict JSON (extracted tolerantly).
-	var envl struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
-	}
 	out := strings.TrimSpace(res.Stdout)
-	if json.Unmarshal([]byte(out), &envl) != nil {
-		blk := firstJSONBlock(out)
-		if blk == "" || json.Unmarshal([]byte(blk), &envl) != nil {
-			return degradedReason("reviewer output not JSON: " + strings.TrimSpace(tail(out, 300)))
-		}
-	}
-	if envl.IsError {
-		return degradedReason("reviewer reported is_error: " + strings.TrimSpace(tail(envl.Result, 300)))
-	}
-	if envl.Result == "" {
-		return degradedReason("reviewer returned empty result")
-	}
-	raw := firstJSONBlock(envl.Result)
-	if raw == "" {
-		return degradedReason("no JSON verdict in reviewer result: " + strings.TrimSpace(tail(envl.Result, 300)))
+	raw, err := agentjson.ParseEnvelope(out)
+	if err != nil {
+		return degradedReason("reviewer " + err.Error())
 	}
 
 	var v Verdict
 	if json.Unmarshal([]byte(raw), &v) != nil {
-		return degradedReason("verdict JSON invalid: " + strings.TrimSpace(tail(raw, 300)))
+		return degradedReason("verdict JSON invalid: " + strings.TrimSpace(agentjson.Tail(raw, 300)))
 	}
 	v.Degraded = false
 	v.Raw = raw
@@ -229,14 +214,6 @@ finding must be fixed before this branch may merge. An empty findings list with
 	return b.String()
 }
 
-// tail returns the last n bytes of s, for bounding an error/log excerpt.
-func tail(s string, n int) string {
-	if len(s) > n {
-		return s[len(s)-n:]
-	}
-	return s
-}
-
 // tailLines returns the last n lines of s.
 func tailLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
@@ -244,42 +221,4 @@ func tailLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
-}
-
-// firstJSONBlock extracts the first balanced {...} block from s, respecting
-// JSON string literals and escapes. Returns "" when no balanced block exists.
-func firstJSONBlock(s string) string {
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return ""
-	}
-	depth := 0
-	inStr := false
-	esc := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		if inStr {
-			switch {
-			case esc:
-				esc = false
-			case c == '\\':
-				esc = true
-			case c == '"':
-				inStr = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inStr = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
-		}
-	}
-	return ""
 }
