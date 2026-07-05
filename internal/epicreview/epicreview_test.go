@@ -6,6 +6,7 @@ package epicreview
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -306,6 +307,86 @@ func TestValidatePromptContent(t *testing.T) {
 		if !strings.Contains(ps, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+}
+
+// TestValidateProgressCallbackLaunchLine verifies that Progress is called
+// exactly once on a clean single-attempt run, and that the launch line
+// contains the key fields an operator needs (epic id, round, children count).
+func TestValidateProgressCallbackLaunchLine(t *testing.T) {
+	verdictJSON := `{"met":true,"summary":"Clean landing."}`
+	o := baseOpts(t, fakeClaude(t, cleanEnvelope(verdictJSON)))
+
+	var calls []string
+	o.Progress = func(format string, args ...any) {
+		calls = append(calls, fmt.Sprintf(format, args...))
+	}
+
+	v := Validate(context.Background(), o)
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("Progress calls = %d, want 1 (launch only); got: %v", len(calls), calls)
+	}
+	launch := calls[0]
+	for _, want := range []string{"test-epic-001", "round 1", "opus", "koryph-epic-validator", "2 children", "420s"} {
+		if !strings.Contains(launch, want) {
+			t.Errorf("launch line missing %q: %q", want, launch)
+		}
+	}
+}
+
+// TestValidateProgressCallbackRetryLine verifies that Progress is called for
+// the launch (attempt 1) and then again for each retry, with the retry line
+// carrying the attempt number and the previous failure reason.
+func TestValidateProgressCallbackRetryLine(t *testing.T) {
+	old := backoffUnit
+	backoffUnit = time.Millisecond
+	t.Cleanup(func() { backoffUnit = old })
+
+	verdictJSON := `{"met":true,"summary":"All good after retry."}`
+	// Fails once, then succeeds.
+	o := baseOpts(t, fakeClaudeFlaky(t, 1, cleanEnvelope(verdictJSON)))
+	o.Attempts = 3
+
+	var calls []string
+	o.Progress = func(format string, args ...any) {
+		calls = append(calls, fmt.Sprintf(format, args...))
+	}
+
+	v := Validate(context.Background(), o)
+	if v.Degraded {
+		t.Fatalf("verdict degraded after retried transient: %+v", v)
+	}
+
+	// Expect: launch (attempt 1) + retry (attempt 2).
+	if len(calls) != 2 {
+		t.Fatalf("Progress calls = %d, want 2 (launch + 1 retry); got: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "test-epic-001") {
+		t.Errorf("launch line missing epic id: %q", calls[0])
+	}
+	retry := calls[1]
+	if !strings.Contains(retry, "attempt 2") {
+		t.Errorf("retry line missing attempt number: %q", retry)
+	}
+	if !strings.Contains(retry, "reason") {
+		t.Errorf("retry line missing reason field: %q", retry)
+	}
+}
+
+// TestValidateProgressNilSafe verifies that Validate does not panic when
+// Progress is nil (the zero value for a function field).
+func TestValidateProgressNilSafe(t *testing.T) {
+	verdictJSON := `{"met":true,"summary":"ok"}`
+	o := baseOpts(t, fakeClaude(t, cleanEnvelope(verdictJSON)))
+	// o.Progress is nil by default from baseOpts.
+
+	v := Validate(context.Background(), o)
+	if v.Degraded {
+		t.Fatalf("verdict degraded with nil Progress: %+v", v)
 	}
 }
 

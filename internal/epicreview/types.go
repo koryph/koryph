@@ -102,4 +102,10 @@ type Opts struct {
 	// OutDir is the directory for persisted verdict JSON.
 	// Default: <RepoRoot>/.koryph/epic-reviews
 	OutDir string
+
+	// Progress, if non-nil, is called before each validator spawn to emit a
+	// human-readable progress line. The format and args follow fmt.Sprintf
+	// conventions; the callee is responsible for appending a newline.
+	// In --json mode the CLI routes progress to stderr; otherwise to stdout.
+	Progress func(format string, args ...any)
 }

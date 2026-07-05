@@ -482,6 +482,64 @@ func TestEpicValidateDegradedJSONFallback(t *testing.T) {
 	}
 }
 
+// TestEpicValidateProgressOnStdout verifies that in non-JSON mode the
+// pre-spawn progress line is written to stdout (not lost or sent to stderr).
+func TestEpicValidateProgressOnStdout(t *testing.T) {
+	isolate(t)
+	installEpicFakeBD(t)
+
+	verdictJSON := `{"met":true,"summary":"Clean landing."}`
+	claudeBin := epicFakeClaude(t, wrapVerdict(verdictJSON))
+	t.Setenv("KORYPH_CLAUDE_BIN", claudeBin)
+
+	rec := registerEpicProject(t, "proj-progress-stdout")
+	docsOff := false
+	writeProjConfig(t, rec.Root, nil, &docsOff)
+
+	code, out, _ := runCmd("epic", "validate", "my-epic-1", "--project", rec.ProjectID)
+	if code != 0 {
+		t.Errorf("code = %d, want 0", code)
+	}
+	// The pre-spawn progress line must appear on stdout in normal mode.
+	if !strings.Contains(out, "my-epic-1") {
+		t.Errorf("stdout missing progress launch line; got: %s", out)
+	}
+	// Key fields from the launch line.
+	for _, want := range []string{"round", "opus", "children", "timeout"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout progress line missing %q; got: %s", want, out)
+		}
+	}
+}
+
+// TestEpicValidateJSONProgressGoesToStderr verifies that in --json mode the
+// progress line is routed to stderr so stdout remains parseable JSON.
+func TestEpicValidateJSONProgressGoesToStderr(t *testing.T) {
+	isolate(t)
+	installEpicFakeBD(t)
+
+	verdictJSON := `{"met":true,"summary":"Clean landing."}`
+	claudeBin := epicFakeClaude(t, wrapVerdict(verdictJSON))
+	t.Setenv("KORYPH_CLAUDE_BIN", claudeBin)
+
+	rec := registerEpicProject(t, "proj-json-progress")
+	docsOff := false
+	writeProjConfig(t, rec.Root, nil, &docsOff)
+
+	code, out, errb := runCmd("epic", "validate", "my-epic-1", "--project", rec.ProjectID, "--json")
+	if code != 0 {
+		t.Errorf("code = %d, want 0", code)
+	}
+	// stdout must remain pure JSON — no progress lines.
+	if strings.Contains(out, "round") || strings.Contains(out, "children") || strings.Contains(out, "timeout") {
+		t.Errorf("--json: progress leaked to stdout; stdout=%s", out)
+	}
+	// Progress launch line must appear on stderr.
+	if !strings.Contains(errb, "my-epic-1") {
+		t.Errorf("--json: progress launch line missing from stderr; stderr=%s", errb)
+	}
+}
+
 func TestEpicValidateRoundFlag(t *testing.T) {
 	isolate(t)
 	argsLog := installEpicFakeBD(t)

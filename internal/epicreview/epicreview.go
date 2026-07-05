@@ -92,7 +92,15 @@ func Validate(ctx context.Context, o Opts) Verdict {
 
 	var last Verdict
 	for i := 0; i < attempts; i++ {
-		if i > 0 {
+		if i == 0 {
+			// Pre-spawn launch line: tells the operator that a potentially
+			// long-running frontier agent was just dispatched so the stream
+			// does not look hung for the duration of TimeoutSec.
+			if o.Progress != nil {
+				o.Progress("epic validate: %s  round %d  model %s  persona %s  %d children  timeout %ds",
+					o.EpicID, round, o.Model, o.Persona, len(o.Children), o.TimeoutSec)
+			}
+		} else {
 			// Exponential backoff so a rate or usage limit — the dominant
 			// transient validator failure — is given progressively more time
 			// to clear instead of being hammered.
@@ -102,6 +110,9 @@ func Validate(ctx context.Context, o Opts) Verdict {
 				last.Attempts = i
 				return last
 			case <-time.After(backoffFor(i)):
+			}
+			if o.Progress != nil {
+				o.Progress("epic validate: attempt %d/%d  reason: %s", i+1, attempts, last.Reason)
 			}
 		}
 		v := attemptValidate(ctx, o, prompt)

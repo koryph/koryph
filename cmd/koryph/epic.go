@@ -184,6 +184,14 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 		Model:           evcfg.Model,
 		TimeoutSec:      evcfg.TimeoutSeconds,
 		OutDir:          outDir,
+		// Progress routes to stderr in --json mode so stdout stays pure JSON.
+		Progress: func(format string, args ...any) {
+			if *asJSON {
+				fmt.Fprintf(stderr, format+"\n", args...)
+			} else {
+				fmt.Fprintf(stdout, format+"\n", args...)
+			}
+		},
 	}
 	if bin := os.Getenv("KORYPH_CLAUDE_BIN"); bin != "" {
 		opts.ClaudeBin = bin
