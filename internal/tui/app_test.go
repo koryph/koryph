@@ -222,7 +222,7 @@ func TestAppQueueTab(t *testing.T) {
 	}
 
 	p := &staticProvider{id: "proj-1", snap: snap}
-	app := tui.NewApp([]cockpit.Provider{p})
+	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()

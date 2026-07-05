@@ -97,6 +97,16 @@ func TestDetailShowsDepLinks(t *testing.T) {
 	})
 }
 
+// tabToDetail presses Tab from the Threads tab to the Detail tab. Detail
+// registers with Order 99 — deliberately LAST — so the press count is derived
+// from the registry size, not hardcoded against today's sibling set (this
+// navigation broke three times as sibling tabs merged; never count manually).
+func tabToDetail(tm *teatest.TestModel) {
+	for i := 0; i < tui.RegisteredTabCount()-1; i++ {
+		tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	}
+}
+
 // TestDetailNoBeadSelected verifies the placeholder renders when no bead is selected.
 func TestDetailNoBeadSelected(t *testing.T) {
 	// Use a snap with no bead detail so the Detail tab shows placeholder.
@@ -111,11 +121,9 @@ func TestDetailNoBeadSelected(t *testing.T) {
 		return strings.Contains(string(bts), "Threads")
 	})
 
-	// Tab to Detail tab (Threads→Burndown→Events→Efficiency→Detail).
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	// Tab to the Detail tab — registered LAST (Order 99), so it is
+	// tabCount-1 presses from Threads regardless of sibling composition.
+	tabToDetail(tm)
 
 	// The placeholder text should appear.
 	waitFor(t, tm, func(bts []byte) bool {
@@ -138,11 +146,8 @@ func TestDetailDepNavigation(t *testing.T) {
 		return strings.Contains(string(bts), "Threads")
 	})
 
-	// Navigate to the Detail tab via Tab key (Threads→Burndown→Events→Efficiency→Detail).
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	// Navigate to the Detail tab (registered last; see tabToDetail).
+	tabToDetail(tm)
 
 	waitFor(t, tm, func(bts []byte) bool {
 		return strings.Contains(string(bts), "No bead selected")

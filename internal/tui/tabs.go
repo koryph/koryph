@@ -61,6 +61,11 @@ type TabDef struct {
 	New func(theme Theme, readOnly bool) TabModel
 }
 
+// RegisteredTabCount reports how many tabs are registered — exported for
+// tests that navigate by Tab presses so they derive counts from the registry
+// instead of hardcoding today's sibling composition.
+func RegisteredTabCount() int { return len(tabRegistry) }
+
 // tabRegistry is the ordered list of registered tab definitions.
 // Populated via registerTab; never written after init() completes.
 var tabRegistry []TabDef

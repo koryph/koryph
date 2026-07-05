@@ -35,9 +35,12 @@ func init() {
 	registerTab(TabDef{
 		Name:  "Queue",
 		Order: 4,
-		New:   func(theme Theme) TabModel { return newQueueModel(theme) },
+		New:   func(theme Theme, _ bool) TabModel { return newQueueModel(theme) },
 	})
 }
+
+// IsCapturingInput implements TabModel. The queue tab has no text inputs.
+func (m *queueModel) IsCapturingInput() bool { return false }
 
 // queueFilter is the active state filter for the queue tab.
 type queueFilter int
