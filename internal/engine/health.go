@@ -46,6 +46,8 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/quota"
+
+	gcpkg "github.com/koryph/koryph/internal/gc"
 )
 
 // defaultHealthIntervalSec is the health patrol cadence when no override is set.
@@ -173,6 +175,7 @@ func (r *runner) collectPatrolFindings(ctx context.Context, now time.Time) []pat
 	out = append(out, r.patrolCheckQuotaBurn()...)
 	out = append(out, r.patrolCheckBD()...)
 	out = append(out, r.patrolCheckLedgerWritable()...)
+	out = append(out, r.patrolCheckGCFootprint()...)
 	return out
 }
 
@@ -513,4 +516,63 @@ func (r *runner) patrolCheckLedgerWritable() []patrolFinding {
 	_ = f.Close()
 	_ = os.Remove(name)
 	return []patrolFinding{{check: patrolCheckLedger, level: "ok", message: "ledger dir writable"}}
+}
+
+// --- check: gc footprint ---------------------------------------------------
+
+const patrolCheckGCFootprint = "gc-footprint"
+
+// patrolCheckGCFootprint performs a dry-run gc scan and warns when pending-gc
+// exceeds the configured threshold (gc.Config.FootprintWarnGB, default 1 GiB).
+// If gc_auto is true in the config, it also runs a live gc pass.
+func (r *runner) patrolCheckGCFootprint() []patrolFinding {
+	repoRoot := ""
+	if r.rec != nil {
+		repoRoot = r.rec.Root
+	}
+
+	cfg, err := gcpkg.LoadConfig(repoRoot)
+	if err != nil {
+		return []patrolFinding{{check: patrolCheckGCFootprint, level: "warn",
+			message: fmt.Sprintf("gc-footprint: cannot load retention config: %v", err)}}
+	}
+
+	dryOpts := gcpkg.Options{RepoRoot: repoRoot, DryRun: true, Config: &cfg}
+	res, err := gcpkg.Run(dryOpts)
+	if err != nil {
+		return []patrolFinding{{check: patrolCheckGCFootprint, level: "warn",
+			message: fmt.Sprintf("gc-footprint: scan failed: %v", err)}}
+	}
+
+	totalMB := res.TotalReclaimedMB()
+	totalGB := totalMB / 1024
+	warnGB := cfg.FootprintWarnGB
+
+	if totalGB < warnGB {
+		return []patrolFinding{{check: patrolCheckGCFootprint, level: "ok",
+			message: fmt.Sprintf("gc-footprint: reclaimable=%.1f MB (threshold %.1f GB)", totalMB, warnGB)}}
+	}
+
+	// Threshold exceeded.
+	f := patrolFinding{
+		check:   patrolCheckGCFootprint,
+		level:   "warn",
+		message: fmt.Sprintf("gc-footprint: %.2f GB reclaimable exceeds threshold (%.1f GB) — run `koryph gc [--project ID]`", totalGB, warnGB),
+	}
+
+	// Auto-gc: run a live pass if enabled (opt-in only).
+	if cfg.GCAuto {
+		liveOpts := gcpkg.Options{RepoRoot: repoRoot, DryRun: false, Config: &cfg}
+		liveRes, gerr := gcpkg.Run(liveOpts)
+		if gerr != nil {
+			f.message += fmt.Sprintf(" [auto-gc failed: %v]", gerr)
+		} else {
+			reclaimed := liveRes.TotalReclaimedMB()
+			f.message = fmt.Sprintf("gc-footprint: auto-gc reclaimed %.1f MB", reclaimed)
+			f.level = "ok"
+			f.fixed = true
+		}
+	}
+
+	return []patrolFinding{f}
 }

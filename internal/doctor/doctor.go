@@ -129,6 +129,7 @@ func Run(opts Options) (*Report, error) {
 	r.addAll(checkQuotaGuardOverride(opts))
 	r.addAll(checkVaultProviders(opts))
 	r.addAll(checkObs(opts))
+	r.addAll(checkGCFootprint(opts))
 
 	for _, f := range r.Findings {
 		if f.Fixed {

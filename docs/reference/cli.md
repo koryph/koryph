@@ -97,6 +97,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph ci check`](#koryph-ci-check) | report drift between installed CI assets and current Render output |
 | [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
 | ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
+| [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail, export, prune |
 | ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
 | ↳ [`koryph obs level`](#koryph-obs-level) | set the log level for a component (or default) |
@@ -1115,6 +1116,21 @@ on-demand epic validation: completeness + structural health review
 | `--json` | bool |  | emit the raw verdict JSON; actions still apply |
 | `--project` | string |  | project id (required) |
 | `--round` | int |  | validation round override (0 = auto-detect from prior verdict files) |
+
+
+---
+
+## `koryph gc` { #koryph-gc }
+
+apply data lifecycle policy: compress old run dirs, rotate audit logs
+
+**See also:** [Gc](../user-guide/gc)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--dry-run` | bool |  | report without making any changes |
+| `--json` | bool |  | emit the result as JSON |
+| `--project` | string |  | apply run-dirs gc for this project |
 
 
 ---
