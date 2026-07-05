@@ -92,6 +92,8 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph completion bash`](#koryph-completion-bash) | print the bash completion script |
 | ↳ [`koryph completion zsh`](#koryph-completion-zsh) | print the zsh completion script |
 | ↳ [`koryph completion install`](#koryph-completion-install) | install the completion script to the standard location |
+| [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
+| ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail |
 | ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
 | ↳ [`koryph obs level`](#koryph-obs-level) | set the log level for a component (or default) |
@@ -1050,6 +1052,29 @@ install the completion script to the standard location
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--shell` | string |  | target shell: bash\|zsh (default: detect from $SHELL) |
+
+
+---
+
+## `koryph epic` { #koryph-epic }
+
+epic lifecycle management (validate, …)
+
+**See also:** [Epic validation](../user-guide/epic-validation) · [Beads](../concepts/beads)
+
+Run `koryph epic <subcommand> -h` for subcommand flags.
+
+## `koryph epic validate` { #koryph-epic-validate }
+
+on-demand epic validation: completeness + structural health review
+
+**See also:** [Epic validation](../user-guide/epic-validation)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit the raw verdict JSON; actions still apply |
+| `--project` | string |  | project id (required) |
+| `--round` | int |  | validation round override (0 = auto-detect from prior verdict files) |
 
 
 ---

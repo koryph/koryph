@@ -119,6 +119,8 @@ type CreateInput struct {
 	Priority    int      // 0..4 (0 = highest); passed to --priority
 	IssueType   string   // bug|feature|task|epic|chore|decision; "" = bd default
 	ExternalRef string   // canonical external-ref key (e.g. "gh-42"); "" = omit
+	Parent      string   // parent bead id (bd --parent); "" = no parent
+	DependsOn   []string // bead ids this bead depends on (bd --depends-on, one flag per id)
 }
 
 // Create creates one bead via `bd create <title> --silent --body-file -` and
@@ -135,11 +137,23 @@ func (a *Adapter) Create(ctx context.Context, in CreateInput) (string, error) {
 	if in.ExternalRef != "" {
 		args = append(args, "--external-ref", in.ExternalRef)
 	}
+	if in.Parent != "" {
+		args = append(args, "--parent", in.Parent)
+	}
+	for _, dep := range in.DependsOn {
+		args = append(args, "--depends-on", dep)
+	}
 	res, err := a.runStdin(ctx, in.Description, args...)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(res.Stdout), nil
+}
+
+// AddLabel adds a single label to an issue via `bd update <id> --add-label <label>`.
+func (a *Adapter) AddLabel(ctx context.Context, id, label string) error {
+	_, err := a.run(ctx, "update", id, "--add-label", label)
+	return err
 }
 
 // Comment posts a comment via `bd comment <id> <text>`.
