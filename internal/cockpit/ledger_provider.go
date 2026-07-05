@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/koryph/koryph/internal/beads"
@@ -27,7 +28,16 @@ type agentStatus struct {
 
 // LedgerProvider implements Provider over a project's run ledger and the
 // machine-global governor. It is the primary provider used by the TUI.
+//
+// Refresh() is safe to call concurrently from multiple goroutines (the TUI
+// tick Cmd and the manual 'r' reload Cmd can race); mu serialises access to
+// mutable fields.
 type LedgerProvider struct {
+	// mu serialises all mutable field access — Refresh() is called from both
+	// the background tick goroutine and the tea.Cmd returned by manual reload,
+	// so concurrent calls are possible.
+	mu sync.Mutex
+
 	projectID      string
 	repoRoot       string
 	accountProfile string // for quota config lookup; may be ""
@@ -78,8 +88,11 @@ func (p *LedgerProvider) ProjectID() string { return p.projectID }
 func (p *LedgerProvider) RepoRoot() string { return p.repoRoot }
 
 // Refresh implements Provider. It reads the latest ledger run, all active
-// slots, and the governor snapshot.
+// slots, and the governor snapshot. Concurrent calls are safe; the mutex
+// serialises execution to protect burndownCache, burndownAt, and events.
 func (p *LedgerProvider) Refresh() (Snapshot, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	snap := Snapshot{
 		ProjectID:  p.projectID,
 		CapturedAt: time.Now(),

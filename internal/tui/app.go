@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -176,6 +177,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// When the active tab has a text-input focused, bypass ALL global
+		// key bindings and deliver the key directly to the tab. This prevents
+		// 'q', 'r', 'p', Tab, and '?' from firing application-level actions
+		// while the operator is typing a bead ID or nudge message.
+		if len(a.tabs) > 0 && a.tabs[a.activeTab].IsCapturingInput() {
+			var cmd tea.Cmd
+			a, cmd = a.updateActiveTab(msg)
+			cmds = append(cmds, cmd)
+			break
+		}
+
 		// Global keys are handled before tab-specific ones.
 		switch {
 		case key.Matches(msg, a.keys.Quit):
@@ -431,6 +443,23 @@ func (a App) renderStatusBar() string {
 // cmdNudge's live-bead path (koryph-o72). If the bead is not dispatched, the
 // result message instructs the operator to use koryph nudge from the CLI.
 func (a App) doNudge(beadID, text string) tea.Cmd {
+	// Enforce read-only mode here as well as in the tab key handler so that
+	// future message sources (shortcuts, scripted tests) cannot bypass the check.
+	if a.readOnly {
+		return func() tea.Msg {
+			return actionResultMsg{Err: fmt.Errorf("nudge: disabled in --read-only mode")}
+		}
+	}
+	// Validate beadID to prevent path traversal: reject empty values, paths
+	// containing directory separators, and dot-leading names.
+	if beadID == "" ||
+		strings.ContainsRune(beadID, '/') ||
+		strings.ContainsRune(beadID, '\\') ||
+		strings.HasPrefix(beadID, ".") {
+		return func() tea.Msg {
+			return actionResultMsg{Err: fmt.Errorf("nudge: invalid bead ID %q", beadID)}
+		}
+	}
 	repoRoot := a.providers[a.projectIdx].RepoRoot()
 	runID := a.snap.RunID
 	return func() tea.Msg {
@@ -450,14 +479,14 @@ func (a App) doNudge(beadID, text string) tea.Cmd {
 				Msg: fmt.Sprintf("nudge: %s not dispatched — use 'koryph nudge' to reach queued beads", beadID),
 			}
 		}
-		phaseDir := paths.KoryphRoot(repoRoot) + "/" + runID + "/" + beadID
+		phaseDir := filepath.Join(paths.KoryphRoot(repoRoot), runID, beadID)
 		if err := os.MkdirAll(phaseDir, 0o755); err != nil {
 			return actionResultMsg{Err: fmt.Errorf("nudge: mkdir: %w", err)}
 		}
 		entry := fmt.Sprintf("\n---\n[%s] operator (tui):\n%s\n",
 			time.Now().UTC().Format(time.RFC3339), text)
-		f, err := os.OpenFile(phaseDir+"/INBOX.md",
-			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		inboxPath := filepath.Join(phaseDir, "INBOX.md")
+		f, err := os.OpenFile(inboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			return actionResultMsg{Err: fmt.Errorf("nudge: open INBOX: %w", err)}
 		}
@@ -475,6 +504,12 @@ func (a App) doNudge(beadID, text string) tea.Cmd {
 // doDrain returns a Cmd that writes the drain sentinel for the active project,
 // mirroring cmdDrain's requestDrain path (koryph-57v.1).
 func (a App) doDrain() tea.Cmd {
+	// Enforce read-only mode here as well as in the tab key handler.
+	if a.readOnly {
+		return func() tea.Msg {
+			return actionResultMsg{Err: fmt.Errorf("drain: disabled in --read-only mode")}
+		}
+	}
 	repoRoot := a.providers[a.projectIdx].RepoRoot()
 	projectID := a.providers[a.projectIdx].ProjectID()
 	return func() tea.Msg {

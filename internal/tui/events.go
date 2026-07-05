@@ -110,6 +110,14 @@ func newEventsModel(theme Theme, readOnly bool) *eventsModel {
 // Init implements TabModel.
 func (m *eventsModel) Init() tea.Cmd { return nil }
 
+// IsCapturingInput implements TabModel. Returns true when a text input is
+// focused so App.Update bypasses global keybindings and delivers all keys
+// to the input (preventing 'q', 'r', 'p', 'tab' from firing global actions
+// while the operator is typing a bead ID or nudge message).
+func (m *eventsModel) IsCapturingInput() bool {
+	return m.mode != modeNormal && m.mode != modeDrainConfirm
+}
+
 // Update implements TabModel.
 func (m *eventsModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	// Always handle action results regardless of modal state.

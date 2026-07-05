@@ -185,8 +185,6 @@ func (c *eventCollector) collectAuditEvents(projectID string) {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Bytes()
-		c.auditOffset = start + int64(len(line)) + 1 // +1 for newline
-		start = c.auditOffset
 
 		var rec auditRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
@@ -200,6 +198,16 @@ func (c *eventCollector) collectAuditEvents(projectID string) {
 		if ev.Kind != "" {
 			c.push(ev)
 		}
+	}
+	// Advance the offset to the end of what was readable when we started.
+	// Computing per-line byte counts is fragile (the final line may lack a
+	// trailing newline, causing a one-byte overshoot). Setting auditOffset
+	// to `size` is safe: any bytes appended during the scan are at offsets
+	// >= size and will be picked up on the next Collect call.
+	// Only advance when the scanner terminated cleanly; on error we leave the
+	// offset unchanged so we retry the same bytes next tick.
+	if sc.Err() == nil {
+		c.auditOffset = size
 	}
 }
 

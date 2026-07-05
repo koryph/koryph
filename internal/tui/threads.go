@@ -53,6 +53,9 @@ func newThreadsModel(theme Theme) *threadsModel {
 // Init implements TabModel.
 func (m *threadsModel) Init() tea.Cmd { return nil }
 
+// IsCapturingInput implements TabModel. Threads tab has no text inputs.
+func (m *threadsModel) IsCapturingInput() bool { return false }
+
 // Update implements TabModel.
 func (m *threadsModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	var cmd tea.Cmd

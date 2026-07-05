@@ -31,6 +31,7 @@ func (s *stubTab) Update(tea.Msg) (TabModel, tea.Cmd) { return s, nil }
 func (s *stubTab) View() string                       { return s.name }
 func (s *stubTab) SetSnapshot(cockpit.Snapshot)       { s.calls = append(s.calls, "snap") }
 func (s *stubTab) Resize(w, h int)                    { s.calls = append(s.calls, "resize") }
+func (s *stubTab) IsCapturingInput() bool             { return false }
 
 // --- registry tests ---------------------------------------------------------
 

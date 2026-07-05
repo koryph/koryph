@@ -57,6 +57,9 @@ func newBurndownModel(theme Theme) *burndownModel {
 // Init implements TabModel.
 func (m *burndownModel) Init() tea.Cmd { return nil }
 
+// IsCapturingInput implements TabModel. Burndown tab has no text inputs.
+func (m *burndownModel) IsCapturingInput() bool { return false }
+
 // Update implements TabModel.
 func (m *burndownModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	switch msg := msg.(type) {

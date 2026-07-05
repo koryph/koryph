@@ -36,6 +36,13 @@ type TabModel interface {
 	// Resize updates the tab's content area dimensions. Called on every
 	// tea.WindowSizeMsg and whenever the active tab changes.
 	Resize(w, h int)
+	// IsCapturingInput reports whether the tab currently has a text-input
+	// focused. When true, App.Update bypasses global key bindings (quit, help,
+	// tab-switch, project-cycle, reload) and routes the key directly to the tab
+	// so that letters like 'q', 'r', 'p', and special chars in bead IDs are
+	// delivered to the input rather than triggering application-level actions.
+	// Tabs with no text inputs should always return false.
+	IsCapturingInput() bool
 }
 
 // TabDef describes one registered TUI tab.
