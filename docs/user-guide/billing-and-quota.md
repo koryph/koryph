@@ -221,6 +221,29 @@ prominent warning and switches the current wave's `billing_mode` to
 `api-key`. A per-agent budget cap (`per_agent_max_usd`, default **$25**) is
 forwarded as `--max-budget-usd` to limit runaway spend.
 
+### Per-agent budget caps and the turn-boundary nuance
+
+`--max-budget-usd` **is enforced under subscription OAuth**, not just
+API-key billing — confirmed empirically with a live canary. But the
+enforcement point matters for capacity planning:
+
+> **The Claude CLI checks the budget cap at turn boundaries, not mid-generation.**
+> A turn already in flight when the cap is reached is allowed to finish before
+> the session is killed. On a thinking-heavy turn this can **overshoot the
+> configured cap substantially** — the pinning canary observed a $0.001 cap
+> overshoot to $0.43 (~428x) because the in-flight turn was allowed to
+> complete. Treat `per_agent_max_usd` / `--max-budget-usd` as a
+> **per-turn-bounded** ceiling, not a hard mid-generation interrupt: actual
+> spend on a killed agent can exceed the configured cap by the cost of one
+> turn.
+
+When an agent is killed this way, the engine classifies it distinctly from a
+crash or rate-limit death (`DeathReason: budget-killed`,
+`error_max_budget_usd` in the stream) and applies a warm-resume-then-park
+policy so the cap isn't silently re-paid on every retry — see [Budget-killed
+agents](running-waves.md#budget-killed-agents) in Running Waves for the full
+requeue/park semantics.
+
 ---
 
 ## Batch mode

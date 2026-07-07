@@ -322,6 +322,23 @@ retried agent never runs against a checkout that predates a main-side fix: a bea
 no commits is rebuilt from a fresh checkout, and one carrying commits is rebased onto the
 advanced base before re-dispatch.
 
+### Budget-killed agents
+
+An agent stopped by `--max-budget-usd` (see [Billing and
+quota](billing-and-quota.md#per-agent-budget-caps-and-the-turn-boundary-nuance))
+is classified distinctly from a crash or rate-limit death and gets its own
+warm-resume policy:
+
+| Situation | Action |
+|---|---|
+| Budget-killed, first time on this bead | Warm-resume requeue: worktree and branch are **preserved** (not rebuilt), so `--resume --fork-session` reattaches to the live Claude session and any uncommitted WIP snapshot is cited in the resume prompt |
+| Budget-killed a second consecutive time | Parked `blocked` with a `needs-attention` note instead of spending a third cap — raise the account's per-agent budget or split the bead |
+| Budget-killed with zero commits and pathological token volume (thrash guard) | Parked immediately, skipping even the first warm resume — the attempt is judged unrecoverable rather than retried |
+
+Parked budget-kill slots surface the same way as any other `blocked` slot —
+via `koryph board`, the TUI, and the health-patrol channels — with the note
+prefixed `needs-attention:` and the accumulated `CostUSD` so far.
+
 ## Poll interval
 
 The engine polls each running slot's `status.json` heartbeat every **10 seconds**
