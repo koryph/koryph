@@ -39,3 +39,31 @@ func (s Stat) TotalMB() uint64 { return s.TotalBytes / (1024 * 1024) }
 // platform with no probe; every other error means the probe was attempted but
 // failed (e.g. vm_stat missing) and the caller should likewise fail open.
 func Available() (Stat, error) { return available() }
+
+// Auto-floor sizing band (koryph-930): the default memory admission floor is a
+// fraction of physical RAM, clamped so it is protective on small hosts without
+// over-reserving on very large ones.
+const (
+	autoFloorFraction = 8    // 1/8 of physical memory ≈ 12.5%
+	minAutoFloorMB    = 1024 // never reserve less than 1 GB
+	maxAutoFloorMB    = 8192 // never reserve more than 8 GB, however large the host
+)
+
+// DefaultFloorMB is the memory admission floor to use when an operator has not
+// configured an explicit one: a fraction of physical memory (sized to the host),
+// clamped to [minAutoFloorMB, maxAutoFloorMB]. totalMB is the host's physical
+// memory in megabytes (Stat.TotalMB). Returns 0 only when totalMB is 0 (no
+// reading), which callers treat as "gate disabled / fail open".
+func DefaultFloorMB(totalMB uint64) int {
+	if totalMB == 0 {
+		return 0
+	}
+	mb := int(totalMB / autoFloorFraction)
+	if mb < minAutoFloorMB {
+		mb = minAutoFloorMB
+	}
+	if mb > maxAutoFloorMB {
+		mb = maxAutoFloorMB
+	}
+	return mb
+}

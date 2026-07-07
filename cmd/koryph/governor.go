@@ -4,12 +4,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"text/tabwriter"
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/sysmem"
 )
 
 func init() {
@@ -145,11 +147,7 @@ func printPoolStatus(stdout io.Writer, gs *govern.Store, pool string) error {
 	}
 	fmt.Fprintf(stdout, "pool %s:\n", pool)
 	fmt.Fprintf(stdout, "  global concurrency cap: %d\n", gs.Cap(pool))
-	if floor := gs.MinFreeMemoryMB(pool); floor > 0 {
-		fmt.Fprintf(stdout, "  memory floor: defer new agents below %d MB free (koryph-930)\n", floor)
-	} else {
-		fmt.Fprintln(stdout, "  memory floor: off")
-	}
+	printMemoryFloor(stdout, gs.MinFreeMemoryMB(pool))
 
 	// AIMD overlay (koryph-2im.4): show adaptive status and, when on, the
 	// dynamic cap that Acquire actually admits against — for THIS pool only.
@@ -227,20 +225,28 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	settleSec := fs.Int("settle-sec", 0, "settle window after any cap change, under --adaptive (default 120)")
 	breakSec := fs.Int("break-sec", 0, "circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600)")
 	minDispatchInterval := fs.Int("min-dispatch-interval", 0, "minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%)")
-	minFreeMem := fs.Int("min-free-memory-mb", -1, "defer new agents while host available memory is below N MB (koryph-930); 0 clears the gate. May be set alone or alongside --max-global")
+	minFreeMem := fs.Int("min-free-memory-mb", 0, "memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global")
 	setUsage(fs, stdout, "set one provider pool's cap on concurrently running agents",
 		"[--max-global N] [--min-free-memory-mb N] [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
+	// Detect whether --min-free-memory-mb was given (0 is a meaningful value —
+	// "reset to auto" — so a sentinel default won't do).
+	memProvided := false
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "min-free-memory-mb" {
+			memProvided = true
+		}
+	})
 	pool := govern.NormalizeProvider(*provider)
 	gs := govern.NewStore()
 
 	// Floor-only invocation: adjust the memory gate without resetting the pool's
 	// cap or AIMD state (SetMinFreeMemoryMB preserves every other field).
 	if *maxGlobal <= 0 {
-		if *minFreeMem < 0 {
-			return usageErr(stderr, "governor set: need --max-global (> 0) and/or --min-free-memory-mb (>= 0)")
+		if !memProvided {
+			return usageErr(stderr, "governor set: need --max-global (> 0) and/or --min-free-memory-mb")
 		}
 		if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
 			return fail(stderr, err)
@@ -268,7 +274,7 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 
 	// A floor requested alongside the cap must be written AFTER the cap set,
 	// since SetCap/SetAdaptiveCap reset the pool wholesale.
-	if *minFreeMem >= 0 {
+	if memProvided {
 		if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
 			return fail(stderr, err)
 		}
@@ -277,12 +283,36 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// memFloorMsg renders the confirmation line for a memory-floor change.
-func memFloorMsg(mb int) string {
-	if mb == 0 {
-		return "memory admission gate disabled (min_free_memory_mb cleared)"
+// printMemoryFloor reports the effective memory admission floor for `governor
+// show` (koryph-930). The raw setting is >0 explicit, <0 disabled, or 0 auto —
+// for auto it probes physical memory to show the resolved floor.
+func printMemoryFloor(stdout io.Writer, setting int) {
+	switch {
+	case setting > 0:
+		fmt.Fprintf(stdout, "  memory floor: defer new agents below %d MB free (koryph-930)\n", setting)
+	case setting < 0:
+		fmt.Fprintln(stdout, "  memory floor: disabled")
+	default:
+		if stat, err := sysmem.Available(); err == nil {
+			auto := sysmem.DefaultFloorMB(stat.TotalMB())
+			fmt.Fprintf(stdout, "  memory floor: auto — defer new agents below %d MB free (~1/8 of %d MB physical) [koryph-930]\n", auto, stat.TotalMB())
+		} else {
+			fmt.Fprintln(stdout, "  memory floor: auto (sized to physical memory) [koryph-930]")
+		}
 	}
-	return fmt.Sprintf("memory admission floor set to %d MB free", mb)
+}
+
+// memFloorMsg renders the confirmation line for a memory-floor change
+// (koryph-930): >0 an explicit floor, <0 disabled, 0 reset to the auto floor.
+func memFloorMsg(mb int) string {
+	switch {
+	case mb > 0:
+		return fmt.Sprintf("memory admission floor set to %d MB free", mb)
+	case mb < 0:
+		return "memory admission gate disabled"
+	default:
+		return "memory admission floor reset to auto (sized to physical memory)"
+	}
 }
 
 func max0(n int) int {

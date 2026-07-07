@@ -85,10 +85,11 @@ func (s *Store) Cap(provider string) int {
 	return c.MaxGlobalAgents
 }
 
-// MinFreeMemoryMB returns provider's configured memory admission floor in MB, or
-// 0 when governor.json (or the pool's entry) is absent or the field is unset —
-// 0 meaning the memory gate is disabled (koryph-930). Fails to 0 (gate off) on
-// any read error, matching the governor's fail-open posture.
+// MinFreeMemoryMB returns provider's RAW configured memory admission floor
+// setting (koryph-930): >0 an explicit floor in MB, <0 the gate explicitly
+// disabled, 0 unset (callers auto-size the floor to physical memory — the gate
+// is ON by default). Returns 0 (auto) when governor.json or the pool entry is
+// absent, or on any read error, matching the governor's fail-open posture.
 func (s *Store) MinFreeMemoryMB(provider string) int {
 	pool := NormalizeProvider(provider)
 	f, err := s.readFile()
@@ -96,7 +97,7 @@ func (s *Store) MinFreeMemoryMB(provider string) int {
 		return 0
 	}
 	c, ok := f.Pools[pool]
-	if !ok || c.MinFreeMemoryMB < 0 {
+	if !ok {
 		return 0
 	}
 	return c.MinFreeMemoryMB
@@ -124,13 +125,11 @@ func (s *Store) SetCap(provider string, n int) error {
 // SetMinFreeMemoryMB writes provider's memory admission floor (koryph-930) to
 // governor.json, PRESERVING every other field of that pool's config (cap, AIMD
 // overlay, breaker/settle state) — unlike SetCap, which resets the pool
-// wholesale. mb=0 clears the gate. A pool that does not yet exist is created
-// with only the floor set (its cap defaults via Cap()). provider=="" is
-// DefaultPool.
+// wholesale. The value is interpreted by readers: mb>0 an explicit floor, mb<0
+// disables the gate, mb==0 resets to the auto floor (sized to physical memory,
+// the default). A pool that does not yet exist is created with only the floor
+// set (its cap defaults via Cap()). provider=="" is DefaultPool.
 func (s *Store) SetMinFreeMemoryMB(provider string, mb int) error {
-	if mb < 0 {
-		return errors.New("govern: min_free_memory_mb must be >= 0")
-	}
 	pool := NormalizeProvider(provider)
 	return s.withLock(func() error {
 		f, err := s.readFile()

@@ -27,6 +27,7 @@ import (
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
 	"github.com/koryph/koryph/internal/signing"
+	"github.com/koryph/koryph/internal/sysmem"
 	"github.com/koryph/koryph/internal/version"
 )
 
@@ -88,11 +89,12 @@ type runner struct {
 	govWarned  bool
 	issues     map[string]beads.Issue
 
-	// memProbe reads current available system memory in MB for the memory
+	// memProbe reads current system memory (total + available) for the memory
 	// admission gate (koryph-930). nil means "use the real platform probe"
 	// (sysmem.Available); tests inject a stub. ok=false signals no usable
-	// reading, on which the gate fails open.
-	memProbe func() (availMB uint64, ok bool)
+	// reading, on which the gate fails open. Total is needed to auto-size the
+	// default floor to physical memory.
+	memProbe func() (sysmem.Stat, bool)
 
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time

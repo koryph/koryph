@@ -484,17 +484,21 @@ like a concurrency-cap denial. It is a soft safety rail — a missing or unreada
 signal always fails open (dispatch proceeds).
 
 The floor is a machine property (like the global concurrency cap), so it lives in
-`~/.koryph/governor.json`, per provider pool. It is **off by default** (`0`). Enable it with:
+`~/.koryph/governor.json`, per provider pool. It is **on by default**, sized to physical
+memory (~1/8 of total RAM, clamped to a 1–8 GB band) — e.g. ~3 GB on a 24 GB host. Override
+or turn it off with:
 
 ```sh
-koryph governor set --min-free-memory-mb 4096          # defer while < 4 GB free
-koryph governor set --min-free-memory-mb 0             # clear the gate
+koryph governor set --min-free-memory-mb 4096          # explicit: defer while < 4 GB free
+koryph governor set --min-free-memory-mb 0             # reset to the auto (sized) floor
+koryph governor set --min-free-memory-mb -1            # disable the gate entirely
 ```
 
-`koryph governor show` reports the active floor. For a one-off run without editing
-`governor.json`, set `KORYPH_MIN_FREE_MEMORY_MB` in the environment — it overrides the
+`koryph governor show` reports the active floor (auto, explicit, or disabled). For a one-off
+run without editing `governor.json`, set `KORYPH_MIN_FREE_MEMORY_MB` in the environment
+(same values: a positive floor, `0` for auto, negative to disable) — it overrides the
 configured floor for that run. The available-memory signal is read from `/proc/meminfo`
-(Linux) or `sysctl` + `vm_stat` (macOS); platforms with no probe leave the gate disabled.
+(Linux) or `sysctl` + `vm_stat` (macOS); a platform with no probe fails open (gate off).
 
 ## Corpus audit: koryph plan audit
 

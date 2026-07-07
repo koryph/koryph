@@ -196,6 +196,11 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 	t.Setenv("FAKE_BD_DIR", f.bdDir)
 	t.Setenv("KORYPH_NO_NPX", "1")
 	t.Setenv("KORYPH_BACKOFF_SEC", "0")
+	// Disable the memory admission gate (koryph-930) for full-run fixtures: it
+	// is ON by default and reads the REAL host's memory, which would make
+	// dispatch-dependent tests flaky on a loaded or small runner. Tests that
+	// exercise the gate itself inject r.memProbe / set this env explicitly.
+	t.Setenv("KORYPH_MIN_FREE_MEMORY_MB", "-1")
 
 	// Project repo.
 	runGit(t, f.repo, "init", "-b", "main")

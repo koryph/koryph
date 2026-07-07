@@ -83,13 +83,14 @@ type Config struct {
 	MaxGlobalAgents int `json:"max_global_agents"`
 
 	// MinFreeMemoryMB is a machine-wide memory admission floor (koryph-930):
-	// when > 0, the scheduler refuses to admit a new agent while the host's
-	// available memory is below this many megabytes, deferring the dispatch to
-	// a later wave. It guards against OOM when many agents (each a claude
-	// subprocess + a git worktree) run concurrently — adaptive concurrency can
-	// climb well past MaxGlobalAgents. 0 (the default, and the value in any
-	// governor.json written before this field existed) disables the gate, so
-	// behavior is unchanged unless an operator opts in. Lives here, next to
+	// the scheduler refuses to admit a new agent while the host's available
+	// memory is below the floor, deferring the dispatch to a later wave. It
+	// guards against OOM when many agents (each a claude subprocess + a git
+	// worktree) run concurrently — adaptive concurrency can climb well past
+	// MaxGlobalAgents. The gate is ON by default, sized to physical memory.
+	// This raw setting is interpreted by readers: >0 an explicit floor in MB;
+	// <0 the gate explicitly disabled; 0/unset the auto floor (a fraction of
+	// physical RAM — see sysmem.DefaultFloorMB). Lives here, next to
 	// MaxGlobalAgents, because free RAM is a machine property shared by every
 	// koryph run on the host, exactly like the concurrency cap.
 	MinFreeMemoryMB int `json:"min_free_memory_mb,omitempty"`
