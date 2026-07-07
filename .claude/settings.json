@@ -24,7 +24,7 @@
       {
         "hooks": [
           {
-            "command": "bd prime --hook-json",
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-prime.sh\"  # replaces: bd prime --hook-json",
             "type": "command"
           }
         ]
