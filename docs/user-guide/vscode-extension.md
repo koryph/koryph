@@ -166,7 +166,7 @@ never launches `claude`. The consequences:
   remains readable from any window via "Other projects".
 
 This is an intentional consequence of the architecture (Decision 6 in the
-[design document](../designs/2026-07-vscode-extension.md)): the extension
+[design document](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-vscode-extension.md)): the extension
 can never dispatch, so it can never dispatch on the wrong account.
 
 For a full explanation of the account isolation model see
@@ -245,5 +245,5 @@ extension never writes koryph state files directly.
 - [IDE integration](../ide-integration.md) — account isolation, CLI usage
   from the editor, and cockpit comparison.
 - [Billing & quota](billing-and-quota.md) — calibrating the quota governor.
-- [Design document](../designs/2026-07-vscode-extension.md) — architecture,
+- [Design document](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-vscode-extension.md) — architecture,
   decision log, and bead decomposition for epic koryph-ew2.
