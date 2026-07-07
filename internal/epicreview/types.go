@@ -57,6 +57,11 @@ type Verdict struct {
 	Reason     string       `json:"reason,omitempty"`     // why it degraded (never a black box)
 	Attempts   int          `json:"attempts,omitempty"`   // validator spawns made
 	Raw        string       `json:"-"`
+	// Envelope is the raw Claude CLI JSON envelope (including usage/cost fields)
+	// from a successful validator spawn. It is persisted beside the parsed verdict
+	// as <epicID>-round<N>-envelope.json so cost/token data is available for audit
+	// and future metrics pickup (same pattern as stage-*.json, koryph-qbc).
+	Envelope string `json:"-"`
 }
 
 // Child describes one completed child bead of the epic.

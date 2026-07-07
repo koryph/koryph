@@ -457,6 +457,42 @@ func TestBackoffForExponentialAndCapped(t *testing.T) {
 	}
 }
 
+// TestValidateEnvelopePersisted verifies that the raw Claude JSON envelope is
+// written to <epicID>-round<N>-envelope.json beside the verdict file (koryph-qbc).
+func TestValidateEnvelopePersisted(t *testing.T) {
+	verdictJSON := `{"met":true,"summary":"All good.","gaps":[]}`
+	envelope := `{"type":"result","is_error":false,"result":` + func() string {
+		b, _ := json.Marshal(verdictJSON)
+		return string(b)
+	}() + `,"usage":{"input_tokens":200,"output_tokens":80},"total_cost_usd":0.002}`
+	o := baseOpts(t, fakeClaude(t, envelope))
+
+	v := Validate(context.Background(), o)
+
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+
+	// <epicID>-round<N>-envelope.json must exist beside the verdict.
+	envPath := filepath.Join(o.OutDir, "test-epic-001-round1-envelope.json")
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("test-epic-001-round1-envelope.json not persisted: %v", err)
+	}
+	// Must contain the full envelope (usage fields present).
+	content := string(raw)
+	for _, want := range []string{`"type":"result"`, `"usage"`, `"input_tokens"`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("envelope file missing %q:\n%s", want, content)
+		}
+	}
+
+	// Envelope field on the returned Verdict must be populated.
+	if v.Envelope == "" {
+		t.Error("Verdict.Envelope must not be empty after a successful validation")
+	}
+}
+
 // TestOutPathDefault checks the default verdict file path naming.
 func TestOutPathDefault(t *testing.T) {
 	p := outPath("/repo", "", "ep-001", 1)

@@ -43,6 +43,11 @@ type Verdict struct {
 	Reason   string    `json:"reason,omitempty"`   // why it degraded (never a black box)
 	Attempts int       `json:"attempts,omitempty"` // reviewer spawns made
 	Raw      string    `json:"-"`
+	// Envelope is the raw Claude CLI JSON envelope (including usage/cost fields)
+	// from a successful reviewer spawn. It is persisted beside the parsed verdict
+	// as review-envelope.json so cost/token data is available for audit and
+	// future metrics pickup (same pattern as stage-*.json, koryph-qbc).
+	Envelope string `json:"-"`
 }
 
 // Opts configures one review.

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -115,6 +116,12 @@ func Review(ctx context.Context, o Opts) Verdict {
 		v.Attempts = i + 1
 		if !v.Degraded {
 			if o.OutPath != "" {
+				// Persist the raw Claude envelope beside the parsed verdict
+				// (same pattern as stage-*.json, koryph-qbc) so usage/cost data
+				// is available for audit. Best-effort: a write failure here is
+				// non-fatal (we still have the parsed verdict).
+				envPath := filepath.Join(filepath.Dir(o.OutPath), "review-envelope.json")
+				_ = fsx.WriteAtomic(envPath, []byte(v.Envelope+"\n"), 0o644)
 				if err := fsx.WriteAtomic(o.OutPath, []byte(v.Raw+"\n"), 0o644); err != nil {
 					v = degradedReason("persist review.json failed: " + err.Error())
 					v.Attempts = i + 1
@@ -171,6 +178,10 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	}
 	v.Degraded = false
 	v.Raw = raw
+	// Capture the full Claude envelope so Review can persist it for audit/metrics
+	// beside the parsed verdict (koryph-qbc). res.Stdout is the raw --output-format
+	// json output including usage and cost fields.
+	v.Envelope = res.Stdout
 	return v
 }
 

@@ -264,6 +264,59 @@ func TestReviewDegradesAfterExhaustingAttempts(t *testing.T) {
 	}
 }
 
+// TestReviewEnvelopePersisted verifies that the raw Claude JSON envelope is
+// written to review-envelope.json beside review.json (koryph-qbc).
+func TestReviewEnvelopePersisted(t *testing.T) {
+	repo := reviewRepo(t)
+	envelope := `{"type":"result","is_error":false,"result":"{\"blocking\":false,\"findings\":[]}","usage":{"input_tokens":100,"output_tokens":50},"total_cost_usd":0.001}`
+	dir := t.TempDir()
+	o := baseOpts(t, repo, fakeClaude(t, envelope))
+	o.OutPath = filepath.Join(dir, "review.json")
+
+	v := Review(context.Background(), o)
+
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+
+	// review-envelope.json must exist beside review.json.
+	envPath := filepath.Join(dir, "review-envelope.json")
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("review-envelope.json not persisted: %v", err)
+	}
+	// Must contain the full envelope (usage fields present).
+	content := string(raw)
+	for _, want := range []string{`"type":"result"`, `"usage"`, `"input_tokens"`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("review-envelope.json missing %q:\n%s", want, content)
+		}
+	}
+
+	// Envelope field on the returned Verdict must be populated.
+	if v.Envelope == "" {
+		t.Error("Verdict.Envelope must not be empty after a successful review")
+	}
+}
+
+// TestReviewEnvelopeSkippedWithoutOutPath verifies that no panic or error
+// occurs when OutPath is empty (PR-review path, no phase dir).
+func TestReviewEnvelopeSkippedWithoutOutPath(t *testing.T) {
+	repo := reviewRepo(t)
+	envelope := `{"type":"result","is_error":false,"result":"{\"blocking\":false,\"findings\":[]}"}`
+	o := baseOpts(t, repo, fakeClaude(t, envelope))
+	o.OutPath = "" // PR-review path: no phase dir
+
+	v := Review(context.Background(), o)
+
+	if v.Degraded {
+		t.Fatalf("verdict degraded with empty OutPath: %+v", v)
+	}
+	if v.Blocking {
+		t.Errorf("Blocking = true, want false")
+	}
+}
+
 func TestReviewBadBranchDegraded(t *testing.T) {
 	repo := reviewRepo(t)
 	o := baseOpts(t, repo, fakeClaude(t, `{"type":"result","result":"{\"blocking\":false}"}`))

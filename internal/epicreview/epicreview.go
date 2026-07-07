@@ -119,6 +119,12 @@ func Validate(ctx context.Context, o Opts) Verdict {
 		v.Attempts = i + 1
 		if !v.Degraded {
 			dest := outPath(o.RepoRoot, o.OutDir, o.EpicID, round)
+			// Persist the raw Claude envelope beside the parsed verdict
+			// (same pattern as stage-*.json, koryph-qbc) so usage/cost data
+			// is available for audit. Best-effort: a write failure here is
+			// non-fatal (we still have the parsed verdict).
+			envelopeDest := strings.TrimSuffix(dest, ".json") + "-envelope.json"
+			_ = fsx.WriteAtomic(envelopeDest, []byte(v.Envelope+"\n"), 0o644)
 			if err := fsx.WriteAtomic(dest, []byte(v.Raw+"\n"), 0o644); err != nil {
 				v = degradedReason("persist verdict JSON failed: " + err.Error())
 				v.Attempts = i + 1
@@ -174,6 +180,10 @@ func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
 	}
 	v.Degraded = false
 	v.Raw = raw
+	// Capture the full Claude envelope so Validate can persist it for audit/metrics
+	// beside the parsed verdict (koryph-qbc). res.Stdout is the raw --output-format
+	// json output including usage and cost fields.
+	v.Envelope = res.Stdout
 	return v
 }
 
