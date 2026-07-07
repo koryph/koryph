@@ -232,6 +232,94 @@ func TestEstimateWaveForRuntimeClaudeParity(t *testing.T) {
 	}
 }
 
+// TestCalibKeyDirectMatchesLegacyShape proves the empty (direct) proxy
+// identity produces the exact pre-koryph-77r.1 "tier:size" key — the
+// backward-compat contract: every key persisted before this bead, and every
+// key any existing caller writes (proxyID is always "" today), is
+// byte-identical to what it always was, so nothing is orphaned.
+func TestCalibKeyDirectMatchesLegacyShape(t *testing.T) {
+	if got, want := calibKey("sonnet", "M", ""), "sonnet:M"; got != want {
+		t.Errorf("calibKey(sonnet, M, \"\") = %q, want %q", got, want)
+	}
+}
+
+// TestCalibKeySegmentsByProxy proves a non-empty proxy identity produces a
+// key distinct from both the direct key and any other proxy's key — the
+// segmentation contract (design §2 I5: "populations never pollute each
+// other").
+func TestCalibKeySegmentsByProxy(t *testing.T) {
+	direct := calibKey("sonnet", "M", "")
+	proxyA := calibKey("sonnet", "M", "headroom-ai")
+	proxyB := calibKey("sonnet", "M", "other-proxy")
+	if proxyA == direct {
+		t.Errorf("calibKey with proxy %q collided with direct key %q", proxyA, direct)
+	}
+	if proxyB == direct {
+		t.Errorf("calibKey with proxy %q collided with direct key %q", proxyB, direct)
+	}
+	if proxyA == proxyB {
+		t.Errorf("two different proxy identities produced the same key %q", proxyA)
+	}
+}
+
+// TestRecordForProxyDoesNotPollutePopulation proves a proxy-segmented Record
+// observation never touches the direct population's Calibration/ErrorStats
+// entry, and vice versa — the whole point of koryph-77r.1's estimator
+// segmentation seam (design §2 I5).
+func TestRecordForProxyDoesNotPollutePopulation(t *testing.T) {
+	cfg := DefaultConfig("acct")
+
+	// Seed the direct population.
+	Record(cfg, "sonnet", "M", 10, 8)
+	directCalib := cfg.Calibration["sonnet:M"]
+	directStats := *cfg.ErrorStats["sonnet:M"]
+
+	// A wildly different observation under a proxy identity must land in its
+	// own segment, not blend into direct's EWMA.
+	RecordForProxy(cfg, "sonnet", "M", "headroom-ai", 1000, 8)
+
+	if got := cfg.Calibration["sonnet:M"]; got != directCalib {
+		t.Errorf("direct Calibration[sonnet:M] changed from %g to %g after a proxy-segmented Record", directCalib, got)
+	}
+	if es := cfg.ErrorStats["sonnet:M"]; es.N != directStats.N || es.Bias != directStats.Bias || es.MAPE != directStats.MAPE {
+		t.Errorf("direct ErrorStats[sonnet:M] changed from %+v to %+v after a proxy-segmented Record", directStats, *es)
+	}
+
+	proxyKey := "sonnet:M@headroom-ai"
+	if _, ok := cfg.Calibration[proxyKey]; !ok {
+		t.Fatalf("Calibration[%s] not created by RecordForProxy", proxyKey)
+	}
+	if got, want := cfg.Calibration[proxyKey], 1000.0; !approx(got, want) {
+		t.Errorf("Calibration[%s] = %g, want %g (first observation seeds verbatim)", proxyKey, got, want)
+	}
+	es, ok := cfg.ErrorStats[proxyKey]
+	if !ok {
+		t.Fatalf("ErrorStats[%s] not created by RecordForProxy", proxyKey)
+	}
+	if es.N != 1 {
+		t.Errorf("ErrorStats[%s].N = %d, want 1", proxyKey, es.N)
+	}
+}
+
+// TestEstimateItemForRuntimeProxyBackwardCompat proves a Config populated
+// with legacy (pre-koryph-77r.1) bare "tier:size" keys still loads correctly
+// under the direct (proxyID=="") identity, and that a genuinely different
+// proxy identity does NOT silently inherit the direct population's
+// calibration (it falls back to the uncalibrated base estimate instead).
+func TestEstimateItemForRuntimeProxyBackwardCompat(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	cfg.Calibration = map[string]float64{"sonnet:M": 2.0} // as if persisted before this bead
+
+	if got := EstimateItemForRuntimeProxy(cfg, "claude", "sonnet", "M", ""); !approx(got, 2.0) {
+		t.Errorf("direct EstimateItemForRuntimeProxy = %g, want 2.0 (legacy key still loads)", got)
+	}
+
+	uncalibratedBase := EstimateItemForRuntime(cfg, "claude", "mystery-tier-not-in-table", "M")
+	if got := EstimateItemForRuntimeProxy(cfg, "claude", "mystery-tier-not-in-table", "M", "headroom-ai"); !approx(got, uncalibratedBase) {
+		t.Errorf("proxy EstimateItemForRuntimeProxy = %g, want uncalibrated base %g (must not inherit direct's calibration)", got, uncalibratedBase)
+	}
+}
+
 // TestDefaultConfigForRuntimeClaudeParity proves DefaultConfigForRuntime(acct,
 // "claude") reproduces DefaultConfig's exact PerTierUSD literal.
 func TestDefaultConfigForRuntimeClaudeParity(t *testing.T) {

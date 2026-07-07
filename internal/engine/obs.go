@@ -173,3 +173,38 @@ func logBeadCost(beadID, model string, costUSD, estimateUSD float64) {
 		slog.Float64(obs.KeyEstimateUSD, estimateUSD),
 	)
 }
+
+// logBeadTokens emits a DEBUG record with one attempt's token composition
+// (koryph-77r.1, design docs/designs/2026-07-token-economy.md §3 L1). Used to
+// populate per-bead token-composition and cache-hit-ratio signals.
+func logBeadTokens(beadID string, input, output, cacheRead, cacheCreation int64) {
+	log.Debug("engine.bead.tokens",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.Int64(obs.KeyInputTokens, input),
+		slog.Int64(obs.KeyOutputTokens, output),
+		slog.Int64(obs.KeyCacheReadTokens, cacheRead),
+		slog.Int64(obs.KeyCacheCreationTokens, cacheCreation),
+	)
+}
+
+// logBeadTokensUnavailable emits a DEBUG record when neither the stream-json
+// result line nor the session-transcript fallback yielded a token
+// composition for a bead attempt (koryph-77r.1) — the slot's token fields
+// stay at their prior (possibly zero) value.
+func logBeadTokensUnavailable(beadID string) {
+	log.Debug("engine.bead.tokens_unavailable", slog.String(obs.KeyBeadID, beadID))
+}
+
+// logCacheRatioTripwire emits a WARN record when one attempt's cache_read
+// share collapses below cacheRatioFloor on a session with material token
+// volume (koryph-77r.1, design §2 I7): the quota-multiplier failure
+// signature — a nondeterministic transform busting the cached prefix and
+// converting 90%-discounted cache reads into 1.25x-cost cache writes. This
+// is observability only; it never changes dispatch behavior.
+func logCacheRatioTripwire(beadID string, ratio float64, totalTokens int64) {
+	log.Warn("engine.bead.cache_ratio_tripwire",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.Float64(obs.KeyCacheRatio, ratio),
+		slog.Int64(obs.KeyTotalTokens, totalTokens),
+	)
+}

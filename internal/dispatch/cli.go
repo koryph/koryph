@@ -306,6 +306,28 @@ func ParseResultCost(streamPath string) (float64, bool) {
 	return claude.ParseResultCost(f)
 }
 
+// TokenUsage is the dispatch-layer name for claude.TokenUsage (koryph-77r.1):
+// the per-attempt token composition off a stream-json result line's usage
+// block. Aliased rather than duplicated — unlike Spec/runtime.DispatchSpec
+// (deliberately decoupled via toRuntimeSpec so dispatch's public Spec shape
+// never leaks internal/runtime's), this is a plain data tuple with no
+// independent reason to diverge from its one source of truth.
+type TokenUsage = claude.TokenUsage
+
+// ParseResultUsage scans a stream.jsonl for the LAST "result" line and
+// returns its token composition (koryph-77r.1, design
+// docs/designs/2026-07-token-economy.md §3 L1) — the usage-block counterpart
+// to ParseResultCost; see its doc for the shared scan mechanics
+// (internal/runtime/claude, koryph-v8u.2) and last-wins semantics.
+func ParseResultUsage(streamPath string) (TokenUsage, bool) {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return TokenUsage{}, false
+	}
+	defer f.Close()
+	return claude.ParseResultUsage(f)
+}
+
 // ParseCleanExit scans a stream.jsonl for the LAST "result" line and reports
 // whether the agent exited successfully (is_error absent or false). Returns
 // false when no result line is found or the file is unreadable.

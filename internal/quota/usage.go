@@ -323,19 +323,29 @@ func scanFile(path string, windowStart time.Time) (float64, error) {
 	return total, nil
 }
 
+// claudeConfigRoot resolves configDir to the projects-transcript root every
+// scan here reads from: configDir itself when set (a work profile's
+// CLAUDE_CONFIG_DIR), else ~/.claude (the personal-profile default).
+func claudeConfigRoot(configDir string) (string, error) {
+	if configDir != "" {
+		return configDir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude"), nil
+}
+
 // JSONLScan is the Go port of the transcript scan. It sums approximate USD over
 // <configDir||~/.claude>/projects/*/*.jsonl for the given window. The 5h window
 // uses the fixed UTC grid (epoch-aligned); any other span is a rolling window
 // ending now. It returns an error when no transcript files exist so the caller
 // can fall through to "unavailable".
 func JSONLScan(configDir string, hours int) (float64, error) {
-	root := configDir
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return 0, err
-		}
-		root = filepath.Join(home, ".claude")
+	root, err := claudeConfigRoot(configDir)
+	if err != nil {
+		return 0, err
 	}
 	pattern := filepath.Join(root, "projects", "*", "*.jsonl")
 	files, err := filepath.Glob(pattern)
@@ -363,6 +373,75 @@ func JSONLScan(configDir string, hours int) (float64, error) {
 		total += v
 	}
 	return total, nil
+}
+
+// TokenComposition is a token-count tally — input, output, cache-read, and
+// cache-creation tokens summed across one or more transcript lines
+// (koryph-77r.1, design docs/designs/2026-07-token-economy.md §3 L1).
+type TokenComposition struct {
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+}
+
+// SessionTokens sums every usage-bearing line of one Claude Code session's own
+// transcript — the fallback source for per-slot token composition
+// (koryph-77r.1, design §3 L1) when a dispatch's stream-json result line
+// carries no usage block. Claude Code writes each session's transcript to
+// exactly one file named "<sessionID>.jsonl" under
+// <configDir||~/.claude>/projects/*/ (the same root JSONLScan already globs),
+// so the session id alone locates it without reproducing Claude Code's
+// cwd-to-directory-name sanitization — cheap given JSONLScan's existing glob
+// pattern, deliberately not a new full-tree scan. Returns ok=false when no
+// matching file exists, it is unreadable, or none of its lines carry usage.
+func SessionTokens(configDir, sessionID string) (TokenComposition, bool) {
+	if sessionID == "" {
+		return TokenComposition{}, false
+	}
+	root, err := claudeConfigRoot(configDir)
+	if err != nil {
+		return TokenComposition{}, false
+	}
+	files, err := filepath.Glob(filepath.Join(root, "projects", "*", sessionID+".jsonl"))
+	if err != nil || len(files) == 0 {
+		return TokenComposition{}, false
+	}
+
+	var total TokenComposition
+	var found bool
+	for _, path := range files {
+		f, err := os.Open(path)
+		if err != nil {
+			continue // tolerate a single unreadable file
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB max token, matches scanFile
+		for sc.Scan() {
+			line := sc.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			var tl transcriptLine
+			if err := json.Unmarshal(line, &tl); err != nil {
+				continue
+			}
+			usage := tl.Message.Usage
+			if usage == nil {
+				usage = tl.Usage
+			}
+			if usage == nil {
+				continue
+			}
+			total.InputTokens += int64(usage.InputTokens)
+			total.OutputTokens += int64(usage.OutputTokens)
+			total.CacheReadTokens += int64(usage.CacheReadInputTokens)
+			total.CacheCreationTokens += int64(usage.CacheCreationInputTokens)
+			found = true
+		}
+		f.Close()
+	}
+	return total, found
 }
 
 // Calibrate sets a window ceiling from an observed ccusage spend and the /usage

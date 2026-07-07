@@ -103,6 +103,73 @@ func TestResultLineWithRateLimitMarkerReportsBoth(t *testing.T) {
 	}
 }
 
+// TestParseResultUsage fixtures (koryph-77r.1): the "usage present" line is
+// copied verbatim (fields reordered for readability only) from a real
+// `claude -p ... --output-format stream-json` result line captured 2026-07 —
+// ground truth for the shape internal/runtime/claude/events.go's rawLine.Usage
+// parses.
+func TestParseResultUsage(t *testing.T) {
+	t.Run("usage present", func(t *testing.T) {
+		line := `{"type":"result","subtype":"success","is_error":false,"result":"Hi!","` +
+			`total_cost_usd":0.124317,"usage":{"input_tokens":3861,"cache_creation_input_tokens":3451,` +
+			`"cache_read_input_tokens":15837,"output_tokens":17,"server_tool_use":{"web_search_requests":0}},` +
+			`"modelUsage":{"claude-fable-5":{"inputTokens":3861,"outputTokens":17}}}`
+		body := strings.Join([]string{`{"type":"system","subtype":"init"}`, line}, "\n") + "\n"
+
+		usage, ok := ParseResultUsage(strings.NewReader(body))
+		if !ok {
+			t.Fatal("ParseResultUsage: ok = false, want true")
+		}
+		want := TokenUsage{InputTokens: 3861, OutputTokens: 17, CacheReadTokens: 15837, CacheCreationTokens: 3451}
+		if usage != want {
+			t.Errorf("ParseResultUsage = %+v, want %+v", usage, want)
+		}
+	})
+
+	t.Run("usage absent", func(t *testing.T) {
+		body := `{"type":"result","total_cost_usd":1.23,"is_error":false}` + "\n"
+		usage, ok := ParseResultUsage(strings.NewReader(body))
+		if ok {
+			t.Errorf("ParseResultUsage = %+v, ok = true, want ok = false (no usage block)", usage)
+		}
+		if usage != (TokenUsage{}) {
+			t.Errorf("ParseResultUsage on no-usage line = %+v, want zero value", usage)
+		}
+	})
+
+	t.Run("is_error result still carries usage", func(t *testing.T) {
+		line := `{"type":"result","is_error":true,"subtype":"error_during_execution",` +
+			`"total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":5,` +
+			`"cache_read_input_tokens":50,"cache_creation_input_tokens":10}}`
+		usage, ok := ParseResultUsage(strings.NewReader(line + "\n"))
+		if !ok {
+			t.Fatal("ParseResultUsage: ok = false, want true (is_error must not suppress usage, mirroring ParseResultCost)")
+		}
+		want := TokenUsage{InputTokens: 100, OutputTokens: 5, CacheReadTokens: 50, CacheCreationTokens: 10}
+		if usage != want {
+			t.Errorf("ParseResultUsage = %+v, want %+v", usage, want)
+		}
+	})
+
+	t.Run("no result line", func(t *testing.T) {
+		usage, ok := ParseResultUsage(strings.NewReader(`{"type":"system"}` + "\n"))
+		if ok || usage != (TokenUsage{}) {
+			t.Errorf("ParseResultUsage = %+v, %v; want zero value, false", usage, ok)
+		}
+	})
+
+	t.Run("last result line wins, later line without usage resets found", func(t *testing.T) {
+		body := strings.Join([]string{
+			`{"type":"result","total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}}`,
+			`{"type":"result","total_cost_usd":0.6}`,
+		}, "\n") + "\n"
+		usage, ok := ParseResultUsage(strings.NewReader(body))
+		if ok || usage != (TokenUsage{}) {
+			t.Errorf("ParseResultUsage = %+v, %v; want zero value, false (last result line has no usage)", usage, ok)
+		}
+	})
+}
+
 func TestClassifySkipsMalformedJSON(t *testing.T) {
 	if _, ok := classify([]byte("not json")); ok {
 		t.Error("classify(malformed) ok = true, want false")

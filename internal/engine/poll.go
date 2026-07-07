@@ -275,6 +275,26 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		logBeadCost(sl.PhaseID, model, cost, sl.EstimateUSD)
 	}
 
+	// Per-attempt token composition (koryph-77r.1, design
+	// docs/designs/2026-07-token-economy.md §3 L1): prefer the stream-json
+	// result line's own usage block; when absent, fall back to summing this
+	// attempt's session transcript (cheap — SessionTokens globs by the
+	// already-unique session id, no new full-tree scan). Leave the slot's
+	// token fields untouched (zeros on a fresh slot) when neither source
+	// yields a reading, rather than building heavier scan machinery.
+	if usage, ok := dispatch.ParseResultUsage(sl.Stream); ok {
+		r.applyTokenUsage(sl.PhaseID, usage)
+	} else if tc, ok := quota.SessionTokens(r.profile.ConfigDir, sl.SessionID); ok {
+		r.applyTokenUsage(sl.PhaseID, dispatch.TokenUsage{
+			InputTokens:         tc.InputTokens,
+			OutputTokens:        tc.OutputTokens,
+			CacheReadTokens:     tc.CacheReadTokens,
+			CacheCreationTokens: tc.CacheCreationTokens,
+		})
+	} else {
+		logBeadTokensUnavailable(sl.PhaseID)
+	}
+
 	// Rate-limit classification runs upstream of the commits/finishCandidate
 	// check (koryph-2im.4): a death caused by the API throttling us is not a
 	// completed candidate even if some work landed before the 429/overload hit,
@@ -329,6 +349,67 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 	r.requeueSlot(ctx, sl, "", deathDesc)
+}
+
+// cacheRatioFloor is the cache_read-share floor below which
+// checkCacheRatioTripwire WARNs (koryph-77r.1, design
+// docs/designs/2026-07-token-economy.md §2 I7, §3 L1): Claude Code resends
+// full conversation history every turn, so a healthy multi-turn session's
+// cache_read share should dominate input+cache_creation once the prefix is
+// established. A collapse below this floor on a material-token-volume
+// attempt is I7's named failure signature — a nondeterministic transform
+// busting the cached prefix and converting 90%-discounted cache reads into
+// 1.25x-cost cache writes, i.e. the quota multiplier this tripwire exists to
+// catch at runtime.
+const cacheRatioFloor = 0.5
+
+// cacheRatioMinTokens is the minimum attempt token volume (input+cache_read+
+// cache_creation) before the cache-ratio tripwire evaluates at all: a
+// session's first turn has no cache to read yet by construction, so a small
+// early attempt would false-positive on every single dispatch.
+const cacheRatioMinTokens = 20_000
+
+// applyTokenUsage accumulates one attempt's token composition onto the
+// slot's persisted totals — exactly like CostUSD accumulates across requeues
+// (koryph-77r.1, koryph-6bl) — logs it, and evaluates the I7 cache-ratio
+// tripwire against the attempt's OWN composition (not the accumulated
+// total), so a healthy early attempt can never mask a later attempt's
+// cache-prefix collapse.
+func (r *runner) applyTokenUsage(beadID string, u dispatch.TokenUsage) {
+	_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+		s.InputTokens += u.InputTokens
+		s.OutputTokens += u.OutputTokens
+		s.CacheReadTokens += u.CacheReadTokens
+		s.CacheCreationTokens += u.CacheCreationTokens
+	})
+	logBeadTokens(beadID, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens)
+	r.checkCacheRatioTripwire(beadID, u)
+}
+
+// cacheRatioWarn evaluates the I7 cache-ratio tripwire's pure decision logic
+// for one attempt's token composition — split out from
+// checkCacheRatioTripwire so the threshold arithmetic is unit-testable
+// without capturing log output. total is input+cache_read+cache_creation;
+// warn is true iff total >= cacheRatioMinTokens and cache_read's share of
+// total is below cacheRatioFloor. ratio/total are always returned (0 when
+// below the volume floor) for the caller's log record.
+func cacheRatioWarn(u dispatch.TokenUsage) (ratio float64, total int64, warn bool) {
+	total = u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+	if total < cacheRatioMinTokens {
+		return 0, total, false
+	}
+	ratio = float64(u.CacheReadTokens) / float64(total)
+	return ratio, total, ratio < cacheRatioFloor
+}
+
+// checkCacheRatioTripwire WARNs when one attempt's cache_read share collapses
+// below cacheRatioFloor on a session with at least cacheRatioMinTokens total
+// volume (koryph-77r.1, design §2 I7). Observability only — it never changes
+// dispatch behavior.
+func (r *runner) checkCacheRatioTripwire(beadID string, u dispatch.TokenUsage) {
+	if ratio, total, warn := cacheRatioWarn(u); warn {
+		logCacheRatioTripwire(beadID, ratio, total)
+	}
 }
 
 // requeueRateLimited re-dispatches a slot that died with a classified
@@ -389,6 +470,14 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		// requeueSlot: rate-limited agents may have spent tokens before being
 		// throttled; that cost must not be lost across the requeue.
 		accumulatedCostUSD: sl.CostUSD,
+		// Carry accumulated token composition forward too (koryph-77r.1) —
+		// same reasoning as accumulatedCostUSD.
+		accumulatedTokens: dispatch.TokenUsage{
+			InputTokens:         sl.InputTokens,
+			OutputTokens:        sl.OutputTokens,
+			CacheReadTokens:     sl.CacheReadTokens,
+			CacheCreationTokens: sl.CacheCreationTokens,
+		},
 	})
 }
 
@@ -843,6 +932,14 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		// spend so far (koryph-6bl): completeSlot ADDs the next attempt's cost
 		// rather than overwriting, so the sum across all attempts is correct.
 		accumulatedCostUSD: sl.CostUSD,
+		// Carry accumulated token composition forward too (koryph-77r.1) —
+		// same reasoning as accumulatedCostUSD.
+		accumulatedTokens: dispatch.TokenUsage{
+			InputTokens:         sl.InputTokens,
+			OutputTokens:        sl.OutputTokens,
+			CacheReadTokens:     sl.CacheReadTokens,
+			CacheCreationTokens: sl.CacheCreationTokens,
+		},
 	})
 }
 

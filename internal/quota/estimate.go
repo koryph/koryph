@@ -84,10 +84,39 @@ func EstimateItem(cfg *Config, tier, size string) float64 {
 // namespaced (back-compat decision, koryph-v8u.12: only claude dispatches
 // have ever recorded calibration, and Record's key shape is unchanged) — a
 // calibrated observation always wins regardless of runtime, matching
-// EstimateItem's existing precedence.
+// EstimateItem's existing precedence. Equivalent to
+// EstimateItemForRuntimeProxy(cfg, runtimeName, tier, size, "") — see that
+// function for the proxy-identity segmentation seam (koryph-77r.1).
 func EstimateItemForRuntime(cfg *Config, runtimeName, tier, size string) float64 {
+	return EstimateItemForRuntimeProxy(cfg, runtimeName, tier, size, "")
+}
+
+// calibKey builds the Config.Calibration / Config.ErrorStats key for one
+// (tier, size) observation, segmented by proxy identity (koryph-77r.1,
+// design docs/designs/2026-07-token-economy.md §2 I5, §3 L1). proxyID==""
+// is "direct" — the only identity that has ever existed (no agent_proxy is
+// wired yet; see design §L5) — and yields the exact pre-existing "tier:size"
+// key shape byte-for-byte, so every key ever persisted before this bead, and
+// every key any pre-koryph-77r.1 caller writes, is unaffected: no migration,
+// nothing orphaned. A future non-empty proxyID (stamped once koryph-3l1.1's
+// agent_proxy seam lands) keys to "tier:size@proxyID" instead — a population
+// Record/EstimateItemForRuntimeProxy deliberately never blend with the direct
+// population's EWMA, so an experimental proxy's bias/MAPE readings can never
+// contaminate the baseline calibration the governor already trusts (I5:
+// "Estimator/calibration state is segmented by proxy identity so populations
+// never pollute each other").
+func calibKey(tier, size, proxyID string) string {
+	if proxyID == "" {
+		return tier + ":" + size
+	}
+	return tier + ":" + size + "@" + proxyID
+}
+
+// EstimateItemForRuntimeProxy is EstimateItemForRuntime generalized by proxy
+// identity (koryph-77r.1); see calibKey's doc for the segmentation contract.
+func EstimateItemForRuntimeProxy(cfg *Config, runtimeName, tier, size, proxyID string) float64 {
 	if cfg.Calibration != nil {
-		if v, ok := cfg.Calibration[tier+":"+size]; ok {
+		if v, ok := cfg.Calibration[calibKey(tier, size, proxyID)]; ok {
 			return v
 		}
 	}
@@ -129,12 +158,22 @@ func EstimateWaveForRuntime(cfg *Config, runtimeName string, items []struct{ Tie
 // the bias-correction path (koryph-6bl). Pass 0 when the estimate is
 // unknown (old ledger slots, requeues without a fresh estimate) to skip
 // error-stat updates while still updating the base calibration. The caller
-// is responsible for persisting cfg with SaveConfig.
+// is responsible for persisting cfg with SaveConfig. Equivalent to
+// RecordForProxy(cfg, tier, size, "", actualUSD, estimateUSD) — see that
+// function for the proxy-identity segmentation seam (koryph-77r.1).
 func Record(cfg *Config, tier, size string, actualUSD, estimateUSD float64) {
+	RecordForProxy(cfg, tier, size, "", actualUSD, estimateUSD)
+}
+
+// RecordForProxy is Record generalized by proxy identity (koryph-77r.1,
+// design §2 I5): proxyID segments the Calibration/ErrorStats key (see
+// calibKey) so a future agent-proxy experiment's observations never blend
+// into the direct (proxyID=="") population Record itself still updates.
+func RecordForProxy(cfg *Config, tier, size, proxyID string, actualUSD, estimateUSD float64) {
 	if cfg.Calibration == nil {
 		cfg.Calibration = map[string]float64{}
 	}
-	key := tier + ":" + size
+	key := calibKey(tier, size, proxyID)
 	if old, ok := cfg.Calibration[key]; ok {
 		cfg.Calibration[key] = 0.7*old + 0.3*actualUSD
 	} else {
@@ -192,12 +231,20 @@ func EstimateItemCorrected(cfg *Config, tier, size string) (corrected, base floa
 // have accumulated, so systematic under/over-estimation self-corrects
 // instead of persisting (koryph-6bl). When the bias-corrected path is
 // active the returned base is the pre-correction value so callers can
-// surface both ("est $1.65 base $1.20").
+// surface both ("est $1.65 base $1.20"). Equivalent to
+// EstimateItemCorrectedForRuntimeProxy(cfg, runtimeName, tier, size, "") —
+// see calibKey's doc for the proxy-identity segmentation seam (koryph-77r.1).
 func EstimateItemCorrectedForRuntime(cfg *Config, runtimeName, tier, size string) (corrected, base float64) {
-	base = EstimateItemForRuntime(cfg, runtimeName, tier, size)
+	return EstimateItemCorrectedForRuntimeProxy(cfg, runtimeName, tier, size, "")
+}
+
+// EstimateItemCorrectedForRuntimeProxy is EstimateItemCorrectedForRuntime
+// generalized by proxy identity (koryph-77r.1); see calibKey's doc.
+func EstimateItemCorrectedForRuntimeProxy(cfg *Config, runtimeName, tier, size, proxyID string) (corrected, base float64) {
+	base = EstimateItemForRuntimeProxy(cfg, runtimeName, tier, size, proxyID)
 	corrected = base
 	if cfg.ErrorStats != nil {
-		key := tier + ":" + size
+		key := calibKey(tier, size, proxyID)
 		if es, ok := cfg.ErrorStats[key]; ok && es.N >= BiasCorrectionThreshold {
 			corrected = base * es.Bias
 		}

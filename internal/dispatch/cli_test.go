@@ -437,6 +437,55 @@ func TestParseResultCost(t *testing.T) {
 	})
 }
 
+func TestParseResultUsage(t *testing.T) {
+	t.Run("usage present", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		lines := strings.Join([]string{
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"result","total_cost_usd":0.124317,"is_error":false,` +
+				`"usage":{"input_tokens":3861,"output_tokens":17,"cache_read_input_tokens":15837,"cache_creation_input_tokens":3451}}`,
+		}, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		usage, ok := ParseResultUsage(path)
+		want := TokenUsage{InputTokens: 3861, OutputTokens: 17, CacheReadTokens: 15837, CacheCreationTokens: 3451}
+		if !ok || usage != want {
+			t.Errorf("ParseResultUsage = %+v, %v; want %+v, true", usage, ok, want)
+		}
+	})
+
+	t.Run("usage absent", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"result","total_cost_usd":1.23}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if usage, ok := ParseResultUsage(path); ok || usage != (TokenUsage{}) {
+			t.Errorf("ParseResultUsage = %+v, %v; want zero value, false", usage, ok)
+		}
+	})
+
+	t.Run("is_error result still carries usage", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		line := `{"type":"result","is_error":true,"total_cost_usd":0.05,` +
+			`"usage":{"input_tokens":100,"output_tokens":5,"cache_read_input_tokens":50,"cache_creation_input_tokens":10}}`
+		if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		usage, ok := ParseResultUsage(path)
+		want := TokenUsage{InputTokens: 100, OutputTokens: 5, CacheReadTokens: 50, CacheCreationTokens: 10}
+		if !ok || usage != want {
+			t.Errorf("ParseResultUsage = %+v, %v; want %+v, true", usage, ok, want)
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		if usage, ok := ParseResultUsage(filepath.Join(t.TempDir(), "nope.jsonl")); ok || usage != (TokenUsage{}) {
+			t.Errorf("ParseResultUsage = %+v, %v; want zero value, false", usage, ok)
+		}
+	})
+}
+
 func TestParseRateLimited(t *testing.T) {
 	writeStream := func(t *testing.T, lines ...string) string {
 		t.Helper()

@@ -64,6 +64,19 @@ type Event struct {
 	CostUSD float64 `json:"cost_usd,omitempty"`
 	HasCost bool    `json:"has_cost,omitempty"`
 
+	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are valid
+	// only when Kind==EventResult && HasUsage — the per-attempt token
+	// composition off a Claude stream-json "result" line's usage block
+	// (koryph-77r.1, design docs/designs/2026-07-token-economy.md §3 L1).
+	// HasUsage exists for the same reason HasCost does: a result line with no
+	// usage block must round-trip as "unknown", not silently collapse into an
+	// all-zero reading indistinguishable from a genuinely token-free turn.
+	InputTokens         int64 `json:"input_tokens,omitempty"`
+	OutputTokens        int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	HasUsage            bool  `json:"has_usage,omitempty"`
+
 	// RateLimited is valid only when Kind==EventError; see EventError.
 	RateLimited bool `json:"rate_limited,omitempty"`
 

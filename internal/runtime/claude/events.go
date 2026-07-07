@@ -38,6 +38,25 @@ type rawLine struct {
 		Type    string `json:"type,omitempty"`
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
+	// Usage is the result line's token composition (koryph-77r.1, design
+	// docs/designs/2026-07-token-economy.md §3 L1) — see resultUsage's doc
+	// for the confirmed real-CLI shape.
+	Usage *resultUsage `json:"usage,omitempty"`
+}
+
+// resultUsage is the token composition on a stream-json "result" line's
+// top-level "usage" object (koryph-77r.1). Confirmed against a live `claude
+// -p ... --output-format stream-json` result line (2026-07): the SAME
+// snake_case field vocabulary internal/quota/usage.go's usageTokens already
+// parses off session transcript lines, so this reuses it rather than
+// inventing a second one. A real result line also carries a "modelUsage"
+// object (camelCase, keyed by model id, redundant with this one) that is
+// deliberately not parsed here.
+type resultUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 }
 
 // messageText extracts rl.Message as plain text for the rate-limit haystack.
@@ -123,6 +142,13 @@ func classify(line []byte) (runtime.Event, bool) {
 		if rl.TotalCostUSD != nil {
 			ev.CostUSD, ev.HasCost = *rl.TotalCostUSD, true
 		}
+		if rl.Usage != nil {
+			ev.InputTokens = rl.Usage.InputTokens
+			ev.OutputTokens = rl.Usage.OutputTokens
+			ev.CacheReadTokens = rl.Usage.CacheReadInputTokens
+			ev.CacheCreationTokens = rl.Usage.CacheCreationInputTokens
+			ev.HasUsage = true
+		}
 	case errorish:
 		ev.Kind = runtime.EventError
 	case rl.SessionID != "":
@@ -196,6 +222,51 @@ func ParseResultCost(r io.Reader) (float64, bool) {
 		}
 	}
 	return cost, found
+}
+
+// TokenUsage is the per-attempt token composition parsed from a stream-json
+// "result" line's usage block (koryph-77r.1, design
+// docs/designs/2026-07-token-economy.md §3 L1): input, output, cache-read,
+// and cache-creation token counts.
+type TokenUsage struct {
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+}
+
+// ParseResultUsage scans r for the LAST EventResult, returning its token
+// composition — the usage-block counterpart to ParseResultCost, sharing its
+// exact last-wins semantics: a later result line with no usage block resets
+// found to false, mirroring ParseResultCost's documented behavior for cost.
+func ParseResultUsage(r io.Reader) (TokenUsage, bool) {
+	es, err := (Claude{}).ParseEvents(r)
+	if err != nil {
+		return TokenUsage{}, false
+	}
+	defer es.Close()
+	var usage TokenUsage
+	var found bool
+	for {
+		ev, ok, err := es.Next()
+		if err != nil || !ok {
+			break
+		}
+		if ev.Kind == runtime.EventResult {
+			if ev.HasUsage {
+				usage = TokenUsage{
+					InputTokens:         ev.InputTokens,
+					OutputTokens:        ev.OutputTokens,
+					CacheReadTokens:     ev.CacheReadTokens,
+					CacheCreationTokens: ev.CacheCreationTokens,
+				}
+				found = true
+			} else {
+				usage, found = TokenUsage{}, false
+			}
+		}
+	}
+	return usage, found
 }
 
 // ParseCleanExit reports whether the LAST "result" line in r has is_error

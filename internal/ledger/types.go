@@ -118,6 +118,20 @@ type Slot struct {
 	ResumeSHA  string  `json:"resume_sha,omitempty"`
 	CostUSD    float64 `json:"cost_usd"`
 
+	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are the
+	// per-slot token composition (koryph-77r.1, design
+	// docs/designs/2026-07-token-economy.md §3 L1), parsed off the stream-json
+	// result line's usage block (or, when absent, the session-transcript
+	// fallback — see internal/engine's completeSlot). They ACCUMULATE across
+	// requeues exactly like CostUSD, so total token spend per bead is never
+	// lost when a slot is replaced on requeue (see requeueSlot/
+	// requeueRateLimited threading accumulatedCostUSD). Additive: a Slot
+	// decoded from a ledger that predates these fields unmarshals them to 0.
+	InputTokens         int64 `json:"input_tokens,omitempty"`
+	OutputTokens        int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+
 	// EstimateUSD is the dispatch-time cost estimate stamped at the moment the
 	// slot was first created (koryph-6bl). Additive: a Slot decoded from a
 	// ledger that predates this field unmarshals it to 0 (= unknown / skip in

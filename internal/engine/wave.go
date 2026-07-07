@@ -619,6 +619,13 @@ type dispatchReq struct {
 	// attempt's cost rather than overwrite it (koryph-6bl). Zero on a fresh
 	// first-attempt dispatch.
 	accumulatedCostUSD float64
+	// accumulatedTokens carries forward the token composition already spent
+	// on previous attempts of this bead (koryph-77r.1), the same way
+	// accumulatedCostUSD carries CostUSD forward: the new slot's token
+	// fields start at this baseline and completeSlot's applyTokenUsage ADDs
+	// each attempt's usage rather than overwriting it. Zero value on a fresh
+	// first-attempt dispatch.
+	accumulatedTokens dispatch.TokenUsage
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -797,6 +804,12 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		// CostUSD starts from accumulatedCostUSD so prior-attempt spend is
 		// not lost when completeSlot ADDs the new attempt's cost (koryph-6bl).
 		CostUSD: q.accumulatedCostUSD,
+		// Token fields start from accumulatedTokens for the same reason
+		// (koryph-77r.1): applyTokenUsage ADDs each attempt's usage.
+		InputTokens:         q.accumulatedTokens.InputTokens,
+		OutputTokens:        q.accumulatedTokens.OutputTokens,
+		CacheReadTokens:     q.accumulatedTokens.CacheReadTokens,
+		CacheCreationTokens: q.accumulatedTokens.CacheCreationTokens,
 	}
 	_ = r.store.SetSlot(r.run, sl)
 	r.dispatched++
