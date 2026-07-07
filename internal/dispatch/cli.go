@@ -367,6 +367,23 @@ func ParseRateLimited(streamPath string) bool {
 	return claude.ParseRateLimited(f)
 }
 
+// ParseBudgetKilled scans a stream.jsonl for a death by the --max-budget-usd
+// cap (koryph-77r.10, design docs/designs/2026-07-token-economy.md
+// recovery-economics follow-up) — the marker was empirically pinned against
+// a live canary run; see internal/runtime/claude/events.go's
+// budgetKillMarkers doc for the captured line and the subscription-OAuth
+// enforcement finding. Returns false when the file is unreadable or no line
+// qualifies. Thin path-opening wrapper, matching ParseRateLimited's pattern
+// (the scan itself lives in internal/runtime/claude, koryph-v8u.2).
+func ParseBudgetKilled(streamPath string) bool {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	return claude.ParseBudgetKilled(f)
+}
+
 // Alive reports whether pid is a live process (signal 0 probe).
 // ESRCH → false; EPERM → true (it exists, we just can't signal it).
 func Alive(pid int) bool {

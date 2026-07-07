@@ -18,6 +18,32 @@ import (
 // internal/dispatch/cli.go's rateLimitMarkers.
 var rateLimitMarkers = []string{"429", "rate_limit_error", "overloaded_error"}
 
+// budgetKillMarkers are the substrings (matched case-insensitively) that
+// identify a death by the --max-budget-usd cap (koryph-77r.10, design
+// docs/designs/2026-07-token-economy.md recovery-economics follow-up).
+// Empirically pinned 2026-07 against a live `claude -p 'reply with the
+// single word hi' --max-budget-usd 0.001 --output-format stream-json
+// --verbose` canary run under subscription OAuth (apiKeySource "none" on
+// the same run's system/init line — confirming the cap IS enforced under
+// subscription auth, not just API-key billing, which is the gating fact
+// this bead's whole feature depends on). The captured terminal line
+// (fields reordered for readability; verbatim otherwise):
+//
+//	{"type":"result","subtype":"error_max_budget_usd","duration_ms":4876,
+//	 "is_error":true,"num_turns":1,"stop_reason":"end_turn",
+//	 "total_cost_usd":0.427796,"errors":["Reached maximum budget ($0.001)"]}
+//
+// Notably total_cost_usd (0.4278) is ~428x the $0.001 cap: enforcement is a
+// turn-boundary check, not a mid-generation hard interrupt — the CLI lets
+// the in-flight turn finish (here, one turn with heavy extended-thinking
+// cache_creation) and then kills the session before the NEXT turn starts.
+// "error_max_budget_usd" (the subtype) is the primary, stable marker;
+// "reached maximum budget" (the human-readable errors[] text) is a
+// secondary/defensive marker in case a future CLI version renames the
+// subtype but keeps prose continuity — see rawLine.Errors for why that text
+// reaches the classification haystack at all.
+var budgetKillMarkers = []string{"error_max_budget_usd", "reached maximum budget"}
+
 // rawLine is the tolerant superset shape scanned out of a stream-json line —
 // the union of internal/dispatch/cli.go's former resultLine and rlEvent
 // structs, unmarshaled once per line instead of twice, so there is exactly
@@ -38,6 +64,13 @@ type rawLine struct {
 		Type    string `json:"type,omitempty"`
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
+	// Errors is a "result" line's top-level "errors" array — the
+	// human-readable string(s) a budget-kill line carries (koryph-77r.10,
+	// e.g. ["Reached maximum budget ($0.001)"]) alongside its Subtype. Fed
+	// into the classification haystack as a secondary/defensive signal (see
+	// budgetKillMarkers' doc) so a future CLI version that keeps this prose
+	// but renames the subtype does not silently stop classifying.
+	Errors []string `json:"errors,omitempty"`
 	// Usage is the result line's token composition (koryph-77r.1, design
 	// docs/designs/2026-07-token-economy.md §3 L1) — see resultUsage's doc
 	// for the confirmed real-CLI shape.
@@ -128,9 +161,24 @@ func classify(line []byte) (runtime.Event, bool) {
 		if rl.Error != nil {
 			haystack += " " + strings.ToLower(rl.Error.Type+" "+rl.Error.Message)
 		}
+		if len(rl.Errors) > 0 {
+			haystack += " " + strings.ToLower(strings.Join(rl.Errors, " "))
+		}
 		for _, marker := range rateLimitMarkers {
 			if strings.Contains(haystack, marker) {
 				ev.RateLimited = true
+				break
+			}
+		}
+		// BudgetKilled is computed independently of RateLimited (koryph-77r.10):
+		// the two marker sets never overlap in practice, but keeping the loops
+		// separate — rather than merging budgetKillMarkers into rateLimitMarkers
+		// — keeps each signal's provenance obvious and lets the two evolve
+		// independently (see runtime.Event.BudgetKilled's doc for why this is
+		// NOT restricted to Kind==EventError the way RateLimited nominally is).
+		for _, marker := range budgetKillMarkers {
+			if strings.Contains(haystack, marker) {
+				ev.BudgetKilled = true
 				break
 			}
 		}
@@ -319,6 +367,31 @@ func ParseRateLimited(r io.Reader) bool {
 			break
 		}
 		if ev.RateLimited {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseBudgetKilled scans r for any event whose text matched a budget-kill
+// marker (koryph-77r.10) — the reader-based equivalent of a future
+// dispatch.ParseBudgetKilled(path string) wrapper, mirroring
+// ParseRateLimited's "any qualifying event anywhere in the stream" semantics
+// (no last-wins): a budget-kill always terminates the stream in practice, so
+// in-order-vs-any distinction is moot, but matching ParseRateLimited's
+// contract exactly keeps the two death-classification scans symmetric.
+func ParseBudgetKilled(r io.Reader) bool {
+	es, err := (Claude{}).ParseEvents(r)
+	if err != nil {
+		return false
+	}
+	defer es.Close()
+	for {
+		ev, ok, err := es.Next()
+		if err != nil || !ok {
+			break
+		}
+		if ev.BudgetKilled {
 			return true
 		}
 	}

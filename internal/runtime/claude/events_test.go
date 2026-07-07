@@ -80,6 +80,81 @@ func TestParseRateLimitedFixtures(t *testing.T) {
 	}
 }
 
+// TestParseBudgetKilledFixtures (koryph-77r.10): the positive fixture is
+// copied verbatim (fields reordered for readability) from a real
+// `claude -p ... --max-budget-usd 0.001 --output-format stream-json
+// --verbose` canary run captured 2026-07 under subscription OAuth — see
+// budgetKillMarkers' doc for the full captured line and the enforcement
+// finding.
+func TestParseBudgetKilledFixtures(t *testing.T) {
+	positive := map[string]string{
+		"real captured canary line (subtype + errors[])": `{"type":"result","subtype":"error_max_budget_usd",` +
+			`"duration_ms":4876,"duration_api_ms":1136,"is_error":true,"num_turns":1,"stop_reason":"end_turn",` +
+			`"session_id":"79e270a8-8623-4484-8a7d-f9ec1103232c","total_cost_usd":0.427796,` +
+			`"errors":["Reached maximum budget ($0.001)"]}`,
+		"subtype alone (no errors[] array)": `{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":0.05}`,
+	}
+	for name, line := range positive {
+		t.Run("positive/"+name, func(t *testing.T) {
+			body := strings.Join([]string{`{"type":"system","subtype":"init"}`, line}, "\n") + "\n"
+			if !ParseBudgetKilled(strings.NewReader(body)) {
+				t.Errorf("ParseBudgetKilled(%q) = false, want true", line)
+			}
+		})
+	}
+
+	negative := map[string][]string{
+		"clean success result": {
+			`{"type":"result","total_cost_usd":1.23,"is_error":false}`,
+		},
+		"ordinary max-turns error (not a budget kill)": {
+			`{"type":"result","is_error":true,"subtype":"error_max_turns","result":"Max turns reached"}`,
+		},
+		"rate-limited death (distinct marker set)": {
+			`{"type":"result","is_error":true,"result":"API Error: 429 rate_limit_error"}`,
+		},
+		"budget mentioned in ordinary (non-error) assistant text": {
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"I stayed under the max budget the whole time"}]}}`,
+			`{"type":"result","total_cost_usd":0.10,"is_error":false}`,
+		},
+	}
+	for name, lines := range negative {
+		t.Run("negative/"+name, func(t *testing.T) {
+			body := strings.Join(lines, "\n") + "\n"
+			if ParseBudgetKilled(strings.NewReader(body)) {
+				t.Errorf("ParseBudgetKilled() = true for %v, want false", lines)
+			}
+		})
+	}
+}
+
+// TestResultLineWithBudgetKillMarkerReportsBoth proves a budget-killed
+// "result" line still classifies as Kind==EventResult (so ParseResultCost
+// still sees its total_cost_usd — the AC2 requirement that completeSlot can
+// still record accumulated CostUSD on a budget-kill death) while also
+// tripping BudgetKilled, mirroring
+// TestResultLineWithRateLimitMarkerReportsBoth's proof for RateLimited.
+func TestResultLineWithBudgetKillMarkerReportsBoth(t *testing.T) {
+	line := `{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":0.427796,` +
+		`"errors":["Reached maximum budget ($0.001)"]}`
+	ev, ok := classify([]byte(line))
+	if !ok {
+		t.Fatal("classify: not ok")
+	}
+	if ev.Kind != runtime.EventResult {
+		t.Errorf("Kind = %v, want EventResult", ev.Kind)
+	}
+	if !ev.BudgetKilled {
+		t.Error("BudgetKilled = false, want true")
+	}
+	if !ev.HasCost || ev.CostUSD != 0.427796 {
+		t.Errorf("HasCost/CostUSD = %v/%v, want true/0.427796", ev.HasCost, ev.CostUSD)
+	}
+	if ev.RateLimited {
+		t.Error("RateLimited = true, want false (distinct marker set)")
+	}
+}
+
 // TestResultLineWithRateLimitMarkerReportsBoth proves a single "result"
 // line that is both cost-bearing-shaped (type result) and rate-limit-flagged
 // (is_error true + marker) is classified as EventResult (so ParseResultCost

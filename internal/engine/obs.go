@@ -195,6 +195,20 @@ func logBeadTokensUnavailable(beadID string) {
 	log.Debug("engine.bead.tokens_unavailable", slog.String(obs.KeyBeadID, beadID))
 }
 
+// logBudgetKilled emits a WARN record when an attempt is classified as
+// killed by --max-budget-usd (koryph-77r.10, design docs/designs/2026-07-
+// token-economy.md recovery-economics follow-up). costUSD is the slot's
+// ACCUMULATED cost across all attempts so far (including this one) — the
+// AC2 requirement — so a dashboard can total real dollars burned by
+// budget-kills per bead without re-deriving it from per-attempt deltas.
+func logBudgetKilled(beadID string, attempt int, costUSD float64) {
+	log.Warn("engine.slot.budget_killed",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.Int(obs.KeyAttempt, attempt),
+		slog.Float64(obs.KeyCostUSD, costUSD),
+	)
+}
+
 // logCacheRatioTripwire emits a WARN record when one attempt's cache_read
 // share collapses below cacheRatioFloor on a session with material token
 // volume (koryph-77r.1, design §2 I7): the quota-multiplier failure

@@ -585,6 +585,53 @@ func TestParseRateLimited(t *testing.T) {
 	})
 }
 
+// TestParseBudgetKilled (koryph-77r.10) proves the dispatch-layer path-based
+// wrapper delegates correctly; internal/runtime/claude/events_test.go's
+// TestParseBudgetKilledFixtures owns the exhaustive marker fixtures (this is
+// the thin-wrapper smoke test, mirroring TestParseRateLimited's structure).
+func TestParseBudgetKilled(t *testing.T) {
+	writeStream := func(t *testing.T, lines ...string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		body := strings.Join(lines, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("positive: real captured canary line", func(t *testing.T) {
+		path := writeStream(t,
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":0.427796,`+
+				`"errors":["Reached maximum budget ($0.001)"]}`,
+		)
+		if !ParseBudgetKilled(path) {
+			t.Error("ParseBudgetKilled = false, want true")
+		}
+	})
+
+	t.Run("negative: clean success result", func(t *testing.T) {
+		path := writeStream(t, `{"type":"result","total_cost_usd":1.23,"is_error":false}`)
+		if ParseBudgetKilled(path) {
+			t.Error("ParseBudgetKilled = true, want false")
+		}
+	})
+
+	t.Run("negative: rate-limited death is not a budget kill", func(t *testing.T) {
+		path := writeStream(t, `{"type":"result","is_error":true,"result":"API Error: 429 rate_limit_error"}`)
+		if ParseBudgetKilled(path) {
+			t.Error("ParseBudgetKilled = true, want false (distinct marker set)")
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		if ParseBudgetKilled(filepath.Join(t.TempDir(), "nope.jsonl")) {
+			t.Error("ParseBudgetKilled(missing file) = true, want false")
+		}
+	})
+}
+
 func TestAlive(t *testing.T) {
 	if !Alive(os.Getpid()) {
 		t.Error("Alive(self) = false")

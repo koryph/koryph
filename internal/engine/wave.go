@@ -602,7 +602,18 @@ type dispatchReq struct {
 	gateRequeues      int
 	mergeRequeues     int
 	rateLimitRequeues int
-	note              string
+	// budgetKillRequeues carries the warm-resume budget-kill counter forward
+	// (koryph-77r.10), the same way rateLimitRequeues does for rate-limit
+	// deaths — see requeueBudgetKilled and ledger.Slot.BudgetKillRequeues.
+	budgetKillRequeues int
+	note               string
+	// wipSnapshotPath threads a captured WIP snapshot's path (koryph-77r.10,
+	// worktree.PatchSnapshot via refreshWorktreeForRequeue) into the compiled
+	// prompt's RESUMING block (promptc.Input.WIPSnapshotPath) so the agent can
+	// restore uncommitted work from a prior attempt instead of orphaning it —
+	// whether that attempt's worktree was preserved or rebuilt. Empty on a
+	// fresh first-attempt dispatch and on any requeue with no WIP to capture.
+	wipSnapshotPath string
 	// footprint is the RW conflict footprint to persist on the ledger slot
 	// (koryph-2im.3, design L2 footprint persistence): the batch item's
 	// computed sched.Footprint on a fresh dispatch, or the prior slot's
@@ -710,19 +721,20 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	policy := r.mergePolicy(ctx, q.epicID)
 
 	prompt := promptc.Compile(promptc.Input{
-		EngineVersion:  EngineVersion,
-		ProjectName:    r.rec.Name,
-		Gate:           r.cfg.Gate,
-		CommitStyle:    r.cfg.CommitStyle,
-		CommitTemplate: r.cfg.CommitTemplate,
-		Bootstrap:      r.cfg.Bootstrap,
-		Bead:           q.issue,
-		ResumeSHA:      q.resumeSHA,
-		ReviewPath:     q.reviewPath,
-		PhaseDir:       phaseDir,
-		SummaryPath:    filepath.Join(phaseDir, "SUMMARY.md"),
-		StatusPath:     filepath.Join(phaseDir, "status.json"),
-		LogPath:        filepath.Join(phaseDir, "session.log"),
+		EngineVersion:   EngineVersion,
+		ProjectName:     r.rec.Name,
+		Gate:            r.cfg.Gate,
+		CommitStyle:     r.cfg.CommitStyle,
+		CommitTemplate:  r.cfg.CommitTemplate,
+		Bootstrap:       r.cfg.Bootstrap,
+		Bead:            q.issue,
+		ResumeSHA:       q.resumeSHA,
+		WIPSnapshotPath: q.wipSnapshotPath,
+		ReviewPath:      q.reviewPath,
+		PhaseDir:        phaseDir,
+		SummaryPath:     filepath.Join(phaseDir, "SUMMARY.md"),
+		StatusPath:      filepath.Join(phaseDir, "status.json"),
+		LogPath:         filepath.Join(phaseDir, "session.log"),
 	})
 
 	sessionID := newSessionID()
@@ -770,39 +782,40 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	sl := &ledger.Slot{
-		PhaseID:           beadID,
-		BeadID:            beadID,
-		EpicID:            q.epicID,
-		Branch:            branch,
-		Worktree:          wt.Path,
-		SessionID:         sessionID,
-		SessionName:       sessionName,
-		Agent:             res.Persona,
-		Model:             res.Model,
-		ModelWhy:          res.Rationale,
-		Effort:            effort,
-		Runtime:           runtimeName,
-		AccountProfile:    r.rec.AccountProfile,
-		ClaudeConfigDir:   r.rec.ClaudeConfigDir,
-		VerifiedIdentity:  handle.VerifiedIdentity,
-		VerifiedAt:        now,
-		BillingMode:       string(r.billing),
-		ProxyID:           r.rec.AgentProxy.ID(),
-		PID:               handle.PID,
-		Stream:            handle.StreamPath,
-		StatusPath:        handle.StatusPath,
-		LogPath:           filepath.Join(phaseDir, "session.log"),
-		Status:            ledger.SlotRunning,
-		Attempts:          q.attempt,
-		ResumeSHA:         q.resumeSHA,
-		ReviewIters:       q.reviewIters,
-		GateRequeues:      q.gateRequeues,
-		MergeRequeues:     q.mergeRequeues,
-		DispatchedAt:      now,
-		Note:              q.note,
-		RateLimitRequeues: q.rateLimitRequeues,
-		Footprint:         q.footprint,
-		EstimateUSD:       estimateUSD,
+		PhaseID:            beadID,
+		BeadID:             beadID,
+		EpicID:             q.epicID,
+		Branch:             branch,
+		Worktree:           wt.Path,
+		SessionID:          sessionID,
+		SessionName:        sessionName,
+		Agent:              res.Persona,
+		Model:              res.Model,
+		ModelWhy:           res.Rationale,
+		Effort:             effort,
+		Runtime:            runtimeName,
+		AccountProfile:     r.rec.AccountProfile,
+		ClaudeConfigDir:    r.rec.ClaudeConfigDir,
+		VerifiedIdentity:   handle.VerifiedIdentity,
+		VerifiedAt:         now,
+		BillingMode:        string(r.billing),
+		ProxyID:            r.rec.AgentProxy.ID(),
+		PID:                handle.PID,
+		Stream:             handle.StreamPath,
+		StatusPath:         handle.StatusPath,
+		LogPath:            filepath.Join(phaseDir, "session.log"),
+		Status:             ledger.SlotRunning,
+		Attempts:           q.attempt,
+		ResumeSHA:          q.resumeSHA,
+		ReviewIters:        q.reviewIters,
+		GateRequeues:       q.gateRequeues,
+		MergeRequeues:      q.mergeRequeues,
+		DispatchedAt:       now,
+		Note:               q.note,
+		RateLimitRequeues:  q.rateLimitRequeues,
+		BudgetKillRequeues: q.budgetKillRequeues,
+		Footprint:          q.footprint,
+		EstimateUSD:        estimateUSD,
 		// CostUSD starts from accumulatedCostUSD so prior-attempt spend is
 		// not lost when completeSlot ADDs the new attempt's cost (koryph-6bl).
 		CostUSD: q.accumulatedCostUSD,

@@ -181,6 +181,25 @@ type Slot struct {
 	// zero, which behaves exactly like "none spent yet."
 	RateLimitRequeues int `json:"rate_limit_requeues,omitempty"`
 
+	// BudgetKillRequeues counts warm-resume requeues spent on a classified
+	// budget-kill death (koryph-77r.10, design
+	// docs/designs/2026-07-token-economy.md recovery-economics follow-up):
+	// unlike RateLimitRequeues, a budget-kill is bead-specific, not
+	// environmental, so this DOES count toward Attempts too (Attempts
+	// increments normally on a budget-killed requeue) — this counter only
+	// bounds the separate, much tighter warm-resume-then-park budget (see
+	// engine's budgetKillRequeueBudget). Additive: a Slot decoded from a
+	// ledger that predates this field unmarshals it to zero.
+	BudgetKillRequeues int `json:"budget_kill_requeues,omitempty"`
+
+	// DeathReason records completeSlot's classification of this slot's most
+	// recent attempt death when it is not an ordinary crash/no-commit exit
+	// (koryph-77r.10) — e.g. "budget-killed". Snapshotted per attempt (like
+	// Note), NOT accumulated across requeues: a fresh dispatch's Slot starts
+	// with DeathReason == "" until its own attempt dies. Additive: a Slot
+	// decoded from a ledger that predates this field unmarshals it to "".
+	DeathReason string `json:"death_reason,omitempty"`
+
 	// Footprint is the RW conflict footprint computed at dispatch time
 	// (koryph-2im.3, docs/designs/2026-07-scheduler-throughput.md L2 footprint
 	// persistence). runner.activeFootprints prefers this persisted value over

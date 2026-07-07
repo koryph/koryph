@@ -80,6 +80,21 @@ type Event struct {
 	// RateLimited is valid only when Kind==EventError; see EventError.
 	RateLimited bool `json:"rate_limited,omitempty"`
 
+	// BudgetKilled reports whether this event's text matched a budget-kill
+	// marker (koryph-77r.10, design docs/designs/2026-07-token-economy.md
+	// recovery-economics follow-up): the agent was terminated by the
+	// --max-budget-usd cap rather than crashing, being rate-limited, or
+	// finishing its turn. Empirically pinned (2026-07) against a live
+	// `claude -p ... --max-budget-usd ...` run: the CLI lets the in-flight
+	// turn complete (often well over the cap) and then emits a normal
+	// "result" line with subtype "error_max_budget_usd" and is_error true —
+	// so, like RateLimited, BudgetKilled can be true on a Kind==EventResult
+	// line (that line's CostUSD/HasCost remain meaningful: "is_error is
+	// irrelevant to cost" applies here too). Unlike RateLimited it is not
+	// restricted to Kind==EventError at all, since a budget-kill always
+	// surfaces as a "result" line in practice.
+	BudgetKilled bool `json:"budget_killed,omitempty"`
+
 	// SessionID is valid when Kind==EventSession, and MAY also be populated
 	// on other kinds for runtimes that stamp a session id on every event —
 	// consumers should only rely on it being present when Kind==EventSession.

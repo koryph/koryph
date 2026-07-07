@@ -86,7 +86,7 @@ func TestRequeueRefreshRebasesWorktreeWithCommits(t *testing.T) {
 	runGit(t, f.repo, "commit", "--no-verify", "-m", "chore: main-side fix")
 
 	sl := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Branch: worktree.BranchFor("tb1"), Worktree: wtPath, Commits: 1}
-	r.refreshWorktreeForRequeue(ctx, sl)
+	r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	// The worktree now carries BOTH the main-side fix and the agent's own work.
 	if _, err := os.Stat(filepath.Join(wtPath, "settings.txt")); err != nil {
@@ -120,7 +120,7 @@ func TestRequeueRebuildsStaleWorktreeWithoutCommits(t *testing.T) {
 	runGit(t, f.repo, "commit", "--no-verify", "-m", "chore: main-side fix")
 
 	sl := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Branch: worktree.BranchFor("tb1"), Worktree: wtPath, Commits: 0}
-	r.refreshWorktreeForRequeue(ctx, sl)
+	r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	// The stale worktree and branch are gone...
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
@@ -173,7 +173,7 @@ func TestRequeueNoCommitsMissingBranchIsClean(t *testing.T) {
 
 	sl := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Branch: branch, Worktree: wtPath, Commits: 0}
 	// Must not panic and must not warn about "dispatch may attach the old tip".
-	r.refreshWorktreeForRequeue(ctx, sl)
+	r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	if strings.Contains(buf.String(), "dispatch may attach the old tip") {
 		t.Errorf("unexpected warning for already-absent branch: %q", buf.String())

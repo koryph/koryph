@@ -195,6 +195,46 @@ func TestResumeAndReviewBlocksConditional(t *testing.T) {
 	}
 }
 
+// TestWIPSnapshotCitedInResumingBlock is the koryph-77r.10 golden: a WIP
+// snapshot path fires the RESUMING block on its own (no ResumeSHA needed —
+// the zero-commit budget-kill case has WIP but no committed SHA to resume
+// from), and combines cleanly with a ResumeSHA when both are present.
+func TestWIPSnapshotCitedInResumingBlock(t *testing.T) {
+	// WIPSnapshotPath alone: RESUMING block present, but no commit-log
+	// guidance (there is no committed work to inspect that way).
+	in := baseInput()
+	in.WIPSnapshotPath = "/phases/p1/wip-20260707T000000Z.patch"
+	out := Compile(in)
+	if !strings.Contains(out, "### RESUMING") {
+		t.Errorf("RESUMING block missing when WIPSnapshotPath is set (no ResumeSHA):\n%s", out)
+	}
+	if strings.Contains(out, "git log --oneline") {
+		t.Errorf("commit-log guidance should be absent with no ResumeSHA:\n%s", out)
+	}
+	if !strings.Contains(out, "/phases/p1/wip-20260707T000000Z.patch") {
+		t.Errorf("RESUMING block missing the WIP snapshot path:\n%s", out)
+	}
+	if !strings.Contains(out, "git apply /phases/p1/wip-20260707T000000Z.patch") {
+		t.Errorf("RESUMING block missing the git apply guidance:\n%s", out)
+	}
+
+	// Both set: one RESUMING block, both the commit-log guidance and the WIP
+	// snapshot citation appear.
+	in2 := baseInput()
+	in2.ResumeSHA = "abc1234"
+	in2.WIPSnapshotPath = "/phases/p1/wip-20260707T000000Z.patch"
+	out2 := Compile(in2)
+	if strings.Count(out2, "### RESUMING") != 1 {
+		t.Errorf("expected exactly one RESUMING heading when both ResumeSHA and WIPSnapshotPath are set:\n%s", out2)
+	}
+	if !strings.Contains(out2, "git log --oneline abc1234..HEAD") {
+		t.Errorf("commit-log guidance missing when ResumeSHA is also set:\n%s", out2)
+	}
+	if !strings.Contains(out2, "/phases/p1/wip-20260707T000000Z.patch") {
+		t.Errorf("WIP snapshot path missing when ResumeSHA is also set:\n%s", out2)
+	}
+}
+
 func TestPlanBlockConditional(t *testing.T) {
 	out := Compile(baseInput())
 	if strings.Contains(out, "### Execution plan (koryph-plan)") {
