@@ -885,7 +885,6 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		BillingMode:     string(r.billing),
 		ProxyID:         proxyID,
 		BootstrapCmds:   r.cfg.Bootstrap,
-		PromptCache:     r.rec.PromptCachePolicy,
 		BatchAllowed:    r.rec.BatchPolicy == "explicit",
 		ReviewStatus:    reviewStatus(q.reviewPath),
 	})

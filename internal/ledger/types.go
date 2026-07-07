@@ -283,7 +283,6 @@ type Manifest struct {
 	OpenQuestions   []string  `json:"open_questions,omitempty"`
 	NextAction      string    `json:"next_action,omitempty"`
 	QuotaSnapshot   any       `json:"quota_snapshot,omitempty"`
-	PromptCache     string    `json:"prompt_cache_policy,omitempty"`
 	BatchAllowed    bool      `json:"batch_mode_allowed"`
 	RecoveryConf    string    `json:"recovery_confidence,omitempty"`
 	RecoveryTier    int       `json:"recovery_policy_tier"`

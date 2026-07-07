@@ -343,7 +343,6 @@ func fullManifest() *Manifest {
 		OpenQuestions: []string{"q1"},
 		NextAction:    "merge",
 		QuotaSnapshot: "snap",
-		PromptCache:   "aggressive",
 		BatchAllowed:  true,
 		RecoveryConf:  "high",
 		RecoveryTier:  2,

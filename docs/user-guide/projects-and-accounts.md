@@ -168,7 +168,6 @@ history is `git log ~/.koryph`.
 | `batch_policy` | `"deny"` \| `"explicit"` — whether the Batch API is available. |
 | `api_fallback` | `"off"` \| `"explicit"` — whether direct API key use is allowed. |
 | `api_key_env_var` | Env-var **name** holding the key (never the key value itself). |
-| `prompt_cache_policy` | `"on"` \| `"off"`. |
 | `billing_guard` | `"enforce"` (default) or `"advisory"` — whether the quota governor blocks or only warns. Automatically advisory while the account is uncalibrated. |
 | `quota_profile` | Quota governor bucket (defaults to `account_profile`). |
 | `visibility_sync` | `"off"` (GitHub/Linear sync is a later phase). |

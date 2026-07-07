@@ -77,10 +77,9 @@ type Record struct {
 	RecoveryModelPolicy string   `json:"recovery_model_policy"` // "upgrade-opus" (fixed; Fable never)
 
 	// Billing / batch
-	BatchPolicy       string `json:"batch_policy"`              // "deny" | "explicit"
-	APIFallback       string `json:"api_fallback"`              // "off" | "explicit"
-	APIKeyEnvVar      string `json:"api_key_env_var,omitempty"` // env var NAME holding the key (never the key itself)
-	PromptCachePolicy string `json:"prompt_cache_policy"`       // "on" | "off"
+	BatchPolicy  string `json:"batch_policy"`              // "deny" | "explicit"
+	APIFallback  string `json:"api_fallback"`              // "off" | "explicit"
+	APIKeyEnvVar string `json:"api_key_env_var,omitempty"` // env var NAME holding the key (never the key itself)
 
 	// BillingGuard controls the quota governor's THROTTLING constraints
 	// (preflight, drain/stop dispatch blocking, slot scaling) for this
