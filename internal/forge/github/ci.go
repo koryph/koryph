@@ -25,8 +25,9 @@ var embeddedGateWorkflowTmpl string
 // templates. The rc field must be non-nil for the "caller" kind; gateCmd is
 // optional (defaults to [forge.DefaultGateCommand]) for the "gate" kind.
 type githubCISvc struct {
-	rc      *project.ReleaseConfig
-	gateCmd string // empty means use forge.DefaultGateCommand
+	rc        *project.ReleaseConfig
+	gateCmd   string                   // empty means use forge.DefaultGateCommand
+	copyright *project.CopyrightConfig // nil ⇒ built-in default SPDX header
 }
 
 // callerWorkflowData is the view-model passed to the caller-workflow template.
@@ -53,6 +54,10 @@ type callerWorkflowData struct {
 	SBOM bool
 	// Provenance enables SLSA provenance in the caller workflow.
 	Provenance bool
+	// Copyright is the SPDX-FileCopyrightText value and License the
+	// SPDX-License-Identifier stamped in the rendered file's header (koryph-s6g).
+	Copyright string
+	License   string
 }
 
 // Render produces the content of a GitHub Actions pipeline asset file.
@@ -87,6 +92,8 @@ func (s *githubCISvc) renderCaller() ([]byte, error) {
 			"build the provider with github.WithReleaseConfig(rc)")
 	}
 	td := buildCallerWorkflowData(s.rc)
+	td.Copyright = s.copyright.FileCopyrightText()
+	td.License = s.copyright.LicenseID()
 	tmpl, err := template.New("caller-workflow.yml").Funcs(forge.TemplateFuncs).Parse(embeddedCallerWorkflowTmpl)
 	if err != nil {
 		return nil, fmt.Errorf("github CI: parse caller workflow template: %w", err)
@@ -128,7 +135,11 @@ func buildCallerWorkflowData(rc *project.ReleaseConfig) callerWorkflowData {
 // renderGate renders the green gate workflow from the embedded template.
 // The gate command defaults to [forge.DefaultGateCommand] when none was supplied.
 func (s *githubCISvc) renderGate() ([]byte, error) {
-	td := forge.GateTemplateData{GateCmd: forge.ResolveGateCommand(s.gateCmd)}
+	td := forge.GateTemplateData{
+		GateCmd:   forge.ResolveGateCommand(s.gateCmd),
+		Copyright: s.copyright.FileCopyrightText(),
+		License:   s.copyright.LicenseID(),
+	}
 	tmpl, err := template.New("gate-workflow.yml").Parse(embeddedGateWorkflowTmpl)
 	if err != nil {
 		return nil, fmt.Errorf("github CI: parse gate workflow template: %w", err)

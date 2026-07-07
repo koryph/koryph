@@ -293,3 +293,46 @@ func TestBotServiceNotNil(t *testing.T) {
 func TestProviderSatisfiesForge(t *testing.T) {
 	var _ forge.Forge = githubforge.New()
 }
+
+// TestCIRender_Copyright_Default confirms that with no copyright config the
+// generated header is byte-identical to koryph's historical literal (koryph-s6g
+// is purely additive).
+func TestCIRender_Copyright_Default(t *testing.T) {
+	p := githubforge.New()
+	got, err := p.CI().Render("gate")
+	if err != nil {
+		t.Fatalf("Render(\"gate\"): %v", err)
+	}
+	s := string(got)
+	// REUSE-IgnoreStart
+	if !strings.Contains(s, "SPDX-FileCopyrightText: "+"2026 The Koryph Developers") {
+		t.Errorf("default copyright header missing; got:\n%s", s)
+	}
+	// REUSE-IgnoreEnd
+}
+
+// TestCIRender_Copyright_PerProject proves koryph-s6g: WithCopyright threads the
+// project's own holder/year/license into the generated CI asset header instead
+// of koryph's.
+func TestCIRender_Copyright_PerProject(t *testing.T) {
+	cc := &project.CopyrightConfig{Holder: "Acme, Inc.", Year: "2024-2026", License: "MIT"}
+	p := githubforge.New(githubforge.WithCopyright(cc))
+	got, err := p.CI().Render("gate")
+	if err != nil {
+		t.Fatalf("Render(\"gate\"): %v", err)
+	}
+	s := string(got)
+	// REUSE-IgnoreStart
+	for _, frag := range []string{
+		"SPDX-FileCopyrightText: " + "2024-2026 Acme, Inc.",
+		"SPDX-License-Identifier: " + "MIT",
+	} {
+		if !strings.Contains(s, frag) {
+			t.Errorf("per-project header missing %q; got:\n%s", frag, s)
+		}
+	}
+	if strings.Contains(s, "The Koryph Developers") {
+		t.Errorf("koryph's default holder leaked into a per-project render:\n%s", s)
+	}
+	// REUSE-IgnoreEnd
+}

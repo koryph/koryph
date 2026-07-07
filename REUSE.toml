@@ -26,6 +26,8 @@ path = [
   ".vscode/**",
   "internal/commands/*.md",
   "internal/release/*.json.tmpl",
+  "internal/forge/github/*.yml.tmpl",
+  "internal/forge/gitlab/*.yml.tmpl",
   ".github/rulesets/*.json",
   ".github/repo-settings.json",
   "internal/posture/builtin/**",

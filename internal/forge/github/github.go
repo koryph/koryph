@@ -45,8 +45,9 @@ func init() {
 // The zero value is valid and satisfies all interface methods; methods that
 // need a project config (CI().Render("caller")) return an error when rc is nil.
 type Provider struct {
-	rc      *project.ReleaseConfig // optional; required for CI().Render("caller")
-	gateCmd string                 // optional; gate command for CI().Render("gate"), default "make gate"
+	rc        *project.ReleaseConfig   // optional; required for CI().Render("caller")
+	gateCmd   string                   // optional; gate command for CI().Render("gate"), default "make gate"
+	copyright *project.CopyrightConfig // optional; SPDX header for generated assets (nil ⇒ built-in default)
 }
 
 // Option is a functional option for [New].
@@ -62,6 +63,13 @@ func WithReleaseConfig(rc *project.ReleaseConfig) Option {
 // The default when this option is not supplied is "make gate".
 func WithGateCommand(cmd string) Option {
 	return func(p *Provider) { p.gateCmd = cmd }
+}
+
+// WithCopyright attaches the project's copyright/license config so generated CI
+// assets carry the project's own SPDX header (koryph-s6g). Nil is fine — the
+// built-in default holder/license is used.
+func WithCopyright(c *project.CopyrightConfig) Option {
+	return func(p *Provider) { p.copyright = c }
 }
 
 // New constructs a GitHub [Provider] with the supplied options. Use this (not
@@ -115,7 +123,9 @@ func (p *Provider) Releases() forge.ReleaseService { return &githubReleaseSvc{} 
 
 // CI returns a [forge.CIService] that renders GitHub Actions pipeline assets
 // using internal/release templates.
-func (p *Provider) CI() forge.CIService { return &githubCISvc{rc: p.rc, gateCmd: p.gateCmd} }
+func (p *Provider) CI() forge.CIService {
+	return &githubCISvc{rc: p.rc, gateCmd: p.gateCmd, copyright: p.copyright}
+}
 
 // Bot returns a [forge.BotService] backed by the GitHub App API.
 func (p *Provider) Bot() forge.BotService { return &githubBotSvc{} }

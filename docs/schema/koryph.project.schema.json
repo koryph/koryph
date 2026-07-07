@@ -2,6 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://koryph.dev/schemas/config",
   "$defs": {
+    "CopyrightConfig": {
+      "properties": {
+        "holder": {
+          "type": "string",
+          "description": "Holder is the copyright holder, e.g. \"Acme, Inc.\" or \"The Foo Authors\"."
+        },
+        "year": {
+          "type": "string",
+          "description": "Year is the copyright year or range, e.g. \"2026\" or \"2024-2026\"."
+        },
+        "license": {
+          "type": "string",
+          "description": "License is the SPDX license identifier stamped into generated files\n(default \"Apache-2.0\")."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "EpicDocsUpdateConfig": {
       "properties": {
         "enabled": {
@@ -547,6 +565,10 @@
     "release": {
       "$ref": "#/$defs/ReleaseConfig",
       "description": "Release, when non-nil, configures the project's release pipeline\n(managed by `koryph release setup`). It drives template rendering for\nthe caller GitHub Actions workflow and the release-please config.\nExactly one build mode (Build.Goreleaser or Build.Commands) must be\nset when this block is present (enforced by Validate)."
+    },
+    "copyright": {
+      "$ref": "#/$defs/CopyrightConfig",
+      "description": "Copyright configures the SPDX header koryph stamps onto files it\nGENERATES for this project — the CI/release workflow assets written by\n`koryph ci setup` / `koryph release setup` (koryph-s6g). It is\nper-project so a repository koryph builds carries ITS OWN copyright and\nlicense, not koryph's. Nil (and any omitted field) falls back to\nkoryph's built-in default, so an unconfigured project's generated output\nis byte-for-byte unchanged."
     },
     "posture": {
       "$ref": "#/$defs/PostureConfig",

@@ -88,6 +88,11 @@ func fullConfig() *Config {
 			SBOM:       true,
 			Provenance: true,
 		},
+		Copyright: &CopyrightConfig{
+			Holder:  "Acme, Inc.",
+			Year:    "2024-2026",
+			License: "MIT",
+		},
 		Posture: &PostureConfig{
 			Profile:    "oss-solo-maintainer",
 			Parameters: map[string]string{"required_checks": "pre-commit,make gate"},
