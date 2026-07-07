@@ -3,8 +3,10 @@
 
 # Shipped Claude Code hooks
 
-Both are `PreToolUse` hooks scoped to Koryph-dispatched agents
-(`KORYPH_PHASE_ID` set); interactive sessions are never restricted by them.
+`worktree-guard.sh` and `agent-boundary-guard.sh` are `PreToolUse` hooks
+scoped to Koryph-dispatched agents (`KORYPH_PHASE_ID` set); interactive
+sessions are never restricted by them. `koryph-prime.sh` is a
+`SessionStart` hook and runs for every session, dispatched or not.
 
 - **`worktree-guard.sh`** — keeps an agent inside its project tree. Denies
   `Edit`/`Write` outside `$CLAUDE_PROJECT_DIR` (or worktree/temp siblings),
@@ -18,6 +20,16 @@ Both are `PreToolUse` hooks scoped to Koryph-dispatched agents
   2026-07-token-economy.md §3 L3): `go test` with `-v` on a broad
   (`...`-wildcard) package set, and `golangci-lint run` with no `--output`
   flag — both point at `make gate-agent` / `make lint-agent` instead.
+- **`koryph-prime.sh`** — wraps `bd prime --hook-json` (koryph-77r.4,
+  docs/designs/2026-07-token-economy.md §3 L2). Logs the injected byte size
+  to `$KORYPH_DIR/prime-size.log` (never to stdout). For secondary-spawn
+  sessions that never touch bead workflow (`KORYPH_SPAWN_KIND` in
+  `review`/`stage`/`epicreview`), substitutes a small (<500 byte) slim
+  profile instead of invoking `bd prime` at all; every other shape — main
+  dispatches, interactive/operator sessions, or an unrecognized spawn kind —
+  gets the full `bd prime --hook-json` output, byte-identical to the bare
+  command it replaces. Fails open: any missing/erroring/unparsable `bd`
+  output is still relayed as-is with exit 0, never blocking session start.
 
 ## settings.json wiring
 
