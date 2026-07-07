@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/netx"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -105,7 +106,7 @@ func checkOneProxy(opts Options, projectID, baseURL, health, pin string) []Findi
 	//    we confirm it held at doctor time (a hand-edited record that bypassed
 	//    the registry's load path would show up here as a WARN).
 	u, err := url.Parse(baseURL)
-	if err != nil || u.Scheme != "http" || !isLoopbackAddr(u.Hostname()) {
+	if err != nil || u.Scheme != "http" || !netx.IsLoopbackHost(u.Hostname()) {
 		return []Finding{{
 			Check:   checkNameProxy,
 			Level:   LevelError,
@@ -358,22 +359,4 @@ func findCounterField(m map[string]interface{}) (float64, bool) {
 // "RequestCount", and "requestcount" are all recognized as the same field.
 func normalizeCounterKey(k string) string {
 	return strings.ToLower(strings.ReplaceAll(k, "_", ""))
-}
-
-// isLoopbackAddr reports whether host (already stripped of port/brackets by
-// url.URL.Hostname()) is a loopback address. Mirrors registry.isLoopbackHost
-// but lives here to avoid cross-package import just for one predicate.
-func isLoopbackAddr(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	// 127.0.0.0/8
-	if strings.HasPrefix(host, "127.") {
-		return true
-	}
-	// ::1
-	if host == "::1" || host == "[::1]" {
-		return true
-	}
-	return false
 }

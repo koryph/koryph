@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/netx"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/quota"
 )
@@ -385,22 +385,11 @@ func validateAgentProxy(rec *Record) error {
 		return fmt.Errorf("registry: agent_proxy.base_url %q must be an http URL (loopback-only; got scheme %q)", raw, u.Scheme)
 	}
 	host := u.Hostname()
-	if !isLoopbackHost(host) {
+	if !netx.IsLoopbackHost(host) {
 		return fmt.Errorf("registry: agent_proxy.base_url %q host %q is not loopback (must be 127.0.0.1/127.0.0.0-8, localhost, or [::1])", raw, host)
 	}
 	if h := rec.AgentProxy.Holdout; h != nil && (*h < 0 || *h > 1) {
 		return fmt.Errorf("registry: agent_proxy.holdout %v must be in [0, 1]", *h)
 	}
 	return nil
-}
-
-// isLoopbackHost reports whether host (a URL's Hostname(), already stripped
-// of brackets/port) is a loopback address: "localhost" by name, or any IP in
-// the loopback range (127.0.0.0/8 or ::1) by literal.
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
