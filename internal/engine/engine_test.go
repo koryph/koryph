@@ -46,6 +46,10 @@ type fixOpts struct {
 	// the rolling-dispatch tests (koryph-2im.3) to distinguish behavior by
 	// $KORYPH_PHASE_ID (e.g. one bead sleeps to hold a slot open).
 	claudeScript string
+	// agentProxy, when set, is written onto the registry record
+	// (koryph-3l1.3) so dispatch-level holdout-arm assignment tests can
+	// exercise dispatchBead's registry.AgentProxy.ArmFor wiring end-to-end.
+	agentProxy *registry.AgentProxy
 }
 
 const fakeIdentityEmail = "test@example.com"
@@ -238,6 +242,7 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 		ExpectedIdentity: o.expectedIdentity,
 		AllowedModels:    []string{"haiku", "sonnet", "opus"},
 		WorktreeRoot:     f.wtRoot,
+		AgentProxy:       o.agentProxy,
 	}
 	if err := st.Add(ctx, rec); err != nil {
 		t.Fatal(err)

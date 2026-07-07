@@ -6,6 +6,7 @@ package quota
 import (
 	"log/slog"
 	"math"
+	"strings"
 )
 
 // SizeOf buckets a work item by its description length: S (<400), M (<2000),
@@ -110,6 +111,33 @@ func calibKey(tier, size, proxyID string) string {
 		return tier + ":" + size
 	}
 	return tier + ":" + size + "@" + proxyID
+}
+
+// ParseCalibKey is calibKey's inverse: it splits a Config.Calibration/
+// Config.ErrorStats key back into (tier, size, proxyID). Exported for the
+// two display paths that read raw keys off cfg.Calibration/cfg.ErrorStats
+// (koryph-3l1.3 carried contract from koryph-3l1.1's operator notes):
+// cmd/koryph/quota.go's cmdMetricsEstimator and internal/cockpit/
+// efficiency.go's splitBucket. Both previously assumed the legacy "tier:size"
+// shape and parsed it themselves (one by scanning for the LAST ':', the
+// other the first) — either approach corrupts on a "@proxyID" suffix once
+// RecordForProxy starts writing non-empty proxyIDs, because proxyID is
+// itself "<base_url>[#pin]" and a base_url like "http://127.0.0.1:8787"
+// contains colons of its own. This is the one place that split is done
+// correctly: tier and size are drawn from a closed, colon-free vocabulary
+// (model tier names, S/M/L), so proxyID is stripped FIRST by finding the
+// first '@' (never a valid tier/size character), and only the remainder is
+// split on ITS first ':' — never last, and never on the (already-removed)
+// proxyID's own colons.
+func ParseCalibKey(key string) (tier, size, proxyID string) {
+	ts := key
+	if i := strings.IndexByte(key, '@'); i >= 0 {
+		ts, proxyID = key[:i], key[i+1:]
+	}
+	if i := strings.IndexByte(ts, ':'); i >= 0 {
+		return ts[:i], ts[i+1:], proxyID
+	}
+	return ts, "", proxyID
 }
 
 // EstimateItemForRuntimeProxy is EstimateItemForRuntime generalized by proxy

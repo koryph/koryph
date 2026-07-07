@@ -93,7 +93,11 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,
 			PhaseDir:         phaseDir,
 			ClaudeBin:        os.Getenv(envClaudeBin),
-			ProxyBaseURL:     r.rec.ProxyBaseURL(),
+			// Follows sl's already-assigned holdout arm rather than the
+			// project's live config, so a stage spawned for a holdout-arm
+			// bead stays direct too (koryph-3l1.3) — see
+			// proxyBaseURLForSlot's doc (poll.go).
+			ProxyBaseURL: r.proxyBaseURLForSlot(sl),
 		})
 
 		// Emit stage duration for histograms (Section O2).
@@ -111,7 +115,10 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 				// (they are launched by the post-implement pipeline, not the
 				// main wave estimator), so pass 0 to skip error-stat updates
 				// while still updating the base EWMA calibration (koryph-6bl).
-				quota.Record(c, model, size, cost, 0)
+				// sl.ProxyID segments by the bead's assigned arm, same
+				// reasoning as completeSlot's RecordForProxy call
+				// (koryph-3l1.3).
+				quota.RecordForProxy(c, model, size, sl.ProxyID, cost, 0)
 				return nil
 			}); err == nil {
 				r.quotaCfg = cfg

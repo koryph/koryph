@@ -795,6 +795,7 @@ per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead tr
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--experiment` | bool |  | render the L6 two-arm (proxied vs holdout) standing-canary comparison instead |
 | `--json` | bool |  | emit JSON |
 | `--project` | string |  | limit to one project ID |
 

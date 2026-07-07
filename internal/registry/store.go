@@ -365,7 +365,10 @@ func validate(rec *Record) error {
 // permitting one invites configuring a non-local endpoint under the guise of
 // a scheme check) whose host is loopback (127.0.0.0/8, "localhost", or
 // "::1"). Called from validate (Store.Add) and directly from Get/List so
-// every load path machine-checks it, not just the docs.
+// every load path machine-checks it, not just the docs. Also validates
+// Holdout (koryph-3l1.3, design §3 L6) when explicitly set: it is a
+// fraction, so anything outside [0, 1] is refused at load rather than
+// silently clamped or ignored.
 func validateAgentProxy(rec *Record) error {
 	if rec.AgentProxy == nil {
 		return nil
@@ -384,6 +387,9 @@ func validateAgentProxy(rec *Record) error {
 	host := u.Hostname()
 	if !isLoopbackHost(host) {
 		return fmt.Errorf("registry: agent_proxy.base_url %q host %q is not loopback (must be 127.0.0.1/127.0.0.0-8, localhost, or [::1])", raw, host)
+	}
+	if h := rec.AgentProxy.Holdout; h != nil && (*h < 0 || *h > 1) {
+		return fmt.Errorf("registry: agent_proxy.holdout %v must be in [0, 1]", *h)
 	}
 	return nil
 }

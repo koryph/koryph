@@ -185,7 +185,16 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 			Effort:          validateEffort,
 			TimeoutSec:      evcfg.TimeoutSeconds,
 			OutDir:          outDir,
-			ProxyBaseURL:    r.rec.ProxyBaseURL(),
+			// Deliberately the project's live config, NOT a bead-scoped arm
+			// lookup (koryph-3l1.3): epic validation spans every child of the
+			// epic, which can straddle both holdout and proxied beads (arms
+			// are assigned per bead, not per epic), so there is no single
+			// "this epic's arm" to follow. Defaulting to proxied here — the
+			// documented judgment call for secondary spawns with no bead of
+			// their own — keeps epicreview's own token/quality signal off the
+			// holdout population entirely rather than arbitrarily picking one
+			// child's arm to represent the whole epic.
+			ProxyBaseURL: r.rec.ProxyBaseURL(),
 		}
 
 		validate := r.epicValidateFn

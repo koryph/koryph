@@ -266,8 +266,15 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		// don't clobber each other's EWMA calibration (koryph-8iu.1).
 		// Pass sl.EstimateUSD so Record can also update error stats (koryph-6bl);
 		// 0 on an old-format slot is treated as "unknown" and skips error stats.
+		// sl.ProxyID segments the calibration key by the arm this slot's
+		// dispatch was assigned to (koryph-3l1.3, calibKey's proxyID
+		// segmentation): the holdout arm and "no proxy configured" share the
+		// same "" key by design (see ledger.Slot.ProxyID's doc), so a standing
+		// canary's direct-arm observations fold into the SAME baseline
+		// population Record always fed, while the proxied arm accumulates
+		// separately under "tier:size@proxyID" and can never pollute it.
 		if cfg, err := quota.UpdateConfig(r.quotaName(), func(c *quota.Config) error {
-			quota.Record(c, model, size, cost, sl.EstimateUSD)
+			quota.RecordForProxy(c, model, size, sl.ProxyID, cost, sl.EstimateUSD)
 			return nil
 		}); err == nil {
 			r.quotaCfg = cfg
@@ -680,6 +687,25 @@ func (r *runner) beadClosedMidFlight(ctx context.Context, id string) bool {
 	return true
 }
 
+// proxyBaseURLForSlot resolves the ANTHROPIC_BASE_URL a secondary spawn tied
+// to slot sl (post-implement pipeline stage, review) should use
+// (koryph-3l1.3, design §3 L6): it follows the SAME arm sl's own main
+// dispatch was already assigned (registry.AgentProxy.ArmFor, computed once in
+// dispatchBead and stamped into sl.ProxyID) rather than recomputing or
+// defaulting to the project's live config — a stage/review spawned for a
+// holdout-arm bead must stay direct too, or proxied stage/review traffic
+// would leak into what is supposed to be the "no interception" control
+// population's telemetry, corrupting the comparison. sl.ProxyID=="" covers
+// both "no agent_proxy configured" and "this bead's holdout arm" identically
+// (see ledger.Slot.ProxyID's doc) — exactly the case where no
+// ANTHROPIC_BASE_URL override belongs in ChildEnvSpec.ProxyBaseURL.
+func (r *runner) proxyBaseURLForSlot(sl *ledger.Slot) string {
+	if sl.ProxyID == "" {
+		return ""
+	}
+	return r.rec.ProxyBaseURL()
+}
+
 // finishCandidate runs the configured post-implement pipeline stages, the
 // optional review pass, and then applies the merge policy to a completed slot.
 func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
@@ -733,7 +759,7 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 			Profile:      r.profile,
 			OutPath:      outPath,
 			ClaudeBin:    os.Getenv(envClaudeBin),
-			ProxyBaseURL: r.rec.ProxyBaseURL(),
+			ProxyBaseURL: r.proxyBaseURLForSlot(sl),
 		})
 		if v.Degraded {
 			// Fail CLOSED: --review was explicitly requested, so a review we

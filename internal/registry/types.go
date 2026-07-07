@@ -17,6 +17,11 @@
 //   - All timestamps RFC3339 UTC.
 package registry
 
+import (
+	"hash/fnv"
+	"math"
+)
+
 // Account profiles. PROFILE names are user-facing; resolution to a
 // CLAUDE_CONFIG_DIR happens in package account.
 const (
@@ -148,6 +153,83 @@ type AgentProxy struct {
 	// so a re-pinned proxy segments estimator calibration separately from
 	// the identity it replaced.
 	Pin string `json:"pin,omitempty"`
+
+	// Holdout is the fraction of dispatches that bypass this proxy even
+	// though it is configured (koryph-3l1.3, design
+	// docs/designs/2026-07-token-economy.md §3 L6, §2 I5): a PERMANENT
+	// standing canary — not a one-time experiment — that stays live for as
+	// long as agent_proxy is configured, so a claimed compression win is
+	// never confused with "the beads that quarter happened to be smaller."
+	// Assignment is deterministic per bead ID (see ArmFor) so a
+	// requeue/resume of the same bead never flips arms mid-flight: arm
+	// flapping would corrupt both the experiment (silently blending two
+	// populations under one bead's accumulated ledger row) and the prompt
+	// cache (a resumed session's ANTHROPIC_BASE_URL must stay byte-identical
+	// to what built its cached prefix, or --resume replays against a
+	// different endpoint than the one the cache was primed against).
+	//
+	// A nil pointer (unset) resolves to DefaultHoldout via EffectiveHoldout
+	// — the common case, so most operators never set this explicitly. An
+	// explicit 0 disables the holdout (100% proxied; not recommended outside
+	// a short deliberate calibration window — I5 requires the tripwire to
+	// stay live). An explicit 1 disables the proxy in practice (100%
+	// holdout; a dry-run/rollout-freeze state that still exercises doctor's
+	// health/pin checks without ever routing real traffic). Validated at
+	// load: 0 <= *Holdout <= 1 (validateAgentProxy).
+	Holdout *float64 `json:"holdout,omitempty"`
+}
+
+// DefaultHoldout is the holdout fraction assumed when agent_proxy is
+// configured but Holdout is unset (nil) — see AgentProxy.Holdout's doc and
+// design docs/designs/2026-07-token-economy.md §3 L6. Deliberately small: a
+// standing canary needs enough traffic to detect quality regressions
+// promptly, not a 50/50 split that would halve the very savings the proxy
+// exists to measure.
+const DefaultHoldout = 0.1
+
+// EffectiveHoldout resolves p.Holdout to DefaultHoldout when unset (nil
+// receiver or nil field) — the single place both ArmFor and any future
+// caller (doctor, docs) should read the configured fraction from.
+func (p *AgentProxy) EffectiveHoldout() float64 {
+	if p == nil || p.Holdout == nil {
+		return DefaultHoldout
+	}
+	return *p.Holdout
+}
+
+// ArmFor deterministically assigns one bead to the "holdout" (direct) or
+// "proxied" arm of the standing canary (koryph-3l1.3, design §3 L6) and
+// returns the (proxyID, proxyBaseURL) pair the caller should stamp/inject
+// for it: the holdout arm returns ("", "") — byte-identical to "no proxy
+// configured at all," which is exactly the population the estimator's
+// calibKey segmentation (internal/quota) and completeSlot's Record calls
+// are meant to compare against. The proxied arm returns (p.ID(),
+// p.BaseURL).
+//
+// The arm is a pure function of beadID alone — never the attempt number,
+// session ID, or wall-clock time — so every requeue/resume of the SAME bead
+// lands in the SAME arm; see Holdout's doc for why flapping would corrupt
+// both the experiment and the prompt cache. A nil AgentProxy or an empty
+// BaseURL always returns ("", "") — direct dispatch, no experiment running,
+// matching ID()'s and ProxyBaseURL()'s existing nil-safety.
+func (p *AgentProxy) ArmFor(beadID string) (proxyID, proxyBaseURL string) {
+	if p == nil || p.BaseURL == "" {
+		return "", ""
+	}
+	if stableUnitInterval(beadID) < p.EffectiveHoldout() {
+		return "", "" // holdout arm: direct, same as no proxy configured
+	}
+	return p.ID(), p.BaseURL
+}
+
+// stableUnitInterval maps s deterministically onto [0, 1) via a 64-bit FNV-1a
+// hash (fast, stable across process restarts and Go versions — no crypto
+// property is needed, only determinism and a roughly uniform spread so a
+// configured holdout fraction is honored across a bead population).
+func stableUnitInterval(s string) float64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s)) // fnv.Write never errors
+	return float64(h.Sum64()) / float64(math.MaxUint64)
 }
 
 // ID returns the stable proxy identity string that ledger.Slot.ProxyID

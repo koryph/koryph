@@ -448,11 +448,16 @@ func onlyBead(issues []beads.Issue, id string) []beads.Issue {
 // default_runtime precedence dispatchBead itself applies
 // (modelroute.ResolveRuntimeName) — so a wave mixing a runtime:<name> bead
 // alongside claude beads estimates each against the right per-runtime base
-// table instead of always assuming claude's.
+// table instead of always assuming claude's. Also prices each item against
+// ITS OWN holdout-arm assignment (koryph-3l1.3, registry.AgentProxy.ArmFor)
+// so a wave estimate is never systematically off by the proxied/holdout
+// split — the same arm computation dispatchBead itself will make for each
+// of these items when it actually dispatches them.
 //
 // Bias correction (koryph-6bl): once enough observations accumulate for a
-// (tier, size) bucket the corrected estimate replaces the raw base, so
-// systematic under/over-estimation self-corrects instead of persisting.
+// (tier, size[, @proxyID]) bucket the corrected estimate replaces the raw
+// base, so systematic under/over-estimation self-corrects instead of
+// persisting.
 func (r *runner) waveEstimate(items []sched.Item) float64 {
 	var est float64
 	for _, it := range items {
@@ -461,21 +466,34 @@ func (r *runner) waveEstimate(items []sched.Item) float64 {
 			model = modelroute.TierSonnet
 		}
 		runtimeName, _ := modelroute.ResolveRuntimeName(it.Issue.Labels, r.cfg.DefaultRuntime)
-		corrected, _ := quota.EstimateItemCorrectedForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(it.Issue.Description)))
+		// r.rec is nil in some estimator-only unit tests that build a bare
+		// &runner{cfg:..., quotaCfg:...} (no registry record) — guard rather
+		// than dereference, matching health.go's existing "r.rec != nil"
+		// defensive precedent. A nil rec has no agent_proxy either way, so ""
+		// (direct) is the correct fallback, not merely a crash-avoidance one.
+		var proxyID string
+		if r.rec != nil {
+			proxyID, _ = r.rec.AgentProxy.ArmFor(it.Issue.ID)
+		}
+		corrected, _ := quota.EstimateItemCorrectedForRuntimeProxy(r.quotaCfg, runtimeName, model, quota.SizeOf(len(it.Issue.Description)), proxyID)
 		est += corrected
 	}
 	return est
 }
 
 // itemEstimate returns the bias-corrected estimate for a single bead, using
-// the same model/runtime/size logic as waveEstimate (koryph-6bl). This is
-// called at dispatch time so the estimate can be persisted on the ledger
-// slot alongside the eventual actual, making estimator error observable.
-func (r *runner) itemEstimate(iss beads.Issue, model, runtimeName string) float64 {
+// the same model/runtime/size logic as waveEstimate (koryph-6bl), segmented
+// by proxyID (koryph-3l1.3) — the caller passes the SAME arm-assigned
+// proxyID it is about to stamp on the ledger slot, so the estimate and the
+// eventual actual (recorded via quota.RecordForProxy) land in the same
+// calibration population. This is called at dispatch time so the estimate
+// can be persisted on the ledger slot alongside the eventual actual, making
+// estimator error observable.
+func (r *runner) itemEstimate(iss beads.Issue, model, runtimeName, proxyID string) float64 {
 	if model == "" {
 		model = modelroute.TierSonnet
 	}
-	corrected, _ := quota.EstimateItemCorrectedForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(iss.Description)))
+	corrected, _ := quota.EstimateItemCorrectedForRuntimeProxy(r.quotaCfg, runtimeName, model, quota.SizeOf(len(iss.Description)), proxyID)
 	return corrected
 }
 
@@ -645,6 +663,21 @@ type dispatchReq struct {
 func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	beadID := q.issue.ID
 
+	// Holdout-arm assignment (koryph-3l1.3, design §3 L6): computed once,
+	// here, from beadID alone — BEFORE anything else in this function reads
+	// r.rec.ProxyBaseURL()/AgentProxy.ID() directly — so every downstream use
+	// (dispatch.Spec's env injection, the ledger slot stamp, the manifest
+	// stamp, and the dispatch-time estimate below) agrees on the same arm for
+	// this attempt. Because dispatchBead is the SOLE dispatch path shared by
+	// wave.go's fresh dispatches, rolling.go's fresh dispatches, and every
+	// requeue path in poll.go (requeueSlot/requeueRateLimited/
+	// requeueBudgetKilled all funnel back through here with the same
+	// q.issue.ID), and ArmFor hashes beadID alone, a requeued or resumed bead
+	// is guaranteed to land in the same arm on every attempt without any of
+	// those call sites needing to thread the arm forward themselves.
+	proxyID, proxyBaseURL := r.rec.AgentProxy.ArmFor(beadID)
+	proxyConfigured := r.rec.AgentProxy != nil && r.rec.AgentProxy.BaseURL != ""
+
 	// Runtime selection (koryph-v8u.3): bead `runtime:<name>` label > project
 	// default_runtime > "claude" (modelroute.ResolveRuntimeName). Dispatch
 	// itself only ever drives the claude CLI today — no other runtime's
@@ -764,7 +797,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Attempt:          q.attempt,
 		SSHAuthSock:      r.sshAuthSock,
 		EnvPassthrough:   r.rec.EnvPassthrough,
-		ProxyBaseURL:     r.rec.ProxyBaseURL(),
+		ProxyBaseURL:     proxyBaseURL,
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "dispatch refused: "+err.Error())
@@ -778,7 +811,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	// estimate (bias-corrected when enough samples exist), NOT accumulated —
 	// it is the prediction we are making for THIS attempt, used later by
 	// completeSlot to compute estimator error and update ErrorStats.
-	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName)
+	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName, proxyID)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	sl := &ledger.Slot{
@@ -799,7 +832,8 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		VerifiedIdentity:   handle.VerifiedIdentity,
 		VerifiedAt:         now,
 		BillingMode:        string(r.billing),
-		ProxyID:            r.rec.AgentProxy.ID(),
+		ProxyID:            proxyID,
+		ProxyConfigured:    proxyConfigured,
 		PID:                handle.PID,
 		Stream:             handle.StreamPath,
 		StatusPath:         handle.StatusPath,
@@ -849,7 +883,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		MergePolicy:     string(policy),
 		AutoMerge:       r.opts.AutoMerge,
 		BillingMode:     string(r.billing),
-		ProxyID:         r.rec.AgentProxy.ID(),
+		ProxyID:         proxyID,
 		BootstrapCmds:   r.cfg.Bootstrap,
 		PromptCache:     r.rec.PromptCachePolicy,
 		BatchAllowed:    r.rec.BatchPolicy == "explicit",

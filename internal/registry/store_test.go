@@ -360,6 +360,68 @@ func TestAgentProxyLoopbackValidation(t *testing.T) {
 	}
 }
 
+// TestAgentProxyHoldoutValidation is the koryph-3l1.3 acceptance test for
+// AgentProxy.Holdout's load-time range check: unset (nil) and any value in
+// [0, 1] are accepted; anything outside that range is refused at Add, the
+// same "machine-checked, not just documented" contract as the loopback check
+// above.
+func TestAgentProxyHoldoutValidation(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+
+	f := func(v float64) *float64 { return &v }
+
+	cases := []struct {
+		name    string
+		holdout *float64
+		wantErr bool
+	}{
+		{"unset (default)", nil, false},
+		{"zero", f(0), false},
+		{"one", f(1), false},
+		{"typical 0.1", f(0.1), false},
+		{"negative refused", f(-0.01), true},
+		{"above one refused", f(1.01), true},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newInitStore(t)
+			id := fmt.Sprintf("proj-holdout-%d", i)
+			rec := sampleRecord(id, root)
+			rec.AgentProxy = &AgentProxy{BaseURL: "http://127.0.0.1:8091", Holdout: tc.holdout}
+
+			err := s.Add(ctx, rec)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Add succeeded with an out-of-range holdout; want refusal at load")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			got, err := s.Get(id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.AgentProxy == nil {
+				t.Fatal("AgentProxy = nil after roundtrip")
+			}
+			gotH, wantH := got.AgentProxy.Holdout, tc.holdout
+			switch {
+			case gotH == nil && wantH == nil:
+				// ok
+			case gotH == nil || wantH == nil:
+				t.Fatalf("Holdout roundtrip mismatch: got %v, want %v", gotH, wantH)
+			case *gotH != *wantH:
+				t.Fatalf("Holdout roundtrip = %v, want %v", *gotH, *wantH)
+			}
+		})
+	}
+}
+
 // TestAgentProxyValidatedIndependentlyAtLoad proves the loopback check runs
 // on every load path (Get and List), not merely inside Add — a record
 // hand-edited (or written by a future codepath that bypasses Add) with a

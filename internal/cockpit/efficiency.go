@@ -19,7 +19,6 @@ package cockpit
 
 import (
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
@@ -454,12 +453,23 @@ func buildQuotaWindow(cfg *quota.Config, usage *quota.Usage) (
 	return
 }
 
-// splitBucket splits a "<tier>:<size>" bucket key into (tier, size).
+// splitBucket splits a "<tier>:<size>" or "<tier>:<size>@<proxyID>" bucket
+// key into (tier, size), discarding any proxy segment (koryph-3l1.3 carried
+// contract from koryph-3l1.1's operator notes): this used to split on the
+// bucket's first ':' directly, which corrupts once RecordForProxy starts
+// writing "@proxyID" suffixes, because size would come back as
+// "M@<proxyID>" — an unrecognized SizeMultiplier key (silently defaulting to
+// 1.0) and an unrecognized sizeOrder bucket (silently sorting last). Delegates
+// to quota.ParseCalibKey, which strips the proxy segment FIRST — see its doc
+// for why order matters (a proxyID like "http://127.0.0.1:8787" has colons
+// of its own). "M" is this function's own no-colon-found default (unchanged
+// from before this bead); ParseCalibKey itself has no opinion on defaults.
 func splitBucket(bucket string) (tier, size string) {
-	if idx := strings.Index(bucket, ":"); idx >= 0 {
-		return bucket[:idx], bucket[idx+1:]
+	tier, size, _ = quota.ParseCalibKey(bucket)
+	if size == "" {
+		size = "M"
 	}
-	return bucket, "M"
+	return tier, size
 }
 
 // baseEstimate returns the uncalibrated base cost for (tier, size) from cfg.

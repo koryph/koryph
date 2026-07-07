@@ -337,3 +337,57 @@ func TestDefaultConfigForRuntimeClaudeParity(t *testing.T) {
 		t.Errorf("DefaultConfigForRuntime(claude) = %+v, want match with DefaultConfig %+v", got, want)
 	}
 }
+
+// TestParseCalibKeyRoundTripsCalibKey proves ParseCalibKey is calibKey's
+// exact inverse across the direct and proxy-segmented shapes (koryph-3l1.3
+// carried contract).
+func TestParseCalibKeyRoundTripsCalibKey(t *testing.T) {
+	cases := []struct {
+		tier, size, proxyID string
+	}{
+		{"sonnet", "M", ""},
+		{"sonnet", "M", "headroom-ai"},
+		{"opus", "L", "http://127.0.0.1:8787"},
+		{"opus", "L", "http://127.0.0.1:8787#v1"},
+	}
+	for _, tc := range cases {
+		key := calibKey(tc.tier, tc.size, tc.proxyID)
+		gotTier, gotSize, gotProxyID := ParseCalibKey(key)
+		if gotTier != tc.tier || gotSize != tc.size || gotProxyID != tc.proxyID {
+			t.Errorf("ParseCalibKey(calibKey(%q,%q,%q)=%q) = (%q,%q,%q), want (%q,%q,%q)",
+				tc.tier, tc.size, tc.proxyID, key, gotTier, gotSize, gotProxyID, tc.tier, tc.size, tc.proxyID)
+		}
+	}
+}
+
+// TestParseCalibKeyProxyBaseURLWithColonsDoesNotCorruptTierSize is the
+// regression case the carried contract exists for: a proxyID built from a
+// base_url like "http://127.0.0.1:8787" contains colons of its own. A naive
+// last-colon-wins split (cmd/koryph/quota.go's prior inline parse) or
+// first-colon-wins split that ignores '@' (cockpit/efficiency.go's prior
+// splitBucket) both corrupt tier/size on a key like this; ParseCalibKey must
+// not.
+func TestParseCalibKeyProxyBaseURLWithColonsDoesNotCorruptTierSize(t *testing.T) {
+	key := calibKey("sonnet", "M", "http://127.0.0.1:8787#v1")
+	tier, size, proxyID := ParseCalibKey(key)
+	if tier != "sonnet" {
+		t.Errorf("tier = %q, want %q (key=%q)", tier, "sonnet", key)
+	}
+	if size != "M" {
+		t.Errorf("size = %q, want %q (key=%q) — a last-colon split would have produced %q",
+			size, "M", key, "8787#v1")
+	}
+	if proxyID != "http://127.0.0.1:8787#v1" {
+		t.Errorf("proxyID = %q, want %q", proxyID, "http://127.0.0.1:8787#v1")
+	}
+}
+
+// TestParseCalibKeyNoColonKeepsSizeEmpty proves a malformed/legacy key with
+// no colon at all yields an empty size rather than panicking or guessing —
+// callers (splitBucket) apply their own default on top of this.
+func TestParseCalibKeyNoColonKeepsSizeEmpty(t *testing.T) {
+	tier, size, proxyID := ParseCalibKey("sonnet")
+	if tier != "sonnet" || size != "" || proxyID != "" {
+		t.Errorf(`ParseCalibKey("sonnet") = (%q,%q,%q), want ("sonnet","","")`, tier, size, proxyID)
+	}
+}

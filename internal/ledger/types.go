@@ -109,18 +109,34 @@ type Slot struct {
 
 	// ProxyID is the proxy identity this slot dispatched through
 	// (koryph-3l1.1, registry.AgentProxy.ID(): "<base_url>" or
-	// "<base_url>#<pin>"), stamped at dispatch time; empty means direct (no
-	// agent_proxy configured). This is the exact value future
-	// quota.RecordForProxy/EstimateItemForRuntimeProxy calls must pass as
-	// their proxyID argument (see internal/quota/estimate.go's calibKey doc)
-	// so the estimator segmentation key ("tier:size@proxyID") stays
-	// consistent between the ledger stamp and the calibration population it
-	// feeds — the empty string keeps the legacy "tier:size" key, so a Slot
-	// decoded from a ledger that predates this field (unmarshals to "")
-	// behaves exactly like today's direct-only population. Not yet consumed
-	// by any RecordForProxy call site (that wiring is a later, holdout bead);
-	// this field only stamps the value those callers will read.
+	// "<base_url>#<pin>"), stamped at dispatch time; empty means direct — EITHER
+	// no agent_proxy was configured for the project at all, OR one was
+	// configured and this slot was assigned to the holdout arm
+	// (registry.AgentProxy.ArmFor, koryph-3l1.3, design §3 L6): the holdout
+	// arm deliberately reuses the exact same "" value as "no proxy" because it
+	// IS a direct dispatch — that is what makes it a valid control population
+	// for the estimator's calibKey segmentation ("tier:size@proxyID") and for
+	// quota.RecordForProxy/EstimateItemForRuntimeProxy, both of which are
+	// wired to pass this value starting with koryph-3l1.3. See
+	// ProxyConfigured below for how a reader distinguishes "no experiment
+	// running" from "this bead landed in the holdout arm of one."
 	ProxyID string `json:"proxy_id,omitempty"`
+
+	// ProxyConfigured records whether the project had a non-nil agent_proxy
+	// configured at THIS slot's dispatch time (koryph-3l1.3, design §3 L6),
+	// independent of which arm ProxyID above says the slot landed in. A
+	// two-arm experiment report needs this to tell "no proxy was ever
+	// configured for this project" (ProxyConfigured==false, ProxyID=="") apart
+	// from "a proxy was configured and this bead was the holdout arm's
+	// direct-dispatch control" (ProxyConfigured==true, ProxyID==="") — both
+	// dispatch identically (no ANTHROPIC_BASE_URL override), but only the
+	// latter belongs in the standing-canary comparison; the former predates
+	// (or postdates) any experiment and would silently inflate the holdout
+	// arm's bead count if not excluded. Additive: a Slot decoded from a
+	// ledger that predates this field unmarshals it to false, which correctly
+	// excludes every pre-koryph-3l1.3 slot from the two-arm report (no
+	// experiment could have been running before this field existed).
+	ProxyConfigured bool `json:"proxy_configured,omitempty"`
 
 	PID        int     `json:"pid,omitempty"`
 	Stream     string  `json:"stream,omitempty"`

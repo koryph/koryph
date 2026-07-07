@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/quota"
 )
 
 // TestBuildTokenEconomy_Empty verifies that an empty run list yields zero values
@@ -265,4 +266,62 @@ func absf(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+// TestSplitBucketProxySuffix is the koryph-3l1.3 carried-contract regression
+// test: a bucket key segmented by a proxyID built from a base_url with its
+// own colons (e.g. "http://127.0.0.1:8787") must still split into the
+// correct (tier, size) — a naive first-colon split (the prior
+// implementation) returned size "M@http://127.0.0.1:8787#v1" instead of "M".
+func TestSplitBucketProxySuffix(t *testing.T) {
+	cases := []struct {
+		bucket             string
+		wantTier, wantSize string
+	}{
+		{"sonnet:M", "sonnet", "M"},
+		{"sonnet:M@headroom-ai", "sonnet", "M"},
+		{"opus:L@http://127.0.0.1:8787#v1", "opus", "L"},
+		{"nocolon", "nocolon", "M"}, // no-colon default preserved
+	}
+	for _, tc := range cases {
+		tier, size := splitBucket(tc.bucket)
+		if tier != tc.wantTier || size != tc.wantSize {
+			t.Errorf("splitBucket(%q) = (%q,%q), want (%q,%q)", tc.bucket, tier, size, tc.wantTier, tc.wantSize)
+		}
+	}
+}
+
+// TestBuildEstimatorTableProxySuffixDoesNotInflateBase proves
+// buildEstimatorTable computes the SAME base estimate for a proxy-segmented
+// bucket as for its direct counterpart (same tier/size) — before the
+// koryph-3l1.3 fix, the corrupted size string missed the SizeMultiplier
+// lookup and silently fell back to 1.0, producing a wrong (inflated, for
+// multiplier < 1, or deflated, for multiplier > 1) base estimate for every
+// proxy-segmented row.
+func TestBuildEstimatorTableProxySuffixDoesNotInflateBase(t *testing.T) {
+	cfg := quota.DefaultConfig("acct")
+	cfg.SizeMultiplier = map[string]float64{"S": 0.5, "M": 1.0, "L": 2.0}
+	cfg.ErrorStats = map[string]*quota.ErrorStat{
+		"sonnet:L":                       {N: 5, Bias: 1.0, MAPE: 10},
+		"sonnet:L@http://127.0.0.1:8787": {N: 5, Bias: 1.0, MAPE: 10},
+	}
+
+	rows := buildEstimatorTable(cfg)
+	byBucket := map[string]EstimatorRow{}
+	for _, r := range rows {
+		byBucket[r.Bucket] = r
+	}
+
+	direct, ok := byBucket["sonnet:L"]
+	if !ok {
+		t.Fatal("missing direct sonnet:L row")
+	}
+	proxied, ok := byBucket["sonnet:L@http://127.0.0.1:8787"]
+	if !ok {
+		t.Fatal("missing proxied sonnet:L@... row")
+	}
+	if direct.Base != proxied.Base {
+		t.Errorf("direct.Base = %v, proxied.Base = %v, want equal (same tier/size, size multiplier must not be lost to the proxy suffix)",
+			direct.Base, proxied.Base)
+	}
 }
