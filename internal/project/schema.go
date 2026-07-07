@@ -22,9 +22,16 @@ import (
 const SchemaModulePath = "github.com/koryph/koryph"
 
 // SchemaRelPath is the committed schema's location relative to the repo root.
-// It is wired into the VS Code extension's `jsonValidation` contribution and is
-// usable by any editor via a `$schema` reference.
+// It is usable by any editor via a `$schema` reference.
 const SchemaRelPath = "docs/schema/koryph.project.schema.json"
+
+// VSCodeSchemaRelPath is the VS Code extension's bundled copy of the schema,
+// relative to the repo root. It is referenced by ide/vscode/package.json
+// (jsonValidation url ./media/koryph.project.schema.json) so that the
+// extension validates koryph.project.json without a network fetch.
+// The generator (go generate ./internal/project) writes both this file and
+// SchemaRelPath so they stay in sync; a sibling drift test enforces that.
+const VSCodeSchemaRelPath = "ide/vscode/media/koryph.project.schema.json"
 
 // GenerateSchema reflects the project Config struct (and the referenced
 // signing.Config) into a JSON Schema document, using the Go doc comments in the
