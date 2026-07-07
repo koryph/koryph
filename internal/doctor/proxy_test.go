@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -169,6 +170,166 @@ func TestCheckProxyPinConfiguredButProxyDoesNotReport(t *testing.T) {
 		t.Errorf("pin not reported: want 0 ERROR, got %d: %v", got, fs)
 	}
 	assertContains(t, fs, LevelWarn, "cannot verify")
+}
+
+// --- positive routing verification (koryph-3l1.5) --------------------------------
+
+// routingRecord builds a registry.Record with an agent_proxy block rooted at
+// a fresh temp dir (for ledger reads) — the fixture every routing-check test
+// starts from.
+func routingRecord(t *testing.T, baseURL, pin string) *registry.Record {
+	t.Helper()
+	return &registry.Record{
+		ProjectID: "test-proj",
+		Root:      t.TempDir(),
+		AgentProxy: &registry.AgentProxy{
+			BaseURL: baseURL,
+			Health:  "/health",
+			Pin:     pin,
+		},
+	}
+}
+
+// writeProxiedSlot records one terminal ledger slot dispatched through
+// proxyID (ProxyConfigured=true) — the "koryph believes it routed this
+// dispatch through the proxy" fixture that countProxiedDispatches reads.
+func writeProxiedSlot(t *testing.T, repoRoot, runID, phaseID, proxyID string) {
+	t.Helper()
+	writeLedgerRun(t, repoRoot, &ledger.Run{
+		RunID:     runID,
+		ProjectID: "test-proj",
+		Status:    ledger.RunDone,
+		Slots: map[string]*ledger.Slot{
+			phaseID: {
+				PhaseID:         phaseID,
+				Status:          ledger.SlotDone,
+				ProxyConfigured: true,
+				ProxyID:         proxyID,
+			},
+		},
+	})
+}
+
+func TestCheckOneProxyRoutingNoDispatchesSkipsOK(t *testing.T) {
+	rec := routingRecord(t, "http://127.0.0.1:8787", "")
+	fs := checkOneProxyRouting(Options{}, rec)
+	if len(fs) != 1 || fs[0].Level != LevelOK {
+		t.Fatalf("no dispatches: want 1 OK, got %v", fs)
+	}
+	if !strings.Contains(fs[0].Message, "skipped") {
+		t.Errorf("no dispatches: want message to note the check was skipped, got %q", fs[0].Message)
+	}
+}
+
+func TestCheckOneProxyRoutingInPathOK(t *testing.T) {
+	rec := routingRecord(t, "http://127.0.0.1:8787", "")
+	proxyID := rec.AgentProxy.ID()
+	writeProxiedSlot(t, rec.Root, "20260707-000000", "koryph-1", proxyID)
+
+	o := Options{ProxyHTTPGet: fakeGet(200, `{"requests": 42}`)}
+	fs := checkOneProxyRouting(o, rec)
+	if len(fs) != 1 || fs[0].Level != LevelOK {
+		t.Fatalf("in-path: want 1 OK, got %v", fs)
+	}
+	if !strings.Contains(fs[0].Message, "42") {
+		t.Errorf("in-path: want message to cite the observed count, got %q", fs[0].Message)
+	}
+}
+
+func TestCheckOneProxyRoutingConfiguredButBypassedError(t *testing.T) {
+	rec := routingRecord(t, "http://127.0.0.1:8787", "")
+	proxyID := rec.AgentProxy.ID()
+	writeProxiedSlot(t, rec.Root, "20260707-000000", "koryph-1", proxyID)
+	writeProxiedSlot(t, rec.Root, "20260707-000100", "koryph-2", proxyID)
+
+	o := Options{ProxyHTTPGet: fakeGet(200, `{"requests": 0}`)}
+	fs := checkOneProxyRouting(o, rec)
+	if len(fs) != 1 || fs[0].Level != LevelError {
+		t.Fatalf("configured-but-bypassed: want 1 ERROR, got %v", fs)
+	}
+	if !strings.Contains(fs[0].Message, "refuse-to-route") {
+		t.Errorf("configured-but-bypassed: want refuse-to-route guidance, got %q", fs[0].Message)
+	}
+	if !strings.Contains(fs[0].Message, "2 proxied-arm dispatch") {
+		t.Errorf("configured-but-bypassed: want the ledger-observed dispatch count cited, got %q", fs[0].Message)
+	}
+}
+
+func TestCheckOneProxyRoutingNoCounterEndpointWarnsOnUnreachable(t *testing.T) {
+	rec := routingRecord(t, "http://127.0.0.1:8787", "")
+	proxyID := rec.AgentProxy.ID()
+	writeProxiedSlot(t, rec.Root, "20260707-000000", "koryph-1", proxyID)
+
+	o := Options{ProxyHTTPGet: fakeGetErr("connection refused")}
+	fs := checkOneProxyRouting(o, rec)
+	if len(fs) != 1 || fs[0].Level != LevelWarn {
+		t.Fatalf("no-counter (unreachable): want 1 WARN, got %v", fs)
+	}
+	if !strings.Contains(fs[0].Message, "unreachable") {
+		t.Errorf("no-counter (unreachable): want message to name the limitation, got %q", fs[0].Message)
+	}
+}
+
+func TestCheckOneProxyRoutingNoCounterEndpointWarnsOnUnknownSchema(t *testing.T) {
+	rec := routingRecord(t, "http://127.0.0.1:8787", "")
+	proxyID := rec.AgentProxy.ID()
+	writeProxiedSlot(t, rec.Root, "20260707-000000", "koryph-1", proxyID)
+
+	// 200 OK, but no field this doctor recognizes as a request counter.
+	o := Options{ProxyHTTPGet: fakeGet(200, `{"status":"ok","uptime_seconds":120}`)}
+	fs := checkOneProxyRouting(o, rec)
+	if len(fs) != 1 || fs[0].Level != LevelWarn {
+		t.Fatalf("no-counter (unknown schema): want 1 WARN, got %v", fs)
+	}
+	if !strings.Contains(fs[0].Message, "did not contain a recognized request-counter field") {
+		t.Errorf("no-counter (unknown schema): want message to name the limitation, got %q", fs[0].Message)
+	}
+}
+
+func TestCheckOneProxyRoutingUsesDefaultStatsPath(t *testing.T) {
+	rec := routingRecord(t, "http://127.0.0.1:8787", "")
+	proxyID := rec.AgentProxy.ID()
+	writeProxiedSlot(t, rec.Root, "20260707-000000", "koryph-1", proxyID)
+
+	var gotURL string
+	o := Options{ProxyHTTPGet: func(url string) (int, []byte, error) {
+		gotURL = url
+		return 200, []byte(`{"requests": 1}`), nil
+	}}
+	checkOneProxyRouting(o, rec)
+	if want := "http://127.0.0.1:8787/stats"; gotURL != want {
+		t.Errorf("default stats path: want GET %s, got %s", want, gotURL)
+	}
+}
+
+func TestCheckOneProxyRoutingHonorsConfiguredStatsPath(t *testing.T) {
+	rec := routingRecord(t, "http://127.0.0.1:8787", "")
+	rec.AgentProxy.Stats = "/v1/counters"
+	proxyID := rec.AgentProxy.ID()
+	writeProxiedSlot(t, rec.Root, "20260707-000000", "koryph-1", proxyID)
+
+	var gotURL string
+	o := Options{ProxyHTTPGet: func(url string) (int, []byte, error) {
+		gotURL = url
+		return 200, []byte(`{"requests": 1}`), nil
+	}}
+	checkOneProxyRouting(o, rec)
+	if want := "http://127.0.0.1:8787/v1/counters"; gotURL != want {
+		t.Errorf("configured stats path: want GET %s, got %s", want, gotURL)
+	}
+}
+
+func TestExtractRequestCounterNestedField(t *testing.T) {
+	f, ok := extractRequestCounter([]byte(`{"stats": {"total_requests": 7}}`))
+	if !ok || f != 7 {
+		t.Errorf("nested field: want (7, true), got (%v, %v)", f, ok)
+	}
+}
+
+func TestExtractRequestCounterUnknownSchema(t *testing.T) {
+	if _, ok := extractRequestCounter([]byte(`{"status":"ok"}`)); ok {
+		t.Error("unknown schema: want ok=false")
+	}
 }
 
 // --- calibration stale check ---------------------------------------------------

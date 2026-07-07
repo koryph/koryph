@@ -99,6 +99,7 @@ Then register the proxy for the project:
   "agent_proxy": {
     "base_url": "http://127.0.0.1:8787",
     "health": "/health",
+    "stats": "/stats",
     "pin": "headroom-ai==0.30.0",
     "holdout": 0.1
   }
@@ -111,13 +112,31 @@ Then register the proxy for the project:
 - `pin` should match the exact installed version string; `koryph doctor`
   compares it against the proxy's self-reported health-endpoint pin and
   errors on mismatch (refuse-to-route).
+- `stats` is the proxy's request-counter endpoint, defaulting to `/stats`
+  when omitted — `koryph doctor` polls it to confirm dispatched traffic is
+  actually flowing through the proxy (see below); headroom-ai exposes a
+  `GET /stats` endpoint with request counts by convention, so most operators
+  never need to set this explicitly.
 - `holdout` defaults to `0.1` (10%) if omitted — see
   [Holdout workflow](#holdout-workflow-measure-before-you-believe-it).
 
 Run `koryph doctor --project my-project` after configuring: it verifies the
-health endpoint is reachable, the base URL is loopback, and the reported pin
-matches the registry's configured pin. Flipping `agent_proxy` also marks the
-account's quota calibration stale — `koryph doctor` will prompt a
+health endpoint is reachable, the base URL is loopback, the reported pin
+matches the registry's configured pin, and — separately — that koryph's own
+count of dispatches routed to this proxy (from the run ledger) is actually
+showing up as upstream-seen traffic on the proxy's `stats` endpoint. This
+last check exists because health+pin only prove the proxy process is up and
+correctly versioned; neither proves your dispatched traffic is flowing
+*through* it. A proxy that is healthy and correctly pinned but silently
+bypassed (a `ChildEnvSpec`/`ANTHROPIC_BASE_URL` wiring regression, for
+example) would otherwise pass doctor clean while every request goes direct —
+exactly the "fail-open means bypass" failure the seam is supposed to
+prevent. If koryph has routed dispatches through the proxy but the `stats`
+endpoint reports zero upstream-seen requests, doctor errors with
+refuse-to-route guidance; if the proxy exposes no recognizable counter
+field, doctor degrades to a warning naming the limitation rather than
+passing silently. Flipping `agent_proxy` also marks the account's quota
+calibration stale — `koryph doctor` will prompt a
 `koryph quota calibrate --account <account>` re-run, because the
 ccusage-USD↔`/usage`-percent slope is not proven invariant under
 compression.

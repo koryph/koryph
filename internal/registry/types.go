@@ -146,6 +146,17 @@ type AgentProxy struct {
 	// Health is the proxy's health-check endpoint (consumed by
 	// koryph-3l1.2's doctor checks; not otherwise interpreted here).
 	Health string `json:"health,omitempty"`
+	// Stats is the proxy's request-counter endpoint (consumed by
+	// koryph-3l1.5's positive-routing-verification doctor check, design
+	// docs/designs/2026-07-token-economy.md §3 L5 fourth check): it compares
+	// a forwarded-request count reported here against koryph's own ledger
+	// count of dispatches routed to this proxy's arm, so a proxy that is
+	// healthy and correctly pinned but silently bypassed (§2 I1's
+	// "fail-open means bypass") is still caught. Defaults to "/stats" when
+	// unset — most proxies (including headroom-ai) expose a GET /stats
+	// counter endpoint by convention, so doctor tries it even when the
+	// operator never sets this explicitly; set it only to override the path.
+	Stats string `json:"stats,omitempty"`
 	// Pin is an opaque identity/version pin for the proxy configuration
 	// (e.g. a config hash or deployment tag) folded into the ledger's
 	// per-slot ProxyID stamp (see ledger.Slot.ProxyID and AgentProxy.ID)
