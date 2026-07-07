@@ -67,6 +67,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph quota guard`](#koryph-quota-guard) | live billing-guard toggle — on\|advisory\|off [--until <duration>]; re-read each wave without a restart |
 | [`koryph metrics`](#koryph-metrics) | burn + reliability rollup across projects |
 | ↳ [`koryph metrics estimator`](#koryph-metrics-estimator) | per-(model,size) estimator accuracy stats |
+| ↳ [`koryph metrics tokens`](#koryph-metrics-tokens) | per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend |
 | [`koryph repo`](#koryph-repo) | check or apply .github IaC (rulesets, repo settings) |
 | ↳ [`koryph repo describe`](#koryph-repo-describe) | explain every setting in .github IaC and why |
 | ↳ [`koryph repo check`](#koryph-repo-check) | diff live GitHub settings/rulesets against .github IaC (exit 1 on drift) |
@@ -785,6 +786,17 @@ per-(model,size) estimator accuracy stats
 |------|------|---------|-------------|
 | `--account` | string |  | limit to one account |
 | `--json` | bool |  | emit JSON |
+
+## `koryph metrics tokens` { #koryph-metrics-tokens }
+
+per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend
+
+**See also:** [Billing and quota](../user-guide/billing-and-quota) · [2026 07 token economy](../docs/designs/2026-07-token-economy)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit JSON |
+| `--project` | string |  | limit to one project ID |
 
 
 ---

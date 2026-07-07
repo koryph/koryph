@@ -60,6 +60,15 @@ func init() {
 				run:      cmdMetricsEstimator,
 				DocLinks: []string{"user-guide/billing-and-quota.md"},
 			},
+			{
+				name:    "tokens",
+				summary: "per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend",
+				run:     cmdMetricsTokens,
+				DocLinks: []string{
+					"user-guide/billing-and-quota.md",
+					"docs/designs/2026-07-token-economy.md",
+				},
+			},
 		},
 	})
 }
@@ -296,8 +305,13 @@ func cmdQuotaGuard(args []string, stdout, stderr io.Writer) int {
 
 // cmdMetricsDispatch dispatches the metrics sub-verbs.
 func cmdMetricsDispatch(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "estimator" {
-		return cmdMetricsEstimator(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "estimator":
+			return cmdMetricsEstimator(args[1:], stdout, stderr)
+		case "tokens":
+			return cmdMetricsTokens(args[1:], stdout, stderr)
+		}
 	}
 	return cmdMetrics(args, stdout, stderr)
 }
@@ -467,5 +481,43 @@ func cmdMetricsEstimator(args []string, stdout, stderr io.Writer) int {
 	}
 
 	_ = ctx
+	return 0
+}
+
+// cmdMetricsTokens prints per-bead and per-tier token composition, cache-hit
+// ratio, and a tokens-per-bead trend derived from the ledger's token fields
+// (koryph-77r.2, design docs/designs/2026-07-token-economy.md §3 L1).
+//
+// Token data is populated by the engine for every dispatched slot; older
+// ledger entries without token fields show as zero and are skipped from the
+// breakdown. Use --json for machine-readable output suitable for scripting or
+// further analysis.
+func cmdMetricsTokens(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("metrics tokens", stderr)
+	projectID := fs.String("project", "", "limit to one project ID")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	setUsage(fs, stdout,
+		"per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend",
+		"[--project ID] [--json]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rep, err := metrics.CollectTokens(store, *projectID)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if *asJSON {
+		if err := printJSON(stdout, rep); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
+	}
+	metrics.RenderTokens(rep, stdout)
 	return 0
 }
