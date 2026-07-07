@@ -541,15 +541,16 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = ledger.SlotReview })
 		outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
 		v := review.Review(ctx, review.Opts{
-			RepoRoot:  r.rec.Root,
-			Worktree:  sl.Worktree,
-			Branch:    sl.Branch,
-			Base:      r.rec.DefaultBranch,
-			Persona:   modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages),
-			Model:     modelroute.TierOpus,
-			Profile:   r.profile,
-			OutPath:   outPath,
-			ClaudeBin: os.Getenv(envClaudeBin),
+			RepoRoot:     r.rec.Root,
+			Worktree:     sl.Worktree,
+			Branch:       sl.Branch,
+			Base:         r.rec.DefaultBranch,
+			Persona:      modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages),
+			Model:        modelroute.TierOpus,
+			Profile:      r.profile,
+			OutPath:      outPath,
+			ClaudeBin:    os.Getenv(envClaudeBin),
+			ProxyBaseURL: r.rec.ProxyBaseURL(),
 		})
 		if v.Degraded {
 			// Fail CLOSED: --review was explicitly requested, so a review we

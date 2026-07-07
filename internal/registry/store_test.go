@@ -5,6 +5,7 @@ package registry
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -291,6 +292,126 @@ func TestSetAccountHappyPath(t *testing.T) {
 	// Commit landed.
 	if log := gitOut(t, s.Home, "log", "--oneline"); !strings.Contains(log, "set-account acct personal->work") {
 		t.Fatalf("expected set-account commit in log:\n%s", log)
+	}
+}
+
+// TestAgentProxyLoopbackValidation is the koryph-3l1.1 acceptance test for
+// I4: agent_proxy.base_url is machine-checked at load, not merely documented.
+// A record with an absent or loopback-hosted agent_proxy is accepted; any
+// other host, scheme, or shape is refused at Add (which itself loads through
+// validate).
+func TestAgentProxyLoopbackValidation(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+
+	cases := []struct {
+		name    string
+		proxy   *AgentProxy
+		wantErr bool
+	}{
+		{"absent (direct)", nil, false},
+		{"loopback IPv4", &AgentProxy{BaseURL: "http://127.0.0.1:8091"}, false},
+		{"loopback IPv4 non-.1", &AgentProxy{BaseURL: "http://127.0.0.42:8091"}, false},
+		{"localhost", &AgentProxy{BaseURL: "http://localhost:8091"}, false},
+		{"loopback IPv6", &AgentProxy{BaseURL: "http://[::1]:8091"}, false},
+		{"loopback with pin and health", &AgentProxy{BaseURL: "http://127.0.0.1:8091", Health: "http://127.0.0.1:8091/health", Pin: "v3"}, false},
+		{"non-loopback host refused", &AgentProxy{BaseURL: "http://example.com:8091"}, true},
+		{"public IP refused", &AgentProxy{BaseURL: "http://93.184.216.34:8091"}, true},
+		{"https scheme refused (loopback needs no TLS)", &AgentProxy{BaseURL: "https://127.0.0.1:8091"}, true},
+		{"empty base_url refused", &AgentProxy{Health: "http://127.0.0.1:8092/health"}, true},
+		{"unparseable URL refused", &AgentProxy{BaseURL: "http://[::not-valid"}, true},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newInitStore(t)
+			id := fmt.Sprintf("proj-%d", i)
+			rec := sampleRecord(id, root)
+			rec.AgentProxy = tc.proxy
+
+			err := s.Add(ctx, rec)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Add succeeded with an invalid agent_proxy; want refusal at load")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			got, err := s.Get(id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if tc.proxy == nil {
+				if got.AgentProxy != nil {
+					t.Fatalf("AgentProxy = %+v, want nil", got.AgentProxy)
+				}
+				return
+			}
+			if got.AgentProxy == nil || got.AgentProxy.BaseURL != tc.proxy.BaseURL || got.AgentProxy.Pin != tc.proxy.Pin {
+				t.Fatalf("AgentProxy roundtrip mismatch: %+v, want %+v", got.AgentProxy, tc.proxy)
+			}
+		})
+	}
+}
+
+// TestAgentProxyValidatedIndependentlyAtLoad proves the loopback check runs
+// on every load path (Get and List), not merely inside Add — a record
+// hand-edited (or written by a future codepath that bypasses Add) with a
+// non-loopback agent_proxy must refuse to load rather than silently
+// dispatching agents through a non-local endpoint.
+func TestAgentProxyValidatedIndependentlyAtLoad(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	rec := sampleRecord("hand-edited", root)
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Bypass Add's validation entirely: write a bad agent_proxy straight to
+	// the record file via the unexported put(), simulating a hand-edit.
+	rec.AgentProxy = &AgentProxy{BaseURL: "http://evil.example.com"}
+	if err := s.put(rec); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	if _, err := s.Get("hand-edited"); err == nil {
+		t.Fatal("Get succeeded loading a non-loopback agent_proxy; want refusal at load")
+	}
+	if _, err := s.List(); err == nil {
+		t.Fatal("List succeeded loading a non-loopback agent_proxy; want refusal at load")
+	}
+}
+
+// TestAgentProxyIDAndProxyBaseURL covers AgentProxy.ID() (the ledger.Slot.
+// ProxyID / future quota proxyID value) and Record.ProxyBaseURL() (the
+// single accessor every spawn site threads into its ChildEnvSpec).
+func TestAgentProxyIDAndProxyBaseURL(t *testing.T) {
+	var nilProxy *AgentProxy
+	if got := nilProxy.ID(); got != "" {
+		t.Errorf("nil AgentProxy.ID() = %q, want \"\"", got)
+	}
+
+	p := &AgentProxy{BaseURL: "http://127.0.0.1:8091"}
+	if got, want := p.ID(), "http://127.0.0.1:8091"; got != want {
+		t.Errorf("ID() = %q, want %q", got, want)
+	}
+	p.Pin = "v3"
+	if got, want := p.ID(), "http://127.0.0.1:8091#v3"; got != want {
+		t.Errorf("ID() with pin = %q, want %q", got, want)
+	}
+
+	rec := &Record{}
+	if got := rec.ProxyBaseURL(); got != "" {
+		t.Errorf("ProxyBaseURL() with nil agent_proxy = %q, want \"\"", got)
+	}
+	rec.AgentProxy = p
+	if got, want := rec.ProxyBaseURL(), "http://127.0.0.1:8091"; got != want {
+		t.Errorf("ProxyBaseURL() = %q, want %q", got, want)
 	}
 }
 

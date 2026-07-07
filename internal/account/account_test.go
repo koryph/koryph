@@ -197,6 +197,101 @@ func TestOutputCapOverridesAndOptOut(t *testing.T) {
 	})
 }
 
+// TestChildEnvProxySeam is the koryph-3l1.1 acceptance test: ProxyBaseURL and
+// SpawnKind are typed ChildEnvSpec fields injected by the single ChildEnv
+// choke point, so every spawn site (main dispatch, review, stage,
+// epicreview) gets them uniformly with zero per-site logic. The table spans
+// the four sites' actual spec shapes x billing mode x {proxy set, unset}.
+// The unset case additionally asserts the resulting env is byte-identical to
+// the same spec built without ProxyBaseURL/SpawnKind ever touched — the I6
+// zero-residue default.
+func TestChildEnvProxySeam(t *testing.T) {
+	profile := Profile{Name: "work", ConfigDir: "/home/u/.claude-work"}
+	const proxyURL = "http://127.0.0.1:8091"
+
+	sites := []struct {
+		name      string
+		spawnKind string // "" for main dispatch, which never sets SpawnKind
+		build     func(billing BillingMode) ChildEnvSpec
+	}{
+		{
+			name:      "main-dispatch",
+			spawnKind: "",
+			build: func(billing BillingMode) ChildEnvSpec {
+				return ChildEnvSpec{Profile: profile, Billing: billing, APIKey: "sk-test", SSHAuthSock: "/koryph/sign.sock"}
+			},
+		},
+		{
+			name:      "review",
+			spawnKind: "review",
+			build: func(billing BillingMode) ChildEnvSpec {
+				return ChildEnvSpec{Profile: profile, Billing: BillingSubscription}
+			},
+		},
+		{
+			name:      "stage",
+			spawnKind: "stage",
+			build: func(billing BillingMode) ChildEnvSpec {
+				return ChildEnvSpec{Profile: profile, Billing: billing, APIKey: "sk-test", SSHAuthSock: "/koryph/sign.sock"}
+			},
+		},
+		{
+			name:      "epicreview",
+			spawnKind: "epicreview",
+			build: func(billing BillingMode) ChildEnvSpec {
+				return ChildEnvSpec{Profile: profile, Billing: BillingSubscription}
+			},
+		},
+	}
+
+	for _, site := range sites {
+		for _, billing := range []BillingMode{BillingSubscription, BillingAPIKey} {
+			t.Run(site.name+"/"+string(billing)+"/unset", func(t *testing.T) {
+				base := site.build(billing)
+				before := ChildEnv(base) // exactly the pre-koryph-3l1.1 spec shape
+
+				withZero := base
+				withZero.ProxyBaseURL = ""
+				withZero.SpawnKind = ""
+				after := ChildEnv(withZero)
+
+				if len(before) != len(after) {
+					t.Fatalf("env length differs: %d (before) vs %d (after) — zero-residue default broken", len(before), len(after))
+				}
+				for i := range before {
+					if before[i] != after[i] {
+						t.Errorf("env[%d] = %q, want %q (byte-identical zero-residue default)", i, after[i], before[i])
+					}
+				}
+				if _, count := envLookup(after, "ANTHROPIC_BASE_URL"); count != 0 {
+					t.Error("ANTHROPIC_BASE_URL present with ProxyBaseURL unset")
+				}
+				if _, count := envLookup(after, "KORYPH_SPAWN_KIND"); count != 0 {
+					t.Error("KORYPH_SPAWN_KIND present with SpawnKind unset")
+				}
+			})
+
+			t.Run(site.name+"/"+string(billing)+"/proxy-set", func(t *testing.T) {
+				spec := site.build(billing)
+				spec.ProxyBaseURL = proxyURL
+				spec.SpawnKind = site.spawnKind
+				env := ChildEnv(spec)
+
+				if got, count := envLookup(env, "ANTHROPIC_BASE_URL"); count != 1 || got != proxyURL {
+					t.Errorf("ANTHROPIC_BASE_URL = %q x%d, want %q exactly once", got, count, proxyURL)
+				}
+				if site.spawnKind == "" {
+					if _, count := envLookup(env, "KORYPH_SPAWN_KIND"); count != 0 {
+						t.Error("KORYPH_SPAWN_KIND present for main dispatch, want absent")
+					}
+				} else if got, count := envLookup(env, "KORYPH_SPAWN_KIND"); count != 1 || got != site.spawnKind {
+					t.Errorf("KORYPH_SPAWN_KIND = %q x%d, want %q exactly once", got, count, site.spawnKind)
+				}
+			})
+		}
+	}
+}
+
 func TestBillingModeValid(t *testing.T) {
 	if !BillingSubscription.Valid() || !BillingAPIKey.Valid() {
 		t.Error("canonical billing modes must be Valid")

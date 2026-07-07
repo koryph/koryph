@@ -93,6 +93,25 @@ type ChildEnvSpec struct {
 	// MaxMCPOutputTokens overrides MAX_MCP_OUTPUT_TOKENS (tokens). Zero uses
 	// DefaultMaxMCPOutputTokens; negative omits the env var entirely.
 	MaxMCPOutputTokens int
+
+	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
+	// (koryph-3l1.1, design docs/designs/2026-07-token-economy.md §3 L5, §2
+	// I4/I6). Non-empty injects ANTHROPIC_BASE_URL=<value>; empty (the
+	// default — no agent_proxy configured, or direct dispatch) leaves the
+	// var ABSENT, exactly as today (it is already scrubbed by the
+	// allowlist, so this is a genuine zero-residue default — see the I6
+	// test asserting a default spec's env is byte-identical to pre-koryph-
+	// 3l1.1 output). This is the single sanctioned source for
+	// ANTHROPIC_BASE_URL; never set it via Passthrough/env_passthrough.
+	ProxyBaseURL string
+
+	// SpawnKind marks which of the four spawn sites is building this env:
+	// "" for main dispatch, "review"/"stage"/"epicreview" for the three
+	// secondary sites (koryph-3l1.1). Non-empty injects
+	// KORYPH_SPAWN_KIND=<value>; empty leaves the var ABSENT. Consumed by a
+	// parallel bead's SessionStart wrapper (koryph-77r.4) to slim
+	// per-session context injection — this field only stamps the marker.
+	SpawnKind string
 }
 
 // ChildEnv builds the complete child environment for a dispatched agent from an
@@ -107,6 +126,11 @@ type ChildEnvSpec struct {
 //     signing socket (paths.SigningAgentSock), which holds ONLY the signing key.
 //     The operator's ambient SSH_AUTH_SOCK is never forwarded — it typically
 //     carries their personal/prod keys, which an untrusted agent must not reach.
+//   - ProxyBaseURL != "" → ANTHROPIC_BASE_URL=<url> (koryph-3l1.1). Empty
+//     (the default) leaves it unset — a default spec's env is byte-identical
+//     to a spec built before this field existed.
+//   - SpawnKind != "" → KORYPH_SPAWN_KIND=<kind> (koryph-3l1.1). Empty (main
+//     dispatch) leaves it unset.
 func ChildEnv(spec ChildEnvSpec) []string {
 	allow := baseAllow
 	if len(spec.Passthrough) > 0 {
@@ -121,6 +145,12 @@ func ChildEnv(spec ChildEnvSpec) []string {
 	}
 	if spec.SSHAuthSock != "" {
 		env = append(env, "SSH_AUTH_SOCK="+spec.SSHAuthSock)
+	}
+	if spec.ProxyBaseURL != "" {
+		env = append(env, "ANTHROPIC_BASE_URL="+spec.ProxyBaseURL)
+	}
+	if spec.SpawnKind != "" {
+		env = append(env, "KORYPH_SPAWN_KIND="+spec.SpawnKind)
 	}
 	env = append(env, outputCapEnv(spec)...)
 	return env

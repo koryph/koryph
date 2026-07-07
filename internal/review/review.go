@@ -134,7 +134,7 @@ func Review(ctx context.Context, o Opts) Verdict {
 func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	res, err := execx.Run(ctx, execx.Cmd{
 		Dir:  o.Worktree,
-		Env:  account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription}),
+		Env:  account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "review"}),
 		Name: o.ClaudeBin,
 		Args: []string{
 			"-p",

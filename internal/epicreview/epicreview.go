@@ -137,7 +137,7 @@ func Validate(ctx context.Context, o Opts) Verdict {
 func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
 	res, err := execx.Run(ctx, execx.Cmd{
 		Dir:  o.RepoRoot,
-		Env:  account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription}),
+		Env:  account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "epicreview"}),
 		Name: o.ClaudeBin,
 		Args: []string{
 			"-p",

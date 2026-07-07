@@ -107,6 +107,21 @@ type Slot struct {
 	VerifiedAt       string `json:"verified_at,omitempty"`
 	BillingMode      string `json:"billing_mode"`
 
+	// ProxyID is the proxy identity this slot dispatched through
+	// (koryph-3l1.1, registry.AgentProxy.ID(): "<base_url>" or
+	// "<base_url>#<pin>"), stamped at dispatch time; empty means direct (no
+	// agent_proxy configured). This is the exact value future
+	// quota.RecordForProxy/EstimateItemForRuntimeProxy calls must pass as
+	// their proxyID argument (see internal/quota/estimate.go's calibKey doc)
+	// so the estimator segmentation key ("tier:size@proxyID") stays
+	// consistent between the ledger stamp and the calibration population it
+	// feeds — the empty string keeps the legacy "tier:size" key, so a Slot
+	// decoded from a ledger that predates this field (unmarshals to "")
+	// behaves exactly like today's direct-only population. Not yet consumed
+	// by any RecordForProxy call site (that wiring is a later, holdout bead);
+	// this field only stamps the value those callers will read.
+	ProxyID string `json:"proxy_id,omitempty"`
+
 	PID        int     `json:"pid,omitempty"`
 	Stream     string  `json:"stream,omitempty"`
 	StatusPath string  `json:"status_path,omitempty"`
@@ -240,8 +255,10 @@ type Manifest struct {
 	MergePolicy     string    `json:"merge_policy,omitempty"`
 	AutoMerge       bool      `json:"auto_merge_allowed"`
 	BillingMode     string    `json:"billing_mode"`
-	BootstrapCmds   []string  `json:"bootstrap_commands,omitempty"`
-	UpdatedAt       string    `json:"updated_at"`
+	// ProxyID mirrors Slot.ProxyID (koryph-3l1.1) — see its doc.
+	ProxyID       string   `json:"proxy_id,omitempty"`
+	BootstrapCmds []string `json:"bootstrap_commands,omitempty"`
+	UpdatedAt     string   `json:"updated_at"`
 
 	// Runtime is the runtime this slot dispatched under (koryph-v8u.3),
 	// mirroring Slot.Runtime — see its doc for the additive/"" == "claude"

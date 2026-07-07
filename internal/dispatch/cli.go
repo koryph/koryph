@@ -284,6 +284,7 @@ func toRuntimeSpec(s Spec) runtime.DispatchSpec {
 		Attempt:          s.Attempt,
 		SSHAuthSock:      s.SSHAuthSock,
 		EnvPassthrough:   s.EnvPassthrough,
+		ProxyBaseURL:     s.ProxyBaseURL,
 	}
 }
 

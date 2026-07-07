@@ -81,6 +81,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,
 			PhaseDir:         phaseDir,
 			ClaudeBin:        os.Getenv(envClaudeBin),
+			ProxyBaseURL:     r.rec.ProxyBaseURL(),
 		})
 
 		// Emit stage duration for histograms (Section O2).

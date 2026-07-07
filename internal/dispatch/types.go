@@ -83,6 +83,12 @@ type Spec struct {
 	// EnvPassthrough forwards extra operator env vars into the agent (the
 	// registry-declared escape hatch for projects that genuinely need one).
 	EnvPassthrough []string
+
+	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
+	// (koryph-3l1.1, registry.Record.ProxyBaseURL()); non-empty is injected
+	// as ANTHROPIC_BASE_URL via account.ChildEnvSpec.ProxyBaseURL. Empty
+	// (the default) means direct dispatch — no override.
+	ProxyBaseURL string
 }
 
 // Handle describes a launched agent.

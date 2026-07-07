@@ -170,6 +170,7 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 			Model:           evcfg.Model,
 			TimeoutSec:      evcfg.TimeoutSeconds,
 			OutDir:          outDir,
+			ProxyBaseURL:    r.rec.ProxyBaseURL(),
 		}
 
 		validate := r.epicValidateFn

@@ -184,6 +184,7 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 		Model:           evcfg.Model,
 		TimeoutSec:      evcfg.TimeoutSeconds,
 		OutDir:          outDir,
+		ProxyBaseURL:    rec.ProxyBaseURL(),
 		// Progress routes to stderr in --json mode so stdout stays pure JSON.
 		Progress: func(format string, args ...any) {
 			if *asJSON {

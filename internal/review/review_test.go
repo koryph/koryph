@@ -273,3 +273,45 @@ func TestReviewBadBranchDegraded(t *testing.T) {
 		t.Errorf("verdict = %+v, want degraded non-blocking on git failure", v)
 	}
 }
+
+// fakeClaudeEnvDump writes a script that dumps the reviewer's environment to
+// envCapture (one KEY=value per line, via `env`) before printing body.
+func fakeClaudeEnvDump(t *testing.T, envCapture, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-claude-env")
+	script := "#!/bin/sh\n" +
+		"cat > /dev/null\n" +
+		"env > " + envCapture + "\n" +
+		"cat <<'FAKE_EOF'\n" + body + "\nFAKE_EOF\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestReviewThreadsProxyAndSpawnKind is the koryph-3l1.1 acceptance test for
+// this spawn site: o.ProxyBaseURL reaches the reviewer's actual child env as
+// ANTHROPIC_BASE_URL, and the reviewer unconditionally stamps
+// KORYPH_SPAWN_KIND=review (attemptReview's ChildEnvSpec literal).
+func TestReviewThreadsProxyAndSpawnKind(t *testing.T) {
+	repo := reviewRepo(t)
+	envCapture := filepath.Join(t.TempDir(), "env.txt")
+	o := baseOpts(t, repo, fakeClaudeEnvDump(t, envCapture, `{"type":"result","result":"{\"blocking\":false}"}`))
+	o.ProxyBaseURL = "http://127.0.0.1:8091"
+
+	v := Review(context.Background(), o)
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+
+	env, err := os.ReadFile(envCapture)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	if !strings.Contains(string(env), "ANTHROPIC_BASE_URL=http://127.0.0.1:8091\n") {
+		t.Errorf("captured env missing ANTHROPIC_BASE_URL:\n%s", env)
+	}
+	if !strings.Contains(string(env), "KORYPH_SPAWN_KIND=review\n") {
+		t.Errorf("captured env missing KORYPH_SPAWN_KIND=review:\n%s", env)
+	}
+}

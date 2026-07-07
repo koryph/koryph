@@ -58,4 +58,10 @@ type Opts struct {
 	ClaudeBin  string // default "claude"
 	TimeoutSec int    // default 240
 	Attempts   int    // reviewer spawn attempts before degrading (default 3)
+
+	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
+	// (koryph-3l1.1), threaded from the caller's registry.Record via
+	// registry.Record.ProxyBaseURL(). Empty (the common case) means direct —
+	// no ANTHROPIC_BASE_URL override. See account.ChildEnvSpec.ProxyBaseURL.
+	ProxyBaseURL string
 }

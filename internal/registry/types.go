@@ -113,8 +113,70 @@ type Record struct {
 	// for a runtime once one is selected.
 	RuntimeAccounts map[string]RuntimeAccount `json:"runtime_accounts,omitempty"`
 
+	// AgentProxy configures an optional local interception proxy that this
+	// project's dispatched agents route their Anthropic traffic through
+	// (koryph-3l1.1, design docs/designs/2026-07-token-economy.md §3 L5, §2
+	// I4/I6). Absent (nil) means direct — no ANTHROPIC_BASE_URL override at
+	// any of the four spawn sites (main dispatch, review, stage, epicreview);
+	// every record written before this bead has no agent_proxy block at all,
+	// so this is purely opt-in. See AgentProxy's doc for the loopback-only
+	// load-time validation (I4: machine-checked, not just documented).
+	AgentProxy *AgentProxy `json:"agent_proxy,omitempty"`
+
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+// AgentProxy is one project's local interception-proxy configuration
+// (koryph-3l1.1). BaseURL is validated at LOAD time (Store.Get/List, and at
+// Store.Add) to parse as an "http" URL with a loopback host (127.0.0.0/8,
+// "localhost", or "::1") — a non-loopback base_url would route the agent's
+// Anthropic traffic, and whatever ANTHROPIC_API_KEY/subscription auth rides
+// with it, to a non-local endpoint with none of the interception harness's
+// guarantees, so this is refused at load rather than merely documented (I4).
+type AgentProxy struct {
+	// BaseURL is injected as ANTHROPIC_BASE_URL for every dispatched agent
+	// (main dispatch, review, stage, epicreview) — the single sanctioned
+	// source (account.ChildEnvSpec.ProxyBaseURL); never env_passthrough.
+	BaseURL string `json:"base_url"`
+	// Health is the proxy's health-check endpoint (consumed by
+	// koryph-3l1.2's doctor checks; not otherwise interpreted here).
+	Health string `json:"health,omitempty"`
+	// Pin is an opaque identity/version pin for the proxy configuration
+	// (e.g. a config hash or deployment tag) folded into the ledger's
+	// per-slot ProxyID stamp (see ledger.Slot.ProxyID and AgentProxy.ID)
+	// so a re-pinned proxy segments estimator calibration separately from
+	// the identity it replaced.
+	Pin string `json:"pin,omitempty"`
+}
+
+// ID returns the stable proxy identity string that ledger.Slot.ProxyID
+// stamps at dispatch and that internal/quota's calibKey/RecordForProxy/
+// EstimateItemForRuntimeProxy will key estimator segmentation by once
+// koryph-3l1.1's holdout bead starts calling them with it: "<base_url>" when
+// Pin is unset, "<base_url>#<pin>" when set. A nil AgentProxy (direct, no
+// proxy configured) or an empty BaseURL returns "" — the empty proxyID that
+// keeps quota's calibKey legacy "tier:size" population intact (never
+// "@"-suffixed; see internal/quota/estimate.go's calibKey doc).
+func (p *AgentProxy) ID() string {
+	if p == nil || p.BaseURL == "" {
+		return ""
+	}
+	if p.Pin != "" {
+		return p.BaseURL + "#" + p.Pin
+	}
+	return p.BaseURL
+}
+
+// ProxyBaseURL returns the project's configured agent-proxy base URL, or ""
+// when AgentProxy is absent (direct dispatch) — the single accessor every
+// spawn site (main dispatch, review, stage, epicreview) threads into its
+// ChildEnvSpec.ProxyBaseURL.
+func (r *Record) ProxyBaseURL() string {
+	if r.AgentProxy == nil {
+		return ""
+	}
+	return r.AgentProxy.BaseURL
 }
 
 // RuntimeAccount is one runtime's account-scoped identity/env configuration

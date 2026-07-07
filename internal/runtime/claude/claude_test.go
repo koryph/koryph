@@ -330,3 +330,36 @@ func TestCommandEnvAllowlistAndSigningSocket(t *testing.T) {
 		t.Errorf("registry EnvPassthrough entry missing from Command's env:\n%s", joined)
 	}
 }
+
+// TestCommandEnvProxyBaseURL is the koryph-3l1.1 main-dispatch acceptance
+// test: DispatchSpec.ProxyBaseURL (threaded from registry.Record.
+// ProxyBaseURL() via dispatch.Spec/toRuntimeSpec) reaches Command's env as
+// ANTHROPIC_BASE_URL; unset leaves it absent (main dispatch never sets
+// KORYPH_SPAWN_KIND either — that marker is main dispatch's default empty
+// value, unlike the three secondary spawn sites).
+func TestCommandEnvProxyBaseURL(t *testing.T) {
+	rt := Claude{Bin: "claude"}
+
+	spec := goldenSpec()
+	_, env, err := rt.Command(spec)
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "ANTHROPIC_BASE_URL=") {
+		t.Errorf("ANTHROPIC_BASE_URL present with ProxyBaseURL unset:\n%s", joined)
+	}
+	if strings.Contains(joined, "KORYPH_SPAWN_KIND=") {
+		t.Errorf("KORYPH_SPAWN_KIND present for main dispatch, want absent:\n%s", joined)
+	}
+
+	spec.ProxyBaseURL = "http://127.0.0.1:8091"
+	_, env, err = rt.Command(spec)
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	joined = strings.Join(env, "\n")
+	if !strings.Contains(joined, "ANTHROPIC_BASE_URL=http://127.0.0.1:8091") {
+		t.Errorf("ANTHROPIC_BASE_URL missing from Command's env:\n%s", joined)
+	}
+}

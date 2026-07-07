@@ -47,6 +47,12 @@ type Opts struct {
 	PhaseDir         string // where stage-<name>.json is written
 	ClaudeBin        string // default "claude"
 	TimeoutSec       int    // default 600
+
+	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
+	// (koryph-3l1.1), threaded from the caller's registry.Record via
+	// registry.Record.ProxyBaseURL(). Empty (the common case) means direct —
+	// no ANTHROPIC_BASE_URL override. See account.ChildEnvSpec.ProxyBaseURL.
+	ProxyBaseURL string
 }
 
 // Result reports what a stage run did.

@@ -308,14 +308,15 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	// project today (no runtime_accounts entry) — same ConfigDir as before.
 	ra := rec.AccountFor(resolvedRuntimeName)
 	v := reviewer(ctx, review.Opts{
-		RepoRoot:  rec.Root,
-		Worktree:  wt,
-		Branch:    ref,
-		Base:      rec.DefaultBranch,
-		Persona:   modelroute.PersonaFor(modelroute.StageReview, cfg.Stages),
-		Model:     modelroute.TierOpus,
-		Profile:   account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
-		ClaudeBin: os.Getenv(envClaudeBin),
+		RepoRoot:     rec.Root,
+		Worktree:     wt,
+		Branch:       ref,
+		Base:         rec.DefaultBranch,
+		Persona:      modelroute.PersonaFor(modelroute.StageReview, cfg.Stages),
+		Model:        modelroute.TierOpus,
+		Profile:      account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
+		ClaudeBin:    os.Getenv(envClaudeBin),
+		ProxyBaseURL: rec.ProxyBaseURL(),
 	})
 	res.Blocking, res.Degraded, res.Findings = v.Blocking, v.Degraded, v.Findings
 	switch {

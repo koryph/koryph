@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -141,7 +143,11 @@ func (s *Store) Add(ctx context.Context, rec *Record) error {
 	return s.commit(ctx, "feat(registry): register "+rec.ProjectID)
 }
 
-// Get loads one record by project id.
+// Get loads one record by project id. The agent_proxy block (if present) is
+// validated at load (koryph-3l1.1, I4: loopback-only is machine-checked, not
+// merely documented) — a record hand-edited (or written by a future version)
+// with a non-loopback base_url refuses to load rather than dispatching
+// through it silently.
 func (s *Store) Get(id string) (*Record, error) {
 	var rec Record
 	if err := fsx.ReadJSON(s.recordPath(id), &rec); err != nil {
@@ -150,10 +156,14 @@ func (s *Store) Get(id string) (*Record, error) {
 		}
 		return nil, err
 	}
+	if err := validateAgentProxy(&rec); err != nil {
+		return nil, err
+	}
 	return &rec, nil
 }
 
-// List returns every record sorted by ProjectID.
+// List returns every record sorted by ProjectID. Each record's agent_proxy
+// block is validated at load exactly as Get does (see Get's doc).
 func (s *Store) List() ([]*Record, error) {
 	entries, err := os.ReadDir(s.registryDir())
 	if err != nil {
@@ -169,6 +179,9 @@ func (s *Store) List() ([]*Record, error) {
 		}
 		var rec Record
 		if err := fsx.ReadJSON(filepath.Join(s.registryDir(), e.Name()), &rec); err != nil {
+			return nil, err
+		}
+		if err := validateAgentProxy(&rec); err != nil {
 			return nil, err
 		}
 		recs = append(recs, &rec)
@@ -318,5 +331,46 @@ func validate(rec *Record) error {
 	if !emailRe.MatchString(rec.ExpectedIdentity) {
 		return fmt.Errorf("registry: expected_identity %q must be an email", rec.ExpectedIdentity)
 	}
+	return validateAgentProxy(rec)
+}
+
+// validateAgentProxy enforces the agent_proxy loopback-only invariant
+// (koryph-3l1.1, design I4): absent AgentProxy (direct dispatch) is always
+// valid; a present one must have a base_url that parses as an "http" URL
+// (no https/other scheme — a loopback proxy has no need for TLS, and
+// permitting one invites configuring a non-local endpoint under the guise of
+// a scheme check) whose host is loopback (127.0.0.0/8, "localhost", or
+// "::1"). Called from validate (Store.Add) and directly from Get/List so
+// every load path machine-checks it, not just the docs.
+func validateAgentProxy(rec *Record) error {
+	if rec.AgentProxy == nil {
+		return nil
+	}
+	raw := rec.AgentProxy.BaseURL
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("registry: agent_proxy.base_url is required when agent_proxy is set")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("registry: agent_proxy.base_url %q: %w", raw, err)
+	}
+	if u.Scheme != "http" {
+		return fmt.Errorf("registry: agent_proxy.base_url %q must be an http URL (loopback-only; got scheme %q)", raw, u.Scheme)
+	}
+	host := u.Hostname()
+	if !isLoopbackHost(host) {
+		return fmt.Errorf("registry: agent_proxy.base_url %q host %q is not loopback (must be 127.0.0.1/127.0.0.0-8, localhost, or [::1])", raw, host)
+	}
 	return nil
+}
+
+// isLoopbackHost reports whether host (a URL's Hostname(), already stripped
+// of brackets/port) is a loopback address: "localhost" by name, or any IP in
+// the loopback range (127.0.0.0/8 or ::1) by literal.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

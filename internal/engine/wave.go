@@ -752,6 +752,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Attempt:          q.attempt,
 		SSHAuthSock:      r.sshAuthSock,
 		EnvPassthrough:   r.rec.EnvPassthrough,
+		ProxyBaseURL:     r.rec.ProxyBaseURL(),
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "dispatch refused: "+err.Error())
@@ -786,6 +787,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		VerifiedIdentity:  handle.VerifiedIdentity,
 		VerifiedAt:        now,
 		BillingMode:       string(r.billing),
+		ProxyID:           r.rec.AgentProxy.ID(),
 		PID:               handle.PID,
 		Stream:            handle.StreamPath,
 		StatusPath:        handle.StatusPath,
@@ -834,6 +836,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		MergePolicy:     string(policy),
 		AutoMerge:       r.opts.AutoMerge,
 		BillingMode:     string(r.billing),
+		ProxyID:         r.rec.AgentProxy.ID(),
 		BootstrapCmds:   r.cfg.Bootstrap,
 		PromptCache:     r.rec.PromptCachePolicy,
 		BatchAllowed:    r.rec.BatchPolicy == "explicit",

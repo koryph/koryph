@@ -76,6 +76,7 @@ func fullSlot() *Slot {
 		VerifiedIdentity:    "owner@example.com",
 		VerifiedAt:          "2026-07-02T00:00:00Z",
 		BillingMode:         "subscription",
+		ProxyID:             "http://127.0.0.1:8091#v3",
 		PID:                 12345,
 		Stream:              "stream-1",
 		StatusPath:          "/s/status.json",
@@ -349,6 +350,7 @@ func fullManifest() *Manifest {
 		MergePolicy:   "auto",
 		AutoMerge:     true,
 		BillingMode:   "subscription",
+		ProxyID:       "http://127.0.0.1:8091#v3",
 		BootstrapCmds: []string{"nix develop"},
 	}
 }

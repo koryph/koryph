@@ -274,6 +274,44 @@ func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 	}
 }
 
+// TestDispatchThreadsProxyBaseURL is the koryph-3l1.1 main-dispatch
+// end-to-end acceptance test: Spec.ProxyBaseURL flows through toRuntimeSpec
+// and the claude adapter's Command into the actually-spawned agent's real
+// child env as ANTHROPIC_BASE_URL. Main dispatch never sets SpawnKind, so
+// KORYPH_SPAWN_KIND must stay absent regardless.
+func TestDispatchThreadsProxyBaseURL(t *testing.T) {
+	spec := baseSpec(t)
+	spec.ProxyBaseURL = "http://127.0.0.1:8091"
+	b := CLIBackend{ClaudeBin: fakeClaude(t)}
+	if _, err := b.Dispatch(context.Background(), spec); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	env := string(waitForFile(t, filepath.Join(spec.PhaseDir, "env.txt")))
+	if !strings.Contains(env, "ANTHROPIC_BASE_URL=http://127.0.0.1:8091\n") {
+		t.Errorf("child env missing ANTHROPIC_BASE_URL:\n%s", env)
+	}
+	if strings.Contains(env, "KORYPH_SPAWN_KIND=") {
+		t.Errorf("child env has KORYPH_SPAWN_KIND set for main dispatch, want absent:\n%s", env)
+	}
+}
+
+// TestDispatchOmitsProxyBaseURLByDefault is the I6 zero-residue guarantee at
+// the main-dispatch integration level: a Spec that never touches
+// ProxyBaseURL produces a child env with no ANTHROPIC_BASE_URL at all.
+func TestDispatchOmitsProxyBaseURLByDefault(t *testing.T) {
+	spec := baseSpec(t)
+	b := CLIBackend{ClaudeBin: fakeClaude(t)}
+	if _, err := b.Dispatch(context.Background(), spec); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	env := string(waitForFile(t, filepath.Join(spec.PhaseDir, "env.txt")))
+	if strings.Contains(env, "ANTHROPIC_BASE_URL=") {
+		t.Errorf("child env has ANTHROPIC_BASE_URL with ProxyBaseURL unset, want absent:\n%s", env)
+	}
+}
+
 func TestDispatchResumeAndAPIKeyEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-polluted-parent")
 
