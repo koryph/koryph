@@ -232,6 +232,7 @@ execute one engine run over a project
 | `--only` | string |  | dispatch only this specific ready bead id |
 | `--parent` | string |  | epic scope for the bd frontier |
 | `--project` | string |  | project id (required) |
+| `--require-calibration` | bool |  | refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run `koryph quota calibrate` first |
 | `--resume` | bool |  | classify and re-dispatch the latest run first |
 | `--review` | bool |  | post-implementation review pass before merge |
 

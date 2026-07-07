@@ -58,7 +58,11 @@ type govGate struct {
 	advisory      bool
 	usage         quota.Usage
 	budgetHit     bool
-	width         int
+	// uncalibratedBlock is set when --require-calibration (or the project's
+	// require_calibration) refuses dispatch because the governor is uncalibrated
+	// (koryph-grz). Distinct reason so the pause is not mislabeled quota-*.
+	uncalibratedBlock bool
+	width             int
 
 	// paused is set when the gate itself already finalized the run — either
 	// paused-quota (quota-stop with nothing active) or operator-drain-with-
@@ -79,6 +83,14 @@ type govGate struct {
 	// instead of a quota-* one, on the off chance the sentinel is consumed by
 	// something else between this gate and that check.
 	operatorDrain bool
+}
+
+// requireCalibration reports whether this run hard-blocks dispatch while the
+// quota governor is uncalibrated (koryph-grz): the --require-calibration run
+// flag or the project's require_calibration config. Opt-in; default false
+// preserves the fresh-install "advisory, don't deadlock" behavior.
+func (r *runner) requireCalibration() bool {
+	return r.opts.RequireCalibration || (r.cfg != nil && r.cfg.RequireCalibration)
 }
 
 // governorGate runs the governor/billing/budget checks once per wave or
@@ -103,6 +115,26 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	r.lastQuotaUsage = usage
 
 	g := govGate{allowDispatch: true, level: level, calibrated: calibrated, advisory: advisory, usage: usage}
+
+	// Uncalibrated governor (koryph-grz): the fresh-install state where both
+	// ceilings are 0, so the governor cannot enforce the 5h/weekly spend ladder
+	// and passes advisory. This USED to be silent (the advisory branch above
+	// only logs when level != OK, but an uncalibrated account reports OK) — so
+	// an operator had no signal spend limits weren't enforced. Warn loudly once
+	// per run, and hard-block when the operator opted into --require-calibration.
+	if !calibrated {
+		if r.requireCalibration() {
+			g.allowDispatch = false
+			g.uncalibratedBlock = true
+			if !r.uncalibratedWarned {
+				r.uncalibratedWarned = true
+				r.progress("!!! quota governor UNCALIBRATED for account %q and --require-calibration is set — refusing to dispatch. Run `koryph quota calibrate` (or `koryph calibrate`) to set a ceiling.", r.quotaName())
+			}
+		} else if !r.uncalibratedWarned {
+			r.uncalibratedWarned = true
+			r.progress("WARNING: quota governor UNCALIBRATED for account %q — 5h/weekly spend limits are NOT enforced this run. Run `koryph quota calibrate` (or `koryph calibrate`) to enable enforcement, or pass --require-calibration to hard-block until then.", r.quotaName())
+		}
+	}
 
 	if !r.opts.Manual && !advisory {
 		// eff is the effective ladder for logging threshold annotations.
@@ -264,6 +296,9 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			reason := "quota-" + string(level)
 			if budgetHit {
 				reason = "budget-cap"
+			}
+			if gate.uncalibratedBlock {
+				reason = "governor-uncalibrated"
 			}
 			if gate.operatorDrain {
 				reason = "operator-drain"

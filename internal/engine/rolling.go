@@ -128,6 +128,9 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if budgetHit {
 				reason = "budget-cap"
 			}
+			if gate.uncalibratedBlock {
+				reason = "governor-uncalibrated"
+			}
 			if gate.operatorDrain {
 				reason = "operator-drain"
 			}

@@ -1,3 +1,4 @@
+WARNING: quota governor UNCALIBRATED for account "work" — 5h/weekly spend limits are NOT enforced this run. Run `koryph quota calibrate` (or `koryph calibrate`) to enable enforcement, or pass --require-calibration to hard-block until then.
 wave 1: 1 ready, dispatching 1 (WINDOW)
 bead tb1: dispatched attempt 1 (model sonnet — RATIONALE; pid PID)
 bead tb1: merged (SHA)

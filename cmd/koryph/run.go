@@ -63,6 +63,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	allowUnvalidated := fs.Bool("allow-unvalidated", false, "permit runs on non-validated projects")
 	manual := fs.Bool("manual", false, "single manual dispatch semantics (quota-exempt)")
 	noBillingGuard := fs.Bool("no-billing-guard", false, "disable quota throttling for this run (usage still measured; billing stays subscription)")
+	requireCalibration := fs.Bool("require-calibration", false, "refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run `koryph quota calibrate` first")
 	dispatchMode := fs.String("dispatch-mode", "", "dispatch mode: wave|rolling (default: project config, else wave)")
 	setUsage(fs, stdout, "execute one engine run over a project", "--project ID [flags]")
 	if _, err := parseFlags(fs, args); err != nil {
@@ -73,24 +74,25 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	opts := engine.Options{
-		ProjectID:        *project,
-		Max:              *max,
-		Once:             *once,
-		DryRun:           *dryRun,
-		Resume:           *resume,
-		Parent:           *parent,
-		Only:             *only,
-		BudgetUSD:        *budget,
-		DefaultModel:     *defaultModel,
-		AutoMerge:        *autoMerge,
-		Direct:           *direct,
-		Review:           *review,
-		Manual:           *manual,
-		AllowAPISpend:    *allowAPISpend,
-		AllowUnvalidated: *allowUnvalidated,
-		NoBillingGuard:   *noBillingGuard,
-		DispatchMode:     *dispatchMode,
-		Out:              stdout,
+		ProjectID:          *project,
+		Max:                *max,
+		Once:               *once,
+		DryRun:             *dryRun,
+		Resume:             *resume,
+		Parent:             *parent,
+		Only:               *only,
+		BudgetUSD:          *budget,
+		DefaultModel:       *defaultModel,
+		AutoMerge:          *autoMerge,
+		Direct:             *direct,
+		Review:             *review,
+		Manual:             *manual,
+		AllowAPISpend:      *allowAPISpend,
+		AllowUnvalidated:   *allowUnvalidated,
+		NoBillingGuard:     *noBillingGuard,
+		RequireCalibration: *requireCalibration,
+		DispatchMode:       *dispatchMode,
+		Out:                stdout,
 	}
 	outcome, err := engine.Run(context.Background(), opts)
 	if err != nil {

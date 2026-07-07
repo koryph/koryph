@@ -525,6 +525,10 @@
       "$ref": "#/$defs/SigningConfig",
       "description": "Signing is the vault-backed commit/artifact signing policy\n(nil = signing not configured; managed by `koryph signing setup`)."
     },
+    "require_calibration": {
+      "type": "boolean",
+      "description": "RequireCalibration hard-blocks dispatch while the quota governor is\nuncalibrated (both ceilings 0), instead of the default advisory pass\n(koryph-grz). Opt-in spend safety for this project: runs refuse to\ndispatch until `koryph quota calibrate` sets a ceiling. The\n`--require-calibration` run flag also sets it for a single run."
+    },
     "max_concurrent_slots": {
       "type": "integer",
       "description": "MaxConcurrentSlots caps wave width for this project (default 3)."

@@ -85,9 +85,10 @@ type runner struct {
 	owner    string
 	width    int
 
-	dispatched int
-	govWarned  bool
-	issues     map[string]beads.Issue
+	dispatched         int
+	govWarned          bool
+	uncalibratedWarned bool // koryph-grz: loud uncalibrated-governor warning fired once this run
+	issues             map[string]beads.Issue
 
 	// memProbe reads current system memory (total + available) for the memory
 	// admission gate (koryph-930). nil means "use the real platform probe"

@@ -69,6 +69,7 @@ func fullConfig() *Config {
 			ItemTitle: "Signing Key",
 			Artifacts: true,
 		},
+		RequireCalibration:     true,
 		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 6,
 		PollSeconds:            5,

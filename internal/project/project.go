@@ -500,6 +500,13 @@ type Config struct {
 	// (nil = signing not configured; managed by `koryph signing setup`).
 	Signing *signing.Config `json:"signing,omitempty"`
 
+	// RequireCalibration hard-blocks dispatch while the quota governor is
+	// uncalibrated (both ceilings 0), instead of the default advisory pass
+	// (koryph-grz). Opt-in spend safety for this project: runs refuse to
+	// dispatch until `koryph quota calibrate` sets a ceiling. The
+	// `--require-calibration` run flag also sets it for a single run.
+	RequireCalibration bool `json:"require_calibration,omitempty"`
+
 	// MaxConcurrentSlots caps wave width for this project (default 3).
 	MaxConcurrentSlots int `json:"max_concurrent_slots,omitempty"`
 
