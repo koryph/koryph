@@ -321,11 +321,13 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 					case <-time.After(stagger):
 					}
 				}
-				// Global concurrency cap (across all projects). A denial defers
-				// the rest of this wave — same-project shares won't free up until
-				// a running agent finishes — so break and re-scan next wave.
+				// Global concurrency cap (across all projects) or the memory
+				// admission floor (koryph-930). A denial defers the rest of this
+				// wave — same-project shares won't free up until a running agent
+				// finishes, and memory won't either — so break and re-scan next
+				// wave. acquireGlobalSlot logs the specific reason when it's memory.
 				if !r.acquireGlobalSlot(it.Issue.ID) {
-					r.progress("wave %d: global governor cap reached — deferring %d bead(s) to a later wave",
+					r.progress("wave %d: global governor cap or memory floor reached — deferring %d bead(s) to a later wave",
 						r.run.Wave, len(w.Items)-i)
 					break
 				}

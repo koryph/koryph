@@ -5,9 +5,12 @@ package engine
 
 import (
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/sysmem"
 )
 
 // The global concurrency governor caps concurrently running agents across ALL
@@ -58,10 +61,71 @@ func (r *runner) warnIfOverFairShare() {
 		r.width, fs, r.gov.Cap(providerAnthropic))
 }
 
+// minFreeMemoryMB resolves the memory admission floor (koryph-930):
+// KORYPH_MIN_FREE_MEMORY_MB wins (a quick per-run override needing no
+// governor.json edit), else the machine-wide governor pool config, else 0
+// (gate disabled). A non-numeric env value is ignored.
+func (r *runner) minFreeMemoryMB() int {
+	if v := os.Getenv("KORYPH_MIN_FREE_MEMORY_MB"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+			return n
+		}
+	}
+	if r.gov == nil {
+		return 0
+	}
+	return r.gov.MinFreeMemoryMB(providerAnthropic)
+}
+
+// availableMemoryMB reads current available system memory, preferring an
+// injected probe (tests) over the real platform probe. ok=false means no usable
+// reading — an unsupported platform or a probe error — on which the caller
+// fails open.
+func (r *runner) availableMemoryMB() (uint64, bool) {
+	if r.memProbe != nil {
+		return r.memProbe()
+	}
+	stat, err := sysmem.Available()
+	if err != nil {
+		return 0, false
+	}
+	return stat.AvailableMB(), true
+}
+
+// memoryAdmits reports whether there is enough free system memory to admit
+// another agent (koryph-930). It fails OPEN — returns true — when no floor is
+// configured or no memory reading is available, because the memory gate is a
+// safety rail, never a correctness dependency (same posture as every other
+// governor helper here). A denial defers the dispatch to a later wave, exactly
+// like a concurrency-cap denial.
+func (r *runner) memoryAdmits(beadID string) bool {
+	floorMB := r.minFreeMemoryMB()
+	if floorMB <= 0 {
+		return true // gate disabled
+	}
+	availMB, ok := r.availableMemoryMB()
+	if !ok {
+		return true // no probe / unsupported platform → fail open
+	}
+	if availMB >= uint64(floorMB) {
+		return true
+	}
+	r.progress("bead %s: deferring dispatch — %d MB free memory below the %d MB floor (min_free_memory_mb / KORYPH_MIN_FREE_MEMORY_MB)",
+		beadID, availMB, floorMB)
+	return false
+}
+
 // acquireGlobalSlot reserves a global concurrency slot for beadID (keyed to the
 // project+bead under this engine's pid; the agent pid is attached later by
 // bindGlobalSlot). Returns true when granted or when governance is unavailable.
 func (r *runner) acquireGlobalSlot(beadID string) bool {
+	// Memory admission gate (koryph-930): refuse to stack another agent's
+	// subprocess+worktree when the host is under memory pressure. Checked
+	// BEFORE the flocked governor Acquire so the (possibly subprocess-backed)
+	// memory probe never runs while holding the machine-wide lock.
+	if !r.memoryAdmits(beadID) {
+		return false
+	}
 	if r.gov == nil {
 		return true
 	}

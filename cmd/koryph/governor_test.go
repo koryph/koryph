@@ -37,12 +37,40 @@ func TestGovernorShowDefaultAndSet(t *testing.T) {
 
 func TestGovernorSetRejectsNonPositive(t *testing.T) {
 	isolate(t)
+	// A non-positive cap with no memory floor requested is a no-op — reject it.
 	code, _, errs := runCmd("governor", "set", "--max-global", "0")
 	if code == 0 {
-		t.Errorf("governor set --max-global 0 should fail")
+		t.Errorf("governor set --max-global 0 (no floor) should fail")
 	}
-	if !strings.Contains(errs, "positive") {
-		t.Errorf("stderr = %q, want a positivity complaint", errs)
+	if !strings.Contains(errs, "max-global") {
+		t.Errorf("stderr = %q, want it to name the required --max-global", errs)
+	}
+}
+
+// TestGovernorSetMemoryFloor proves koryph-930: --min-free-memory-mb can be set
+// alone (no --max-global), persists to governor.json, and reads back.
+func TestGovernorSetMemoryFloor(t *testing.T) {
+	isolate(t)
+
+	code, out, errs := runCmd("governor", "set", "--min-free-memory-mb", "4096")
+	if code != 0 {
+		t.Fatalf("floor-only set failed: code %d stderr %q", code, errs)
+	}
+	if !strings.Contains(out, "4096 MB") {
+		t.Errorf("stdout = %q, want the floor confirmation", out)
+	}
+
+	// It persisted independent of the cap (cap stays at its default).
+	if got := govern.NewStore().MinFreeMemoryMB(""); got != 4096 {
+		t.Errorf("persisted floor = %d, want 4096", got)
+	}
+
+	// Clearing sets it back to 0 (gate disabled).
+	if code, _, _ := runCmd("governor", "set", "--min-free-memory-mb", "0"); code != 0 {
+		t.Fatalf("clearing the floor failed: code %d", code)
+	}
+	if got := govern.NewStore().MinFreeMemoryMB(""); got != 0 {
+		t.Errorf("floor after clear = %d, want 0", got)
 	}
 }
 

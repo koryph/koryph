@@ -88,6 +88,12 @@ type runner struct {
 	govWarned  bool
 	issues     map[string]beads.Issue
 
+	// memProbe reads current available system memory in MB for the memory
+	// admission gate (koryph-930). nil means "use the real platform probe"
+	// (sysmem.Available); tests inject a stub. ok=false signals no usable
+	// reading, on which the gate fails open.
+	memProbe func() (availMB uint64, ok bool)
+
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time
 	patrolSeen     map[string]time.Time // finding key → last logged; throttles repeat findings

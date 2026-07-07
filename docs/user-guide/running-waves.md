@@ -468,6 +468,29 @@ koryph resize --project myproject --clear
 `resize` are recorded in the central audit log (`~/.koryph/audit.jsonl`), same as other
 operator actions.
 
+### Memory admission floor
+
+Every dispatched agent is a separate `claude` subprocess plus a git worktree, so a wide
+wave — especially with the [adaptive concurrency overlay](../developer-guide/global-governor.md)
+probing the cap upward — can exhaust host RAM and OOM the machine. The **memory admission
+floor** is a machine-wide guard: when the host's available memory drops below the floor, the
+scheduler defers new dispatches to a later wave (running agents are never touched), exactly
+like a concurrency-cap denial. It is a soft safety rail — a missing or unreadable memory
+signal always fails open (dispatch proceeds).
+
+The floor is a machine property (like the global concurrency cap), so it lives in
+`~/.koryph/governor.json`, per provider pool. It is **off by default** (`0`). Enable it with:
+
+```sh
+koryph governor set --min-free-memory-mb 4096          # defer while < 4 GB free
+koryph governor set --min-free-memory-mb 0             # clear the gate
+```
+
+`koryph governor show` reports the active floor. For a one-off run without editing
+`governor.json`, set `KORYPH_MIN_FREE_MEMORY_MB` in the environment — it overrides the
+configured floor for that run. The available-memory signal is read from `/proc/meminfo`
+(Linux) or `sysctl` + `vm_stat` (macOS); platforms with no probe leave the gate disabled.
+
 ## Corpus audit: koryph plan audit
 
 Before running the loop — or after changing `area_map` in `koryph.project.json` — run the

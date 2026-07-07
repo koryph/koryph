@@ -47,7 +47,7 @@ burst of cheap agents still exceeds the limit.
 
 | Path | Contents |
 |---|---|
-| `~/.koryph/governor.json` | `{ "pools": { "<provider>": { "max_global_agents": N, ... } } }` — one independent cap/AIMD-overlay per provider pool (koryph-v8u.11, see below). Absent/missing pool ⇒ default **8**. Edited only by the machine owner (never per-run), so no single project can lift the ceiling. |
+| `~/.koryph/governor.json` | `{ "pools": { "<provider>": { "max_global_agents": N, "min_free_memory_mb": M, ... } } }` — one independent cap/AIMD-overlay per provider pool (koryph-v8u.11, see below). Absent/missing pool ⇒ default **8**. `min_free_memory_mb` (koryph-930, default `0` = off) is the memory admission floor: dispatch is deferred while host available memory is below it. Edited only by the machine owner (never per-run), so no single project can lift the ceiling. |
 | `~/.koryph/slots/<project>-<bead>-<pid>.json` | One **lease** per running agent: `{project, bead, pid, engine_pid, model, acquired_at, provider}`. Keyed to the **agent** PID (detached), so a lease survives an engine restart/resume and frees only when the real agent dies. `provider` selects which pool the lease counts against. |
 | `~/.koryph/slots/demand/<project>.json` | One **demand heartbeat** per active engine with ready work, per pool: `{project, engine_pid, updated_at, provider}`. Refreshed each wave; pruned when stale (TTL) or `engine_pid` dead. |
 
@@ -299,6 +299,16 @@ governor.json:
   wholesale — every other pool is untouched). The three L5b flags are
   meaningful only under `--adaptive` and default (this package's documented
   constants) when omitted or non-positive.
+- `koryph governor set --min-free-memory-mb N [--provider P]` — set the memory
+  admission floor (koryph-930) for one pool. Unlike `--max-global`, this
+  PRESERVES the pool's cap and AIMD state (it edits only `min_free_memory_mb`),
+  and may be given alone or alongside `--max-global`. `0` clears the gate. When
+  the floor is `> 0`, `Acquire`-time admission is refused while the host's
+  available memory (from `/proc/meminfo` on Linux, `sysctl`+`vm_stat` on macOS
+  via `internal/sysmem`) is below `N` MB — the engine checks this BEFORE the
+  flocked `Acquire` so the probe never runs under the machine-wide lock, and
+  fails open on any read error. `KORYPH_MIN_FREE_MEMORY_MB` overrides the
+  configured floor for a single run.
 - `board` / `status` prune stale leases and demand (across all pools) as a
   hygiene side effect.
 

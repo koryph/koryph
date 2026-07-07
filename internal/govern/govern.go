@@ -85,6 +85,23 @@ func (s *Store) Cap(provider string) int {
 	return c.MaxGlobalAgents
 }
 
+// MinFreeMemoryMB returns provider's configured memory admission floor in MB, or
+// 0 when governor.json (or the pool's entry) is absent or the field is unset —
+// 0 meaning the memory gate is disabled (koryph-930). Fails to 0 (gate off) on
+// any read error, matching the governor's fail-open posture.
+func (s *Store) MinFreeMemoryMB(provider string) int {
+	pool := NormalizeProvider(provider)
+	f, err := s.readFile()
+	if err != nil {
+		return 0
+	}
+	c, ok := f.Pools[pool]
+	if !ok || c.MinFreeMemoryMB < 0 {
+		return 0
+	}
+	return c.MinFreeMemoryMB
+}
+
 // SetCap writes provider's pool cap to governor.json, resetting that pool's
 // AIMD/settle/breaker/smoothing state wholesale (exactly today's single-pool
 // SetCap semantics — a plain `set` disables any previously-enabled overlay)
@@ -100,6 +117,29 @@ func (s *Store) SetCap(provider string, n int) error {
 			return err
 		}
 		f.Pools[pool] = Config{MaxGlobalAgents: n}
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
+}
+
+// SetMinFreeMemoryMB writes provider's memory admission floor (koryph-930) to
+// governor.json, PRESERVING every other field of that pool's config (cap, AIMD
+// overlay, breaker/settle state) — unlike SetCap, which resets the pool
+// wholesale. mb=0 clears the gate. A pool that does not yet exist is created
+// with only the floor set (its cap defaults via Cap()). provider=="" is
+// DefaultPool.
+func (s *Store) SetMinFreeMemoryMB(provider string, mb int) error {
+	if mb < 0 {
+		return errors.New("govern: min_free_memory_mb must be >= 0")
+	}
+	pool := NormalizeProvider(provider)
+	return s.withLock(func() error {
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		c := f.Pools[pool] // zero Config when the pool is absent
+		c.MinFreeMemoryMB = mb
+		f.Pools[pool] = c
 		return fsx.WriteJSONAtomic(s.cfgPath, f)
 	})
 }

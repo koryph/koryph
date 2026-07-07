@@ -145,6 +145,11 @@ func printPoolStatus(stdout io.Writer, gs *govern.Store, pool string) error {
 	}
 	fmt.Fprintf(stdout, "pool %s:\n", pool)
 	fmt.Fprintf(stdout, "  global concurrency cap: %d\n", gs.Cap(pool))
+	if floor := gs.MinFreeMemoryMB(pool); floor > 0 {
+		fmt.Fprintf(stdout, "  memory floor: defer new agents below %d MB free (koryph-930)\n", floor)
+	} else {
+		fmt.Fprintln(stdout, "  memory floor: off")
+	}
 
 	// AIMD overlay (koryph-2im.4): show adaptive status and, when on, the
 	// dynamic cap that Acquire actually admits against — for THIS pool only.
@@ -222,16 +227,28 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	settleSec := fs.Int("settle-sec", 0, "settle window after any cap change, under --adaptive (default 120)")
 	breakSec := fs.Int("break-sec", 0, "circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600)")
 	minDispatchInterval := fs.Int("min-dispatch-interval", 0, "minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%)")
+	minFreeMem := fs.Int("min-free-memory-mb", -1, "defer new agents while host available memory is below N MB (koryph-930); 0 clears the gate. May be set alone or alongside --max-global")
 	setUsage(fs, stdout, "set one provider pool's cap on concurrently running agents",
-		"--max-global N [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
+		"[--max-global N] [--min-free-memory-mb N] [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
-	if *maxGlobal <= 0 {
-		return usageErr(stderr, "governor set: --max-global must be a positive integer")
-	}
 	pool := govern.NormalizeProvider(*provider)
 	gs := govern.NewStore()
+
+	// Floor-only invocation: adjust the memory gate without resetting the pool's
+	// cap or AIMD state (SetMinFreeMemoryMB preserves every other field).
+	if *maxGlobal <= 0 {
+		if *minFreeMem < 0 {
+			return usageErr(stderr, "governor set: need --max-global (> 0) and/or --min-free-memory-mb (>= 0)")
+		}
+		if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "%s [pool %s]\n", memFloorMsg(*minFreeMem), pool)
+		return 0
+	}
+
 	if *adaptive {
 		if err := gs.SetAdaptiveCap(pool, *maxGlobal, *hardMax, *settleSec, *breakSec, *minDispatchInterval); err != nil {
 			return fail(stderr, err)
@@ -242,13 +259,30 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "global concurrency cap set to %d (adaptive: dynamic cap %d, hard max %d) [pool %s]\n",
 			*maxGlobal, *maxGlobal, hm, pool)
-		return 0
+	} else {
+		if err := gs.SetCap(pool, *maxGlobal); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "global concurrency cap set to %d [pool %s]\n", *maxGlobal, pool)
 	}
-	if err := gs.SetCap(pool, *maxGlobal); err != nil {
-		return fail(stderr, err)
+
+	// A floor requested alongside the cap must be written AFTER the cap set,
+	// since SetCap/SetAdaptiveCap reset the pool wholesale.
+	if *minFreeMem >= 0 {
+		if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "%s [pool %s]\n", memFloorMsg(*minFreeMem), pool)
 	}
-	fmt.Fprintf(stdout, "global concurrency cap set to %d [pool %s]\n", *maxGlobal, pool)
 	return 0
+}
+
+// memFloorMsg renders the confirmation line for a memory-floor change.
+func memFloorMsg(mb int) string {
+	if mb == 0 {
+		return "memory admission gate disabled (min_free_memory_mb cleared)"
+	}
+	return fmt.Sprintf("memory admission floor set to %d MB free", mb)
 }
 
 func max0(n int) int {

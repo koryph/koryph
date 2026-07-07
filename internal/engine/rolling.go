@@ -191,11 +191,12 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 						case <-time.After(stagger):
 						}
 					}
-					// Global concurrency cap (across all projects). A denial
-					// defers the REST of this refill batch — do not spin —
-					// the loop re-scans next tick.
+					// Global concurrency cap (across all projects) or the memory
+					// admission floor (koryph-930). A denial defers the REST of
+					// this refill batch — do not spin — the loop re-scans next
+					// tick. acquireGlobalSlot logs the specific reason for memory.
 					if !r.acquireGlobalSlot(it.Issue.ID) {
-						r.progress("refill: global governor cap reached — deferring %d bead(s) to a later tick",
+						r.progress("refill: global governor cap or memory floor reached — deferring %d bead(s) to a later tick",
 							len(w.Items)-i)
 						break
 					}
