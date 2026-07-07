@@ -218,6 +218,16 @@ type Config struct {
 	// silently reset to zero (use defaults). Re-read at every wave preflight
 	// without a restart.
 	Ladder Ladder `json:"ladder,omitempty"`
+
+	// CalibrationStale is set when the proxy config has changed since the last
+	// calibration run (koryph-3l1.2). When true, the governor still operates
+	// using the existing slope but the doctor emits a WARN and prompts a
+	// `koryph quota calibrate` re-run, because the ccusage-USD vs /usage-%
+	// slope is not proven invariant under a compression change (design §2 I1/I5,
+	// §3 L5). Cleared by `koryph quota calibrate` on completion.
+	CalibrationStale bool `json:"calibration_stale,omitempty"`
+	// CalibrationStaleReason is the human-readable cause for CalibrationStale.
+	CalibrationStaleReason string `json:"calibration_stale_reason,omitempty"`
 }
 
 // DefaultConfig returns uncalibrated defaults for a new account profile.

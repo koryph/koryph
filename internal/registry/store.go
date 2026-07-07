@@ -19,6 +19,7 @@ import (
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/quota"
 )
 
 // Store is the git-backed central registry rooted at Home (usually
@@ -193,6 +194,11 @@ func (s *Store) List() ([]*Record, error) {
 // Save updates an existing record. It refuses to change the account triple
 // (AccountProfile / ClaudeConfigDir / ExpectedIdentity) relative to the
 // on-disk record — those move only through SetAccount.
+//
+// When agent_proxy changes (by AgentProxy.ID()), the account's quota
+// calibration is marked stale (koryph-3l1.2): the ccusage-USD vs /usage-%
+// slope is not proven invariant under a compression change, so a re-run of
+// `koryph quota calibrate` is prompted via the doctor check.
 func (s *Store) Save(ctx context.Context, rec *Record) error {
 	old, err := s.Get(rec.ProjectID)
 	if err != nil {
@@ -204,6 +210,10 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 		return fmt.Errorf("registry: account fields are immutable via Save; use SetAccount")
 	}
 
+	// Detect proxy flip before stamping UpdatedAt so the diff is clear in the audit.
+	oldProxyID := old.AgentProxy.ID()
+	newProxyID := rec.AgentProxy.ID()
+
 	rec.UpdatedAt = nowRFC3339()
 	if err := s.put(rec); err != nil {
 		return err
@@ -211,6 +221,20 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 	if err := s.Audit(Event{Kind: "update", ProjectID: rec.ProjectID}); err != nil {
 		return err
 	}
+
+	// Best-effort: mark calibration stale when proxy identity changed. We use
+	// SetCalibrationStaleAt with s.quotaDir() so tests that point the Store at a
+	// temp home also write the stale flag there (not to the global KORYPH_HOME).
+	if oldProxyID != newProxyID {
+		qAccount := rec.QuotaProfile
+		if qAccount == "" {
+			qAccount = rec.AccountProfile
+		}
+		reason := fmt.Sprintf("agent_proxy changed for project %s (%q → %q); re-run `koryph quota calibrate --account %s`",
+			rec.ProjectID, oldProxyID, newProxyID, qAccount)
+		_ = quota.SetCalibrationStaleAt(qAccount, reason, s.quotaDir())
+	}
+
 	return s.commit(ctx, "chore(registry): update "+rec.ProjectID)
 }
 

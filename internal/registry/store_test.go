@@ -5,6 +5,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/quota"
 )
 
 // gitProject creates a fresh directory that is a valid git repository, usable
@@ -438,4 +441,88 @@ func TestListSorted(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("list order = %v, want %v", got, want)
 	}
+}
+
+// TestSaveMarksCalibrationStaleOnProxyFlip verifies that Store.Save writes the
+// CalibrationStale flag to the quota config when agent_proxy.ID() changes
+// (koryph-3l1.2). The flag is written to s.quotaDir() so the test is hermetic
+// (no KORYPH_HOME dependency).
+func TestSaveMarksCalibrationStaleOnProxyFlip(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	// Register a project with an initial proxy.
+	rec := sampleRecord("proxy-proj", root)
+	rec.AgentProxy = &AgentProxy{
+		BaseURL: "http://127.0.0.1:8787",
+		Health:  "/health",
+		Pin:     "headroom-ai==0.30.0",
+	}
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Load the record back and flip to a different proxy pin.
+	saved, err := s.Get("proxy-proj")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	saved.AgentProxy = &AgentProxy{
+		BaseURL: "http://127.0.0.1:8787",
+		Health:  "/health",
+		Pin:     "headroom-ai==0.31.0", // pin changed → new proxy ID
+	}
+	if err := s.Save(ctx, saved); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Read the quota config from the store's own quota dir (not global KORYPH_HOME).
+	account := rec.AccountProfile // "personal"
+	qPath := filepath.Join(s.quotaDir(), account+".json")
+	data, err := os.ReadFile(qPath)
+	if err != nil {
+		t.Fatalf("read quota config %s: %v", qPath, err)
+	}
+	var cfg quota.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse quota config: %v", err)
+	}
+	if !cfg.CalibrationStale {
+		t.Errorf("CalibrationStale = false after proxy flip; want true")
+	}
+	if cfg.CalibrationStaleReason == "" {
+		t.Errorf("CalibrationStaleReason is empty; want a non-empty reason string")
+	}
+}
+
+// TestSaveNoStaleOnSameProxy verifies that Save does NOT mark calibration stale
+// when the proxy identity is unchanged (same base_url + same pin).
+func TestSaveNoStaleOnSameProxy(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	rec := sampleRecord("stable-proj", root)
+	rec.AgentProxy = &AgentProxy{BaseURL: "http://127.0.0.1:8787", Pin: "v1"}
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Save with identical proxy — same base_url and same pin.
+	saved, _ := s.Get("stable-proj")
+	saved.AgentProxy = &AgentProxy{BaseURL: "http://127.0.0.1:8787", Pin: "v1"}
+	if err := s.Save(ctx, saved); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Quota file should NOT be written (or should have CalibrationStale=false).
+	qPath := filepath.Join(s.quotaDir(), rec.AccountProfile+".json")
+	if data, err := os.ReadFile(qPath); err == nil {
+		var cfg quota.Config
+		if json.Unmarshal(data, &cfg) == nil && cfg.CalibrationStale {
+			t.Errorf("CalibrationStale = true after no-change save; want false")
+		}
+	}
+	// If file is absent (quota file never created), that's also fine — no stale.
 }
