@@ -307,13 +307,21 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	// AccountFor (koryph-v8u.5) falls back to rec.ClaudeConfigDir for every
 	// project today (no runtime_accounts entry) — same ConfigDir as before.
 	ra := rec.AccountFor(resolvedRuntimeName)
+	prReviewPersona := modelroute.PersonaFor(modelroute.StageReview, cfg.Stages)
+	// Same koryph-77r.8 fix as the in-loop reviewer call site (poll.go): honor
+	// the persona's declared frontmatter effort instead of silently dropping it.
+	prReviewEffort := ""
+	if _, metaEffort, _, err := modelroute.PersonaMeta(rec.Root, prReviewPersona); err == nil {
+		prReviewEffort = metaEffort
+	}
 	v := reviewer(ctx, review.Opts{
 		RepoRoot:     rec.Root,
 		Worktree:     wt,
 		Branch:       ref,
 		Base:         rec.DefaultBranch,
-		Persona:      modelroute.PersonaFor(modelroute.StageReview, cfg.Stages),
+		Persona:      prReviewPersona,
 		Model:        modelroute.TierOpus,
+		Effort:       prReviewEffort,
 		Profile:      account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
 		ClaudeBin:    os.Getenv(envClaudeBin),
 		ProxyBaseURL: rec.ProxyBaseURL(),

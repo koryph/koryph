@@ -540,13 +540,25 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	if r.opts.Review {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = ledger.SlotReview })
 		outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
+		reviewPersona := modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages)
+		// The reviewer's model tier stays hardcoded opus (quality-critical, never
+		// auto-downgraded — koryph-77r.8 audit). Effort was previously never
+		// threaded through at all, so the persona's own frontmatter `effort:`
+		// hint (koryph-security-reviewer: xhigh) was silently dropped; resolve it
+		// here the same way wave.go's main-dispatch path does, so the already
+		// declared effort actually takes effect.
+		reviewEffort := ""
+		if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, reviewPersona); err == nil {
+			reviewEffort = metaEffort
+		}
 		v := review.Review(ctx, review.Opts{
 			RepoRoot:     r.rec.Root,
 			Worktree:     sl.Worktree,
 			Branch:       sl.Branch,
 			Base:         r.rec.DefaultBranch,
-			Persona:      modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages),
+			Persona:      reviewPersona,
 			Model:        modelroute.TierOpus,
+			Effort:       reviewEffort,
 			Profile:      r.profile,
 			OutPath:      outPath,
 			ClaudeBin:    os.Getenv(envClaudeBin),

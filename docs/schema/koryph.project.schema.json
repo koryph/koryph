@@ -34,6 +34,10 @@
           "type": "string",
           "description": "Persona is the agent file (.claude/agents/\u003cpersona\u003e) used as the\nvalidator (default \"koryph-epic-validator\")."
         },
+        "effort": {
+          "type": "string",
+          "description": "Effort overrides the reasoning-effort hint passed to the validator agent\n(default: resolved from the validator persona's own frontmatter `effort:`\nat the engine call site — koryph-77r.8 — since epic validation is\nquality-critical and unmeasured by design, this is left empty here so\noperators opt in explicitly rather than the engine guessing a default)."
+        },
         "max_rounds": {
           "type": "integer",
           "description": "MaxRounds caps how many validation rounds the engine runs per epic before\nparking it (default 2). Beyond this cap the epic receives the label\nvalidation:parked and waits for operator intervention. Must be \u003e= 1 when\nexplicitly set (non-zero); zero resolves to the default via Effective()."

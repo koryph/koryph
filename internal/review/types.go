@@ -17,7 +17,7 @@
 //   - Review(ctx, Opts) Verdict — runs, in the worktree, the account-scoped
 //     claude CLI one-shot, retried up to Opts.Attempts times:
 //     claude -p --agent <persona> --permission-mode plan
-//     --model <model> --output-format json
+//     --model <model> [--effort <effort>] --output-format json
 //     with a prompt containing `git diff --stat <base>...<branch>` (tail 40
 //     lines) + the changed-file list, asking for STRICT JSON
 //     {"blocking": bool, "findings":[{"severity","file","summary"}]}.
@@ -53,6 +53,7 @@ type Opts struct {
 	Base       string // default branch
 	Persona    string // default koryph-security-reviewer
 	Model      string // default opus
+	Effort     string // reasoning-effort hint; empty omits --effort (runtime default)
 	Profile    account.Profile
 	OutPath    string // review.json destination
 	ClaudeBin  string // default "claude"

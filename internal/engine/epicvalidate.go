@@ -11,6 +11,7 @@ import (
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/epicreview"
+	"github.com/koryph/koryph/internal/modelroute"
 )
 
 // Epic validation — the in-loop trigger (design §2/§4/§4b,
@@ -156,6 +157,19 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 				Labels:      c.Labels,
 			})
 		}
+		// Effort precedence: explicit project.json epic_validation.effort >
+		// the validator persona's own frontmatter `effort:` hint (koryph-
+		// epic-validator: xhigh), resolved the same way wave.go's main-dispatch
+		// path already does. Epic validation is quality-critical — never
+		// auto-downgraded — so this only ever wires an already-declared effort
+		// through; it does not itself change what effort is requested
+		// (koryph-77r.8 audit).
+		validateEffort := evcfg.Effort
+		if validateEffort == "" {
+			if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, evcfg.Persona); err == nil {
+				validateEffort = metaEffort
+			}
+		}
 		opts := epicreview.Opts{
 			EpicID:          epicID,
 			EpicTitle:       epic.Title,
@@ -168,6 +182,7 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 			Profile:         r.profile,
 			Persona:         evcfg.Persona,
 			Model:           evcfg.Model,
+			Effort:          validateEffort,
 			TimeoutSec:      evcfg.TimeoutSeconds,
 			OutDir:          outDir,
 			ProxyBaseURL:    r.rec.ProxyBaseURL(),

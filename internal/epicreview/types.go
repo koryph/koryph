@@ -95,6 +95,7 @@ type Opts struct {
 	Profile    account.Profile // account profile for billing
 	Persona    string          // default koryph-epic-validator
 	Model      string          // default opus
+	Effort     string          // reasoning-effort hint; empty omits --effort (runtime default)
 	ClaudeBin  string          // default "claude"
 	TimeoutSec int             // default 420
 	Attempts   int             // validator spawn attempts before degrading (default 3)

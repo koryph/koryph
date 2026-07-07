@@ -135,17 +135,21 @@ func Validate(ctx context.Context, o Opts) Verdict {
 // degraded verdict whose Reason explains the failure so a degradation is never
 // a black box.
 func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
+	args := []string{
+		"-p",
+		"--agent", o.Persona,
+		"--permission-mode", "plan",
+		"--model", o.Model,
+		"--output-format", "json",
+	}
+	if o.Effort != "" {
+		args = append(args, "--effort", o.Effort)
+	}
 	res, err := execx.Run(ctx, execx.Cmd{
-		Dir:  o.RepoRoot,
-		Env:  account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "epicreview"}),
-		Name: o.ClaudeBin,
-		Args: []string{
-			"-p",
-			"--agent", o.Persona,
-			"--permission-mode", "plan",
-			"--model", o.Model,
-			"--output-format", "json",
-		},
+		Dir:     o.RepoRoot,
+		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "epicreview"}),
+		Name:    o.ClaudeBin,
+		Args:    args,
 		Stdin:   prompt,
 		Timeout: time.Duration(o.TimeoutSec) * time.Second,
 	})

@@ -54,9 +54,21 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		if st.Persona != "" {
 			persona = st.Persona
 		}
+		// Effort precedence: explicit stage config (project.json pipeline[].effort)
+		// > res.Effort (currently always empty — Resolve never populates it; kept
+		// for forward compat) > the stage persona's own frontmatter `effort:`
+		// hint, resolved the same way wave.go's main-dispatch path already does
+		// (koryph-77r.8 audit finding: this persona fallback was missing here, so
+		// a stage persona's declared effort — e.g. koryph-feature-docs-author's
+		// `effort: low` — was silently never applied to pipeline-stage spawns).
 		effort := st.Effort
 		if effort == "" {
 			effort = res.Effort
+		}
+		if effort == "" {
+			if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, persona); err == nil {
+				effort = metaEffort
+			}
 		}
 
 		r.progress("bead %s: stage %q running (persona %s, model %s)", sl.PhaseID, st.Name, persona, res.Model)

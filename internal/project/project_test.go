@@ -99,6 +99,7 @@ func fullConfig() *Config {
 			Enabled:          boolPtr(true),
 			Model:            "opus",
 			Persona:          "koryph-epic-validator",
+			Effort:           "xhigh",
 			MaxRounds:        3,
 			AutoClose:        boolPtr(true),
 			TimeoutSeconds:   300,

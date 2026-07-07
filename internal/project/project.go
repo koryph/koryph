@@ -205,6 +205,13 @@ type EpicValidationConfig struct {
 	// validator (default "koryph-epic-validator").
 	Persona string `json:"persona,omitempty"`
 
+	// Effort overrides the reasoning-effort hint passed to the validator agent
+	// (default: resolved from the validator persona's own frontmatter `effort:`
+	// at the engine call site — koryph-77r.8 — since epic validation is
+	// quality-critical and unmeasured by design, this is left empty here so
+	// operators opt in explicitly rather than the engine guessing a default).
+	Effort string `json:"effort,omitempty"`
+
 	// MaxRounds caps how many validation rounds the engine runs per epic before
 	// parking it (default 2). Beyond this cap the epic receives the label
 	// validation:parked and waits for operator intervention. Must be >= 1 when

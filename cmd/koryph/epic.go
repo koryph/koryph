@@ -15,6 +15,7 @@ import (
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/epicreview"
+	"github.com/koryph/koryph/internal/modelroute"
 	"github.com/koryph/koryph/internal/project"
 )
 
@@ -170,6 +171,15 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 	profile := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
 
 	// Build validator opts from config defaults + caller overrides.
+	// Same koryph-77r.8 wiring as the in-loop caller (internal/engine/
+	// epicvalidate.go): honor the validator persona's declared frontmatter
+	// effort instead of silently dropping it.
+	validateEffort := evcfg.Effort
+	if validateEffort == "" {
+		if _, metaEffort, _, err := modelroute.PersonaMeta(rec.Root, evcfg.Persona); err == nil {
+			validateEffort = metaEffort
+		}
+	}
 	opts := epicreview.Opts{
 		EpicID:          epicID,
 		EpicTitle:       epic.Title,
@@ -182,6 +192,7 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 		Profile:         profile,
 		Persona:         evcfg.Persona,
 		Model:           evcfg.Model,
+		Effort:          validateEffort,
 		TimeoutSec:      evcfg.TimeoutSeconds,
 		OutDir:          outDir,
 		ProxyBaseURL:    rec.ProxyBaseURL(),
