@@ -114,3 +114,24 @@ func TestTemplateContainsContainmentModel(t *testing.T) {
 		}
 	}
 }
+
+// TestTemplateOutputEconomy verifies the output-economy section (design:
+// docs/designs/2026-07-token-economy.md §3 L3+L4) is present in the embedded
+// AGENTS.md template and teaches the three key patterns: quiet gate
+// (make gate-agent), file-spill wrappers (koryph-spill.sh), and Read-based
+// recovery.
+func TestTemplateOutputEconomy(t *testing.T) {
+	tmpl := string(agentsmd.Template())
+	for _, fragment := range []string{
+		"make gate-agent",
+		"koryph-spill.sh",
+		"full output",
+		"Read tool",
+		"gate-agent",
+		"file-spill",
+	} {
+		if !strings.Contains(tmpl, fragment) {
+			t.Errorf("AGENTS.md template missing output-economy fragment %q", fragment)
+		}
+	}
+}

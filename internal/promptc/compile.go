@@ -76,7 +76,23 @@ contract is identical for every dispatch of this engine version.
   and again right before you finish: a nudge appended right after dispatch
   (before your first heartbeat is even polled) is otherwise invisible until
   your next check-in, and one appended near the end can still change what
-  "done" means.`
+  "done" means.
+
+## Output economy
+Gate and Bash output dominate transcript bytes; keep them small:
+
+- Prefer "make gate-agent" over "make gate". It runs identical checks with
+  the same fail-fast verdict, but prints one PASS/FAIL line per stage and
+  tees each stage's full log to $KORYPH_PHASE_DIR/gate-<stage>.log. On
+  failure it also prints a short tail so the actionable error still reaches
+  you; the full output is always recoverable via the Read tool.
+- File-spill wrappers: for any long-running command, invoke
+  hooks/koryph-spill.sh with a label and the command. The wrapper prints a
+  head+tail summary, writes the full untruncated output to a file under your
+  phase dir, and ends its summary with "full output: <path>". Recover the
+  complete output at any time with the Read tool against that path.
+- Keep your own replies concise: summaries, status lines, and code snippets;
+  skip prose narration. Long output belongs in a file, not in your response.`
 
 // projectBlock returns section [2]: stable per project. Conventions, the
 // green gate, and optional cross-cutting gates and bootstrap notes. No

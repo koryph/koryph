@@ -74,3 +74,47 @@ whether violations are caught before or after execution.
 
 Always pass non-interactive flags so a `-i`-aliased tool cannot hang on a prompt:
 `rm -f`, `rm -rf`, `cp -f`, `mv -f`; `ssh`/`scp -o BatchMode=yes`; `apt-get -y`.
+
+## Output economy — quiet gate, file-spill wrappers, Read recovery
+
+Gate and Bash output dominate transcript bytes (and therefore quota). Use the
+koryph-native reductions:
+
+### Quiet gate: `make gate-agent`
+
+Prefer `make gate-agent` over `make gate`. It runs **identical checks** in the
+**same fail-fast order** (fmt-check, build, vet, test, lint-agent, reuse) but
+prints only one `PASS`/`FAIL` line per stage. On failure it also shows a short
+tail of the failing stage's output — enough to act on — so actionable errors
+still reach you. Full raw logs are teed to `$KORYPH_PHASE_DIR/gate-<stage>.log`
+(or a repo-local scratch dir when running outside a dispatch). Recover the
+complete log with the Read tool.
+
+**Gate FAIL workflow**: read the tail in the output → fix → re-run
+`make gate-agent`. Do not re-run `make gate` just to see more output; use
+Read on the log file instead.
+
+### File-spill wrappers: `hooks/koryph-spill.sh`
+
+For any command whose output would dominate the transcript, use the generic
+file-spill wrapper:
+
+```
+hooks/koryph-spill.sh <label> -- <command…>
+```
+
+The wrapper:
+1. Runs `<command…>` and captures **all** combined stdout+stderr byte-for-byte
+   to a spill file under your phase dir.
+2. Prints a head+tail summary to stdout — you see the key lines without
+   flooding the transcript.
+3. Always ends with `full output: <path>` pointing at the spill file.
+4. Preserves the command's exit code exactly; failure signals are never eaten.
+5. Skips the spill entirely if the output is already smaller than the
+   head+tail budget (no `full output:` line → nothing to recover).
+
+### Recovery via Read
+
+Whenever you see `full output: <path>` in a gate or wrapper output, use the
+Read tool to fetch the complete file — the path is absolute and available for
+the lifetime of the dispatch. No separate download or shell command is needed.

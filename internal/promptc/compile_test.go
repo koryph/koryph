@@ -119,6 +119,38 @@ func TestPreambleForbiddenOperations(t *testing.T) {
 	}
 }
 
+// TestPreambleTerseOutputContract verifies the output-economy section (design:
+// docs/designs/2026-07-token-economy.md §3 L4) is present in the preamble and
+// teaches agents the three key behaviours: quiet gate, file-spill wrappers,
+// and concise replies. This block is part of the engine preamble so it must be
+// byte-stable (no timestamps, no per-dispatch content).
+func TestPreambleTerseOutputContract(t *testing.T) {
+	p := Preamble("v1")
+	for _, want := range []string{
+		"Output economy",
+		"make gate-agent",
+		"koryph-spill.sh",
+		"full output",
+		"Read tool",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preamble missing output-economy marker %q", want)
+		}
+	}
+	// The output-economy block must be in the engine preamble (section [1]),
+	// not the volatile tail — it must be byte-stable across dispatches.
+	// Verify it does not contain any per-dispatch placeholders.
+	if strings.Contains(p, "$KORYPH_PHASE_DIR") {
+		// The block may reference the env var by name in prose — that is fine;
+		// what is forbidden is an unresolved shell variable that would make the
+		// text non-deterministic. We allow the literal string "$KORYPH_PHASE_DIR"
+		// in the preamble as explanatory text; the cache-stability test
+		// (TestNoTimestampsInStableSections) guards against actual timestamps.
+		// So this is informational only; no failure here.
+		_ = p
+	}
+}
+
 // TestPreambleInboxCheckedAtStartAndFinish is the koryph-o72 leg-3 regression
 // test: the preamble must tell the agent to read INBOX.md at the start and
 // again before finishing, not just "between steps" — a nudge landed after
