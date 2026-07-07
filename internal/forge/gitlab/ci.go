@@ -23,23 +23,14 @@ var embeddedDocsPipelineTmpl string
 //go:embed gate-pipeline.yml.tmpl
 var embeddedGatePipelineTmpl string
 
-// defaultGateCmd is the gate command used when none is specified.
-const defaultGateCmd = "make gate"
-
 // gitlabCISvc implements [forge.CIService] for GitLab CI/CD.
 //
 // It renders forge-appropriate .gitlab-ci.yml pipeline assets using embedded
 // templates. The rc field is required for the "release" kind; gateCmd is
-// optional (defaults to [defaultGateCmd]) for the "gate" kind.
+// optional (defaults to [forge.DefaultGateCommand]) for the "gate" kind.
 type gitlabCISvc struct {
 	rc      *project.ReleaseConfig
-	gateCmd string // empty means use defaultGateCmd
-}
-
-// gitlabGateTemplateData is the view-model passed to the gate pipeline template.
-type gitlabGateTemplateData struct {
-	// GateCmd is the shell command that runs the project's green gate.
-	GateCmd string
+	gateCmd string // empty means use forge.DefaultGateCommand
 }
 
 // gitlabTemplateData is the view-model passed to the GitLab CI templates.
@@ -59,11 +50,6 @@ type gitlabTemplateData struct {
 	// Provenance enables provenance; for GitLab this is cosign keyless only
 	// (SLSA GitHub Generator is not available — gap is documented in the template).
 	Provenance bool
-}
-
-// ciTemplateFuncs provides helpers for the GitLab CI templates.
-var ciTemplateFuncs = template.FuncMap{
-	"join": func(ss []string, sep string) string { return strings.Join(ss, sep) },
 }
 
 // Render produces the content of a GitLab CI/CD pipeline asset file.
@@ -131,13 +117,9 @@ func (s *gitlabCISvc) renderDocs() ([]byte, error) {
 }
 
 // renderGate renders the green gate pipeline from the embedded template.
-// The gate command defaults to [defaultGateCmd] when none was supplied.
+// The gate command defaults to [forge.DefaultGateCommand] when none was supplied.
 func (s *gitlabCISvc) renderGate() ([]byte, error) {
-	cmd := s.gateCmd
-	if cmd == "" {
-		cmd = defaultGateCmd
-	}
-	td := gitlabGateTemplateData{GateCmd: cmd}
+	td := forge.GateTemplateData{GateCmd: forge.ResolveGateCommand(s.gateCmd)}
 	b, err := renderCITemplate("gate-pipeline.yml", embeddedGatePipelineTmpl, td)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab CI: render gate pipeline: %w", err)
@@ -172,7 +154,7 @@ func buildGitLabTemplateData(rc *project.ReleaseConfig) gitlabTemplateData {
 
 // renderCITemplate parses and executes a text/template source against data.
 func renderCITemplate(name, src string, data any) ([]byte, error) {
-	tmpl, err := template.New(name).Funcs(ciTemplateFuncs).Parse(src)
+	tmpl, err := template.New(name).Funcs(forge.TemplateFuncs).Parse(src)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
