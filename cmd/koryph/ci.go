@@ -261,20 +261,34 @@ func resolveKinds(cmd, kindFlag string, stderr io.Writer) ([]string, int) {
 // project-scoped provider instance is built with the gate command wired; for
 // other providers the base CI() service is returned unchanged.
 func buildCIService(f forge.Forge, cfg *project.Config, gateCmd string) forge.CIService {
-	if gateCmd == "" {
+	// Nothing project-scoped to inject (no gate override, no per-project
+	// copyright) → the base provider service, unchanged.
+	if gateCmd == "" && cfg.Copyright == nil {
 		return f.CI()
 	}
 	switch f.Name() {
 	case "github":
-		opts := []github.Option{github.WithGateCommand(gateCmd)}
+		var opts []github.Option
+		if gateCmd != "" {
+			opts = append(opts, github.WithGateCommand(gateCmd))
+		}
 		if cfg.Release != nil {
 			opts = append(opts, github.WithReleaseConfig(cfg.Release))
 		}
+		if cfg.Copyright != nil {
+			opts = append(opts, github.WithCopyright(cfg.Copyright))
+		}
 		return github.New(opts...).CI()
 	case "gitlab":
-		opts := []gitlab.Option{gitlab.WithGateCommand(gateCmd)}
+		var opts []gitlab.Option
+		if gateCmd != "" {
+			opts = append(opts, gitlab.WithGateCommand(gateCmd))
+		}
 		if cfg.Release != nil {
 			opts = append(opts, gitlab.WithReleaseConfig(cfg.Release))
+		}
+		if cfg.Copyright != nil {
+			opts = append(opts, gitlab.WithCopyright(cfg.Copyright))
 		}
 		return gitlab.New(opts...).CI()
 	}

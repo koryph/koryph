@@ -27,11 +27,16 @@ func ResolveGateCommand(override string) string {
 
 // GateTemplateData is the view-model passed to a provider's gate
 // workflow/pipeline template. Both the GitHub and GitLab gate templates
-// reference only {{.GateCmd}}, so they share this type; it does not couple
+// reference the same fields, so they share this type; it does not couple
 // the two providers' distinct template sources together.
 type GateTemplateData struct {
 	// GateCmd is the shell command that runs the project's green gate.
 	GateCmd string
+	// Copyright is the SPDX-FileCopyrightText value ("<year> <holder>") and
+	// License the SPDX-License-Identifier stamped into the generated file's
+	// header (koryph-s6g). Both providers' gate templates reference them.
+	Copyright string
+	License   string
 }
 
 // TemplateFuncs is the [text/template.FuncMap] shared by every provider's CI

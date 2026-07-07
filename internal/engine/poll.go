@@ -453,6 +453,12 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 	}
 	r.reportRateLimit(sl.PhaseID)
 
+	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q), even
+	// though a rate-limit requeue burns no attempt — over the cap is over the cap.
+	if r.parkForRunBudget(sl) {
+		return
+	}
+
 	if sl.RateLimitRequeues >= rateLimitedRequeueBudget {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
@@ -491,6 +497,13 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		note:              "rate-limited requeue",
 		rateLimitRequeues: requeues,
 		wipSnapshotPath:   wipSnapshot,
+		// Freeze the model resolution from the first attempt (koryph-ehx) —
+		// see requeueSlot's identical comment. A rate-limit requeue is the
+		// same attempt continuing, so it must re-run the same model.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward (koryph-2im.3): a requeue is
 		// the SAME bead attempt continuing, not a relabeled re-evaluation, so
 		// in-flight gating must stay exact across it rather than falling back
@@ -585,6 +598,13 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.DeathReason = deathReasonBudgetKilled })
 	logBudgetKilled(sl.PhaseID, sl.Attempts, sl.CostUSD)
 
+	// Run --budget exhausted: park instead of a warm-resume requeue (koryph-u7q).
+	// The per-agent budget kill already fired; spending another attempt would
+	// also breach the whole-run ceiling.
+	if r.parkForRunBudget(sl) {
+		return
+	}
+
 	thrashing := commits == 0 && totalAttemptTokens(usage) >= thrashGuardTokenFloor
 	if sl.BudgetKillRequeues >= budgetKillRequeueBudget || thrashing {
 		why := "budget-killed twice in a row"
@@ -641,6 +661,13 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		note:               "budget-killed requeue",
 		budgetKillRequeues: requeues,
 		wipSnapshotPath:    wipSnapshot,
+		// Freeze the model resolution from the first attempt (koryph-ehx) —
+		// see requeueSlot's identical comment. A budget-kill warm-resume must
+		// re-run the same model the bead was originally dispatched with.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,
@@ -1091,6 +1118,31 @@ func prBody(iss beads.Issue, runID string) string {
 	return b.String()
 }
 
+// parkForRunBudget refuses a requeue when the per-run --budget cap is exhausted
+// (koryph-u7q): re-dispatching would spend past a ceiling the operator set, and
+// requeues run INSIDE pollUntilIdle where the wave-boundary budget gate never
+// sees them — that hole let a run sail past --budget one retry at a time.
+// Instead it parks the slot terminal (needs-attention) and returns true. false
+// means the budget still has room and the caller should proceed with the
+// requeue. Mirrors the budget-KILL park (SlotBlocked + note + release), so the
+// bead stays claimed for operator resolution rather than being silently retried.
+func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
+	if !r.budgetExhausted() {
+		return false
+	}
+	note := fmt.Sprintf(
+		"needs-attention: run --budget cap reached ($%.2f projected >= $%.2f) — parked without re-dispatch (accumulated cost $%.2f); raise --budget or resume the run",
+		r.projectedRunCostUSD(), r.opts.BudgetUSD, sl.CostUSD)
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotBlocked
+		s.Note = note
+	})
+	r.releaseGlobalSlot(sl.PhaseID) // terminal: free the reserved/held slot
+	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
+	logSlotBlocked(sl.PhaseID, note)
+	return true
+}
+
 // requeueSlot re-dispatches a slot: backoff, refresh the worktree onto current
 // main, then the same dispatch flow with the branch HEAD as ResumeSHA and (when
 // the manifest carries a session id and the worktree survives) a native session
@@ -1102,6 +1154,10 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	// running; without this check the engine would waste a full re-dispatch on
 	// a bead the operator has already retired (live repro koryph-pln).
 	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
+		return
+	}
+	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q).
+	if r.parkForRunBudget(sl) {
 		return
 	}
 	attempt := sl.Attempts + 1
@@ -1140,6 +1196,15 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		gateRequeues:  sl.GateRequeues,
 		mergeRequeues: sl.MergeRequeues,
 		note:          why,
+		// Freeze the model resolution from the first attempt (koryph-ehx): a
+		// requeue re-runs the SAME model/persona/effort the bead was dispatched
+		// with, so a `model:*` relabel mid-run (or non-deterministic
+		// persona-tier resolution) cannot silently switch a retry to the wrong
+		// model. Same freeze rationale as the footprint just below.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward too (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,

@@ -58,7 +58,11 @@ type govGate struct {
 	advisory      bool
 	usage         quota.Usage
 	budgetHit     bool
-	width         int
+	// uncalibratedBlock is set when --require-calibration (or the project's
+	// require_calibration) refuses dispatch because the governor is uncalibrated
+	// (koryph-grz). Distinct reason so the pause is not mislabeled quota-*.
+	uncalibratedBlock bool
+	width             int
 
 	// paused is set when the gate itself already finalized the run — either
 	// paused-quota (quota-stop with nothing active) or operator-drain-with-
@@ -79,6 +83,14 @@ type govGate struct {
 	// instead of a quota-* one, on the off chance the sentinel is consumed by
 	// something else between this gate and that check.
 	operatorDrain bool
+}
+
+// requireCalibration reports whether this run hard-blocks dispatch while the
+// quota governor is uncalibrated (koryph-grz): the --require-calibration run
+// flag or the project's require_calibration config. Opt-in; default false
+// preserves the fresh-install "advisory, don't deadlock" behavior.
+func (r *runner) requireCalibration() bool {
+	return r.opts.RequireCalibration || (r.cfg != nil && r.cfg.RequireCalibration)
 }
 
 // governorGate runs the governor/billing/budget checks once per wave or
@@ -103,6 +115,26 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	r.lastQuotaUsage = usage
 
 	g := govGate{allowDispatch: true, level: level, calibrated: calibrated, advisory: advisory, usage: usage}
+
+	// Uncalibrated governor (koryph-grz): the fresh-install state where both
+	// ceilings are 0, so the governor cannot enforce the 5h/weekly spend ladder
+	// and passes advisory. This USED to be silent (the advisory branch above
+	// only logs when level != OK, but an uncalibrated account reports OK) — so
+	// an operator had no signal spend limits weren't enforced. Warn loudly once
+	// per run, and hard-block when the operator opted into --require-calibration.
+	if !calibrated {
+		if r.requireCalibration() {
+			g.allowDispatch = false
+			g.uncalibratedBlock = true
+			if !r.uncalibratedWarned {
+				r.uncalibratedWarned = true
+				r.progress("!!! quota governor UNCALIBRATED for account %q and --require-calibration is set — refusing to dispatch. Run `koryph quota calibrate` (or `koryph calibrate`) to set a ceiling.", r.quotaName())
+			}
+		} else if !r.uncalibratedWarned {
+			r.uncalibratedWarned = true
+			r.progress("WARNING: quota governor UNCALIBRATED for account %q — 5h/weekly spend limits are NOT enforced this run. Run `koryph quota calibrate` (or `koryph calibrate`) to enable enforcement, or pass --require-calibration to hard-block until then.", r.quotaName())
+		}
+	}
 
 	if !r.opts.Manual && !advisory {
 		// eff is the effective ladder for logging threshold annotations.
@@ -181,13 +213,14 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	}
 	g.width = width
 
-	// Per-run budget ceiling: once cumulative run cost reaches the cap, stop
-	// starting new agents; any active slots still finish.
+	// Per-run budget ceiling: once projected run cost (settled + in-flight
+	// estimates, koryph-u7q) reaches the cap, stop starting new agents; any
+	// active slots still finish.
 	if r.opts.BudgetUSD > 0 {
-		if spent := r.runCostUSD(); spent >= r.opts.BudgetUSD {
+		if spent := r.projectedRunCostUSD(); spent >= r.opts.BudgetUSD {
 			g.budgetHit = true
 			if g.allowDispatch {
-				r.progress("run budget reached: $%.2f spent >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
+				r.progress("run budget reached: $%.2f projected >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
 			}
 			g.allowDispatch = false
 		}
@@ -264,6 +297,9 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			if budgetHit {
 				reason = "budget-cap"
 			}
+			if gate.uncalibratedBlock {
+				reason = "governor-uncalibrated"
+			}
 			if gate.operatorDrain {
 				reason = "operator-drain"
 			}
@@ -314,6 +350,16 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			r.warnIfOverFairShare()
 			stagger := r.staggerDelay()
 			for i, it := range w.Items {
+				// Per-run budget cap, re-checked per item (koryph-u7q): each
+				// dispatch above added its estimate to projected spend (via the
+				// now-running slot), so a single wide wave stops the moment
+				// projected cost reaches the cap instead of dispatching the whole
+				// batch and only settling past it later.
+				if r.budgetExhausted() {
+					r.progress("wave %d: run budget reached ($%.2f projected >= $%.2f cap) — deferring %d bead(s)",
+						r.run.Wave, r.projectedRunCostUSD(), r.opts.BudgetUSD, len(w.Items)-i)
+					break
+				}
 				if i > 0 && stagger > 0 {
 					select {
 					case <-ctx.Done():
@@ -321,11 +367,13 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 					case <-time.After(stagger):
 					}
 				}
-				// Global concurrency cap (across all projects). A denial defers
-				// the rest of this wave — same-project shares won't free up until
-				// a running agent finishes — so break and re-scan next wave.
+				// Global concurrency cap (across all projects) or the memory
+				// admission floor (koryph-930). A denial defers the rest of this
+				// wave — same-project shares won't free up until a running agent
+				// finishes, and memory won't either — so break and re-scan next
+				// wave. acquireGlobalSlot logs the specific reason when it's memory.
 				if !r.acquireGlobalSlot(it.Issue.ID) {
-					r.progress("wave %d: global governor cap reached — deferring %d bead(s) to a later wave",
+					r.progress("wave %d: global governor cap or memory floor reached — deferring %d bead(s) to a later wave",
 						r.run.Wave, len(w.Items)-i)
 					break
 				}
@@ -419,8 +467,10 @@ func (r *runner) billingFor(level quota.Level) (account.BillingMode, string) {
 	return account.BillingSubscription, ""
 }
 
-// runCostUSD is the cumulative recorded cost of every slot in this run — the
-// figure the per-run --budget ceiling is measured against.
+// runCostUSD is the cumulative recorded (settled) cost of every slot in this
+// run. It only reflects attempts that have COMPLETED — a running agent's cost
+// lands in CostUSD at completeSlot — so on its own it reads $0 for a wave that
+// is still in flight. Use projectedRunCostUSD for budget admission.
 func (r *runner) runCostUSD() float64 {
 	var total float64
 	for _, sl := range r.run.Slots {
@@ -429,6 +479,35 @@ func (r *runner) runCostUSD() float64 {
 		}
 	}
 	return total
+}
+
+// projectedRunCostUSD is the budget-admission figure (koryph-u7q): settled cost
+// PLUS each still-running slot's dispatch-time estimate. Without the in-flight
+// term, runCostUSD reads $0 until agents complete, so a whole wave (or a
+// requeue) could be admitted after the cap was already committed and only settle
+// past it later — the "budget sails past the cap" bug. EstimateUSD is the
+// per-attempt estimate stamped at dispatch (bias-corrected when samples exist),
+// and CostUSD already carries prior attempts' accumulated cost, so a running
+// slot contributes prior-spend + this-attempt-estimate.
+func (r *runner) projectedRunCostUSD() float64 {
+	var total float64
+	for _, sl := range r.run.Slots {
+		if sl == nil {
+			continue
+		}
+		total += sl.CostUSD
+		if sl.Status == ledger.SlotRunning {
+			total += sl.EstimateUSD
+		}
+	}
+	return total
+}
+
+// budgetExhausted reports whether the per-run --budget ceiling is set and
+// projected spend has reached it — the shared admission predicate for both
+// fresh dispatch and requeue (koryph-u7q). Zero/absent BudgetUSD means no cap.
+func (r *runner) budgetExhausted() bool {
+	return r.opts.BudgetUSD > 0 && r.projectedRunCostUSD() >= r.opts.BudgetUSD
 }
 
 // onlyBead narrows a frontier to the single bead with id, or empty when it is
@@ -655,6 +734,77 @@ type dispatchReq struct {
 	// each attempt's usage rather than overwriting it. Zero value on a fresh
 	// first-attempt dispatch.
 	accumulatedTokens dispatch.TokenUsage
+	// frozenModel/frozenPersona/frozenModelWhy/frozenEffort carry the model
+	// resolution forward from the first attempt so every requeue re-runs the
+	// SAME model, persona, and effort the bead was originally dispatched with
+	// (koryph-ehx). Mirrors the footprint field's freeze rationale exactly: a
+	// requeue is the SAME bead attempt continuing, not a relabeled
+	// re-evaluation, so a `model:*`/`runtime:*` relabel mid-run (or any
+	// non-determinism in the persona-tier resolution chain) must NOT change
+	// which model a retry runs — otherwise a bead dispatched on opus can
+	// silently finish on haiku (or vice-versa). dispatchBead skips
+	// modelroute.Resolve entirely when frozenModel != "". Empty frozenModel on
+	// a fresh first-attempt dispatch means "resolve normally".
+	frozenModel    string
+	frozenPersona  string
+	frozenModelWhy string
+	frozenEffort   string
+}
+
+// resolveModel decides which model, persona, and effort a dispatch runs under.
+//
+// On a requeue (q.frozenModel set) the first attempt's resolution is reused
+// verbatim (koryph-ehx): a `model:*`/`runtime:*` relabel mid-run — or any
+// non-determinism in the persona-tier resolution chain — must NOT change which
+// model a retry runs, exactly as the persisted footprint cannot change what a
+// retry conflicts with. On a fresh dispatch it resolves from the bead's live
+// labels through the full modelroute precedence.
+func (r *runner) resolveModel(q dispatchReq, runtimeName string) (modelroute.Resolution, string, error) {
+	if q.frozenModel != "" {
+		return modelroute.Resolution{
+			Model:     q.frozenModel,
+			Persona:   q.frozenPersona,
+			Effort:    q.frozenEffort,
+			Rationale: q.frozenModelWhy,
+		}, q.frozenEffort, nil
+	}
+
+	// Auto-filed docs-update beads (epic validation §4b, label validation:docs)
+	// dispatch as the docs stage: PersonaFor(StageDocs) routes them to the
+	// docs-author persona instead of the implementer. Everything else stays
+	// implement-stage.
+	stage := modelroute.StageImplement
+	if q.issue.HasLabel(epicreview.LabelDocs) {
+		stage = modelroute.StageDocs
+	}
+	res, err := modelroute.Resolve(modelroute.Req{
+		Stage:         stage,
+		Labels:        q.issue.Labels,
+		RunDefault:    r.opts.DefaultModel,
+		AllowedModels: r.rec.AllowedModels,
+		Stages:        r.cfg.Stages,
+		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
+		// step inside Resolve: a bead model:<tier> label still wins unchanged;
+		// absent that, the implement-stage persona's `tier` frontmatter
+		// resolves through the selected runtime's ModelMap (overlaid with the
+		// project's ModelMap override) before falling back to the persona's
+		// legacy `model` pin and finally the runtime-namespaced hardcoded
+		// stage default (koryph-v8u.3).
+		RepoRoot: r.rec.Root,
+		ModelMap: r.cfg.ModelMap,
+		Runtime:  runtimeName,
+	})
+	if err != nil {
+		return modelroute.Resolution{}, "", err
+	}
+	// Persona metadata: the meta model/tier never override the resolved tier
+	// here (Resolve already folded persona tier/model into res.Model above, per
+	// koryph-v8u.10); only the effort hint is taken from this second read.
+	effort := res.Effort
+	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, res.Persona); err == nil && effort == "" {
+		effort = metaEffort
+	}
+	return res, effort, nil
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -694,42 +844,10 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		return
 	}
 
-	// Auto-filed docs-update beads (epic validation §4b, label validation:docs)
-	// dispatch as the docs stage: PersonaFor(StageDocs) routes them to the
-	// docs-author persona instead of the implementer. Everything else stays
-	// implement-stage.
-	stage := modelroute.StageImplement
-	if q.issue.HasLabel(epicreview.LabelDocs) {
-		stage = modelroute.StageDocs
-	}
-	res, err := modelroute.Resolve(modelroute.Req{
-		Stage:         stage,
-		Labels:        q.issue.Labels,
-		RunDefault:    r.opts.DefaultModel,
-		AllowedModels: r.rec.AllowedModels,
-		Stages:        r.cfg.Stages,
-		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
-		// step inside Resolve: a bead model:<tier> label (above) still wins
-		// unchanged; absent that, the implement-stage persona's `tier`
-		// frontmatter resolves through the selected runtime's ModelMap
-		// (overlaid with the project's ModelMap override) before falling
-		// back to the persona's legacy `model` pin and finally the
-		// runtime-namespaced hardcoded stage default (koryph-v8u.3).
-		RepoRoot: r.rec.Root,
-		ModelMap: r.cfg.ModelMap,
-		Runtime:  runtimeName,
-	})
+	res, effort, err := r.resolveModel(q, runtimeName)
 	if err != nil {
 		r.blockSlot(beadID, q, "model resolution: "+err.Error())
 		return
-	}
-	// Persona metadata: the meta model/tier never override the resolved
-	// tier here (Resolve already folded persona tier/model into res.Model
-	// above, per koryph-v8u.10); only the effort hint is taken from this
-	// second read.
-	effort := res.Effort
-	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, res.Persona); err == nil && effort == "" {
-		effort = metaEffort
 	}
 
 	branch := worktree.BranchFor(beadID)

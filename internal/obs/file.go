@@ -34,9 +34,17 @@ func telemetryDirPath() string {
 // file is renamed to koryph-YYYYMMDD-HHmmssZ.jsonl and a fresh
 // koryph-YYYYMMDD.jsonl is started.
 //
+// When dir is "" the directory is resolved lazily at the first open (and
+// again after each rotation that closes the active file) by calling
+// telemetryDirPath(). This means the KORYPH_HOME env var is read at write
+// time rather than at construction, so test code that changes KORYPH_HOME
+// via t.Setenv gets the right isolated directory instead of the value that
+// was in effect when the package-level logger was initialised.
+//
 // fileWriter is goroutine-safe via mu.
 type fileWriter struct {
-	dir          string
+	dir          string // explicit dir, or "" for lazy resolution
+	resolvedDir  string // dir of the currently open file; "" until first open or after rotation
 	maxSizeBytes int64
 	mu           sync.Mutex
 	current      *os.File
@@ -78,22 +86,25 @@ func (fw *fileWriter) ensureOpen() error {
 	now := time.Now().UTC()
 	today := now.Format("20060102")
 
-	// Rotate on date change.
+	// Rotate on date change: close and clear so the next block opens a fresh file.
 	if fw.current != nil && fw.currentDate != today {
 		_ = fw.current.Close()
 		fw.current = nil
 		fw.currentSize = 0
+		fw.resolvedDir = ""
 	}
 
-	// Rotate on size cap.
+	// Rotate on size cap: rename the full file, then clear so a fresh one opens.
 	if fw.current != nil && fw.currentSize >= fw.maxSizeBytes {
 		stamp := now.Format("150405")
 		// E.g. koryph-20260704.jsonl → koryph-20260704-123456.jsonl
-		oldName := filepath.Join(fw.dir, "koryph-"+fw.currentDate+".jsonl")
-		newName := filepath.Join(fw.dir, "koryph-"+fw.currentDate+"-"+stamp+".jsonl")
+		// Use resolvedDir (the dir of the file that is currently open).
+		oldName := filepath.Join(fw.resolvedDir, "koryph-"+fw.currentDate+".jsonl")
+		newName := filepath.Join(fw.resolvedDir, "koryph-"+fw.currentDate+"-"+stamp+".jsonl")
 		_ = fw.current.Close()
 		fw.current = nil
 		fw.currentSize = 0
+		fw.resolvedDir = ""
 		_ = os.Rename(oldName, newName) // best-effort; if it fails we overwrite
 	}
 
@@ -101,13 +112,23 @@ func (fw *fileWriter) ensureOpen() error {
 		return nil
 	}
 
+	// Resolve the directory: honour an explicit dir or read KORYPH_HOME lazily.
+	// Lazy resolution (dir=="") means the KORYPH_HOME value in effect at the
+	// time of the first write is used, not the value at logger construction — so
+	// tests that set KORYPH_HOME via t.Setenv get the correct isolated path.
+	dir := fw.dir
+	if dir == "" {
+		dir = telemetryDirPath()
+	}
+	fw.resolvedDir = dir
+
 	// Ensure the directory exists.
-	if err := os.MkdirAll(fw.dir, 0o700); err != nil {
-		return fmt.Errorf("obs file: mkdir %s: %w", fw.dir, err)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("obs file: mkdir %s: %w", dir, err)
 	}
 
 	fw.currentDate = today
-	path := filepath.Join(fw.dir, "koryph-"+today+".jsonl")
+	path := filepath.Join(dir, "koryph-"+today+".jsonl")
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("obs file: open %s: %w", path, err)
@@ -129,6 +150,7 @@ func (fw *fileWriter) Close() error {
 		err := fw.current.Close()
 		fw.current = nil
 		fw.currentSize = 0
+		fw.resolvedDir = ""
 		return err
 	}
 	return nil

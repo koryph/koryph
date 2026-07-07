@@ -29,8 +29,9 @@ var embeddedGatePipelineTmpl string
 // templates. The rc field is required for the "release" kind; gateCmd is
 // optional (defaults to [forge.DefaultGateCommand]) for the "gate" kind.
 type gitlabCISvc struct {
-	rc      *project.ReleaseConfig
-	gateCmd string // empty means use forge.DefaultGateCommand
+	rc        *project.ReleaseConfig
+	gateCmd   string                   // empty means use forge.DefaultGateCommand
+	copyright *project.CopyrightConfig // nil ⇒ built-in default SPDX header
 }
 
 // gitlabTemplateData is the view-model passed to the GitLab CI templates.
@@ -50,6 +51,17 @@ type gitlabTemplateData struct {
 	// Provenance enables provenance; for GitLab this is cosign keyless only
 	// (SLSA GitHub Generator is not available — gap is documented in the template).
 	Provenance bool
+	// Copyright is the SPDX-FileCopyrightText value and License the
+	// SPDX-License-Identifier stamped in the rendered file's header (koryph-s6g).
+	Copyright string
+	License   string
+}
+
+// pipelineHeaderData carries just the SPDX header fields for templates (like the
+// docs pipeline) that have no other view-model (koryph-s6g).
+type pipelineHeaderData struct {
+	Copyright string
+	License   string
 }
 
 // Render produces the content of a GitLab CI/CD pipeline asset file.
@@ -99,6 +111,8 @@ func (s *gitlabCISvc) renderRelease() ([]byte, error) {
 			"build the provider with gitlab.WithReleaseConfig(rc)")
 	}
 	td := buildGitLabTemplateData(s.rc)
+	td.Copyright = s.copyright.FileCopyrightText()
+	td.License = s.copyright.LicenseID()
 	b, err := renderCITemplate("release-pipeline.yml", embeddedReleasePipelineTmpl, td)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab CI: render release pipeline: %w", err)
@@ -109,7 +123,8 @@ func (s *gitlabCISvc) renderRelease() ([]byte, error) {
 // renderDocs renders the GitLab Pages docs-publish pipeline. This kind does
 // not require a ReleaseConfig.
 func (s *gitlabCISvc) renderDocs() ([]byte, error) {
-	b, err := renderCITemplate("docs-pipeline.yml", embeddedDocsPipelineTmpl, nil)
+	hd := pipelineHeaderData{Copyright: s.copyright.FileCopyrightText(), License: s.copyright.LicenseID()}
+	b, err := renderCITemplate("docs-pipeline.yml", embeddedDocsPipelineTmpl, hd)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab CI: render docs pipeline: %w", err)
 	}
@@ -119,7 +134,11 @@ func (s *gitlabCISvc) renderDocs() ([]byte, error) {
 // renderGate renders the green gate pipeline from the embedded template.
 // The gate command defaults to [forge.DefaultGateCommand] when none was supplied.
 func (s *gitlabCISvc) renderGate() ([]byte, error) {
-	td := forge.GateTemplateData{GateCmd: forge.ResolveGateCommand(s.gateCmd)}
+	td := forge.GateTemplateData{
+		GateCmd:   forge.ResolveGateCommand(s.gateCmd),
+		Copyright: s.copyright.FileCopyrightText(),
+		License:   s.copyright.LicenseID(),
+	}
 	b, err := renderCITemplate("gate-pipeline.yml", embeddedGatePipelineTmpl, td)
 	if err != nil {
 		return nil, fmt.Errorf("gitlab CI: render gate pipeline: %w", err)

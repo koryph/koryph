@@ -232,6 +232,7 @@ execute one engine run over a project
 | `--only` | string |  | dispatch only this specific ready bead id |
 | `--parent` | string |  | epic scope for the bd frontier |
 | `--project` | string |  | project id (required) |
+| `--require-calibration` | bool |  | refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run `koryph quota calibrate` first |
 | `--resume` | bool |  | classify and re-dispatch the latest run first |
 | `--review` | bool |  | post-implementation review pass before merge |
 
@@ -720,6 +721,7 @@ set the machine-wide cap
 | `--hard-max` | int |  | absolute ceiling for upward probing under --adaptive (default 2x --max-global) |
 | `--max-global` | int |  | cap on concurrently running agents in this pool (required, > 0) |
 | `--min-dispatch-interval` | int |  | minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%) |
+| `--min-free-memory-mb` | int |  | memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global |
 | `--provider` | string |  | governor pool to configure (default: anthropic) — koryph-v8u.11 independent per-provider pools |
 | `--settle-sec` | int |  | settle window after any cap change, under --adaptive (default 120) |
 

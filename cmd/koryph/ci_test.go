@@ -14,9 +14,24 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 )
 
-// registerProjectForCI registers a project with a GitHub forge and a
+// registerProjectForCI registers a project with a GitHub forge and a minimal
 // koryph.project.json pointing at the given root.
 func registerProjectForCI(t *testing.T, id, root string) {
+	t.Helper()
+	registerProjectForCIJSON(t, id, root, `{
+  "schema_version": 1,
+  "project_id": "`+id+`",
+  "work_source": "bd",
+  "gate": ["make gate"],
+  "merge_policy": "manual",
+  "risk_tier_default": 2,
+  "forge": "github"
+}`)
+}
+
+// registerProjectForCIJSON is registerProjectForCI with a caller-supplied
+// koryph.project.json body, so tests can add blocks like "copyright".
+func registerProjectForCIJSON(t *testing.T, id, root, projJSON string) {
 	t.Helper()
 	ctx := context.Background()
 	store := registry.NewStore()
@@ -34,16 +49,6 @@ func registerProjectForCI(t *testing.T, id, root string) {
 	if err := store.Add(ctx, rec); err != nil {
 		t.Fatalf("store.Add: %v", err)
 	}
-	// Write minimal koryph.project.json.
-	projJSON := `{
-  "schema_version": 1,
-  "project_id": "` + id + `",
-  "work_source": "bd",
-  "gate": ["make gate"],
-  "merge_policy": "manual",
-  "risk_tier_default": 2,
-  "forge": "github"
-}`
 	if err := os.WriteFile(filepath.Join(root, "koryph.project.json"), []byte(projJSON), 0o644); err != nil {
 		t.Fatalf("write koryph.project.json: %v", err)
 	}
@@ -184,4 +189,42 @@ func TestCIUnknownSubcommandError(t *testing.T) {
 	if code != engine.ExitUsage {
 		t.Errorf("code = %d, want usage error (stderr=%s)", code, errb)
 	}
+}
+
+// TestCISetupPerProjectCopyright is the koryph-s6g end-to-end proof: a project
+// that declares a "copyright" block gets ITS OWN SPDX header in the installed CI
+// asset, not koryph's default holder.
+func TestCISetupPerProjectCopyright(t *testing.T) {
+	isolate(t)
+	root := gitRepo(t)
+	registerProjectForCIJSON(t, "cpright", root, `{
+  "schema_version": 1,
+  "project_id": "cpright",
+  "work_source": "bd",
+  "gate": ["make gate"],
+  "merge_policy": "manual",
+  "risk_tier_default": 2,
+  "forge": "github",
+  "copyright": {"holder": "Acme, Inc.", "year": "2024-2026", "license": "MIT"}
+}`)
+
+	if code, out, errb := runCmd("ci", "setup", "--project", "cpright", "--kind", "gate"); code != 0 {
+		t.Fatalf("ci setup: code = %d (stdout=%s stderr=%s)", code, out, errb)
+	}
+
+	b, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "koryph-gate.yml"))
+	if err != nil {
+		t.Fatalf("read installed gate workflow: %v", err)
+	}
+	s := string(b)
+	// REUSE-IgnoreStart
+	for _, frag := range []string{"SPDX-FileCopyrightText: " + "(c) 2024-2026 Acme, Inc.", "SPDX-License-Identifier: " + "MIT"} {
+		if !strings.Contains(s, frag) {
+			t.Errorf("installed workflow missing per-project header %q:\n%s", frag, s)
+		}
+	}
+	if strings.Contains(s, "The Koryph Developers") {
+		t.Errorf("koryph's default holder leaked into cpright's generated workflow:\n%s", s)
+	}
+	// REUSE-IgnoreEnd
 }

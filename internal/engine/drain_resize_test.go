@@ -13,6 +13,26 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 )
 
+// drainResizeDeadlines holds the generous per-phase deadlines used by the
+// drain and resize tests. The fake claude sleeps KORYPH_TEST_SLOW_SECONDS
+// (nominally 3 s) to hold a slot open; under extreme host load (observed
+// load-avg 208 from concurrent gates + live koryph loops) system scheduling
+// inflates that sleep and every intermediate git/subprocess step 6x or more.
+// The deadlines below are sized for a >10x inflation while remaining fast
+// (<10 s total per test) on a quiet machine (koryph-b0k).
+const (
+	// drainDispatchTimeout is how long to wait for tb1's DispatchedAt to
+	// appear in the ledger. Dispatch involves a git-worktree-add + subprocess
+	// spawn; inflate the 1–2 s baseline by 15x to tolerate heavy load.
+	drainDispatchTimeout = 30 * time.Second
+	// drainEffectTimeout is how long to wait for a drain/resize log line or
+	// ledger entry to appear after the sentinel/override is written.
+	drainEffectTimeout = 30 * time.Second
+	// drainFinalTimeout is the backstop for the engine's Run() to return.
+	// slowClaudeScript sleeps 3 s; inflate by 30x for extreme-load tolerance.
+	drainFinalTimeout = 90 * time.Second
+)
+
 // --- operator drain (koryph-57v.1) ------------------------------------------
 
 // TestRollingOperatorDrainFinishesActiveThenExitsImmediately proves the whole
@@ -54,7 +74,7 @@ func TestRollingOperatorDrainFinishesActiveThenExitsImmediately(t *testing.T) {
 	}()
 
 	store := ledger.NewStore(f.repo)
-	dispatched := waitForCondition(5*time.Second, func() bool {
+	dispatched := waitForCondition(drainDispatchTimeout, func() bool {
 		run, err := store.LoadLatest()
 		return err == nil && run != nil && run.Slots["tb1"] != nil && run.Slots["tb1"].DispatchedAt != ""
 	})
@@ -66,7 +86,7 @@ func TestRollingOperatorDrainFinishesActiveThenExitsImmediately(t *testing.T) {
 		t.Fatalf("RequestDrain: %v", err)
 	}
 
-	sawDrain := waitForCondition(6*time.Second, func() bool {
+	sawDrain := waitForCondition(drainEffectTimeout, func() bool {
 		return strings.Contains(out.String(), "operator drain: no new dispatch")
 	})
 	if !sawDrain {
@@ -98,7 +118,7 @@ func TestRollingOperatorDrainFinishesActiveThenExitsImmediately(t *testing.T) {
 		if store.DrainRequested() {
 			t.Error("drain sentinel was not consumed on the operator-drain exit")
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(drainFinalTimeout):
 		t.Fatalf("Run did not complete in time; log:\n%s", out.String())
 	}
 }
@@ -133,7 +153,7 @@ func TestWaveOperatorDrainFinishesActiveThenExitsImmediately(t *testing.T) {
 	}()
 
 	store := ledger.NewStore(f.repo)
-	dispatched := waitForCondition(5*time.Second, func() bool {
+	dispatched := waitForCondition(drainDispatchTimeout, func() bool {
 		run, err := store.LoadLatest()
 		return err == nil && run != nil && run.Slots["tb1"] != nil && run.Slots["tb1"].DispatchedAt != ""
 	})
@@ -170,7 +190,7 @@ func TestWaveOperatorDrainFinishesActiveThenExitsImmediately(t *testing.T) {
 		if store.DrainRequested() {
 			t.Error("drain sentinel was not consumed on the operator-drain exit")
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(drainFinalTimeout):
 		t.Fatalf("Run did not complete in time; log:\n%s", out.String())
 	}
 }
@@ -245,7 +265,7 @@ func TestRollingResizeOverrideRaisesWidthWithoutRestart(t *testing.T) {
 	}()
 
 	store := ledger.NewStore(f.repo)
-	dispatched := waitForCondition(5*time.Second, func() bool {
+	dispatched := waitForCondition(drainDispatchTimeout, func() bool {
 		run, err := store.LoadLatest()
 		return err == nil && run != nil && run.Slots["tb1"] != nil && run.Slots["tb1"].DispatchedAt != ""
 	})
@@ -258,7 +278,7 @@ func TestRollingResizeOverrideRaisesWidthWithoutRestart(t *testing.T) {
 	}
 
 	var tb1StillActiveWhenTb2Dispatched bool
-	ok := waitForCondition(8*time.Second, func() bool {
+	ok := waitForCondition(drainEffectTimeout, func() bool {
 		run, err := store.LoadLatest()
 		if err != nil || run == nil {
 			return false
@@ -287,7 +307,7 @@ func TestRollingResizeOverrideRaisesWidthWithoutRestart(t *testing.T) {
 		if r.got.Dispatched != 2 || r.got.Merged != 2 {
 			t.Errorf("Outcome = %+v, want 2 dispatched / 2 merged", r.got)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(drainFinalTimeout):
 		t.Fatalf("Run did not complete in time; log:\n%s", out.String())
 	}
 }

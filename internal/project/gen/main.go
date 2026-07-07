@@ -30,14 +30,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	out := filepath.Join(repoRoot, project.SchemaRelPath)
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "schemagen: %v\n", err)
-		os.Exit(1)
+	// Write to every tracked schema path so all mirrors stay in sync.
+	for _, rel := range []string{project.SchemaRelPath, project.VSCodeSchemaRelPath} {
+		out := filepath.Join(repoRoot, rel)
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "schemagen: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(out, schema, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "schemagen: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("wrote %s (%d bytes)\n", rel, len(schema))
 	}
-	if err := os.WriteFile(out, schema, 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "schemagen: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("wrote %s (%d bytes)\n", project.SchemaRelPath, len(schema))
 }

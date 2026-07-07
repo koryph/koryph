@@ -36,11 +36,10 @@
 # Usage: scripts/gate-agent.sh <log-dir>
 # Called by `make gate-agent` (see Makefile); GATE_LOG_DIR there resolves
 # $KORYPH_PHASE_DIR / $KORYPH_DIR (the koryph dispatch contract's phase
-# dir — internal/dispatch/types.go) or a repo-local scratch dir.
+# dir — internal/dispatch/types.go) or a repo-local scratch dir.  The
+# identical bash-side resolution is in scripts/koryph-phase-dir.sh
+# (koryph_resolve_log_dir), used directly by hooks/koryph-spill.sh.
 set -uo pipefail
-
-log_dir="${1:?usage: gate-agent.sh <log-dir>}"
-mkdir -p "$log_dir"
 
 # Run from the repo root regardless of the caller's cwd (make normally
 # invokes recipes from the Makefile's directory already, but this keeps the
@@ -48,6 +47,19 @@ mkdir -p "$log_dir"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root" || exit 1
+
+# Source the shared phase-dir/citation helper (koryph-qta.9).
+# koryph_resolve_log_dir and koryph_cite_full_output are defined there.
+# shellcheck source=scripts/koryph-phase-dir.sh
+. "$script_dir/koryph-phase-dir.sh"
+
+# The log dir is provided by the Makefile's GATE_LOG_DIR variable, which
+# performs the KORYPH_PHASE_DIR → KORYPH_DIR → git-dir resolution in Make
+# syntax (see Makefile line ~125).  The same resolution in bash is defined in
+# koryph_resolve_log_dir above, used directly by hooks/koryph-spill.sh so
+# both scripts share one definition.
+log_dir="${1:?usage: gate-agent.sh <log-dir>}"
+mkdir -p "$log_dir"
 
 # Stage list: "<name>|<command>" pairs, run via `make <target>` so the real
 # check logic (gofmt flags, vet, golangci config, reuse) lives in exactly
@@ -95,5 +107,5 @@ for stage in "${stages[@]}"; do
   fi
 done
 
-echo "full output: $log_dir"
+koryph_cite_full_output "$log_dir"
 exit "$overall"

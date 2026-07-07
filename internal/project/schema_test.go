@@ -36,6 +36,28 @@ func TestSchemaNoDrift(t *testing.T) {
 	}
 }
 
+// TestVSCodeSchemaNoDrift asserts that the VS Code extension's bundled schema
+// mirror (ide/vscode/media/koryph.project.schema.json) is byte-identical to
+// the generated schema. The generator writes both files; this test detects
+// cases where docs/schema was regenerated but the VS Code copy was not (or
+// vice versa). Run `go generate ./internal/project` to fix failures.
+func TestVSCodeSchemaNoDrift(t *testing.T) {
+	canonical, err := os.ReadFile(filepath.Join(repoRoot, SchemaRelPath))
+	if err != nil {
+		t.Fatalf("read canonical schema (run `go generate ./internal/project`): %v", err)
+	}
+
+	mirror, err := os.ReadFile(filepath.Join(repoRoot, VSCodeSchemaRelPath))
+	if err != nil {
+		t.Fatalf("read VS Code mirror schema (run `go generate ./internal/project`): %v", err)
+	}
+
+	if string(canonical) != string(mirror) {
+		t.Errorf("VS Code mirror %s differs from canonical %s; run `go generate ./internal/project` and commit both files",
+			VSCodeSchemaRelPath, SchemaRelPath)
+	}
+}
+
 // TestSchemaWellFormed sanity-checks the generated document: it parses as JSON,
 // declares the 2020-12 meta-schema, and carries the load-bearing enums/ranges
 // that editors rely on for validation.

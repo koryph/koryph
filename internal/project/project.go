@@ -126,6 +126,60 @@ type ReleaseConfig struct {
 	Provenance bool `json:"provenance,omitempty"`
 }
 
+// Built-in defaults applied when a CopyrightConfig field is omitted. An
+// unconfigured project attributes generated files to koryph — "(c) 2026 The
+// Koryph Developers" — matching koryph's own source-header convention (see
+// FileCopyrightText for the "(c)" prefix).
+const (
+	defaultCopyrightHolder = "The Koryph Developers"
+	defaultCopyrightYear   = "2026"
+	defaultLicenseID       = "Apache-2.0"
+)
+
+// CopyrightConfig configures the SPDX header koryph stamps onto files it
+// GENERATES for a project (CI/release workflow assets). Every field is
+// optional and falls back to a built-in default (see the constants above), so
+// the block is purely additive — set it to make koryph attribute generated
+// files to YOUR project instead of "The Koryph Developers".
+type CopyrightConfig struct {
+	// Holder is the copyright holder, e.g. "Acme, Inc." or "The Foo Authors".
+	Holder string `json:"holder,omitempty"`
+	// Year is the copyright year or range, e.g. "2026" or "2024-2026".
+	Year string `json:"year,omitempty"`
+	// License is the SPDX license identifier stamped into generated files
+	// (default "Apache-2.0").
+	License string `json:"license,omitempty"`
+}
+
+// FileCopyrightText returns the SPDX-FileCopyrightText value
+// ("(c) <year> <holder>") for a generated file header, applying built-in
+// defaults for omitted fields. The "(c)" prefix matches koryph's own
+// source-header convention ("Copyright (c) 2026 The Koryph Developers"), so an
+// unconfigured project attributes to "(c) 2026 The Koryph Developers". A nil
+// receiver yields the full default, so callers may write
+// cfg.Copyright.FileCopyrightText() without a nil check.
+func (c *CopyrightConfig) FileCopyrightText() string {
+	holder, year := defaultCopyrightHolder, defaultCopyrightYear
+	if c != nil {
+		if c.Holder != "" {
+			holder = c.Holder
+		}
+		if c.Year != "" {
+			year = c.Year
+		}
+	}
+	return "(c) " + year + " " + holder
+}
+
+// LicenseID returns the SPDX license identifier for a generated file header,
+// defaulting to Apache-2.0. Nil-safe like FileCopyrightText.
+func (c *CopyrightConfig) LicenseID() string {
+	if c != nil && c.License != "" {
+		return c.License
+	}
+	return defaultLicenseID
+}
+
 // IntakeSource configures one issue-tracker source in the koryph.project.json
 // intake list. Each entry drives one poll per `koryph intake` invocation.
 type IntakeSource struct {
@@ -446,6 +500,13 @@ type Config struct {
 	// (nil = signing not configured; managed by `koryph signing setup`).
 	Signing *signing.Config `json:"signing,omitempty"`
 
+	// RequireCalibration hard-blocks dispatch while the quota governor is
+	// uncalibrated (both ceilings 0), instead of the default advisory pass
+	// (koryph-grz). Opt-in spend safety for this project: runs refuse to
+	// dispatch until `koryph quota calibrate` sets a ceiling. The
+	// `--require-calibration` run flag also sets it for a single run.
+	RequireCalibration bool `json:"require_calibration,omitempty"`
+
 	// MaxConcurrentSlots caps wave width for this project (default 3).
 	MaxConcurrentSlots int `json:"max_concurrent_slots,omitempty"`
 
@@ -494,6 +555,15 @@ type Config struct {
 	// Exactly one build mode (Build.Goreleaser or Build.Commands) must be
 	// set when this block is present (enforced by Validate).
 	Release *ReleaseConfig `json:"release,omitempty"`
+
+	// Copyright configures the SPDX header koryph stamps onto files it
+	// GENERATES for this project — the CI/release workflow assets written by
+	// `koryph ci setup` / `koryph release setup` (koryph-s6g). It is
+	// per-project so a repository koryph builds carries ITS OWN copyright and
+	// license, not koryph's. Nil (and any omitted field) falls back to
+	// koryph's built-in default, so an unconfigured project's generated output
+	// is byte-for-byte unchanged.
+	Copyright *CopyrightConfig `json:"copyright,omitempty"`
 
 	// Posture, when non-nil, declares the desired-state posture profile for
 	// this project's GitHub repository. koryph doctor --project reports any
