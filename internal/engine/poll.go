@@ -491,6 +491,13 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		note:              "rate-limited requeue",
 		rateLimitRequeues: requeues,
 		wipSnapshotPath:   wipSnapshot,
+		// Freeze the model resolution from the first attempt (koryph-ehx) —
+		// see requeueSlot's identical comment. A rate-limit requeue is the
+		// same attempt continuing, so it must re-run the same model.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward (koryph-2im.3): a requeue is
 		// the SAME bead attempt continuing, not a relabeled re-evaluation, so
 		// in-flight gating must stay exact across it rather than falling back
@@ -641,6 +648,13 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		note:               "budget-killed requeue",
 		budgetKillRequeues: requeues,
 		wipSnapshotPath:    wipSnapshot,
+		// Freeze the model resolution from the first attempt (koryph-ehx) —
+		// see requeueSlot's identical comment. A budget-kill warm-resume must
+		// re-run the same model the bead was originally dispatched with.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,
@@ -1140,6 +1154,15 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		gateRequeues:  sl.GateRequeues,
 		mergeRequeues: sl.MergeRequeues,
 		note:          why,
+		// Freeze the model resolution from the first attempt (koryph-ehx): a
+		// requeue re-runs the SAME model/persona/effort the bead was dispatched
+		// with, so a `model:*` relabel mid-run (or non-deterministic
+		// persona-tier resolution) cannot silently switch a retry to the wrong
+		// model. Same freeze rationale as the footprint just below.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward too (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,

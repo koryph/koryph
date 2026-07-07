@@ -655,6 +655,77 @@ type dispatchReq struct {
 	// each attempt's usage rather than overwriting it. Zero value on a fresh
 	// first-attempt dispatch.
 	accumulatedTokens dispatch.TokenUsage
+	// frozenModel/frozenPersona/frozenModelWhy/frozenEffort carry the model
+	// resolution forward from the first attempt so every requeue re-runs the
+	// SAME model, persona, and effort the bead was originally dispatched with
+	// (koryph-ehx). Mirrors the footprint field's freeze rationale exactly: a
+	// requeue is the SAME bead attempt continuing, not a relabeled
+	// re-evaluation, so a `model:*`/`runtime:*` relabel mid-run (or any
+	// non-determinism in the persona-tier resolution chain) must NOT change
+	// which model a retry runs — otherwise a bead dispatched on opus can
+	// silently finish on haiku (or vice-versa). dispatchBead skips
+	// modelroute.Resolve entirely when frozenModel != "". Empty frozenModel on
+	// a fresh first-attempt dispatch means "resolve normally".
+	frozenModel    string
+	frozenPersona  string
+	frozenModelWhy string
+	frozenEffort   string
+}
+
+// resolveModel decides which model, persona, and effort a dispatch runs under.
+//
+// On a requeue (q.frozenModel set) the first attempt's resolution is reused
+// verbatim (koryph-ehx): a `model:*`/`runtime:*` relabel mid-run — or any
+// non-determinism in the persona-tier resolution chain — must NOT change which
+// model a retry runs, exactly as the persisted footprint cannot change what a
+// retry conflicts with. On a fresh dispatch it resolves from the bead's live
+// labels through the full modelroute precedence.
+func (r *runner) resolveModel(q dispatchReq, runtimeName string) (modelroute.Resolution, string, error) {
+	if q.frozenModel != "" {
+		return modelroute.Resolution{
+			Model:     q.frozenModel,
+			Persona:   q.frozenPersona,
+			Effort:    q.frozenEffort,
+			Rationale: q.frozenModelWhy,
+		}, q.frozenEffort, nil
+	}
+
+	// Auto-filed docs-update beads (epic validation §4b, label validation:docs)
+	// dispatch as the docs stage: PersonaFor(StageDocs) routes them to the
+	// docs-author persona instead of the implementer. Everything else stays
+	// implement-stage.
+	stage := modelroute.StageImplement
+	if q.issue.HasLabel(epicreview.LabelDocs) {
+		stage = modelroute.StageDocs
+	}
+	res, err := modelroute.Resolve(modelroute.Req{
+		Stage:         stage,
+		Labels:        q.issue.Labels,
+		RunDefault:    r.opts.DefaultModel,
+		AllowedModels: r.rec.AllowedModels,
+		Stages:        r.cfg.Stages,
+		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
+		// step inside Resolve: a bead model:<tier> label still wins unchanged;
+		// absent that, the implement-stage persona's `tier` frontmatter
+		// resolves through the selected runtime's ModelMap (overlaid with the
+		// project's ModelMap override) before falling back to the persona's
+		// legacy `model` pin and finally the runtime-namespaced hardcoded
+		// stage default (koryph-v8u.3).
+		RepoRoot: r.rec.Root,
+		ModelMap: r.cfg.ModelMap,
+		Runtime:  runtimeName,
+	})
+	if err != nil {
+		return modelroute.Resolution{}, "", err
+	}
+	// Persona metadata: the meta model/tier never override the resolved tier
+	// here (Resolve already folded persona tier/model into res.Model above, per
+	// koryph-v8u.10); only the effort hint is taken from this second read.
+	effort := res.Effort
+	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, res.Persona); err == nil && effort == "" {
+		effort = metaEffort
+	}
+	return res, effort, nil
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -694,42 +765,10 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		return
 	}
 
-	// Auto-filed docs-update beads (epic validation §4b, label validation:docs)
-	// dispatch as the docs stage: PersonaFor(StageDocs) routes them to the
-	// docs-author persona instead of the implementer. Everything else stays
-	// implement-stage.
-	stage := modelroute.StageImplement
-	if q.issue.HasLabel(epicreview.LabelDocs) {
-		stage = modelroute.StageDocs
-	}
-	res, err := modelroute.Resolve(modelroute.Req{
-		Stage:         stage,
-		Labels:        q.issue.Labels,
-		RunDefault:    r.opts.DefaultModel,
-		AllowedModels: r.rec.AllowedModels,
-		Stages:        r.cfg.Stages,
-		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
-		// step inside Resolve: a bead model:<tier> label (above) still wins
-		// unchanged; absent that, the implement-stage persona's `tier`
-		// frontmatter resolves through the selected runtime's ModelMap
-		// (overlaid with the project's ModelMap override) before falling
-		// back to the persona's legacy `model` pin and finally the
-		// runtime-namespaced hardcoded stage default (koryph-v8u.3).
-		RepoRoot: r.rec.Root,
-		ModelMap: r.cfg.ModelMap,
-		Runtime:  runtimeName,
-	})
+	res, effort, err := r.resolveModel(q, runtimeName)
 	if err != nil {
 		r.blockSlot(beadID, q, "model resolution: "+err.Error())
 		return
-	}
-	// Persona metadata: the meta model/tier never override the resolved
-	// tier here (Resolve already folded persona tier/model into res.Model
-	// above, per koryph-v8u.10); only the effort hint is taken from this
-	// second read.
-	effort := res.Effort
-	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, res.Persona); err == nil && effort == "" {
-		effort = metaEffort
 	}
 
 	branch := worktree.BranchFor(beadID)
