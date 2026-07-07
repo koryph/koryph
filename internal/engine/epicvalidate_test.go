@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -34,6 +35,12 @@ type epicFakeStore struct {
 	notes   []string // "<id>:<text>"
 	closed  []string // "<id>:<reason>"
 	deps    []string // "<id>:<blockedBy>"
+
+	// listCalls and childrenCalls count bd-subprocess-equivalent calls, used
+	// by the health-patrol cadence tests (koryph-bbe) to verify the epic
+	// listing is actually throttled rather than re-fetched every tick.
+	listCalls     int
+	childrenCalls int
 }
 
 func (f *epicFakeStore) Show(_ context.Context, id string) (beads.Issue, error) {
@@ -43,7 +50,29 @@ func (f *epicFakeStore) Show(_ context.Context, id string) (beads.Issue, error) 
 	return beads.Issue{}, fmt.Errorf("no such issue %s", id)
 }
 func (f *epicFakeStore) ListChildren(_ context.Context, id string) ([]beads.Issue, error) {
+	f.childrenCalls++
 	return f.children[id], nil
+}
+
+// List mirrors beads.Adapter.List's contract: only non-closed issues, sorted
+// by ID for deterministic test assertions (the real bd CLI has no ordering
+// guarantee either, so callers must not depend on it — sorting here just
+// keeps the fixtures reproducible).
+func (f *epicFakeStore) List(_ context.Context) ([]beads.Issue, error) {
+	f.listCalls++
+	ids := make([]string, 0, len(f.issues))
+	for id := range f.issues {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]beads.Issue, 0, len(ids))
+	for _, id := range ids {
+		iss := f.issues[id]
+		if iss.Status != "closed" && iss.Status != "done" {
+			out = append(out, iss)
+		}
+	}
+	return out, nil
 }
 func (f *epicFakeStore) Create(_ context.Context, in beads.CreateInput) (string, error) {
 	f.created = append(f.created, in)

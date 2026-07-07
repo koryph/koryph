@@ -94,6 +94,14 @@ type runner struct {
 	lastQuotaLevel quota.Level          // cached from the most recent governorGate call
 	lastQuotaUsage quota.Usage          // cached from the most recent governorGate call
 
+	// Cached full issue listing for the epic-aware patrol checks (koryph-bbe's
+	// completed-but-unvalidated sweep; koryph-wo0.7's parked/degraded WARN
+	// check shares the same cache). Refreshed via one bd subprocess call at
+	// most once per epicListCadence — see health.go's doc comment.
+	epicPatrolAt       time.Time
+	epicPatrolIssues   []beads.Issue
+	epicPatrolFindings []patrolFinding // patrolCheckUnvalidatedEpics's cache from the last real scan
+
 	// reportedSkips dedups structural-skip warnings so each non-dispatchable
 	// ready bead is surfaced once per run, not every wave (koryph-6g2.1).
 	reportedSkips map[string]bool
