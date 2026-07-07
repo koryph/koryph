@@ -55,8 +55,12 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	if settings != SettingsCreated {
 		t.Errorf("settings action = %q, want created", settings)
 	}
-	// Hook scripts installed and executable.
-	for _, want := range []string{"agent-boundary-guard", "worktree-guard"} {
+	// Hook scripts installed and executable. koryph-spill.sh (koryph-77r.6)
+	// is not wired into settings.json hooks (it's a callable wrapper, not a
+	// PreToolUse/SessionStart hook) but rides along for free via
+	// scaffold.CopyEmbed's "every embedded file ships" contract — this
+	// assertion is the regression guard for that.
+	for _, want := range []string{"agent-boundary-guard", "worktree-guard", "koryph-spill"} {
 		found := false
 		for _, r := range hookResults {
 			if r.Name == want && r.Action == scaffold.ActionInstalled {

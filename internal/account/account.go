@@ -41,6 +41,41 @@ var baseAllow = []string{
 // base-directory hints (XDG_*). None of these carry credentials.
 var baseAllowPrefixes = []string{"LC_", "KORYPH_", "XDG_"}
 
+// Output-cap defaults (koryph-77r.6, design: docs/designs/
+// 2026-07-token-economy.md §3 L3). Claude Code exposes two tool-output size
+// knobs (verified against https://code.claude.com/docs/en/env-vars on
+// 2026-07-07):
+//
+//   - BASH_MAX_OUTPUT_LENGTH: max characters in a Bash tool_result before
+//     Claude Code itself spills the full output to a file and hands the
+//     agent a path plus a short preview — Claude Code's own native,
+//     built-in CCR. No default is documented (unset behaves as effectively
+//     unbounded).
+//   - MAX_MCP_OUTPUT_TOKENS: max tokens in an MCP tool_result before
+//     truncation. Claude Code's own default is the model's context window
+//     minus 10000 tokens reserved for the response — i.e. effectively
+//     unbounded in practice.
+//
+// Both are injected as typed ChildEnvSpec fields below (never
+// env_passthrough) so every one of the four dispatch sites (main dispatch
+// via internal/runtime/claude, internal/review, internal/stage,
+// internal/epicreview — every one already funnels through ChildEnv) gets
+// them uniformly from this single point (I6: allowlist discipline stays
+// single-point; no per-site plumbing needed). The defaults are deliberately
+// conservative: high enough that ordinary command output — including
+// make gate-agent's own PASS/FAIL summary and tail-40 failure excerpt,
+// which run to a few KB — is never touched, low enough to bound a
+// genuinely pathological unbounded dump (e.g. an agent bypassing the
+// verbose-command guard and cat-ing a multi-GB file).
+const (
+	// DefaultBashMaxOutputLength is BASH_MAX_OUTPUT_LENGTH's koryph default,
+	// in characters (~400 KB).
+	DefaultBashMaxOutputLength = 400_000
+	// DefaultMaxMCPOutputTokens is MAX_MCP_OUTPUT_TOKENS's koryph default, in
+	// tokens.
+	DefaultMaxMCPOutputTokens = 50_000
+)
+
 // ChildEnvSpec parameterizes the dispatched-agent environment.
 type ChildEnvSpec struct {
 	Profile     Profile
@@ -48,6 +83,16 @@ type ChildEnvSpec struct {
 	APIKey      string   // injected as ANTHROPIC_API_KEY iff Billing==api-key
 	SSHAuthSock string   // scoped signing socket; injected as SSH_AUTH_SOCK iff non-empty
 	Passthrough []string // extra operator vars to forward (registry-declared escape hatch)
+
+	// BashMaxOutputLength overrides BASH_MAX_OUTPUT_LENGTH (characters).
+	// Zero (the common case — no caller sets this today) uses
+	// DefaultBashMaxOutputLength; a negative value omits the env var
+	// entirely, falling back to Claude Code's own unbounded default — an
+	// explicit opt-out escape hatch, not expected to be used in practice.
+	BashMaxOutputLength int
+	// MaxMCPOutputTokens overrides MAX_MCP_OUTPUT_TOKENS (tokens). Zero uses
+	// DefaultMaxMCPOutputTokens; negative omits the env var entirely.
+	MaxMCPOutputTokens int
 }
 
 // ChildEnv builds the complete child environment for a dispatched agent from an
@@ -76,6 +121,30 @@ func ChildEnv(spec ChildEnvSpec) []string {
 	}
 	if spec.SSHAuthSock != "" {
 		env = append(env, "SSH_AUTH_SOCK="+spec.SSHAuthSock)
+	}
+	env = append(env, outputCapEnv(spec)...)
+	return env
+}
+
+// outputCapEnv resolves BASH_MAX_OUTPUT_LENGTH and MAX_MCP_OUTPUT_TOKENS per
+// spec, applying the koryph defaults when unset (zero) and omitting the var
+// entirely when the field is explicitly negative. See the Default* consts'
+// doc for the values and rationale.
+func outputCapEnv(spec ChildEnvSpec) []string {
+	var env []string
+	bashCap := spec.BashMaxOutputLength
+	if bashCap == 0 {
+		bashCap = DefaultBashMaxOutputLength
+	}
+	if bashCap > 0 {
+		env = append(env, fmt.Sprintf("BASH_MAX_OUTPUT_LENGTH=%d", bashCap))
+	}
+	mcpCap := spec.MaxMCPOutputTokens
+	if mcpCap == 0 {
+		mcpCap = DefaultMaxMCPOutputTokens
+	}
+	if mcpCap > 0 {
+		env = append(env, fmt.Sprintf("MAX_MCP_OUTPUT_TOKENS=%d", mcpCap))
 	}
 	return env
 }

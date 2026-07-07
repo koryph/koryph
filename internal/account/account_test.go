@@ -5,6 +5,7 @@ package account
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,72 @@ func TestChildEnvPassthrough(t *testing.T) {
 	if _, count := envLookup(env, "GH_TOKEN"); count != 0 {
 		t.Error("GH_TOKEN leaked despite not being in the passthrough list")
 	}
+}
+
+// TestOutputCapDefaults proves the koryph defaults apply automatically when
+// a caller's ChildEnvSpec doesn't set the output-cap fields — which is the
+// shape every one of today's four dispatch sites actually uses (main
+// dispatch via internal/runtime/claude.Command, internal/review,
+// internal/stage, internal/epicreview all build ChildEnvSpec without ever
+// touching BashMaxOutputLength/MaxMCPOutputTokens). This is the point of
+// putting the defaults inside ChildEnv itself (design doc §3 L3: "so all
+// four spawn sites get them uniformly and the allowlist discipline stays
+// single-point") — no per-site code changes were needed.
+func TestOutputCapDefaults(t *testing.T) {
+	cases := []struct {
+		name string
+		spec ChildEnvSpec
+	}{
+		// internal/runtime/claude.Command's main-dispatch shape.
+		{"main dispatch", ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription, Passthrough: []string{"MY_VAR"}}},
+		// internal/review.attemptReview's and internal/epicreview.attemptValidate's shape.
+		{"review/epicreview", ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription}},
+		// internal/stage.Run's shape.
+		{"stage", ChildEnvSpec{Profile: Profile{Name: "work", ConfigDir: "/x/.claude-work"}, Billing: BillingAPIKey, APIKey: "sk-test", SSHAuthSock: "/koryph/signing/agent.sock"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := ChildEnv(tc.spec)
+			if got, count := envLookup(env, "BASH_MAX_OUTPUT_LENGTH"); count != 1 || got != fmt.Sprintf("%d", DefaultBashMaxOutputLength) {
+				t.Errorf("BASH_MAX_OUTPUT_LENGTH = %q x%d, want %d exactly once", got, count, DefaultBashMaxOutputLength)
+			}
+			if got, count := envLookup(env, "MAX_MCP_OUTPUT_TOKENS"); count != 1 || got != fmt.Sprintf("%d", DefaultMaxMCPOutputTokens) {
+				t.Errorf("MAX_MCP_OUTPUT_TOKENS = %q x%d, want %d exactly once", got, count, DefaultMaxMCPOutputTokens)
+			}
+		})
+	}
+}
+
+// TestOutputCapOverridesAndOptOut proves a caller can override either cap to
+// a specific positive value, or opt out entirely with a negative value.
+func TestOutputCapOverridesAndOptOut(t *testing.T) {
+	base := ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription}
+
+	t.Run("override", func(t *testing.T) {
+		spec := base
+		spec.BashMaxOutputLength = 12345
+		spec.MaxMCPOutputTokens = 6789
+		env := ChildEnv(spec)
+		if got, count := envLookup(env, "BASH_MAX_OUTPUT_LENGTH"); count != 1 || got != "12345" {
+			t.Errorf("BASH_MAX_OUTPUT_LENGTH = %q x%d, want 12345 exactly once", got, count)
+		}
+		if got, count := envLookup(env, "MAX_MCP_OUTPUT_TOKENS"); count != 1 || got != "6789" {
+			t.Errorf("MAX_MCP_OUTPUT_TOKENS = %q x%d, want 6789 exactly once", got, count)
+		}
+	})
+
+	t.Run("opt-out", func(t *testing.T) {
+		spec := base
+		spec.BashMaxOutputLength = -1
+		spec.MaxMCPOutputTokens = -1
+		env := ChildEnv(spec)
+		if _, count := envLookup(env, "BASH_MAX_OUTPUT_LENGTH"); count != 0 {
+			t.Errorf("BASH_MAX_OUTPUT_LENGTH present despite negative opt-out (count %d)", count)
+		}
+		if _, count := envLookup(env, "MAX_MCP_OUTPUT_TOKENS"); count != 0 {
+			t.Errorf("MAX_MCP_OUTPUT_TOKENS present despite negative opt-out (count %d)", count)
+		}
+	})
 }
 
 func TestBillingModeValid(t *testing.T) {
