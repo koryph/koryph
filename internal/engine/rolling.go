@@ -184,6 +184,14 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 				stagger := r.staggerDelay()
 				dispatchedThisIter := 0
 				for i, it := range w.Items {
+					// Per-run budget cap, re-checked per item (koryph-u7q): in-flight
+					// estimates count toward projected spend, so a refill batch stops
+					// the moment projected cost reaches the cap.
+					if r.budgetExhausted() {
+						r.progress("refill: run budget reached ($%.2f projected >= $%.2f cap) — deferring %d bead(s)",
+							r.projectedRunCostUSD(), r.opts.BudgetUSD, len(w.Items)-i)
+						break
+					}
 					if i > 0 && stagger > 0 {
 						select {
 						case <-ctx.Done():

@@ -23,10 +23,15 @@ actually sending anything, pass `--dry-run`.
 
 To build **one specific bead** instead of the whole frontier, pass `--only <bead-id>`:
 the wave is narrowed to that bead, and the run drains once it closes. To cap the
-run's spend, pass `--budget <USD>`: once the run's cumulative agent cost reaches
-the ceiling, no new agents are dispatched (active ones finish) and the run pauses
-with a `budget-cap` reason. This is a per-run ceiling, separate from the account
-cost governor and the global concurrency governor.
+run's spend, pass `--budget <USD>`: once the run's **projected** cost reaches the
+ceiling, no new agents are dispatched (active ones finish) and the run pauses
+with a `budget-cap` reason. Projected cost is settled spend **plus each in-flight
+agent's dispatch-time estimate** — so a wide wave or a retry cannot slip past the
+cap and only settle over it afterward. The check is re-evaluated per bead within
+a wave (dispatch stops mid-wave the moment the projection crosses the cap), and a
+requeue is refused once the budget is exhausted (the slot parks needs-attention
+rather than spending another attempt). This is a per-run ceiling, separate from
+the account cost governor and the global concurrency governor.
 
 ## Dispatch mode: wave vs rolling
 

@@ -181,13 +181,14 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	}
 	g.width = width
 
-	// Per-run budget ceiling: once cumulative run cost reaches the cap, stop
-	// starting new agents; any active slots still finish.
+	// Per-run budget ceiling: once projected run cost (settled + in-flight
+	// estimates, koryph-u7q) reaches the cap, stop starting new agents; any
+	// active slots still finish.
 	if r.opts.BudgetUSD > 0 {
-		if spent := r.runCostUSD(); spent >= r.opts.BudgetUSD {
+		if spent := r.projectedRunCostUSD(); spent >= r.opts.BudgetUSD {
 			g.budgetHit = true
 			if g.allowDispatch {
-				r.progress("run budget reached: $%.2f spent >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
+				r.progress("run budget reached: $%.2f projected >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
 			}
 			g.allowDispatch = false
 		}
@@ -314,6 +315,16 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			r.warnIfOverFairShare()
 			stagger := r.staggerDelay()
 			for i, it := range w.Items {
+				// Per-run budget cap, re-checked per item (koryph-u7q): each
+				// dispatch above added its estimate to projected spend (via the
+				// now-running slot), so a single wide wave stops the moment
+				// projected cost reaches the cap instead of dispatching the whole
+				// batch and only settling past it later.
+				if r.budgetExhausted() {
+					r.progress("wave %d: run budget reached ($%.2f projected >= $%.2f cap) — deferring %d bead(s)",
+						r.run.Wave, r.projectedRunCostUSD(), r.opts.BudgetUSD, len(w.Items)-i)
+					break
+				}
 				if i > 0 && stagger > 0 {
 					select {
 					case <-ctx.Done():
@@ -421,8 +432,10 @@ func (r *runner) billingFor(level quota.Level) (account.BillingMode, string) {
 	return account.BillingSubscription, ""
 }
 
-// runCostUSD is the cumulative recorded cost of every slot in this run — the
-// figure the per-run --budget ceiling is measured against.
+// runCostUSD is the cumulative recorded (settled) cost of every slot in this
+// run. It only reflects attempts that have COMPLETED — a running agent's cost
+// lands in CostUSD at completeSlot — so on its own it reads $0 for a wave that
+// is still in flight. Use projectedRunCostUSD for budget admission.
 func (r *runner) runCostUSD() float64 {
 	var total float64
 	for _, sl := range r.run.Slots {
@@ -431,6 +444,35 @@ func (r *runner) runCostUSD() float64 {
 		}
 	}
 	return total
+}
+
+// projectedRunCostUSD is the budget-admission figure (koryph-u7q): settled cost
+// PLUS each still-running slot's dispatch-time estimate. Without the in-flight
+// term, runCostUSD reads $0 until agents complete, so a whole wave (or a
+// requeue) could be admitted after the cap was already committed and only settle
+// past it later — the "budget sails past the cap" bug. EstimateUSD is the
+// per-attempt estimate stamped at dispatch (bias-corrected when samples exist),
+// and CostUSD already carries prior attempts' accumulated cost, so a running
+// slot contributes prior-spend + this-attempt-estimate.
+func (r *runner) projectedRunCostUSD() float64 {
+	var total float64
+	for _, sl := range r.run.Slots {
+		if sl == nil {
+			continue
+		}
+		total += sl.CostUSD
+		if sl.Status == ledger.SlotRunning {
+			total += sl.EstimateUSD
+		}
+	}
+	return total
+}
+
+// budgetExhausted reports whether the per-run --budget ceiling is set and
+// projected spend has reached it — the shared admission predicate for both
+// fresh dispatch and requeue (koryph-u7q). Zero/absent BudgetUSD means no cap.
+func (r *runner) budgetExhausted() bool {
+	return r.opts.BudgetUSD > 0 && r.projectedRunCostUSD() >= r.opts.BudgetUSD
 }
 
 // onlyBead narrows a frontier to the single bead with id, or empty when it is
