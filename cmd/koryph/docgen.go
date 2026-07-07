@@ -189,7 +189,10 @@ func renderCommandSection(w io.Writer, warnOut io.Writer, c *command, parent str
 	// Heading with explicit anchor for stability.
 	p("## `koryph %s` { #%s }\n", fullName, anchor)
 	p("\n")
-	p("%s\n", c.summary)
+	// Summaries carry CLI usage syntax like "[--until <duration>]" — escape
+	// it here too or zensical --strict reads it as an unresolved link
+	// reference (same hazard escape() documents for table cells).
+	p("%s\n", strings.ReplaceAll(c.summary, "[", "\\["))
 	p("\n")
 
 	// DocLinks cross-reference block.
@@ -336,10 +339,15 @@ func docLinkTitle(path string) string {
 }
 
 // escape replaces Markdown pipe characters in table cells and escapes
-// backticks so the output is valid Markdown table content.
+// square brackets so the output is valid Markdown table content. Brackets
+// matter under the strict docs build: CLI usage text like
+// "[--until <duration>]" otherwise parses as an unresolved Markdown link
+// reference and fails zensical --strict (koryph-3l1.4 landing finding).
 func escape(s string) string {
 	// Escape pipe characters in table cells.
 	s = strings.ReplaceAll(s, "|", "\\|")
+	// Escape link-reference syntax: only the opening bracket needs it.
+	s = strings.ReplaceAll(s, "[", "\\[")
 	return s
 }
 
