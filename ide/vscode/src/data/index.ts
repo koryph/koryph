@@ -24,3 +24,4 @@ export { CliAdapter } from './cli';
 export type { CliOptions, CliResult } from './cli';
 export { BeadTitleCache, parseBeadTitle } from './beadTitle';
 export { StatusReader, parseStatusReport, formatStatusReport } from './statusReader';
+export { CockpitReader } from './cockpitReader';

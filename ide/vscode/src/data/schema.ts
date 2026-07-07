@@ -460,6 +460,78 @@ export interface QuotaSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// cockpit snapshot — cmd/koryph/cockpit.go CockpitSnapshot (`koryph cockpit --json`)
+//
+// Design constraint: the extension MUST consume all agent/project state from
+// this snapshot. Do not add new direct ledger/govern/quota file reads to the
+// extension's data layer — route them through `koryph cockpit --json` instead.
+// See docs/developer-guide/ide-setup.md §"Data layer".
+// ---------------------------------------------------------------------------
+
+/**
+ * CockpitPool — one governor pool's observable state as emitted by
+ * `koryph cockpit --json`. Mirrors cmd/koryph/cockpit.go CockpitPool.
+ */
+export interface CockpitPool {
+  provider: string;
+  cap: number;
+  dynamic: number;
+  adaptive: boolean;
+  leases: number;
+  breaker_state?: string;
+}
+
+/**
+ * CockpitGov — machine-wide governor state as emitted by `koryph cockpit
+ * --json`. Mirrors cmd/koryph/cockpit.go CockpitGov.
+ */
+export interface CockpitGov {
+  pools: Record<string, CockpitPool>;
+}
+
+/**
+ * CockpitSlot — one slot's view-model as emitted by `koryph cockpit --json`.
+ * Mirrors cmd/koryph/cockpit.go CockpitSlot.
+ */
+export interface CockpitSlot {
+  phase_id: string;
+  bead_id?: string;
+  /** Ledger status (running/review/merge-pending/merged/…). */
+  stage: string;
+  model?: string;
+  attempt: number;
+  pid?: number;
+  branch?: string;
+  worktree?: string;
+  cost_usd: number;
+  estimate_usd?: number;
+  /** Last step from the agent's status.json heartbeat. */
+  status_line?: string;
+  /** Raw "state" field from the agent's status.json heartbeat. */
+  status_json?: string;
+  /** RFC3339 dispatch time, absent when slot has not been dispatched yet. */
+  dispatched_at?: string;
+  elapsed_sec?: number;
+}
+
+/**
+ * CockpitSnapshot — the top-level document returned by `koryph cockpit
+ * --json`. The VS Code extension MUST consume all agent/project state from
+ * this document; it MUST NOT add new direct ledger/govern/quota file reads.
+ * Mirrors cmd/koryph/cockpit.go CockpitSnapshot.
+ */
+export interface CockpitSnapshot {
+  project_id: string;
+  run_id?: string;
+  run_status?: string;
+  wave: number;
+  slots: CockpitSlot[];
+  governor: CockpitGov;
+  /** RFC3339 timestamp when this snapshot was assembled. */
+  captured_at: string;
+}
+
+// ---------------------------------------------------------------------------
 // agent status heartbeat — phase-dir status.json (dispatch contract)
 // ---------------------------------------------------------------------------
 

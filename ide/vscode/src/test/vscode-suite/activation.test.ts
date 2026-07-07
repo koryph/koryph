@@ -13,7 +13,8 @@ describe('activation (in-host smoke)', () => {
     const ctx = { subscriptions: [] as vscode.Disposable[] } as vscode.ExtensionContext;
     const data = activate(ctx);
     assert.ok(data.registry, 'registry watcher present');
-    assert.ok(data.governor, 'governor reader present');
+    // governor reader removed in koryph-5ew: agent state now flows through
+    // CockpitReader (koryph cockpit --json) rather than direct file reads.
     assert.ok(data.quota, 'quota reader present');
     assert.ok(ctx.subscriptions.length >= 3, 'disposables registered');
     deactivate();

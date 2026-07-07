@@ -3,19 +3,24 @@
 
 // AgentThreadsProvider — the "Koryph" activity-bar TreeDataProvider (§2). All
 // grouping/pinning/ordering is the pure `./model` builder; this file is only the
-// VS Code glue: it loads the data layer (registry + per-project ledger +
-// governor leases), turns the model into TreeItems (glyphs, tooltips, context
-// values ext.6's menus key off), sets the tree badge to the live-agent count,
-// and refreshes on any watcher tick. Read-only: it never mutates koryph state.
+// VS Code glue: it loads the data layer (registry + per-project cockpit snapshot),
+// turns the model into TreeItems (glyphs, tooltips, context values ext.6's menus
+// key off), sets the tree badge to the live-agent count, and refreshes on any
+// watcher tick. Read-only: it never mutates koryph state.
+//
+// Data layer constraint (koryph-5ew): agent/project state MUST flow through
+// CockpitReader (which calls `koryph cockpit --json`). Do NOT add new direct
+// ledger/govern/quota file reads — see docs/developer-guide/ide-setup.md §"Data layer".
 
 import * as vscode from 'vscode';
 import { slotRef } from '../commands/argv';
 import { BeadTitleCache } from '../data/beadTitle';
-import { GovernorReader } from '../data/governorReader';
-import { LedgerWatcher, ParsedRun } from '../data/ledgerWatcher';
+import { CockpitReader } from '../data/cockpitReader';
+import { CliAdapter } from '../data/cli';
 import { RegistryWatcher } from '../data/registryWatcher';
-import { Lease } from '../data/schema';
+import { CockpitSlot, CockpitSnapshot, LEDGER_SCHEMA_VERSION, Lease, Run, Slot, isTerminal } from '../data/schema';
 import { StatusReader, formatStatusReport } from '../data/statusReader';
+import { ParsedRun } from '../data/ledgerWatcher';
 import { statusGlyph } from './glyph';
 import {
   ProjectNode,
@@ -53,19 +58,21 @@ export class AgentThreadsProvider implements vscode.TreeDataProvider<TreeElement
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeElement | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  private readonly ledgers = new Map<string, LedgerWatcher>();
+  // CockpitReader per project — replaces the old per-project LedgerWatcher.
+  // All agent/project state flows through cockpit.LedgerProvider.Refresh()
+  // via `koryph cockpit --json` (koryph-5ew data-layer constraint).
+  private readonly cockpitReaders = new Map<string, CockpitReader>();
   private readonly disposables: vscode.Disposable[] = [];
   private view?: vscode.TreeView<TreeElement>;
 
   constructor(
     private readonly registry: RegistryWatcher,
-    private readonly governor: GovernorReader,
+    private readonly cli: CliAdapter,
     private readonly titles: BeadTitleCache,
     private readonly status: StatusReader = new StatusReader(),
   ) {
-    // Any registry or governor change re-renders (and re-syncs ledger watchers).
+    // Any registry change re-renders (and re-syncs cockpit readers).
     this.disposables.push(this.registry.onChange(() => this.refresh()));
-    this.disposables.push(this.governor.onChange(() => this.refresh()));
   }
 
   /** Attach the created TreeView so the provider can set its badge. */
@@ -79,10 +86,10 @@ export class AgentThreadsProvider implements vscode.TreeDataProvider<TreeElement
 
   dispose(): void {
     this._onDidChangeTreeData.dispose();
-    for (const w of this.ledgers.values()) {
-      w.dispose();
+    for (const r of this.cockpitReaders.values()) {
+      r.dispose();
     }
-    this.ledgers.clear();
+    this.cockpitReaders.clear();
     for (const d of this.disposables) {
       d.dispose();
     }
@@ -152,26 +159,51 @@ export class AgentThreadsProvider implements vscode.TreeDataProvider<TreeElement
   /** Load the data layer and delegate all shaping to the pure builder. */
   private async buildModel(): Promise<TreeModel> {
     const records = await this.registry.list();
-    this.syncLedgerWatchers(records.map((r) => r.value.project_id).filter(Boolean));
+    this.syncCockpitReaders(records.map((r) => r.value.project_id).filter(Boolean) as string[]);
 
-    const runs = new Map<string, ParsedRun | undefined>();
+    // Fetch one cockpit snapshot per project. All state (slots + governor)
+    // flows through cockpit.LedgerProvider.Refresh() — the same path as the TUI.
+    const snapshots = new Map<string, CockpitSnapshot | undefined>();
     await Promise.all(
       records.map(async (rec) => {
         const root = rec.value.root;
         const id = rec.value.project_id;
         if (!root || !id) {
-          runs.set(id, undefined);
+          snapshots.set(id ?? '', undefined);
           return;
         }
-        runs.set(id, await this.ledgerFor(id, root).load());
+        snapshots.set(id, await this.cockpitReaderFor(id, root).snapshot());
       }),
     );
 
-    let leases: Lease[] = [];
-    try {
-      leases = await this.governor.leases();
-    } catch {
-      /* leases are best-effort; a bad read just yields a zero badge */
+    // Map cockpit snapshots to the ParsedRun format that buildTree() expects,
+    // so the pure model builder stays unchanged and tests keep working.
+    const runs = new Map<string, ParsedRun | undefined>();
+    for (const [id, snap] of snapshots) {
+      runs.set(id, snap ? cockpitToRun(snap) : undefined);
+    }
+
+    // Synthesise Lease objects from non-terminal slots so buildTree can compute
+    // the per-visible-project badge count (liveAgentCount). This is more
+    // accurate than the old governor.leases() call because each snapshot's
+    // slots are already project-scoped.
+    const leases: Lease[] = [];
+    for (const [id, snap] of snapshots) {
+      if (!snap) {
+        continue;
+      }
+      for (const slot of snap.slots) {
+        if (!isTerminal(slot.stage)) {
+          leases.push({
+            project: id,
+            bead: slot.bead_id ?? '',
+            pid: slot.pid ?? 0,
+            engine_pid: 0,
+            model: slot.model,
+            acquired_at: slot.dispatched_at ?? '',
+          });
+        }
+      }
     }
 
     return buildTree({
@@ -340,28 +372,83 @@ export class AgentThreadsProvider implements vscode.TreeDataProvider<TreeElement
 
   private readonly statusCache = new Map<string, string>();
 
-  // --- ledger watcher lifecycle -------------------------------------------
+  // --- cockpit reader lifecycle --------------------------------------------
 
-  private ledgerFor(projectId: string, root: string): LedgerWatcher {
-    let w = this.ledgers.get(projectId);
-    if (!w) {
-      w = new LedgerWatcher(root);
-      w.onChange(() => this.refresh());
-      this.ledgers.set(projectId, w);
+  private cockpitReaderFor(projectId: string, root: string): CockpitReader {
+    let r = this.cockpitReaders.get(projectId);
+    if (!r) {
+      r = new CockpitReader(projectId, root, this.cli);
+      r.onChange(() => this.refresh());
+      this.cockpitReaders.set(projectId, r);
     }
-    return w;
+    return r;
   }
 
-  /** Dispose ledger watchers for projects that vanished from the registry. */
-  private syncLedgerWatchers(liveIds: string[]): void {
+  /** Dispose cockpit readers for projects that vanished from the registry. */
+  private syncCockpitReaders(liveIds: string[]): void {
     const live = new Set(liveIds);
-    for (const [id, w] of this.ledgers) {
+    for (const [id, r] of this.cockpitReaders) {
       if (!live.has(id)) {
-        w.dispose();
-        this.ledgers.delete(id);
+        r.dispose();
+        this.cockpitReaders.delete(id);
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cockpit → legacy model mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a CockpitSnapshot to the ParsedRun format expected by buildTree().
+ * This shim keeps the pure model builder unchanged while the data source
+ * migrates to the cockpit layer (koryph-5ew).
+ *
+ * Fields the TUI surfaces but the extension does not yet render (agent,
+ * account_profile, effort, etc.) are left empty — the tooltip guards on
+ * non-empty before showing them.
+ */
+function cockpitToRun(snap: CockpitSnapshot): ParsedRun {
+  const slots: Record<string, Slot> = {};
+  for (const cs of snap.slots) {
+    slots[cs.phase_id] = cockpitSlotToSlot(cs);
+  }
+  const run: Run = {
+    schema_version: LEDGER_SCHEMA_VERSION,
+    run_id: snap.run_id ?? '',
+    project_id: snap.project_id,
+    engine_version: '',
+    started_at: '',
+    updated_at: snap.captured_at,
+    status: snap.run_status ?? '',
+    wave: snap.wave,
+    source: 'cockpit',
+    slots,
+  };
+  return { known: true, schemaVersion: LEDGER_SCHEMA_VERSION, value: run, raw: snap };
+}
+
+/** Map one CockpitSlot to the Slot wire type. */
+function cockpitSlotToSlot(cs: CockpitSlot): Slot {
+  return {
+    phase_id: cs.phase_id,
+    bead_id: cs.bead_id,
+    branch: cs.branch ?? '',
+    worktree: cs.worktree ?? '',
+    session_id: '',
+    agent: '',
+    model: cs.model ?? '',
+    account_profile: '',
+    billing_mode: '',
+    status: cs.stage,
+    attempts: cs.attempt,
+    commits: 0,
+    cost_usd: cs.cost_usd,
+    pid: cs.pid,
+    dispatched_at: cs.dispatched_at,
+    // updated_at: not available in cockpit snapshot; slots sort by phase_id.
+  };
 }
 
 // --- pure-ish glue helpers -------------------------------------------------

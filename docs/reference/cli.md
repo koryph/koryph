@@ -96,6 +96,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph ci`](#koryph-ci) | render and install forge-native CI pipeline assets |
 | ↳ [`koryph ci setup`](#koryph-ci-setup) | render and install CI assets into the project |
 | ↳ [`koryph ci check`](#koryph-ci-check) | report drift between installed CI assets and current Render output |
+| [`koryph cockpit`](#koryph-cockpit) | emit a cockpit snapshot for the VS Code extension |
 | [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
 | ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
 | [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
@@ -1108,6 +1109,20 @@ report drift between installed CI assets and current Render output
 | `--gate-cmd` | string |  | override the gate command (default: make gate) |
 | `--kind` | string | `gate` | CI asset kind(s) to check: gate, scanner, or all |
 | `--project` | string |  | project id |
+
+
+---
+
+## `koryph cockpit` { #koryph-cockpit }
+
+emit a cockpit snapshot for the VS Code extension
+
+**See also:** [Ide setup](../developer-guide/ide-setup)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit snapshot as JSON (used by the VS Code extension) |
+| `--project` | string |  | project id (required) |
 
 
 ---

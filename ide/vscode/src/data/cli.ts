@@ -16,7 +16,7 @@
 import { spawn } from 'child_process';
 import { tryParse } from './json';
 import { koryphHome } from './paths';
-import { BoardEntry } from './schema';
+import { BoardEntry, CockpitSnapshot } from './schema';
 
 export interface CliOptions {
   /** koryph binary (default "koryph"; override for tests / non-PATH installs). */
@@ -86,6 +86,28 @@ export class CliAdapter {
       throw new Error('koryph board --json did not return a JSON array');
     }
     return parsed as BoardEntry[];
+  }
+
+  /**
+   * Emit a cockpit snapshot for one project via `koryph cockpit --json
+   * --project ID`.  This is the sole data-access path for agent/project state
+   * in the extension — do NOT add new direct ledger/govern/quota file reads.
+   *
+   * @param projectId  The project id (from the registry record).
+   * @throws When the CLI exits non-zero or stdout is not a valid JSON object.
+   */
+  async cockpit(projectId: string): Promise<CockpitSnapshot> {
+    const res = await this.koryph(['cockpit', '--json', '--project', projectId]);
+    if (res.code !== 0) {
+      throw new Error(
+        `koryph cockpit --json exited ${res.code}${res.timedOut ? ' (timed out)' : ''}: ${res.stderr.trim()}`,
+      );
+    }
+    const parsed = tryParse(res.stdout);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('koryph cockpit --json did not return a JSON object');
+    }
+    return parsed as CockpitSnapshot;
   }
 
   /** Generic spawn + capture. Never rejects on non-zero exit — inspect .code. */

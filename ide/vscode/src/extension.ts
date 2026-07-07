@@ -11,7 +11,6 @@ import * as vscode from 'vscode';
 import {
   BeadTitleCache,
   CliAdapter,
-  GovernorReader,
   QuotaReader,
   RegistryWatcher,
 } from './data';
@@ -27,7 +26,6 @@ import { KoryphTranscriptPanel } from './webview/transcriptPanel';
  */
 export interface KoryphExtension {
   registry: RegistryWatcher;
-  governor: GovernorReader;
   quota: QuotaReader;
   tree: AgentThreadsProvider;
   statusBar: QuotaStatusBar;
@@ -38,14 +36,14 @@ let ext: KoryphExtension | undefined;
 
 export function activate(context: vscode.ExtensionContext): KoryphExtension {
   const registry = new RegistryWatcher();
-  const governor = new GovernorReader();
   const quota = new QuotaReader();
   const cli = new CliAdapter();
   const titles = new BeadTitleCache(cli);
 
-  // Tree view — agent threads (§2). The provider owns per-project ledger
-  // watchers and refreshes on any registry/ledger/governor change.
-  const tree = new AgentThreadsProvider(registry, governor, titles);
+  // Tree view — agent threads (§2). The provider owns per-project CockpitReaders
+  // (koryph-5ew) and refreshes on any registry or cockpit-watch change.
+  // All agent/project state flows through `koryph cockpit --json` via CockpitReader.
+  const tree = new AgentThreadsProvider(registry, cli, titles);
   const view = vscode.window.createTreeView(AGENT_THREADS_VIEW, {
     treeDataProvider: tree,
     showCollapseAll: true,
@@ -83,11 +81,10 @@ export function activate(context: vscode.ExtensionContext): KoryphExtension {
     { dispose: () => tree.dispose() },
     { dispose: () => statusBar.dispose() },
     { dispose: () => registry.dispose() },
-    { dispose: () => governor.dispose() },
     { dispose: () => quota.dispose() },
   );
 
-  ext = { registry, governor, quota, tree, statusBar, banner };
+  ext = { registry, quota, tree, statusBar, banner };
   return ext;
 }
 
@@ -95,7 +92,6 @@ export function deactivate(): void {
   ext?.tree.dispose();
   ext?.statusBar.dispose();
   ext?.registry.dispose();
-  ext?.governor.dispose();
   ext?.quota.dispose();
   ext = undefined;
 }
