@@ -12,7 +12,12 @@ Both are `PreToolUse` hooks scoped to Koryph-dispatched agents
 - **`agent-boundary-guard.sh`** — denies orchestrator-only ops: `git push`,
   `git merge`, `git checkout|switch main|master`, `bd close`, `gh pr merge`.
   `git commit` and `git rebase` (incl. onto `main`) are explicitly allowed.
-  Falls back to exit-2 + stderr when `jq` is unavailable.
+  Falls back to exit-2 + stderr when `jq` is unavailable. Also nudges (deny
+  with a message, not a boundary violation) the two highest-confidence
+  verbose-output patterns measured in koryph-77r.5 (docs/designs/
+  2026-07-token-economy.md §3 L3): `go test` with `-v` on a broad
+  (`...`-wildcard) package set, and `golangci-lint run` with no `--output`
+  flag — both point at `make gate-agent` / `make lint-agent` instead.
 
 ## settings.json wiring
 

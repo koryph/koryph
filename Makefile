@@ -110,6 +110,29 @@ reuse: ## REUSE/SPDX compliance (skipped with a notice if no runner; CI enforces
 .PHONY: gate
 gate: fmt-check build vet test lint reuse ## The green gate (mirrors koryph.project.json)
 
+##@ Quality (agent-facing)
+
+# koryph-77r.5: Bash tool output is ~28% of agent transcript bytes (docs/
+# designs/2026-07-token-economy.md §3 L3); `gate` itself is the single
+# biggest repeat offender. GATE_LOG_DIR is where gate-agent tees each
+# stage's full raw output: $KORYPH_PHASE_DIR if ever set (the design doc's
+# name), else $KORYPH_DIR (the koryph dispatch contract's actual phase-dir
+# env var — internal/dispatch/types.go), else a repo-local scratch dir so
+# gate-agent also works outside a koryph dispatch.
+# The repo-local fallback resolves the git dir via rev-parse because in a
+# git worktree .git is a pointer FILE, not a directory — mkdir under a
+# literal $(CURDIR)/.git would fail exactly where koryph agents run.
+GATE_LOG_DIR ?= $(if $(KORYPH_PHASE_DIR),$(KORYPH_PHASE_DIR),$(if $(KORYPH_DIR),$(KORYPH_DIR),$(shell git rev-parse --git-dir 2>/dev/null || echo .git)/koryph-gate-agent))
+
+.PHONY: lint-agent
+lint-agent: ## Like lint, without inline source snippets per issue (same verdict, fewer bytes on failure)
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run --output.text.print-issued-lines=false ./...; \
+	else echo "golangci-lint not installed; skipping (CI enforces it) — see .golangci.yml"; fi
+
+.PHONY: gate-agent
+gate-agent: ## Agent-facing green gate: same checks/verdict as gate, quiet stdout, full logs under GATE_LOG_DIR
+	@scripts/gate-agent.sh "$(GATE_LOG_DIR)"
+
 ##@ VS Code Extension
 
 .PHONY: ext-build

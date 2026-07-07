@@ -25,6 +25,21 @@
 # agents rebase their branch onto origin/main routinely), git commit,
 # git config reads (--get/--list/...).
 #
+# Verbose-command nudges (koryph-77r.5, docs/designs/2026-07-token-economy.md
+# §3 L3 — Bash tool output is ~28% of agent transcript bytes; these are the
+# two highest-confidence offenders): deny-with-message, pointing at the quiet
+# `make gate-agent` / `make lint-agent` targets, never a boundary violation.
+# Conservative and data-driven: only exact high-confidence verbose shapes are
+# matched; anything ambiguous is allowed through.
+#   - `go test` on a broad (`...`-wildcard) package set with `-v`/`-v=true`
+#     (e.g. `go test ./... -v`, `go test -v ./internal/...`). A narrow,
+#     single-package `-v` (no `...`) is NOT matched — it isn't the byte
+#     offender the audit measured.
+#   - `golangci-lint run` with no `--output` flag at all (i.e. the default
+#     text reporter, which prints a source snippet per issue). Any `--output`
+#     flag present (e.g. `--output.text.print-issued-lines=false`, as
+#     `make lint-agent` uses) is treated as already-filtered and allowed.
+#
 # Decision output:
 #   - jq available: emit the PreToolUse JSON deny body on stdout, exit 0.
 #     (The JSON `permissionDecision` field itself IS the deny signal; Claude
@@ -67,6 +82,27 @@
 #      $ echo '{"tool_name":"Bash","tool_input":{"command":"GH_TOKEN=x bd close sg-42"}}' \
 #          | KORYPH_PHASE_ID=phase-12a ./agent-boundary-guard.sh
 #      → deny (bd close), exit 0
+#
+# 7. Dispatched, `go test ./... -v` → denied, nudged to gate-agent.
+#      $ echo '{"tool_name":"Bash","tool_input":{"command":"go test ./... -v"}}' \
+#          | KORYPH_PHASE_ID=phase-12a ./agent-boundary-guard.sh
+#      → deny (go test -v on a broad package set), exit 0
+#
+# 8. Dispatched, narrow single-package `-v` → allowed (not a broad-package
+#    verbose run; ambiguous cases pass).
+#      $ echo '{"tool_name":"Bash","tool_input":{"command":"go test ./internal/rules -v"}}' \
+#          | KORYPH_PHASE_ID=phase-12a ./agent-boundary-guard.sh
+#      → exit 0, no output
+#
+# 9. Dispatched, unfiltered `golangci-lint run` → denied, nudged to lint-agent.
+#      $ echo '{"tool_name":"Bash","tool_input":{"command":"golangci-lint run ./..."}}' \
+#          | KORYPH_PHASE_ID=phase-12a ./agent-boundary-guard.sh
+#      → deny (golangci-lint run without output filtering), exit 0
+#
+# 10. Dispatched, already-filtered lint → allowed.
+#       $ echo '{"tool_name":"Bash","tool_input":{"command":"golangci-lint run --output.text.print-issued-lines=false ./..."}}' \
+#           | KORYPH_PHASE_ID=phase-12a ./agent-boundary-guard.sh
+#       → exit 0, no output
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -99,9 +135,12 @@ raw_command="$(extract_field '.tool_input.command' 'command')"
 
 [[ "${tool_name}" == "Bash" && -n "${raw_command}" ]] || exit 0
 
-deny() {
-  local op="$1"
-  local reason="koryph boundary: ${op} is orchestrator-only — stay on your branch; the koryph merges, pushes, and closes beads"
+# emit_deny prints the PreToolUse deny decision (jq form) or falls back to
+# the plain stderr+exit-2 form, for the given reason. Shared by deny()
+# (orchestrator-boundary violations) and deny_nudge() (verbose-command
+# policy, koryph-77r.5) — same output contract, different message shape.
+emit_deny() {
+  local reason="$1"
   if [[ "${have_jq}" == "1" ]]; then
     jq -n --arg r "${reason}" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
@@ -109,6 +148,18 @@ deny() {
   fi
   printf '%s\n' "${reason}" >&2
   exit 2
+}
+
+deny() {
+  local op="$1"
+  emit_deny "koryph boundary: ${op} is orchestrator-only — stay on your branch; the koryph merges, pushes, and closes beads"
+}
+
+# deny_nudge: verbose-command policy (koryph-77r.5) — not a boundary
+# violation, just a byte-economy steer toward the quiet gate target.
+deny_nudge() {
+  local op="$1"
+  emit_deny "koryph gate: ${op} emits far more transcript bytes than needed — use \`make gate-agent\` (or \`make lint-agent\`) instead; full untruncated logs land under \$KORYPH_DIR/gate-*.log"
 }
 
 # --- Split into &&/;/|-separated segments, checked independently -----------
@@ -152,6 +203,24 @@ check_segment() {
   fi
   if [[ "${seg}" =~ ^gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$) ]]; then
     deny "gh pr merge"
+  fi
+
+  # --- Verbose-command nudges (koryph-77r.5) --------------------------------
+  # `go test` on a broad (`...`-wildcard) package set with -v/-v=true. A
+  # narrow single-package -v is NOT matched (not the measured byte offender;
+  # ambiguous cases pass through per policy).
+  if [[ "${seg}" =~ ^go[[:space:]]+test([[:space:]]|$) ]] &&
+    [[ "${seg}" == *"..."* ]] &&
+    [[ "${seg}" =~ (^|[[:space:]])-v($|=true($|[[:space:]])|[[:space:]]) ]]; then
+    deny_nudge "go test with -v on a broad (./...) package set"
+  fi
+  # Unfiltered `golangci-lint run`: no --output flag at all means the default
+  # text reporter, which prints a source snippet per issue. Any --output flag
+  # (e.g. --output.text.print-issued-lines=false) is treated as already
+  # filtered and allowed.
+  if [[ "${seg}" =~ ^golangci-lint[[:space:]]+run([[:space:]]|$) ]] &&
+    [[ "${seg}" != *"--output"* ]]; then
+    deny_nudge "golangci-lint run without output filtering"
   fi
 
   # git config persistence vectors. A linked worktree writes the SHARED repo
