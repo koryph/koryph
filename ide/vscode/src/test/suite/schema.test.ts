@@ -7,7 +7,10 @@ import {
   LEDGER_SCHEMA_VERSION,
   QuotaLevel,
   Run,
+  STOP_FRACTION,
+  THROTTLE_FRACTION,
   Usage,
+  WARN_FRACTION,
   Window,
   guardSchemaVersion,
   isTerminal,
@@ -92,7 +95,7 @@ describe('schema: quota banding', () => {
     assert.strictEqual(windowFraction(win(5, 20)), 0.25);
   });
 
-  it('bands ok/warn/drain/stop off the max of both windows', () => {
+  it('bands ok/warn/throttle/drain/stop off the max of both windows', () => {
     const at = '2026-07-03T00:00:00Z';
     const mk = (w5: Window, wk: Window): Usage => ({
       account: 'personal',
@@ -100,13 +103,22 @@ describe('schema: quota banding', () => {
       window_5h: w5,
       weekly: wk,
     });
+    // ok: max fraction < 0.90
     assert.strictEqual(quotaLevel(mk(win(1, 20), win(1, 140))), QuotaLevel.OK);
-    assert.strictEqual(quotaLevel(mk(win(17, 20), win(1, 140))), QuotaLevel.Warn);
-    assert.strictEqual(quotaLevel(mk(win(1, 20), win(130, 140))), QuotaLevel.Drain);
-    assert.strictEqual(quotaLevel(mk(win(19.5, 20), win(1, 140))), QuotaLevel.Stop);
+    // warn: max fraction >= 0.90 (18.1/20 = 90.5%)
+    assert.strictEqual(quotaLevel(mk(win(18.1, 20), win(1, 140))), QuotaLevel.Warn);
+    // throttle: max fraction >= 0.94 (18.9/20 = 94.5%)
+    assert.strictEqual(quotaLevel(mk(win(18.9, 20), win(1, 140))), QuotaLevel.Throttle);
+    // drain: max fraction >= 0.97 via weekly (136/140 ≈ 97.1%)
+    assert.strictEqual(quotaLevel(mk(win(1, 20), win(136, 140))), QuotaLevel.Drain);
+    // stop: max fraction >= 0.99 (19.9/20 = 99.5%)
+    assert.strictEqual(quotaLevel(mk(win(19.9, 20), win(1, 140))), QuotaLevel.Stop);
   });
 
-  it('drain fraction constant matches the engine (0.90)', () => {
-    assert.strictEqual(DRAIN_FRACTION, 0.9);
+  it('ladder threshold constants mirror engine defaults', () => {
+    assert.strictEqual(WARN_FRACTION, 0.90);
+    assert.strictEqual(THROTTLE_FRACTION, 0.94);
+    assert.strictEqual(DRAIN_FRACTION, 0.97);
+    assert.strictEqual(STOP_FRACTION, 0.99);
   });
 });

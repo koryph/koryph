@@ -85,24 +85,23 @@ One item per account that owns a visible project with an active run:
 ⚡ personal 62% 5h · 41% wk
 ```
 
-Governor-level coloring:
+Governor-level coloring (mirrors the engine's default ladder — see
+[Billing and quota](billing-and-quota.md#the-governor-ladder)):
 
 | Level | Threshold | Color |
 |-------|-----------|-------|
-| ok | < 80 % | default (no background) |
-| warn | ≥ 80 % | yellow (`statusBarItem.warningBackground`) |
-| drain | ≥ 90 % | red (`statusBarItem.errorBackground`) |
-| stop | ≥ 95 % | red (`statusBarItem.errorBackground`, same as drain) |
+| ok | < 90 % | default (no background) |
+| warn | ≥ 90 % | yellow (`statusBarItem.warningBackground`) |
+| throttle | ≥ 94 % | yellow (`statusBarItem.warningBackground`); slot scaling starts |
+| drain | ≥ 97 % | red (`statusBarItem.errorBackground`); no new dispatch |
+| stop | ≥ 99 % | red (`statusBarItem.errorBackground`); interrupt in-flight |
 
-> **Note:** the status bar's thresholds (80 % / 90 % / 95 %, hard-coded in
-> `ide/vscode/src/data/schema.ts`) are a fixed four-level band. They are
-> **not** read from the per-account governor ladder described in [Billing and
-> quota](billing-and-quota.md#the-governor-ladder), which defaults to
-> 90 % / 94 % / 97 % / 99 % with a distinct `throttle` level and is
-> configurable per account. The two can disagree — e.g. an account the
-> extension colors `warn` (≥ 80 %) may still read `ok` from `koryph quota`
-> (< 90 %). Treat the status bar as a coarse at-a-glance indicator and trust
-> `koryph quota` / the TUI for the authoritative level.
+The thresholds in `ide/vscode/src/data/schema.ts` mirror the engine defaults
+(`DefaultWarnFraction` / `DefaultThrottleFraction` / `DefaultGracefulStopFraction` /
+`DefaultHardStopFraction`). Live snapshots from `koryph quota show --json` carry
+the engine-computed level, which honours any per-account ladder overrides; the
+extension's client-side `quotaLevel()` function (used as a fallback when no live
+snapshot is available) uses the same default fractions.
 
 Click the item for a full quota snapshot and a **Calibrate…** hint (points
 at the `/koryph-calibrate` skill).

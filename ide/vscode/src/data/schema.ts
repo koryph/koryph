@@ -338,19 +338,27 @@ export interface Demand {
 // quota — internal/quota/types.go
 // ---------------------------------------------------------------------------
 
-/** quota.Level — the governor verdict. */
+/** quota.Level — the governor verdict. Mirrors internal/quota/types.go Level. */
 export const QuotaLevel = {
   OK: 'ok',
-  Warn: 'warn', // >= 0.80
-  Drain: 'drain', // >= 0.90
-  Stop: 'stop', // >= 0.95
+  Warn: 'warn', // >= 0.90 (DefaultWarnFraction)
+  Throttle: 'throttle', // >= 0.94 (DefaultThrottleFraction); slot scaling starts
+  Drain: 'drain', // >= 0.97 (DefaultGracefulStopFraction); no new dispatch
+  Stop: 'stop', // >= 0.99 (DefaultHardStopFraction); interrupt in-flight
 } as const;
 export type QuotaLevel = (typeof QuotaLevel)[keyof typeof QuotaLevel];
 
-/** quota thresholds (fractions of the calibrated ceiling). */
-export const WARN_FRACTION = 0.8;
-export const DRAIN_FRACTION = 0.9;
-export const STOP_FRACTION = 0.95;
+/**
+ * Default governor ladder thresholds (fractions of the calibrated ceiling).
+ * Mirror internal/quota/types.go DefaultWarnFraction / DefaultThrottleFraction /
+ * DefaultGracefulStopFraction / DefaultHardStopFraction. Per-account ladders are
+ * configurable; the extension uses these defaults when computing the level locally
+ * (live snapshots from `koryph quota show --json` carry the engine-computed level).
+ */
+export const WARN_FRACTION = 0.90;
+export const THROTTLE_FRACTION = 0.94;
+export const DRAIN_FRACTION = 0.97;
+export const STOP_FRACTION = 0.99;
 
 /** quota.Window — one measured usage window. */
 export interface Window {
@@ -397,7 +405,9 @@ export function windowFraction(w: Window | undefined): number {
 
 /**
  * quota.State — level from the max of window & weekly fractions. Mirrors the
- * governor's ok/warn/drain/stop banding.
+ * governor's ok/warn/throttle/drain/stop banding (internal/quota/governor.go State).
+ * Uses default ladder thresholds; live snapshots from `koryph quota show --json`
+ * carry the engine-computed level (which honours per-account ladder overrides).
  */
 export function quotaLevel(u: Usage | undefined): QuotaLevel {
   const frac = Math.max(windowFraction(u?.window_5h), windowFraction(u?.weekly));
@@ -406,6 +416,9 @@ export function quotaLevel(u: Usage | undefined): QuotaLevel {
   }
   if (frac >= DRAIN_FRACTION) {
     return QuotaLevel.Drain;
+  }
+  if (frac >= THROTTLE_FRACTION) {
+    return QuotaLevel.Throttle;
   }
   if (frac >= WARN_FRACTION) {
     return QuotaLevel.Warn;
