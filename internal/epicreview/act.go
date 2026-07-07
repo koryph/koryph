@@ -97,7 +97,7 @@ func Act(ctx context.Context, bd BeadStore, o ActOpts, v Verdict) (ActResult, er
 	switch {
 	case v.Degraded:
 		res.Outcome = "degraded"
-		note := fmt.Sprintf("validation:degraded (round %d): %s", o.Round, v.Reason)
+		note := FormatDegradedNote(o.Round, v.Reason)
 		if err := bd.AppendNotes(ctx, o.EpicID, note); err != nil {
 			progress("epic %s: append degraded note: %v", o.EpicID, err)
 		}

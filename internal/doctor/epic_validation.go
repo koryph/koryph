@@ -6,8 +6,6 @@ package doctor
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -110,49 +108,36 @@ func defaultListEpics(repoRoot string) ([]beads.Issue, error) {
 }
 
 // --- note parsing -----------------------------------------------------------
-
-// reDegradedNote matches lines written by epicreview.Act when a round is
-// degraded (infra failure):
 //
-//	"validation:degraded (round N): <reason>"
-var reDegradedNote = regexp.MustCompile(`validation:degraded \(round (\d+)\):\s*(.+)`)
-
-// reParkedNote matches lines written by engine.parkEpic when the round cap
-// is exceeded:
-//
-//	"validation parked: round N would exceed max_rounds=M. Operator recovery: ..."
-var reParkedNote = regexp.MustCompile(`validation parked: round (\d+) would exceed max_rounds=(\d+)`)
+// Both note formats are written by epicreview (Act's degraded note,
+// engine.parkEpic's parked note) and parsed here via the shared codec in
+// internal/epicreview/notes.go — the single source of truth for both
+// Sprintf and regex, so the two can never drift out of byte-compatibility.
 
 // parseDegradedNote scans the notes field (most-recent line first) and
-// returns the round number and reason from the last
+// returns the round number and reason from the last matching
 // "validation:degraded (round N): reason" line. Returns (0, "") when no
 // matching line is found.
 func parseDegradedNote(notes string) (round int, reason string) {
 	lines := strings.Split(notes, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		m := reDegradedNote.FindStringSubmatch(strings.TrimSpace(lines[i]))
-		if m == nil {
-			continue
+		if n, r, ok := epicreview.ParseDegradedNote(strings.TrimSpace(lines[i])); ok {
+			return n, r
 		}
-		n, _ := strconv.Atoi(m[1])
-		return n, strings.TrimSpace(m[2])
 	}
 	return 0, ""
 }
 
 // parseParkedNote scans the notes field (most-recent line first) and returns
-// the round number and a short description from the last
-// "validation parked: round N ..." line. Returns (0, "") when no matching
-// line is found.
+// the round number and a short description from the last matching parked
+// note line (canonical colon form or legacy space form). Returns (0, "")
+// when no matching line is found.
 func parseParkedNote(notes string) (round int, reason string) {
 	lines := strings.Split(notes, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		m := reParkedNote.FindStringSubmatch(strings.TrimSpace(lines[i]))
-		if m == nil {
-			continue
+		if n, maxRounds, ok := epicreview.ParseParkedNote(strings.TrimSpace(lines[i])); ok {
+			return n, fmt.Sprintf("exceeded max_rounds=%d", maxRounds)
 		}
-		n, _ := strconv.Atoi(m[1])
-		return n, fmt.Sprintf("exceeded max_rounds=%s", m[2])
 	}
 	return 0, ""
 }

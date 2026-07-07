@@ -198,9 +198,8 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 // decides from here (`koryph epic validate` is the recovery verb).
 func (r *runner) parkEpic(ctx context.Context, epicID string, round, maxRounds int) {
 	bd, ok := r.adapter.(epicreview.BeadStore)
-	note := fmt.Sprintf(
-		"validation parked: round %d would exceed max_rounds=%d. Operator recovery: koryph epic validate %s --project %s",
-		round, maxRounds, epicID, r.opts.ProjectID)
+	recovery := fmt.Sprintf("koryph epic validate %s --project %s", epicID, r.opts.ProjectID)
+	note := epicreview.FormatParkedNote(round, maxRounds, recovery)
 	if ok {
 		if err := bd.AddLabel(ctx, epicID, epicreview.LabelParked); err != nil {
 			r.progress("epic %s: add parked label: %v", epicID, err)
