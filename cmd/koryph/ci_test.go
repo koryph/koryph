@@ -218,7 +218,7 @@ func TestCISetupPerProjectCopyright(t *testing.T) {
 	}
 	s := string(b)
 	// REUSE-IgnoreStart
-	for _, frag := range []string{"SPDX-FileCopyrightText: " + "2024-2026 Acme, Inc.", "SPDX-License-Identifier: " + "MIT"} {
+	for _, frag := range []string{"SPDX-FileCopyrightText: " + "(c) 2024-2026 Acme, Inc.", "SPDX-License-Identifier: " + "MIT"} {
 		if !strings.Contains(s, frag) {
 			t.Errorf("installed workflow missing per-project header %q:\n%s", frag, s)
 		}

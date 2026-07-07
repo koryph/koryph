@@ -126,9 +126,10 @@ type ReleaseConfig struct {
 	Provenance bool `json:"provenance,omitempty"`
 }
 
-// Built-in defaults applied when a CopyrightConfig field is omitted. They match
-// the literal header koryph's generators emitted before koryph-s6g, so an
-// unconfigured project's rendered output is byte-for-byte unchanged.
+// Built-in defaults applied when a CopyrightConfig field is omitted. An
+// unconfigured project attributes generated files to koryph — "(c) 2026 The
+// Koryph Developers" — matching koryph's own source-header convention (see
+// FileCopyrightText for the "(c)" prefix).
 const (
 	defaultCopyrightHolder = "The Koryph Developers"
 	defaultCopyrightYear   = "2026"
@@ -150,9 +151,12 @@ type CopyrightConfig struct {
 	License string `json:"license,omitempty"`
 }
 
-// FileCopyrightText returns the SPDX-FileCopyrightText value ("<year> <holder>")
-// for a generated file header, applying built-in defaults for omitted fields. A
-// nil receiver yields the full default, so callers may write
+// FileCopyrightText returns the SPDX-FileCopyrightText value
+// ("(c) <year> <holder>") for a generated file header, applying built-in
+// defaults for omitted fields. The "(c)" prefix matches koryph's own
+// source-header convention ("Copyright (c) 2026 The Koryph Developers"), so an
+// unconfigured project attributes to "(c) 2026 The Koryph Developers". A nil
+// receiver yields the full default, so callers may write
 // cfg.Copyright.FileCopyrightText() without a nil check.
 func (c *CopyrightConfig) FileCopyrightText() string {
 	holder, year := defaultCopyrightHolder, defaultCopyrightYear
@@ -164,7 +168,7 @@ func (c *CopyrightConfig) FileCopyrightText() string {
 			year = c.Year
 		}
 	}
-	return year + " " + holder
+	return "(c) " + year + " " + holder
 }
 
 // LicenseID returns the SPDX license identifier for a generated file header,

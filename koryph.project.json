@@ -111,6 +111,11 @@
   "engine_version": "0.2+",
   "merge_policy": "auto",
   "risk_tier_default": 1,
+  "copyright": {
+    "holder": "The Koryph Developers",
+    "year": "2026",
+    "license": "Apache-2.0"
+  },
   "signing": {
     "required": true,
     "mode": "ssh",

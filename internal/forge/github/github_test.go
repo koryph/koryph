@@ -305,7 +305,7 @@ func TestCIRender_Copyright_Default(t *testing.T) {
 	}
 	s := string(got)
 	// REUSE-IgnoreStart
-	if !strings.Contains(s, "SPDX-FileCopyrightText: "+"2026 The Koryph Developers") {
+	if !strings.Contains(s, "SPDX-FileCopyrightText: "+"(c) 2026 The Koryph Developers") {
 		t.Errorf("default copyright header missing; got:\n%s", s)
 	}
 	// REUSE-IgnoreEnd
@@ -324,7 +324,7 @@ func TestCIRender_Copyright_PerProject(t *testing.T) {
 	s := string(got)
 	// REUSE-IgnoreStart
 	for _, frag := range []string{
-		"SPDX-FileCopyrightText: " + "2024-2026 Acme, Inc.",
+		"SPDX-FileCopyrightText: " + "(c) 2024-2026 Acme, Inc.",
 		"SPDX-License-Identifier: " + "MIT",
 	} {
 		if !strings.Contains(s, frag) {

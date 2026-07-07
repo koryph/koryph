@@ -144,14 +144,14 @@ correct for koryph's own repo, wrong for yours. Declare a `copyright` block in
 
 Every field is optional and falls back to the built-in default
 (`year` → `2026`, `holder` → `The Koryph Developers`, `license` → `Apache-2.0`),
-so the block is purely additive — an unconfigured project's generated output is
-byte-for-byte unchanged. Re-run `koryph ci setup` (and `koryph release setup`)
-after adding or changing it to restamp the installed assets. The rendered header
-becomes:
+so an unconfigured project attributes generated files to koryph
+(`(c) 2026 The Koryph Developers`, matching koryph's own source-header style).
+Re-run `koryph ci setup` (and `koryph release setup`) after adding or changing it
+to restamp the installed assets. The rendered header becomes:
 
 <!-- REUSE-IgnoreStart -->
 ```yaml
-# SPDX-FileCopyrightText: 2024-2026 Acme, Inc.
+# SPDX-FileCopyrightText: (c) 2024-2026 Acme, Inc.
 # SPDX-License-Identifier: MIT
 ```
 <!-- REUSE-IgnoreEnd -->
