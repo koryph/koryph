@@ -69,6 +69,7 @@ func fullConfig() *Config {
 			ItemTitle: "Signing Key",
 			Artifacts: true,
 		},
+		RequireCalibration:     true,
 		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 6,
 		PollSeconds:            5,
@@ -88,6 +89,11 @@ func fullConfig() *Config {
 			SBOM:       true,
 			Provenance: true,
 		},
+		Copyright: &CopyrightConfig{
+			Holder:  "Acme, Inc.",
+			Year:    "2024-2026",
+			License: "MIT",
+		},
 		Posture: &PostureConfig{
 			Profile:    "oss-solo-maintainer",
 			Parameters: map[string]string{"required_checks": "pre-commit,make gate"},
@@ -99,6 +105,7 @@ func fullConfig() *Config {
 			Enabled:          boolPtr(true),
 			Model:            "opus",
 			Persona:          "koryph-epic-validator",
+			Effort:           "xhigh",
 			MaxRounds:        3,
 			AutoClose:        boolPtr(true),
 			TimeoutSeconds:   300,

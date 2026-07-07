@@ -140,6 +140,53 @@ func SetGuardMode(account, mode string, until time.Time) (*Config, error) {
 	})
 }
 
+// SetCalibrationStaleAt marks the quota config at quotaDir/<account>.json as
+// stale (koryph-3l1.2). quotaDir is passed explicitly so callers that manage
+// their own home directory (e.g. registry.Store in tests) bypass the global
+// paths.QuotaDir(). The config is created with uncalibrated defaults when the
+// file is absent (brand-new install). A best-effort write: if the file exists
+// but cannot be parsed the call is a no-op (the calibration-stale flag will
+// be re-evaluated on the next actual calibrate run).
+func SetCalibrationStaleAt(account, reason, quotaDir string) error {
+	path := filepath.Join(quotaDir, account+".json")
+	var cfg *Config
+	if fsx.Exists(path) {
+		var stored Config
+		if err := fsx.ReadJSON(path, &stored); err != nil {
+			// Cannot parse — skip the update rather than clobbering the file.
+			return nil
+		}
+		cfg = &stored
+	} else {
+		cfg = DefaultConfig(account)
+	}
+	cfg.CalibrationStale = true
+	cfg.CalibrationStaleReason = reason
+	// Best-effort: create the quota dir if missing (registry may call us during
+	// onboarding before the dir exists).
+	if err := os.MkdirAll(quotaDir, 0o700); err != nil {
+		return err
+	}
+	return fsx.WriteJSONAtomicPerm(path, cfg, 0o600)
+}
+
+// SetCalibrationStale marks the account's quota calibration stale using the
+// global quota directory (paths.QuotaDir()). Production callers use this;
+// registry.Store uses SetCalibrationStaleAt to stay within its own home.
+func SetCalibrationStale(account, reason string) error {
+	return SetCalibrationStaleAt(account, reason, paths.QuotaDir())
+}
+
+// ClearCalibrationStale clears the calibration-stale flag for the account.
+// Called by `koryph quota calibrate` on completion so the doctor stops warning.
+func ClearCalibrationStale(account string) (*Config, error) {
+	return UpdateConfig(account, func(c *Config) error {
+		c.CalibrationStale = false
+		c.CalibrationStaleReason = ""
+		return nil
+	})
+}
+
 // ConfigGuardAdvisory reports whether the stored guard mode is advisory right
 // now, taking the optional GuardUntil expiry into account. now is injected for
 // testing; pass time.Now() in production callers.

@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/registry"
 )
 
 // Level classifies a finding's severity.
@@ -80,6 +83,13 @@ type Options struct {
 	Alive func(pid int) bool
 	// LookPath locates a binary on PATH (injectable for tests).
 	LookPath func(name string) (string, error)
+	// ProxyHTTPGet is injectable for tests; the real implementation issues an
+	// HTTP GET with a 5-second timeout. Signature: (url) → (statusCode, body, err).
+	ProxyHTTPGet func(url string) (int, []byte, error)
+	// RegistryList is injectable for tests; the real implementation calls
+	// registry.NewStoreAt(opts.home()).List(). Returning (nil, nil) means no
+	// records: proxy check is a no-op.
+	RegistryList func() ([]*registry.Record, error)
 }
 
 func (o *Options) home() string {
@@ -110,6 +120,31 @@ func (o *Options) lookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
 
+func (o *Options) proxyHTTPGet(url string) (int, []byte, error) {
+	if o.ProxyHTTPGet != nil {
+		return o.ProxyHTTPGet(url)
+	}
+	return defaultProxyHTTPGet(url)
+}
+
+func defaultProxyHTTPGet(url string) (int, []byte, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url) //nolint:noctx // doctor is a short CLI check; no ctx plumbing needed
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, err
+}
+
+func (o *Options) registryList() ([]*registry.Record, error) {
+	if o.RegistryList != nil {
+		return o.RegistryList()
+	}
+	return registry.NewStoreAt(o.home()).List()
+}
+
 // Run executes all global checks and returns the report.
 func Run(opts Options) (*Report, error) {
 	r := &Report{
@@ -130,6 +165,7 @@ func Run(opts Options) (*Report, error) {
 	r.addAll(checkVaultProviders(opts))
 	r.addAll(checkObs(opts))
 	r.addAll(checkGCFootprint(opts))
+	r.addAll(checkProxy(opts))
 
 	for _, f := range r.Findings {
 		if f.Fixed {
@@ -160,6 +196,7 @@ const checkNameDemand = "stale-demand"
 const checkNameQuota = "quota-calibration"
 const checkNameVault = "vault-providers"
 const checkNameObs = "obs"
+const checkNameProxy = "proxy"
 
 // checkLayout verifies the required subdirectory skeleton under Home.
 func checkLayout(opts Options) Finding {
@@ -619,6 +656,20 @@ func checkQuotaCalibration(opts Options) []Finding {
 						account, eff.Warn*100, eff.Throttle*100, eff.GracefulStop*100, eff.HardStop*100),
 				})
 			}
+		}
+		// CalibrationStale: proxy config changed since last calibrate run
+		// (koryph-3l1.2). Emit a WARN so the operator knows to re-calibrate;
+		// the governor still operates on the old slope in the meantime.
+		if cfg.CalibrationStale {
+			reason := cfg.CalibrationStaleReason
+			if reason == "" {
+				reason = "proxy config changed"
+			}
+			findings = append(findings, Finding{
+				Check:   checkNameQuota,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("account %s: calibration stale — %s; run `koryph quota calibrate --account %s`", account, reason, account),
+			})
 		}
 	}
 	if len(findings) == 0 {

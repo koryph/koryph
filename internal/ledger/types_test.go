@@ -61,3 +61,56 @@ func TestSlotOldLedgerCompat(t *testing.T) {
 		t.Error("merge_requeues should be omitted (omitempty) when zero")
 	}
 }
+
+// TestSlotProxyIDAdditiveCompat proves ProxyID (koryph-3l1.1) is additive
+// exactly like GateRequeues/MergeRequeues above: a Slot JSON blob captured
+// before the field existed unmarshals it to "" (direct — no agent proxy),
+// which is the exact "no proxy" value quota's calibKey treats as the legacy
+// "tier:size" population (never "@"-suffixed). omitempty keeps a
+// direct-dispatch slot's re-marshaled JSON indistinguishable from an old
+// ledger that never had the field at all.
+func TestSlotProxyIDAdditiveCompat(t *testing.T) {
+	const oldSlotJSON = `{
+		"phase_id": "tb2",
+		"bead_id": "tb2",
+		"branch": "koryph/tb2",
+		"worktree": "/tmp/tb2",
+		"status": "running",
+		"billing_mode": "subscription"
+	}`
+
+	var sl Slot
+	if err := json.Unmarshal([]byte(oldSlotJSON), &sl); err != nil {
+		t.Fatalf("unmarshal pre-koryph-3l1.1 Slot JSON: %v", err)
+	}
+	if sl.ProxyID != "" {
+		t.Errorf("ProxyID = %q, want \"\" (zero value) for an old ledger without the field", sl.ProxyID)
+	}
+
+	out, err := json.Marshal(&sl)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var rt map[string]any
+	if err := json.Unmarshal(out, &rt); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	if _, ok := rt["proxy_id"]; ok {
+		t.Error("proxy_id should be omitted (omitempty) when empty")
+	}
+
+	// A non-empty ProxyID survives round-trip verbatim (the format callers
+	// will feed into quota.RecordForProxy/EstimateItemForRuntimeProxy).
+	sl.ProxyID = "http://127.0.0.1:8091#v3"
+	out, err = json.Marshal(&sl)
+	if err != nil {
+		t.Fatalf("marshal with ProxyID: %v", err)
+	}
+	var sl2 Slot
+	if err := json.Unmarshal(out, &sl2); err != nil {
+		t.Fatalf("unmarshal with ProxyID: %v", err)
+	}
+	if sl2.ProxyID != sl.ProxyID {
+		t.Errorf("ProxyID roundtrip = %q, want %q", sl2.ProxyID, sl.ProxyID)
+	}
+}

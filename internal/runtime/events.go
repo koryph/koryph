@@ -64,8 +64,36 @@ type Event struct {
 	CostUSD float64 `json:"cost_usd,omitempty"`
 	HasCost bool    `json:"has_cost,omitempty"`
 
+	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are valid
+	// only when Kind==EventResult && HasUsage — the per-attempt token
+	// composition off a Claude stream-json "result" line's usage block
+	// (koryph-77r.1, design docs/designs/2026-07-token-economy.md §3 L1).
+	// HasUsage exists for the same reason HasCost does: a result line with no
+	// usage block must round-trip as "unknown", not silently collapse into an
+	// all-zero reading indistinguishable from a genuinely token-free turn.
+	InputTokens         int64 `json:"input_tokens,omitempty"`
+	OutputTokens        int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	HasUsage            bool  `json:"has_usage,omitempty"`
+
 	// RateLimited is valid only when Kind==EventError; see EventError.
 	RateLimited bool `json:"rate_limited,omitempty"`
+
+	// BudgetKilled reports whether this event's text matched a budget-kill
+	// marker (koryph-77r.10, design docs/designs/2026-07-token-economy.md
+	// recovery-economics follow-up): the agent was terminated by the
+	// --max-budget-usd cap rather than crashing, being rate-limited, or
+	// finishing its turn. Empirically pinned (2026-07) against a live
+	// `claude -p ... --max-budget-usd ...` run: the CLI lets the in-flight
+	// turn complete (often well over the cap) and then emits a normal
+	// "result" line with subtype "error_max_budget_usd" and is_error true —
+	// so, like RateLimited, BudgetKilled can be true on a Kind==EventResult
+	// line (that line's CostUSD/HasCost remain meaningful: "is_error is
+	// irrelevant to cost" applies here too). Unlike RateLimited it is not
+	// restricted to Kind==EventError at all, since a budget-kill always
+	// surfaces as a "result" line in practice.
+	BudgetKilled bool `json:"budget_killed,omitempty"`
 
 	// SessionID is valid when Kind==EventSession, and MAY also be populated
 	// on other kinds for runtimes that stamp a session id on every event —

@@ -5,9 +5,12 @@ package engine
 
 import (
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/sysmem"
 )
 
 // The global concurrency governor caps concurrently running agents across ALL
@@ -58,10 +61,91 @@ func (r *runner) warnIfOverFairShare() {
 		r.width, fs, r.gov.Cap(providerAnthropic))
 }
 
+// memStat reads current system memory (total + available), preferring an
+// injected probe (tests) over the real platform probe. ok=false means no usable
+// reading — an unsupported platform or a probe error — on which the caller
+// fails open.
+func (r *runner) memStat() (sysmem.Stat, bool) {
+	if r.memProbe != nil {
+		return r.memProbe()
+	}
+	stat, err := sysmem.Available()
+	if err != nil {
+		return sysmem.Stat{}, false
+	}
+	return stat, true
+}
+
+// memoryFloorMB resolves the effective memory admission floor in MB for a host
+// with totalMB physical memory (koryph-930). Resolution order:
+// KORYPH_MIN_FREE_MEMORY_MB env override, else the machine-wide governor pool
+// config, else unset. A setting is interpreted as: >0 an explicit absolute
+// floor; <0 the gate disabled; 0/unset the auto floor sized to physical memory
+// (sysmem.DefaultFloorMB). So the gate is ON by default. A non-numeric env
+// value is ignored (falls through to config).
+func (r *runner) memoryFloorMB(totalMB uint64) int {
+	if v := os.Getenv("KORYPH_MIN_FREE_MEMORY_MB"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return floorFromSetting(n, totalMB)
+		}
+	}
+	configured := 0
+	if r.gov != nil {
+		configured = r.gov.MinFreeMemoryMB(providerAnthropic)
+	}
+	return floorFromSetting(configured, totalMB)
+}
+
+// floorFromSetting maps a raw min-free-memory setting to an effective floor:
+// positive is a literal floor, negative disables the gate (0), and 0/absent
+// auto-sizes to physical memory (koryph-930).
+func floorFromSetting(n int, totalMB uint64) int {
+	switch {
+	case n > 0:
+		return n
+	case n < 0:
+		return 0 // explicitly disabled
+	default:
+		return sysmem.DefaultFloorMB(totalMB)
+	}
+}
+
+// memoryAdmits reports whether there is enough free system memory to admit
+// another agent (koryph-930). The gate is ON by default with a floor auto-sized
+// to physical memory. It fails OPEN — returns true — when no memory reading is
+// available or the floor is disabled, because the memory gate is a safety rail,
+// never a correctness dependency (same posture as every other governor helper
+// here). A denial defers the dispatch to a later wave, exactly like a
+// concurrency-cap denial.
+func (r *runner) memoryAdmits(beadID string) bool {
+	stat, ok := r.memStat()
+	if !ok {
+		return true // no probe / unsupported platform → fail open
+	}
+	floorMB := r.memoryFloorMB(stat.TotalMB())
+	if floorMB <= 0 {
+		return true // gate disabled
+	}
+	availMB := stat.AvailableMB()
+	if availMB >= uint64(floorMB) {
+		return true
+	}
+	r.progress("bead %s: deferring dispatch — %d MB free memory below the %d MB floor (auto-sized to physical RAM; set min_free_memory_mb / KORYPH_MIN_FREE_MEMORY_MB to override, -1 to disable)",
+		beadID, availMB, floorMB)
+	return false
+}
+
 // acquireGlobalSlot reserves a global concurrency slot for beadID (keyed to the
 // project+bead under this engine's pid; the agent pid is attached later by
 // bindGlobalSlot). Returns true when granted or when governance is unavailable.
 func (r *runner) acquireGlobalSlot(beadID string) bool {
+	// Memory admission gate (koryph-930): refuse to stack another agent's
+	// subprocess+worktree when the host is under memory pressure. Checked
+	// BEFORE the flocked governor Acquire so the (possibly subprocess-backed)
+	// memory probe never runs while holding the machine-wide lock.
+	if !r.memoryAdmits(beadID) {
+		return false
+	}
 	if r.gov == nil {
 		return true
 	}

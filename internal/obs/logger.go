@@ -200,8 +200,10 @@ func buildConsoleHandler(cfg Config, w *os.File) slog.Handler {
 // BuildPipeline constructs the full handler pipeline from cfg:
 //   - A console handler writing to w (text or JSON per cfg.Format).
 //   - A telemetry JSONL file handler writing to telDir (or the canonical
-//     telemetry directory when telDir is empty).  On failure the file handler
-//     is silently skipped so telemetry is always best-effort.
+//     telemetry directory when telDir is empty, resolved lazily at the first
+//     write so KORYPH_HOME is read at write time rather than at construction).
+//     On failure the file handler is silently skipped so telemetry is always
+//     best-effort.
 //   - When cfg.OTELEndpoint is non-empty, an OTLP/HTTP JSON handler that
 //     forwards records to that endpoint.
 //
@@ -214,10 +216,12 @@ func BuildPipeline(cfg Config, w *os.File, telDir string) slog.Handler {
 	var handlers []slog.Handler
 	handlers = append(handlers, console)
 
-	// Telemetry file handler.
-	if telDir == "" {
-		telDir = telemetryDirPath()
-	}
+	// Telemetry file handler. When telDir is "" the fileWriter resolves the
+	// directory lazily at the first write (see fileWriter.ensureOpen), which
+	// means KORYPH_HOME is read at write time rather than at logger
+	// construction. This prevents the package-level `var log = obs.For("engine")`
+	// from baking the real ~/.koryph path into the file sink before tests have
+	// had a chance to set KORYPH_HOME via t.Setenv.
 	maxBytes := int64(cfg.TelemetryMaxSizeMB) * 1024 * 1024
 	if maxBytes <= 0 {
 		maxBytes = 50 * 1024 * 1024

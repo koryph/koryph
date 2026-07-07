@@ -85,6 +85,48 @@ func cleanEnvelope(verdictJSON string) string {
 	return `{"type":"result","is_error":false,"result":` + string(inner) + `}`
 }
 
+// fakeClaudeEnvDump dumps the validator's environment to envCapture (via
+// `env`) before printing body.
+func fakeClaudeEnvDump(t *testing.T, envCapture, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-claude-env")
+	script := "#!/bin/sh\n" +
+		"cat > /dev/null\n" +
+		"env > " + envCapture + "\n" +
+		"cat <<'FAKE_EOF'\n" + body + "\nFAKE_EOF\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestValidateThreadsProxyAndSpawnKind is the koryph-3l1.1 acceptance test
+// for this spawn site: o.ProxyBaseURL reaches the validator's actual child
+// env as ANTHROPIC_BASE_URL, and attemptValidate unconditionally stamps
+// KORYPH_SPAWN_KIND=epicreview (its ChildEnvSpec literal).
+func TestValidateThreadsProxyAndSpawnKind(t *testing.T) {
+	verdictJSON := `{"met":true,"summary":"clean","gaps":[]}`
+	envCapture := filepath.Join(t.TempDir(), "env.txt")
+	o := baseOpts(t, fakeClaudeEnvDump(t, envCapture, cleanEnvelope(verdictJSON)))
+	o.ProxyBaseURL = "http://127.0.0.1:8091"
+
+	v := Validate(context.Background(), o)
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+
+	env, err := os.ReadFile(envCapture)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	if !strings.Contains(string(env), "ANTHROPIC_BASE_URL=http://127.0.0.1:8091\n") {
+		t.Errorf("captured env missing ANTHROPIC_BASE_URL:\n%s", env)
+	}
+	if !strings.Contains(string(env), "KORYPH_SPAWN_KIND=epicreview\n") {
+		t.Errorf("captured env missing KORYPH_SPAWN_KIND=epicreview:\n%s", env)
+	}
+}
+
 // TestValidateClean checks a verdict where the epic is fully met with no gaps.
 func TestValidateClean(t *testing.T) {
 	verdictJSON := `{"met":true,"summary":"The epic landed cleanly.","gaps":[]}`
@@ -412,6 +454,42 @@ func TestBackoffForExponentialAndCapped(t *testing.T) {
 		if got := backoffFor(tc.retry); got != tc.want {
 			t.Errorf("backoffFor(%d) = %s, want %s", tc.retry, got, tc.want)
 		}
+	}
+}
+
+// TestValidateEnvelopePersisted verifies that the raw Claude JSON envelope is
+// written to <epicID>-round<N>-envelope.json beside the verdict file (koryph-qbc).
+func TestValidateEnvelopePersisted(t *testing.T) {
+	verdictJSON := `{"met":true,"summary":"All good.","gaps":[]}`
+	envelope := `{"type":"result","is_error":false,"result":` + func() string {
+		b, _ := json.Marshal(verdictJSON)
+		return string(b)
+	}() + `,"usage":{"input_tokens":200,"output_tokens":80},"total_cost_usd":0.002}`
+	o := baseOpts(t, fakeClaude(t, envelope))
+
+	v := Validate(context.Background(), o)
+
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+
+	// <epicID>-round<N>-envelope.json must exist beside the verdict.
+	envPath := filepath.Join(o.OutDir, "test-epic-001-round1-envelope.json")
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("test-epic-001-round1-envelope.json not persisted: %v", err)
+	}
+	// Must contain the full envelope (usage fields present).
+	content := string(raw)
+	for _, want := range []string{`"type":"result"`, `"usage"`, `"input_tokens"`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("envelope file missing %q:\n%s", want, content)
+		}
+	}
+
+	// Envelope field on the returned Verdict must be populated.
+	if v.Envelope == "" {
+		t.Error("Verdict.Envelope must not be empty after a successful validation")
 	}
 }
 

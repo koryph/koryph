@@ -63,6 +63,53 @@ func TestJSONLScanNoFiles(t *testing.T) {
 	}
 }
 
+// writeSessionTranscript writes projects/x/<sessionID>.jsonl with lines
+// carrying both message-nested and top-level usage shapes (koryph-77r.1,
+// SessionTokens fallback path).
+func writeSessionTranscript(t *testing.T, root, sessionID string) {
+	t.Helper()
+	dir := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line1 := `{"message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":5,"cache_read_input_tokens":50}}}`
+	line2 := `{"model":"claude-sonnet-4-5","usage":{"input_tokens":200,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	line3 := `not json at all`
+	line4 := `{"type":"system"}` // no usage field — must not contribute
+	body := strings.Join([]string{line1, line2, line3, line4}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, sessionID+".jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionTokens(t *testing.T) {
+	root := t.TempDir()
+	writeSessionTranscript(t, root, "sess-abc")
+
+	got, ok := SessionTokens(root, "sess-abc")
+	if !ok {
+		t.Fatal("SessionTokens: ok = false, want true")
+	}
+	want := TokenComposition{InputTokens: 300, OutputTokens: 30, CacheReadTokens: 50, CacheCreationTokens: 5}
+	if got != want {
+		t.Errorf("SessionTokens = %+v, want %+v", got, want)
+	}
+}
+
+func TestSessionTokensNoMatchingFile(t *testing.T) {
+	root := t.TempDir()
+	writeSessionTranscript(t, root, "sess-abc")
+	if _, ok := SessionTokens(root, "sess-does-not-exist"); ok {
+		t.Fatal("SessionTokens: ok = true for a session id with no transcript file, want false")
+	}
+}
+
+func TestSessionTokensEmptySessionID(t *testing.T) {
+	if _, ok := SessionTokens(t.TempDir(), ""); ok {
+		t.Fatal("SessionTokens: ok = true for an empty session id, want false")
+	}
+}
+
 func TestFiveHourWindowStart(t *testing.T) {
 	epoch := time.Unix(0, 0).UTC()
 	const grid = 5 * time.Hour

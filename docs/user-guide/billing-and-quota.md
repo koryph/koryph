@@ -18,26 +18,47 @@ audit log so you always have a per-dispatch record.
 
 ---
 
-## The 80 / 90 / 95 governor
+## The governor ladder
 
 The governor measures two usage windows per account and maps
-fraction-of-ceiling to one of four levels:
+fraction-of-ceiling to one of five levels (defaults; configurable per-account
+via `quota.Ladder`):
 
-| Fraction | Level   | Effect in loop mode                                              |
-|----------|---------|------------------------------------------------------------------|
-| < 80 %   | `ok`    | Full concurrency                                                 |
-| ≥ 80 %   | `warn`  | Log warning; concurrency linearly scaled toward 1 as 90 % nears |
-| ≥ 90 %   | `drain` | No new dispatch; active agents finish their current turn         |
-| ≥ 95 %   | `stop`  | No new dispatch; run paused (`paused-quota`) or switches to API-key billing if explicitly configured |
+| Fraction | Level      | Effect in loop mode                                                 |
+|----------|------------|---------------------------------------------------------------------|
+| < 90 %   | `ok`       | Full concurrency                                                    |
+| ≥ 90 %   | `warn`     | Log warning; full concurrency continues                             |
+| ≥ 94 %   | `throttle` | Concurrency linearly scaled toward 1 as 97 % nears                 |
+| ≥ 97 %   | `drain`    | No new dispatch; active agents finish their current turn            |
+| ≥ 99 %   | `stop`     | In-flight agents interrupted (SIGTERM); worktrees preserved for resume |
 
-**Concurrency scaling.** Between 80 % and 90 %, `ScaleSlots` linearly
-interpolates wave width from `max` down to 1. At 90 % the slot count is 0
+**Concurrency scaling.** Between 94 % and 97 %, `ScaleSlots` linearly
+interpolates wave width from `max` down to 1. At 97 % the slot count is 0
 and no new agents are launched. Manual dispatch (`koryph run --manual`) is
 exempt from all governor levels.
 
 **Preflight gate.** Before each wave the engine projects the estimated cost
 of the candidate items against the 5 h ceiling. A wave that would push the
-window to or past 90 % is refused before any agent is launched.
+window to or past 97 % (the graceful-stop threshold) is refused before any
+agent is launched.
+
+**Configuring thresholds.** All four thresholds are configurable per-account
+in `~/.koryph/quota/<account>.json` under the `ladder` key:
+
+```json
+{
+  "account": "personal",
+  "ladder": {
+    "warn": 0.90,
+    "throttle": 0.94,
+    "graceful_stop": 0.97,
+    "hard_stop": 0.99
+  }
+}
+```
+
+Zero fields use the package defaults shown in the table above. Fields must be
+strictly ascending.
 
 **Fail-closed windows.** A window whose source is `unavailable` reports
 fraction 1.0 and immediately triggers drain. An uncalibrated account (both
@@ -173,10 +194,25 @@ The billing guard controls whether the governor's throttling constraints
 | **Enforced** (default) | `billing_guard` unset or `"enforce"` in the registry record | Governor blocks dispatch and scales concurrency |
 | **Advisory (registry)** | `billing_guard: advisory` in the registry record | Measure + log + warn; never block |
 | **Advisory (run flag)** | `--no-billing-guard` passed to `koryph run` | Advisory for that run only |
-| **Automatic baseline** | Account not yet calibrated | Always advisory until a ceiling is set |
+| **Automatic baseline** | Account not yet calibrated | Advisory until a ceiling is set — but **warned loudly every run** (see below) |
 
 In any advisory mode, billing stays on subscription regardless of governor
 level — the API-key stop-fallback never fires.
+
+### Uncalibrated governor (koryph-grz)
+
+An uncalibrated account (both ceilings `0`) cannot enforce the 5h/weekly ladder,
+so it runs **advisory** — but this is no longer *silent*. Every run emits a
+prominent warning that spend limits are **not** being enforced, naming the
+account and the `koryph quota calibrate` fix. If you want spend safety to be a
+hard guarantee rather than a nudge, opt into **fail-closed**:
+
+- **Per run:** `koryph run … --require-calibration` — the run refuses to
+  dispatch (reason `governor-uncalibrated`) until a ceiling is calibrated.
+- **Per project:** `"require_calibration": true` in `koryph.project.json` —
+  same block for every run of that project.
+
+Calibrating (below) clears both the warning and the block.
 
 > Spend-authorization gates (explicit API key, batch confirmation) are
 > independent of the billing guard and are never bypassed by advisory mode.
@@ -199,6 +235,29 @@ When all three conditions are met at a `stop` event, the engine logs a
 prominent warning and switches the current wave's `billing_mode` to
 `api-key`. A per-agent budget cap (`per_agent_max_usd`, default **$25**) is
 forwarded as `--max-budget-usd` to limit runaway spend.
+
+### Per-agent budget caps and the turn-boundary nuance
+
+`--max-budget-usd` **is enforced under subscription OAuth**, not just
+API-key billing — confirmed empirically with a live canary. But the
+enforcement point matters for capacity planning:
+
+> **The Claude CLI checks the budget cap at turn boundaries, not mid-generation.**
+> A turn already in flight when the cap is reached is allowed to finish before
+> the session is killed. On a thinking-heavy turn this can **overshoot the
+> configured cap substantially** — the pinning canary observed a $0.001 cap
+> overshoot to $0.43 (~428x) because the in-flight turn was allowed to
+> complete. Treat `per_agent_max_usd` / `--max-budget-usd` as a
+> **per-turn-bounded** ceiling, not a hard mid-generation interrupt: actual
+> spend on a killed agent can exceed the configured cap by the cost of one
+> turn.
+
+When an agent is killed this way, the engine classifies it distinctly from a
+crash or rate-limit death (`DeathReason: budget-killed`,
+`error_max_budget_usd` in the stream) and applies a warm-resume-then-park
+policy so the cap isn't silently re-paid on every retry — see [Budget-killed
+agents](running-waves.md#budget-killed-agents) in Running Waves for the full
+requeue/park semantics.
 
 ---
 

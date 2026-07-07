@@ -144,6 +144,51 @@ func TestRunStageCommitsAndReportsCost(t *testing.T) {
 	}
 }
 
+// fakeStageClaudeEnvDump dumps the stage agent's environment to envCapture
+// (via `env`) then prints a minimal result envelope and exits 0. No commit is
+// made — this variant is only used to inspect the child env.
+func fakeStageClaudeEnvDump(t *testing.T, envCapture string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-claude-env")
+	script := "#!/bin/sh\n" +
+		"cat > /dev/null\n" +
+		"env > " + envCapture + "\n" +
+		"printf '{\"type\":\"result\",\"total_cost_usd\":0,\"result\":\"done\"}\\n'\n"
+	writeFile(t, path, script)
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestRunStageThreadsProxyAndSpawnKind is the koryph-3l1.1 acceptance test
+// for this spawn site: o.ProxyBaseURL reaches the stage agent's actual child
+// env as ANTHROPIC_BASE_URL, and Run unconditionally stamps
+// KORYPH_SPAWN_KIND=stage (its ChildEnvSpec literal).
+func TestRunStageThreadsProxyAndSpawnKind(t *testing.T) {
+	repo := stageRepo(t)
+	envCapture := filepath.Join(t.TempDir(), "env.txt")
+
+	o := baseStageOpts(t, repo, fakeStageClaudeEnvDump(t, envCapture))
+	o.ProxyBaseURL = "http://127.0.0.1:8091"
+
+	r := Run(context.Background(), o)
+	if !r.Ran || !r.OK {
+		t.Fatalf("Result = %+v, want ran+ok", r)
+	}
+
+	env, err := os.ReadFile(envCapture)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	if !strings.Contains(string(env), "ANTHROPIC_BASE_URL=http://127.0.0.1:8091\n") {
+		t.Errorf("captured env missing ANTHROPIC_BASE_URL:\n%s", env)
+	}
+	if !strings.Contains(string(env), "KORYPH_SPAWN_KIND=stage\n") {
+		t.Errorf("captured env missing KORYPH_SPAWN_KIND=stage:\n%s", env)
+	}
+}
+
 func TestRunStageNonZeroExitNotOK(t *testing.T) {
 	repo := stageRepo(t)
 	o := baseStageOpts(t, repo, fakeStageClaude(t, 3))

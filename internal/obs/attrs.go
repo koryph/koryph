@@ -75,6 +75,26 @@ const (
 
 	// KeyEstimateUSD is the pre-dispatch bias-corrected cost estimate in USD.
 	KeyEstimateUSD = "estimate_usd"
+
+	// Section koryph-77r.1 token telemetry keys (design
+	// docs/designs/2026-07-token-economy.md §3 L1).
+
+	// KeyInputTokens/KeyOutputTokens/KeyCacheReadTokens/
+	// KeyCacheCreationTokens are the per-attempt token composition parsed
+	// from a stream-json result line's usage block (or the session-
+	// transcript fallback).
+	KeyInputTokens         = "input_tokens"
+	KeyOutputTokens        = "output_tokens"
+	KeyCacheReadTokens     = "cache_read_tokens"
+	KeyCacheCreationTokens = "cache_creation_tokens"
+
+	// KeyCacheRatio is cache_read / (input + cache_read + cache_creation) for
+	// one attempt — the I7 cache-hit-ratio tripwire signal.
+	KeyCacheRatio = "cache_ratio"
+
+	// KeyTotalTokens is the attempt's total token volume
+	// (input+cache_read+cache_creation) the cache-ratio tripwire gates on.
+	KeyTotalTokens = "total_tokens"
 )
 
 // RunAttrs returns slog attributes for a run context. Pass "" for any field

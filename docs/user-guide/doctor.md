@@ -76,6 +76,39 @@ When `~/.koryph/vault.json` is present, checks that the first binary in
 each provider's `fetch` template (e.g. `pass-cli` for ProtonPass, `op` for
 1Password) is on `PATH`. A missing binary is a **warning**.
 
+### proxy
+For every registered project with an `agent_proxy` block configured (see
+[Headroom integration](headroom-integration.md)), runs four checks:
+
+- **loopback** — confirms `base_url` is still an `http://` loopback address
+  (the registry already refuses to load a non-loopback value, but a
+  hand-edited record could bypass that; a non-loopback `base_url` is an
+  **error**).
+- **health** — `GET <base_url><health>` must return 2xx. Unreachable or
+  non-2xx is an **error**; an unconfigured `health` path is a **warning**.
+- **pin** — when `pin` is set, compares it against the `"pin"` field in the
+  health response. A mismatch is an **error** with refuse-to-route guidance
+  (a different proxy version is running than the registry expects); a health
+  response with no `"pin"` field is a **warning** (cannot verify).
+- **routing verification** — compares koryph's own ledger count of
+  dispatches routed to this proxy's arm against the proxy's self-reported
+  forwarded-request counter (`GET <base_url><stats>`, `stats` defaulting to
+  `/stats`). This exists because health+pin only prove the proxy process is
+  up and correctly versioned, not that dispatched traffic is actually
+  flowing *through* it — a proxy that is healthy and correctly pinned but
+  silently bypassed (e.g. a `ChildEnvSpec`/`ANTHROPIC_BASE_URL` wiring
+  regression) would otherwise pass doctor clean while every dispatch goes
+  direct. Outcomes:
+  - No proxied-arm dispatches recorded yet → **ok** (nothing to verify).
+  - Stats endpoint unreachable, non-2xx, or its JSON body has no field
+    doctor recognizes as a request counter (a `requests`/`request_count`/
+    `total_requests`-style name, top level or nested one level) → **warning**
+    naming the limitation. Never a silent pass.
+  - Dispatches recorded but the proxy reports zero upstream-seen requests →
+    **error** — configured but not in path; refuse-to-route until the wiring
+    is fixed.
+  - Dispatches recorded and the proxy reports a nonzero count → **ok**.
+
 ## Project-mode checks
 
 When `--project <id>` is given, koryph doctor runs against the project's

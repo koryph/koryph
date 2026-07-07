@@ -76,7 +76,23 @@ contract is identical for every dispatch of this engine version.
   and again right before you finish: a nudge appended right after dispatch
   (before your first heartbeat is even polled) is otherwise invisible until
   your next check-in, and one appended near the end can still change what
-  "done" means.`
+  "done" means.
+
+## Output economy
+Gate and Bash output dominate transcript bytes; keep them small:
+
+- Prefer "make gate-agent" over "make gate". It runs identical checks with
+  the same fail-fast verdict, but prints one PASS/FAIL line per stage and
+  tees each stage's full log to $KORYPH_PHASE_DIR/gate-<stage>.log. On
+  failure it also prints a short tail so the actionable error still reaches
+  you; the full output is always recoverable via the Read tool.
+- File-spill wrappers: for any long-running command, invoke
+  hooks/koryph-spill.sh with a label and the command. The wrapper prints a
+  head+tail summary, writes the full untruncated output to a file under your
+  phase dir, and ends its summary with "full output: <path>". Recover the
+  complete output at any time with the Read tool against that path.
+- Keep your own replies concise: summaries, status lines, and code snippets;
+  skip prose narration. Long output belongs in a file, not in your response.`
 
 // projectBlock returns section [2]: stable per project. Conventions, the
 // green gate, and optional cross-cutting gates and bootstrap notes. No
@@ -151,15 +167,29 @@ func volatileTail(in Input) string {
 		b.WriteString("\n```")
 	}
 
-	if in.ResumeSHA != "" {
+	if in.ResumeSHA != "" || in.WIPSnapshotPath != "" {
 		b.WriteString("\n\n### RESUMING\n")
-		b.WriteString("This task resumes from committed work at ")
-		b.WriteString(in.ResumeSHA)
-		b.WriteString(". Inspect what already landed:\n    git log --oneline ")
-		b.WriteString(in.ResumeSHA)
-		b.WriteString("..HEAD\n")
-		b.WriteString("Do NOT redo work that is already committed. Read the manifest's ")
-		b.WriteString("next_action and continue from there.")
+		if in.ResumeSHA != "" {
+			b.WriteString("This task resumes from committed work at ")
+			b.WriteString(in.ResumeSHA)
+			b.WriteString(". Inspect what already landed:\n    git log --oneline ")
+			b.WriteString(in.ResumeSHA)
+			b.WriteString("..HEAD\n")
+			b.WriteString("Do NOT redo work that is already committed. Read the manifest's ")
+			b.WriteString("next_action and continue from there.")
+		}
+		if in.WIPSnapshotPath != "" {
+			if in.ResumeSHA != "" {
+				b.WriteString("\n\n")
+			}
+			b.WriteString("A previous attempt's uncommitted work was snapshotted (git diff format) to ")
+			b.WriteString(in.WIPSnapshotPath)
+			b.WriteString(" before this worktree was possibly rebuilt. Check your working tree first (git status): ")
+			b.WriteString("if it already carries those changes, they need no action; if not, read the snapshot and ")
+			b.WriteString("apply what is still relevant (git apply ")
+			b.WriteString(in.WIPSnapshotPath)
+			b.WriteString(") rather than redoing the exploration from scratch. Either way, commit as you go.")
+		}
 	}
 
 	if in.ReviewPath != "" {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/epicreview"
+	"github.com/koryph/koryph/internal/modelroute"
 )
 
 // Epic validation — the in-loop trigger (design §2/§4/§4b,
@@ -156,6 +157,19 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 				Labels:      c.Labels,
 			})
 		}
+		// Effort precedence: explicit project.json epic_validation.effort >
+		// the validator persona's own frontmatter `effort:` hint (koryph-
+		// epic-validator: xhigh), resolved the same way wave.go's main-dispatch
+		// path already does. Epic validation is quality-critical — never
+		// auto-downgraded — so this only ever wires an already-declared effort
+		// through; it does not itself change what effort is requested
+		// (koryph-77r.8 audit).
+		validateEffort := evcfg.Effort
+		if validateEffort == "" {
+			if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, evcfg.Persona); err == nil {
+				validateEffort = metaEffort
+			}
+		}
 		opts := epicreview.Opts{
 			EpicID:          epicID,
 			EpicTitle:       epic.Title,
@@ -168,8 +182,19 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 			Profile:         r.profile,
 			Persona:         evcfg.Persona,
 			Model:           evcfg.Model,
+			Effort:          validateEffort,
 			TimeoutSec:      evcfg.TimeoutSeconds,
 			OutDir:          outDir,
+			// Deliberately the project's live config, NOT a bead-scoped arm
+			// lookup (koryph-3l1.3): epic validation spans every child of the
+			// epic, which can straddle both holdout and proxied beads (arms
+			// are assigned per bead, not per epic), so there is no single
+			// "this epic's arm" to follow. Defaulting to proxied here — the
+			// documented judgment call for secondary spawns with no bead of
+			// their own — keeps epicreview's own token/quality signal off the
+			// holdout population entirely rather than arbitrarily picking one
+			// child's arm to represent the whole epic.
+			ProxyBaseURL: r.rec.ProxyBaseURL(),
 		}
 
 		validate := r.epicValidateFn
@@ -198,9 +223,8 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 // decides from here (`koryph epic validate` is the recovery verb).
 func (r *runner) parkEpic(ctx context.Context, epicID string, round, maxRounds int) {
 	bd, ok := r.adapter.(epicreview.BeadStore)
-	note := fmt.Sprintf(
-		"validation parked: round %d would exceed max_rounds=%d. Operator recovery: koryph epic validate %s --project %s",
-		round, maxRounds, epicID, r.opts.ProjectID)
+	recovery := fmt.Sprintf("koryph epic validate %s --project %s", epicID, r.opts.ProjectID)
+	note := epicreview.FormatParkedNote(round, maxRounds, recovery)
 	if ok {
 		if err := bd.AddLabel(ctx, epicID, epicreview.LabelParked); err != nil {
 			r.progress("epic %s: add parked label: %v", epicID, err)

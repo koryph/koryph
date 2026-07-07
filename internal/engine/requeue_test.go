@@ -64,6 +64,56 @@ func ensureWorktreeAt(t *testing.T, f *fix, beadID string) string {
 	return wt.Path
 }
 
+// TestRequeueFreezesModel proves koryph-ehx: a requeue reuses the model,
+// persona, effort, and rationale resolved on the FIRST attempt, so a `model:*`
+// relabel mid-run cannot silently switch a retry to the wrong model.
+// resolveModel is the single seam every dispatch — fresh and requeue — funnels
+// through, so exercising it here covers all three poll.go requeue paths.
+func TestRequeueFreezesModel(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+
+	// The bead is currently labeled model:sonnet — as if the operator relabeled
+	// it after the first attempt already went out on opus.
+	relabeled := beads.Issue{ID: "tb1", Labels: []string{"model:sonnet"}}
+
+	// A FRESH dispatch honors the live label (this is what a requeue used to do,
+	// and why retries drifted to the wrong model).
+	fresh, _, err := r.resolveModel(dispatchReq{issue: relabeled}, "claude")
+	if err != nil {
+		t.Fatalf("fresh resolveModel: %v", err)
+	}
+	if fresh.Model != "sonnet" {
+		t.Fatalf("fresh model = %q, want sonnet (live label wins on a fresh dispatch)", fresh.Model)
+	}
+
+	// A REQUEUE carrying attempt 1's frozen resolution ignores the relabel and
+	// re-runs opus, with the persona/effort/rationale carried forward verbatim.
+	frozen, effort, err := r.resolveModel(dispatchReq{
+		issue:          relabeled,
+		attempt:        2,
+		frozenModel:    "opus",
+		frozenPersona:  "koryph-implementer",
+		frozenModelWhy: "frozen from attempt 1",
+		frozenEffort:   "high",
+	}, "claude")
+	if err != nil {
+		t.Fatalf("frozen resolveModel: %v", err)
+	}
+	if frozen.Model != "opus" {
+		t.Errorf("requeue model = %q, want opus (frozen from attempt 1, not the mid-run relabel)", frozen.Model)
+	}
+	if frozen.Persona != "koryph-implementer" {
+		t.Errorf("requeue persona = %q, want koryph-implementer (frozen)", frozen.Persona)
+	}
+	if frozen.Rationale != "frozen from attempt 1" {
+		t.Errorf("requeue rationale = %q, want the frozen rationale", frozen.Rationale)
+	}
+	if effort != "high" {
+		t.Errorf("requeue effort = %q, want high (frozen)", effort)
+	}
+}
+
 // TestRequeueRefreshRebasesWorktreeWithCommits proves the koryph-137 resume
 // path: a worktree carrying landed commits is rebased onto an advanced main
 // before re-dispatch, so the agent resumes on top of the main-side fix while
@@ -86,7 +136,7 @@ func TestRequeueRefreshRebasesWorktreeWithCommits(t *testing.T) {
 	runGit(t, f.repo, "commit", "--no-verify", "-m", "chore: main-side fix")
 
 	sl := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Branch: worktree.BranchFor("tb1"), Worktree: wtPath, Commits: 1}
-	r.refreshWorktreeForRequeue(ctx, sl)
+	r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	// The worktree now carries BOTH the main-side fix and the agent's own work.
 	if _, err := os.Stat(filepath.Join(wtPath, "settings.txt")); err != nil {
@@ -120,7 +170,7 @@ func TestRequeueRebuildsStaleWorktreeWithoutCommits(t *testing.T) {
 	runGit(t, f.repo, "commit", "--no-verify", "-m", "chore: main-side fix")
 
 	sl := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Branch: worktree.BranchFor("tb1"), Worktree: wtPath, Commits: 0}
-	r.refreshWorktreeForRequeue(ctx, sl)
+	r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	// The stale worktree and branch are gone...
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
@@ -173,7 +223,7 @@ func TestRequeueNoCommitsMissingBranchIsClean(t *testing.T) {
 
 	sl := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Branch: branch, Worktree: wtPath, Commits: 0}
 	// Must not panic and must not warn about "dispatch may attach the old tip".
-	r.refreshWorktreeForRequeue(ctx, sl)
+	r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	if strings.Contains(buf.String(), "dispatch may attach the old tip") {
 		t.Errorf("unexpected warning for already-absent branch: %q", buf.String())

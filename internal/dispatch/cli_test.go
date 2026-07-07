@@ -274,6 +274,44 @@ func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 	}
 }
 
+// TestDispatchThreadsProxyBaseURL is the koryph-3l1.1 main-dispatch
+// end-to-end acceptance test: Spec.ProxyBaseURL flows through toRuntimeSpec
+// and the claude adapter's Command into the actually-spawned agent's real
+// child env as ANTHROPIC_BASE_URL. Main dispatch never sets SpawnKind, so
+// KORYPH_SPAWN_KIND must stay absent regardless.
+func TestDispatchThreadsProxyBaseURL(t *testing.T) {
+	spec := baseSpec(t)
+	spec.ProxyBaseURL = "http://127.0.0.1:8091"
+	b := CLIBackend{ClaudeBin: fakeClaude(t)}
+	if _, err := b.Dispatch(context.Background(), spec); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	env := string(waitForFile(t, filepath.Join(spec.PhaseDir, "env.txt")))
+	if !strings.Contains(env, "ANTHROPIC_BASE_URL=http://127.0.0.1:8091\n") {
+		t.Errorf("child env missing ANTHROPIC_BASE_URL:\n%s", env)
+	}
+	if strings.Contains(env, "KORYPH_SPAWN_KIND=") {
+		t.Errorf("child env has KORYPH_SPAWN_KIND set for main dispatch, want absent:\n%s", env)
+	}
+}
+
+// TestDispatchOmitsProxyBaseURLByDefault is the I6 zero-residue guarantee at
+// the main-dispatch integration level: a Spec that never touches
+// ProxyBaseURL produces a child env with no ANTHROPIC_BASE_URL at all.
+func TestDispatchOmitsProxyBaseURLByDefault(t *testing.T) {
+	spec := baseSpec(t)
+	b := CLIBackend{ClaudeBin: fakeClaude(t)}
+	if _, err := b.Dispatch(context.Background(), spec); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	env := string(waitForFile(t, filepath.Join(spec.PhaseDir, "env.txt")))
+	if strings.Contains(env, "ANTHROPIC_BASE_URL=") {
+		t.Errorf("child env has ANTHROPIC_BASE_URL with ProxyBaseURL unset, want absent:\n%s", env)
+	}
+}
+
 func TestDispatchResumeAndAPIKeyEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-polluted-parent")
 
@@ -437,6 +475,55 @@ func TestParseResultCost(t *testing.T) {
 	})
 }
 
+func TestParseResultUsage(t *testing.T) {
+	t.Run("usage present", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		lines := strings.Join([]string{
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"result","total_cost_usd":0.124317,"is_error":false,` +
+				`"usage":{"input_tokens":3861,"output_tokens":17,"cache_read_input_tokens":15837,"cache_creation_input_tokens":3451}}`,
+		}, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		usage, ok := ParseResultUsage(path)
+		want := TokenUsage{InputTokens: 3861, OutputTokens: 17, CacheReadTokens: 15837, CacheCreationTokens: 3451}
+		if !ok || usage != want {
+			t.Errorf("ParseResultUsage = %+v, %v; want %+v, true", usage, ok, want)
+		}
+	})
+
+	t.Run("usage absent", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		if err := os.WriteFile(path, []byte(`{"type":"result","total_cost_usd":1.23}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if usage, ok := ParseResultUsage(path); ok || usage != (TokenUsage{}) {
+			t.Errorf("ParseResultUsage = %+v, %v; want zero value, false", usage, ok)
+		}
+	})
+
+	t.Run("is_error result still carries usage", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		line := `{"type":"result","is_error":true,"total_cost_usd":0.05,` +
+			`"usage":{"input_tokens":100,"output_tokens":5,"cache_read_input_tokens":50,"cache_creation_input_tokens":10}}`
+		if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		usage, ok := ParseResultUsage(path)
+		want := TokenUsage{InputTokens: 100, OutputTokens: 5, CacheReadTokens: 50, CacheCreationTokens: 10}
+		if !ok || usage != want {
+			t.Errorf("ParseResultUsage = %+v, %v; want %+v, true", usage, ok, want)
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		if usage, ok := ParseResultUsage(filepath.Join(t.TempDir(), "nope.jsonl")); ok || usage != (TokenUsage{}) {
+			t.Errorf("ParseResultUsage = %+v, %v; want zero value, false", usage, ok)
+		}
+	})
+}
+
 func TestParseRateLimited(t *testing.T) {
 	writeStream := func(t *testing.T, lines ...string) string {
 		t.Helper()
@@ -494,6 +581,53 @@ func TestParseRateLimited(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		if ParseRateLimited(filepath.Join(t.TempDir(), "nope.jsonl")) {
 			t.Error("ParseRateLimited(missing file) = true, want false")
+		}
+	})
+}
+
+// TestParseBudgetKilled (koryph-77r.10) proves the dispatch-layer path-based
+// wrapper delegates correctly; internal/runtime/claude/events_test.go's
+// TestParseBudgetKilledFixtures owns the exhaustive marker fixtures (this is
+// the thin-wrapper smoke test, mirroring TestParseRateLimited's structure).
+func TestParseBudgetKilled(t *testing.T) {
+	writeStream := func(t *testing.T, lines ...string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "stream.jsonl")
+		body := strings.Join(lines, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("positive: real captured canary line", func(t *testing.T) {
+		path := writeStream(t,
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":0.427796,`+
+				`"errors":["Reached maximum budget ($0.001)"]}`,
+		)
+		if !ParseBudgetKilled(path) {
+			t.Error("ParseBudgetKilled = false, want true")
+		}
+	})
+
+	t.Run("negative: clean success result", func(t *testing.T) {
+		path := writeStream(t, `{"type":"result","total_cost_usd":1.23,"is_error":false}`)
+		if ParseBudgetKilled(path) {
+			t.Error("ParseBudgetKilled = true, want false")
+		}
+	})
+
+	t.Run("negative: rate-limited death is not a budget kill", func(t *testing.T) {
+		path := writeStream(t, `{"type":"result","is_error":true,"result":"API Error: 429 rate_limit_error"}`)
+		if ParseBudgetKilled(path) {
+			t.Error("ParseBudgetKilled = true, want false (distinct marker set)")
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		if ParseBudgetKilled(filepath.Join(t.TempDir(), "nope.jsonl")) {
+			t.Error("ParseBudgetKilled(missing file) = true, want false")
 		}
 	})
 }

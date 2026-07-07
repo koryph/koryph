@@ -3,6 +3,7 @@ name: koryph-feature-docs-author
 description: Author or update user-facing feature docs from the delta of a just-completed implementer branch
 model: sonnet
 tier: standard
+effort: low
 allowed-tools:
   - Read
   - Glob

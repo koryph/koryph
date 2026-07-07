@@ -74,3 +74,36 @@ whether violations are caught before or after execution.
 
 Always pass non-interactive flags so a `-i`-aliased tool cannot hang on a prompt:
 `rm -f`, `rm -rf`, `cp -f`, `mv -f`; `ssh`/`scp -o BatchMode=yes`; `apt-get -y`.
+
+## Output economy — quiet gate, file-spill wrappers, Read recovery
+
+Gate and Bash output dominate transcript bytes (and therefore quota).
+
+### Quiet gate: `make gate-agent`
+
+Prefer `make gate-agent` over `make gate`: identical checks, same fail-fast
+order, but one `PASS`/`FAIL` line per stage (plus a short tail on failure).
+Full raw logs are teed to `$KORYPH_PHASE_DIR/gate-<stage>.log` (or a
+repo-local scratch dir outside a dispatch) — recover the complete log with
+the Read tool. On `FAIL`: read the tail, fix, re-run `make gate-agent`; don't
+re-run `make gate` just for more output.
+
+### File-spill wrappers: `hooks/koryph-spill.sh`
+
+For any command whose output would dominate the transcript:
+
+```
+hooks/koryph-spill.sh <label> -- <command…>
+```
+
+Captures the command's full combined stdout+stderr byte-for-byte to a spill
+file under the phase dir, prints a head+tail summary, preserves the exit
+code exactly (failure signals are never eaten), and always ends with
+`full output: <path>` — skipped entirely when the output is already smaller
+than the summary budget.
+
+### Recovery via Read
+
+Whenever you see `full output: <path>`, use the Read tool to fetch the
+complete file — the path is absolute and available for the dispatch's
+lifetime; no separate download or shell command is needed.

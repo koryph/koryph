@@ -43,7 +43,7 @@ func TestGlobalGovernorDefersWhenCapFull(t *testing.T) {
 	if got.Dispatched != 0 {
 		t.Errorf("Dispatched = %d, want 0 (global cap full)", got.Dispatched)
 	}
-	if !strings.Contains(out.String(), "global governor cap reached") {
+	if !strings.Contains(out.String(), "global governor cap or memory floor reached") {
 		t.Errorf("expected a deferral log line; got:\n%s", out.String())
 	}
 	// The bead was neither claimed nor given a worktree.

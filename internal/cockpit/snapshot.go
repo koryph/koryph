@@ -245,6 +245,26 @@ type EfficiencySnapshot struct {
 	// QuotaSource identifies the data source for the quota window values:
 	// "ccusage", "jsonl-scan", "unavailable", or "uncalibrated".
 	QuotaSource string
+
+	// TokenRows is the per-bead token composition table (koryph-77r.3, design
+	// §3 L1). Assembled from historical ledger slots; most-recent beads first.
+	// Nil when no token data has accumulated (ledger predates token fields).
+	TokenRows []TokenCompositionRow
+
+	// FleetCacheHitRatio is the fleet-wide cache_read share of total input
+	// tokens: cache_read / (input_fresh + cache_read + cache_creation).
+	// Range [0,1]; 0 when no token data available.
+	FleetCacheHitRatio float64
+
+	// CacheHitTripwire is the I7 tripwire state for the cache-hit ratio.
+	// "" = OK / insufficient data; "warn" = cache_read share has collapsed
+	// below threshold since last refresh (design §2 I7).
+	CacheHitTripwire string
+
+	// TokensPerBeadTrend is a sparkline series of mean tokens-per-bead over
+	// the last SparklineLen days (index 0 = oldest, last = today).
+	// Entry is 0 for days with no completed beads.
+	TokensPerBeadTrend []float64
 }
 
 // DeferralToken is one footprint write-token held by active slots, with a
@@ -289,6 +309,31 @@ type EstimatorRow struct {
 	// Base is the uncalibrated base cost (PerTierUSD * SizeMultiplier) —
 	// the fallback estimate before calibration data accumulates.
 	Base float64
+}
+
+// TokenCompositionRow is one row of the per-bead token composition table
+// (koryph-77r.3, design §3 L1). Derived from the ledger's accumulated slot
+// token fields (InputTokens, OutputTokens, CacheReadTokens, CacheCreationTokens).
+type TokenCompositionRow struct {
+	// BeadID is the bead or phase identifier.
+	BeadID string
+	// Title is the bead's display title (from beads metadata or PhaseID fallback).
+	Title string
+	// TotalTokens is the sum of all token classes for this bead.
+	TotalTokens int64
+	// InputFresh is the fresh-input token count (not from cache).
+	InputFresh int64
+	// CacheRead is the cache_read token count.
+	CacheRead int64
+	// CacheCreation is the cache_creation token count.
+	CacheCreation int64
+	// Output is the output token count.
+	Output int64
+	// CacheHitRatio is cache_read / (input_fresh + cache_read + cache_creation).
+	// Range [0,1]; 0 when denominator is 0 (no token data).
+	CacheHitRatio float64
+	// CostUSD is the slot's accumulated cost.
+	CostUSD float64
 }
 
 // TUIEvent is one entry in the live events feed (Events tab, koryph-9af.5).

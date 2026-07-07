@@ -27,6 +27,7 @@ import (
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
 	"github.com/koryph/koryph/internal/signing"
+	"github.com/koryph/koryph/internal/sysmem"
 	"github.com/koryph/koryph/internal/version"
 )
 
@@ -84,15 +85,31 @@ type runner struct {
 	owner    string
 	width    int
 
-	dispatched int
-	govWarned  bool
-	issues     map[string]beads.Issue
+	dispatched         int
+	govWarned          bool
+	uncalibratedWarned bool // koryph-grz: loud uncalibrated-governor warning fired once this run
+	issues             map[string]beads.Issue
+
+	// memProbe reads current system memory (total + available) for the memory
+	// admission gate (koryph-930). nil means "use the real platform probe"
+	// (sysmem.Available); tests inject a stub. ok=false signals no usable
+	// reading, on which the gate fails open. Total is needed to auto-size the
+	// default floor to physical memory.
+	memProbe func() (sysmem.Stat, bool)
 
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time
 	patrolSeen     map[string]time.Time // finding key → last logged; throttles repeat findings
 	lastQuotaLevel quota.Level          // cached from the most recent governorGate call
 	lastQuotaUsage quota.Usage          // cached from the most recent governorGate call
+
+	// Cached full issue listing for the epic-aware patrol checks (koryph-bbe's
+	// completed-but-unvalidated sweep; koryph-wo0.7's parked/degraded WARN
+	// check shares the same cache). Refreshed via one bd subprocess call at
+	// most once per epicListCadence — see health.go's doc comment.
+	epicPatrolAt       time.Time
+	epicPatrolIssues   []beads.Issue
+	epicPatrolFindings []patrolFinding // patrolCheckUnvalidatedEpics's cache from the last real scan
 
 	// reportedSkips dedups structural-skip warnings so each non-dispatchable
 	// ready bead is surfaced once per run, not every wave (koryph-6g2.1).

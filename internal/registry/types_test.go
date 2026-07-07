@@ -5,6 +5,7 @@ package registry
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -101,5 +102,112 @@ func TestRuntimeAccountsJSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.RuntimeAccounts, rec.RuntimeAccounts) {
 		t.Errorf("round-trip RuntimeAccounts = %+v, want %+v", got.RuntimeAccounts, rec.RuntimeAccounts)
+	}
+}
+
+// TestEffectiveHoldoutDefaultsWhenUnset is the koryph-3l1.3 acceptance test
+// for AgentProxy.Holdout's tri-state resolution: nil (unset) resolves to
+// DefaultHoldout; an explicit 0 stays 0 (never silently promoted to the
+// default); nil receiver is safe.
+func TestEffectiveHoldoutDefaultsWhenUnset(t *testing.T) {
+	var nilProxy *AgentProxy
+	if got := nilProxy.EffectiveHoldout(); got != DefaultHoldout {
+		t.Errorf("nil AgentProxy.EffectiveHoldout() = %v, want DefaultHoldout %v", got, DefaultHoldout)
+	}
+
+	unset := &AgentProxy{BaseURL: "http://127.0.0.1:8091"}
+	if got := unset.EffectiveHoldout(); got != DefaultHoldout {
+		t.Errorf("unset Holdout.EffectiveHoldout() = %v, want DefaultHoldout %v", got, DefaultHoldout)
+	}
+
+	zero := 0.0
+	explicitZero := &AgentProxy{BaseURL: "http://127.0.0.1:8091", Holdout: &zero}
+	if got := explicitZero.EffectiveHoldout(); got != 0 {
+		t.Errorf("explicit Holdout=0 .EffectiveHoldout() = %v, want 0 (must not be promoted to default)", got)
+	}
+}
+
+// TestArmForDeterministic proves the koryph-3l1.3 core invariant: the SAME
+// bead ID always resolves to the SAME arm, across repeated calls — this is
+// what keeps a requeue/resume of the same bead from flipping arms mid-flight
+// (see AgentProxy.Holdout's doc for why that would corrupt both the
+// experiment and the prompt cache).
+func TestArmForDeterministic(t *testing.T) {
+	half := 0.5
+	p := &AgentProxy{BaseURL: "http://127.0.0.1:8091", Pin: "v1", Holdout: &half}
+	for _, id := range []string{"koryph-abc", "koryph-def.2", "tb1", "another-bead-id"} {
+		wantProxyID, wantBaseURL := p.ArmFor(id)
+		for i := 0; i < 5; i++ {
+			gotProxyID, gotBaseURL := p.ArmFor(id)
+			if gotProxyID != wantProxyID || gotBaseURL != wantBaseURL {
+				t.Errorf("ArmFor(%q) call %d = (%q,%q), want stable (%q,%q)",
+					id, i, gotProxyID, gotBaseURL, wantProxyID, wantBaseURL)
+			}
+		}
+	}
+}
+
+// TestArmForEdgeFractions covers Holdout=0 (always proxied) and Holdout=1
+// (always holdout) — the documented edge cases (AgentProxy.Holdout's doc).
+func TestArmForEdgeFractions(t *testing.T) {
+	p := &AgentProxy{BaseURL: "http://127.0.0.1:8091", Pin: "v1"}
+
+	zero := 0.0
+	p.Holdout = &zero
+	for i := 0; i < 25; i++ {
+		id := fmt.Sprintf("bead-%d", i)
+		proxyID, baseURL := p.ArmFor(id)
+		if proxyID != p.ID() || baseURL != p.BaseURL {
+			t.Errorf("Holdout=0: ArmFor(%q) = (%q,%q), want always-proxied (%q,%q)",
+				id, proxyID, baseURL, p.ID(), p.BaseURL)
+		}
+	}
+
+	one := 1.0
+	p.Holdout = &one
+	for i := 0; i < 25; i++ {
+		id := fmt.Sprintf("bead-%d", i)
+		proxyID, baseURL := p.ArmFor(id)
+		if proxyID != "" || baseURL != "" {
+			t.Errorf("Holdout=1: ArmFor(%q) = (%q,%q), want always-holdout (\"\",\"\")", id, proxyID, baseURL)
+		}
+	}
+}
+
+// TestArmForNilOrUnconfiguredIsAlwaysDirect proves a nil AgentProxy or one
+// with an empty BaseURL always returns the direct ("", "") pair regardless of
+// Holdout — matching ID()'s and ProxyBaseURL()'s existing nil-safety, and
+// confirming ArmFor never accidentally "holds out" a project that has no
+// proxy configured at all (there is no experiment to run).
+func TestArmForNilOrUnconfiguredIsAlwaysDirect(t *testing.T) {
+	var nilProxy *AgentProxy
+	if proxyID, baseURL := nilProxy.ArmFor("any-bead"); proxyID != "" || baseURL != "" {
+		t.Errorf("nil AgentProxy.ArmFor() = (%q,%q), want (\"\",\"\")", proxyID, baseURL)
+	}
+
+	empty := &AgentProxy{}
+	if proxyID, baseURL := empty.ArmFor("any-bead"); proxyID != "" || baseURL != "" {
+		t.Errorf("empty-BaseURL AgentProxy.ArmFor() = (%q,%q), want (\"\",\"\")", proxyID, baseURL)
+	}
+}
+
+// TestArmForRoughlyHonorsFraction is a statistical sanity check (not a
+// determinism proof — TestArmForDeterministic covers that): across a large
+// bead population, the observed holdout share should land in the
+// neighborhood of the configured fraction, proving stableUnitInterval's
+// spread is not pathologically skewed.
+func TestArmForRoughlyHonorsFraction(t *testing.T) {
+	tenth := 0.1
+	p := &AgentProxy{BaseURL: "http://127.0.0.1:8091", Holdout: &tenth}
+	const n = 10000
+	holdout := 0
+	for i := 0; i < n; i++ {
+		if proxyID, _ := p.ArmFor(fmt.Sprintf("bead-%d", i)); proxyID == "" {
+			holdout++
+		}
+	}
+	frac := float64(holdout) / n
+	if frac < 0.07 || frac > 0.13 {
+		t.Errorf("observed holdout fraction = %.3f over %d beads, want roughly 0.10", frac, n)
 	}
 }

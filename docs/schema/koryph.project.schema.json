@@ -2,6 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://koryph.dev/schemas/config",
   "$defs": {
+    "CopyrightConfig": {
+      "properties": {
+        "holder": {
+          "type": "string",
+          "description": "Holder is the copyright holder, e.g. \"Acme, Inc.\" or \"The Foo Authors\"."
+        },
+        "year": {
+          "type": "string",
+          "description": "Year is the copyright year or range, e.g. \"2026\" or \"2024-2026\"."
+        },
+        "license": {
+          "type": "string",
+          "description": "License is the SPDX license identifier stamped into generated files\n(default \"Apache-2.0\")."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "EpicDocsUpdateConfig": {
       "properties": {
         "enabled": {
@@ -33,6 +51,10 @@
         "persona": {
           "type": "string",
           "description": "Persona is the agent file (.claude/agents/\u003cpersona\u003e) used as the\nvalidator (default \"koryph-epic-validator\")."
+        },
+        "effort": {
+          "type": "string",
+          "description": "Effort overrides the reasoning-effort hint passed to the validator agent\n(default: resolved from the validator persona's own frontmatter `effort:`\nat the engine call site — koryph-77r.8 — since epic validation is\nquality-critical and unmeasured by design, this is left empty here so\noperators opt in explicitly rather than the engine guessing a default)."
         },
         "max_rounds": {
           "type": "integer",
@@ -503,6 +525,10 @@
       "$ref": "#/$defs/SigningConfig",
       "description": "Signing is the vault-backed commit/artifact signing policy\n(nil = signing not configured; managed by `koryph signing setup`)."
     },
+    "require_calibration": {
+      "type": "boolean",
+      "description": "RequireCalibration hard-blocks dispatch while the quota governor is\nuncalibrated (both ceilings 0), instead of the default advisory pass\n(koryph-grz). Opt-in spend safety for this project: runs refuse to\ndispatch until `koryph quota calibrate` sets a ceiling. The\n`--require-calibration` run flag also sets it for a single run."
+    },
     "max_concurrent_slots": {
       "type": "integer",
       "description": "MaxConcurrentSlots caps wave width for this project (default 3)."
@@ -543,6 +569,10 @@
     "release": {
       "$ref": "#/$defs/ReleaseConfig",
       "description": "Release, when non-nil, configures the project's release pipeline\n(managed by `koryph release setup`). It drives template rendering for\nthe caller GitHub Actions workflow and the release-please config.\nExactly one build mode (Build.Goreleaser or Build.Commands) must be\nset when this block is present (enforced by Validate)."
+    },
+    "copyright": {
+      "$ref": "#/$defs/CopyrightConfig",
+      "description": "Copyright configures the SPDX header koryph stamps onto files it\nGENERATES for this project — the CI/release workflow assets written by\n`koryph ci setup` / `koryph release setup` (koryph-s6g). It is\nper-project so a repository koryph builds carries ITS OWN copyright and\nlicense, not koryph's. Nil (and any omitted field) falls back to\nkoryph's built-in default, so an unconfigured project's generated output\nis byte-for-byte unchanged."
     },
     "posture": {
       "$ref": "#/$defs/PostureConfig",

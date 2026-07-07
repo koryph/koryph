@@ -13,21 +13,29 @@ crossing accounts.
 extension's build/test live in the developer guide:
 [Developing koryph: editor setup](developer-guide/ide-setup.md).)
 
-## 0. The VS Code extension (in development)
+## 0. The VS Code extension
 
-A first-class **koryph agent cockpit for VS Code** is actively being built
-(epic `koryph-ew2`, source in `ide/vscode/`). Already working today:
+The **primary IDE surface** for koryph is the VS Code extension
+(epic `koryph-ew2`, source in `ide/vscode/`). It provides:
 
-- a **tree view of agent threads** — live per-bead lifecycle for the
-  current run (dispatched / reviewing / merging / blocked) without leaving
+- a **tree view of agent threads** — live per-bead lifecycle across all
+  projects (dispatched / reviewing / merging / blocked) without leaving
   the editor;
-- a **quota status bar** — the account's subscription-window burn at a
-  glance, the same numbers `koryph board` reports.
+- **transcript panels** — incremental rendering of each agent's
+  `stream.jsonl` line of thought, with tool-call chips, stop/nudge
+  controls, and worktree navigation;
+- a **quota status bar** — per-account subscription-window burn at a
+  glance, colour-coded by governor level;
+- **project config editing** — `koryph.project.json` with JSON Schema
+  validation and per-field hover docs.
 
-Planned: dispatch/drain controls, review-finding surfacing, and per-slot
-log tailing. It is not yet published to the marketplace — early adopters
-can build it from source (`make ext-build` in the koryph repo). Until it
-ships, everything below works with any editor and no extension at all.
+The extension is not yet published to the Marketplace — install it from
+source via `make ext-build` (outputs a `.vsix`). Everything else in this
+page works with any editor and no extension at all.
+
+For the full reference — command palette, settings, per-account
+multi-instance behavior, and build/side-load instructions — see
+[VS Code extension](user-guide/vscode-extension.md).
 
 ## 1. Accessing koryph from an IDE
 
@@ -120,7 +128,7 @@ the context:
 | | Terminal cockpit (`koryph tui`) | VS Code cockpit (extension koryph-ew2) |
 |---|---|---|
 | **Access** | Any terminal, SSH, headless | VS Code window |
-| **Zero-install** | Yes — ships with `koryph` binary | Must build from source until marketplace publication |
+| **Zero-install** | Yes — ships with `koryph` binary | Build from source (VSIX); see [VS Code extension: build and side-load](user-guide/vscode-extension.md#build-and-side-load) |
 | **Tabs** | Threads, Burndown, Events, Efficiency, Queue, Detail | Thread tree view (more panels planned) |
 | **Write actions** | Nudge (`n`), Drain (`D`) | Dispatch/drain controls (planned) |
 | **Read-only mode** | `--read-only` flag | N/A (not yet implemented) |
@@ -154,3 +162,4 @@ would show for the same project — there is no separate sync path.
   from the TUI and a drain from the extension produce one sentinel, not two.
 
 See [tui.md](user-guide/tui.md) for the full terminal cockpit reference.
+See [vscode-extension.md](user-guide/vscode-extension.md) for the full VS Code extension reference.

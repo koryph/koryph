@@ -119,6 +119,12 @@ func Validate(ctx context.Context, o Opts) Verdict {
 		v.Attempts = i + 1
 		if !v.Degraded {
 			dest := outPath(o.RepoRoot, o.OutDir, o.EpicID, round)
+			// Persist the raw Claude envelope beside the parsed verdict
+			// (same pattern as stage-*.json, koryph-qbc) so usage/cost data
+			// is available for audit. Best-effort: a write failure here is
+			// non-fatal (we still have the parsed verdict).
+			envelopeDest := strings.TrimSuffix(dest, ".json") + "-envelope.json"
+			_ = fsx.WriteAtomic(envelopeDest, []byte(v.Envelope+"\n"), 0o644)
 			if err := fsx.WriteAtomic(dest, []byte(v.Raw+"\n"), 0o644); err != nil {
 				v = degradedReason("persist verdict JSON failed: " + err.Error())
 				v.Attempts = i + 1
@@ -135,17 +141,21 @@ func Validate(ctx context.Context, o Opts) Verdict {
 // degraded verdict whose Reason explains the failure so a degradation is never
 // a black box.
 func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
+	args := []string{
+		"-p",
+		"--agent", o.Persona,
+		"--permission-mode", "plan",
+		"--model", o.Model,
+		"--output-format", "json",
+	}
+	if o.Effort != "" {
+		args = append(args, "--effort", o.Effort)
+	}
 	res, err := execx.Run(ctx, execx.Cmd{
-		Dir:  o.RepoRoot,
-		Env:  account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription}),
-		Name: o.ClaudeBin,
-		Args: []string{
-			"-p",
-			"--agent", o.Persona,
-			"--permission-mode", "plan",
-			"--model", o.Model,
-			"--output-format", "json",
-		},
+		Dir:     o.RepoRoot,
+		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "epicreview"}),
+		Name:    o.ClaudeBin,
+		Args:    args,
 		Stdin:   prompt,
 		Timeout: time.Duration(o.TimeoutSec) * time.Second,
 	})
@@ -170,6 +180,10 @@ func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
 	}
 	v.Degraded = false
 	v.Raw = raw
+	// Capture the full Claude envelope so Validate can persist it for audit/metrics
+	// beside the parsed verdict (koryph-qbc). res.Stdout is the raw --output-format
+	// json output including usage and cost fields.
+	v.Envelope = res.Stdout
 	return v
 }
 

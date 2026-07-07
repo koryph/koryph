@@ -7,7 +7,6 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
-	"strings"
 	"text/template"
 
 	"github.com/koryph/koryph/internal/forge"
@@ -20,17 +19,15 @@ var embeddedCallerWorkflowTmpl string
 //go:embed gate-workflow.yml.tmpl
 var embeddedGateWorkflowTmpl string
 
-// defaultGateCmd is the gate command used when none is specified.
-const defaultGateCmd = "make gate"
-
 // githubCISvc implements [forge.CIService] for GitHub Actions.
 //
 // It renders forge-appropriate CI/CD pipeline asset files using embedded
 // templates. The rc field must be non-nil for the "caller" kind; gateCmd is
-// optional (defaults to [defaultGateCmd]) for the "gate" kind.
+// optional (defaults to [forge.DefaultGateCommand]) for the "gate" kind.
 type githubCISvc struct {
-	rc      *project.ReleaseConfig
-	gateCmd string // empty means use defaultGateCmd
+	rc        *project.ReleaseConfig
+	gateCmd   string                   // empty means use forge.DefaultGateCommand
+	copyright *project.CopyrightConfig // nil ⇒ built-in default SPDX header
 }
 
 // callerWorkflowData is the view-model passed to the caller-workflow template.
@@ -57,18 +54,10 @@ type callerWorkflowData struct {
 	SBOM bool
 	// Provenance enables SLSA provenance in the caller workflow.
 	Provenance bool
-}
-
-// callerTemplateFuncs provides helpers available in the caller-workflow template.
-var callerTemplateFuncs = template.FuncMap{
-	// join concatenates ss with sep (mirrors strings.Join).
-	"join": func(ss []string, sep string) string { return strings.Join(ss, sep) },
-}
-
-// githubGateTemplateData is the view-model passed to the gate workflow template.
-type githubGateTemplateData struct {
-	// GateCmd is the shell command that runs the project's green gate.
-	GateCmd string
+	// Copyright is the SPDX-FileCopyrightText value and License the
+	// SPDX-License-Identifier stamped in the rendered file's header (koryph-s6g).
+	Copyright string
+	License   string
 }
 
 // Render produces the content of a GitHub Actions pipeline asset file.
@@ -103,7 +92,9 @@ func (s *githubCISvc) renderCaller() ([]byte, error) {
 			"build the provider with github.WithReleaseConfig(rc)")
 	}
 	td := buildCallerWorkflowData(s.rc)
-	tmpl, err := template.New("caller-workflow.yml").Funcs(callerTemplateFuncs).Parse(embeddedCallerWorkflowTmpl)
+	td.Copyright = s.copyright.FileCopyrightText()
+	td.License = s.copyright.LicenseID()
+	tmpl, err := template.New("caller-workflow.yml").Funcs(forge.TemplateFuncs).Parse(embeddedCallerWorkflowTmpl)
 	if err != nil {
 		return nil, fmt.Errorf("github CI: parse caller workflow template: %w", err)
 	}
@@ -142,13 +133,13 @@ func buildCallerWorkflowData(rc *project.ReleaseConfig) callerWorkflowData {
 }
 
 // renderGate renders the green gate workflow from the embedded template.
-// The gate command defaults to [defaultGateCmd] when none was supplied.
+// The gate command defaults to [forge.DefaultGateCommand] when none was supplied.
 func (s *githubCISvc) renderGate() ([]byte, error) {
-	cmd := s.gateCmd
-	if cmd == "" {
-		cmd = defaultGateCmd
+	td := forge.GateTemplateData{
+		GateCmd:   forge.ResolveGateCommand(s.gateCmd),
+		Copyright: s.copyright.FileCopyrightText(),
+		License:   s.copyright.LicenseID(),
 	}
-	td := githubGateTemplateData{GateCmd: cmd}
 	tmpl, err := template.New("gate-workflow.yml").Parse(embeddedGateWorkflowTmpl)
 	if err != nil {
 		return nil, fmt.Errorf("github CI: parse gate workflow template: %w", err)

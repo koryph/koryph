@@ -58,7 +58,11 @@ type govGate struct {
 	advisory      bool
 	usage         quota.Usage
 	budgetHit     bool
-	width         int
+	// uncalibratedBlock is set when --require-calibration (or the project's
+	// require_calibration) refuses dispatch because the governor is uncalibrated
+	// (koryph-grz). Distinct reason so the pause is not mislabeled quota-*.
+	uncalibratedBlock bool
+	width             int
 
 	// paused is set when the gate itself already finalized the run — either
 	// paused-quota (quota-stop with nothing active) or operator-drain-with-
@@ -79,6 +83,14 @@ type govGate struct {
 	// instead of a quota-* one, on the off chance the sentinel is consumed by
 	// something else between this gate and that check.
 	operatorDrain bool
+}
+
+// requireCalibration reports whether this run hard-blocks dispatch while the
+// quota governor is uncalibrated (koryph-grz): the --require-calibration run
+// flag or the project's require_calibration config. Opt-in; default false
+// preserves the fresh-install "advisory, don't deadlock" behavior.
+func (r *runner) requireCalibration() bool {
+	return r.opts.RequireCalibration || (r.cfg != nil && r.cfg.RequireCalibration)
 }
 
 // governorGate runs the governor/billing/budget checks once per wave or
@@ -103,6 +115,26 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	r.lastQuotaUsage = usage
 
 	g := govGate{allowDispatch: true, level: level, calibrated: calibrated, advisory: advisory, usage: usage}
+
+	// Uncalibrated governor (koryph-grz): the fresh-install state where both
+	// ceilings are 0, so the governor cannot enforce the 5h/weekly spend ladder
+	// and passes advisory. This USED to be silent (the advisory branch above
+	// only logs when level != OK, but an uncalibrated account reports OK) — so
+	// an operator had no signal spend limits weren't enforced. Warn loudly once
+	// per run, and hard-block when the operator opted into --require-calibration.
+	if !calibrated {
+		if r.requireCalibration() {
+			g.allowDispatch = false
+			g.uncalibratedBlock = true
+			if !r.uncalibratedWarned {
+				r.uncalibratedWarned = true
+				r.progress("!!! quota governor UNCALIBRATED for account %q and --require-calibration is set — refusing to dispatch. Run `koryph quota calibrate` (or `koryph calibrate`) to set a ceiling.", r.quotaName())
+			}
+		} else if !r.uncalibratedWarned {
+			r.uncalibratedWarned = true
+			r.progress("WARNING: quota governor UNCALIBRATED for account %q — 5h/weekly spend limits are NOT enforced this run. Run `koryph quota calibrate` (or `koryph calibrate`) to enable enforcement, or pass --require-calibration to hard-block until then.", r.quotaName())
+		}
+	}
 
 	if !r.opts.Manual && !advisory {
 		// eff is the effective ladder for logging threshold annotations.
@@ -181,13 +213,14 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	}
 	g.width = width
 
-	// Per-run budget ceiling: once cumulative run cost reaches the cap, stop
-	// starting new agents; any active slots still finish.
+	// Per-run budget ceiling: once projected run cost (settled + in-flight
+	// estimates, koryph-u7q) reaches the cap, stop starting new agents; any
+	// active slots still finish.
 	if r.opts.BudgetUSD > 0 {
-		if spent := r.runCostUSD(); spent >= r.opts.BudgetUSD {
+		if spent := r.projectedRunCostUSD(); spent >= r.opts.BudgetUSD {
 			g.budgetHit = true
 			if g.allowDispatch {
-				r.progress("run budget reached: $%.2f spent >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
+				r.progress("run budget reached: $%.2f projected >= $%.2f cap — no new dispatch", spent, r.opts.BudgetUSD)
 			}
 			g.allowDispatch = false
 		}
@@ -264,6 +297,9 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			if budgetHit {
 				reason = "budget-cap"
 			}
+			if gate.uncalibratedBlock {
+				reason = "governor-uncalibrated"
+			}
 			if gate.operatorDrain {
 				reason = "operator-drain"
 			}
@@ -314,6 +350,16 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			r.warnIfOverFairShare()
 			stagger := r.staggerDelay()
 			for i, it := range w.Items {
+				// Per-run budget cap, re-checked per item (koryph-u7q): each
+				// dispatch above added its estimate to projected spend (via the
+				// now-running slot), so a single wide wave stops the moment
+				// projected cost reaches the cap instead of dispatching the whole
+				// batch and only settling past it later.
+				if r.budgetExhausted() {
+					r.progress("wave %d: run budget reached ($%.2f projected >= $%.2f cap) — deferring %d bead(s)",
+						r.run.Wave, r.projectedRunCostUSD(), r.opts.BudgetUSD, len(w.Items)-i)
+					break
+				}
 				if i > 0 && stagger > 0 {
 					select {
 					case <-ctx.Done():
@@ -321,11 +367,13 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 					case <-time.After(stagger):
 					}
 				}
-				// Global concurrency cap (across all projects). A denial defers
-				// the rest of this wave — same-project shares won't free up until
-				// a running agent finishes — so break and re-scan next wave.
+				// Global concurrency cap (across all projects) or the memory
+				// admission floor (koryph-930). A denial defers the rest of this
+				// wave — same-project shares won't free up until a running agent
+				// finishes, and memory won't either — so break and re-scan next
+				// wave. acquireGlobalSlot logs the specific reason when it's memory.
 				if !r.acquireGlobalSlot(it.Issue.ID) {
-					r.progress("wave %d: global governor cap reached — deferring %d bead(s) to a later wave",
+					r.progress("wave %d: global governor cap or memory floor reached — deferring %d bead(s) to a later wave",
 						r.run.Wave, len(w.Items)-i)
 					break
 				}
@@ -419,8 +467,10 @@ func (r *runner) billingFor(level quota.Level) (account.BillingMode, string) {
 	return account.BillingSubscription, ""
 }
 
-// runCostUSD is the cumulative recorded cost of every slot in this run — the
-// figure the per-run --budget ceiling is measured against.
+// runCostUSD is the cumulative recorded (settled) cost of every slot in this
+// run. It only reflects attempts that have COMPLETED — a running agent's cost
+// lands in CostUSD at completeSlot — so on its own it reads $0 for a wave that
+// is still in flight. Use projectedRunCostUSD for budget admission.
 func (r *runner) runCostUSD() float64 {
 	var total float64
 	for _, sl := range r.run.Slots {
@@ -429,6 +479,35 @@ func (r *runner) runCostUSD() float64 {
 		}
 	}
 	return total
+}
+
+// projectedRunCostUSD is the budget-admission figure (koryph-u7q): settled cost
+// PLUS each still-running slot's dispatch-time estimate. Without the in-flight
+// term, runCostUSD reads $0 until agents complete, so a whole wave (or a
+// requeue) could be admitted after the cap was already committed and only settle
+// past it later — the "budget sails past the cap" bug. EstimateUSD is the
+// per-attempt estimate stamped at dispatch (bias-corrected when samples exist),
+// and CostUSD already carries prior attempts' accumulated cost, so a running
+// slot contributes prior-spend + this-attempt-estimate.
+func (r *runner) projectedRunCostUSD() float64 {
+	var total float64
+	for _, sl := range r.run.Slots {
+		if sl == nil {
+			continue
+		}
+		total += sl.CostUSD
+		if sl.Status == ledger.SlotRunning {
+			total += sl.EstimateUSD
+		}
+	}
+	return total
+}
+
+// budgetExhausted reports whether the per-run --budget ceiling is set and
+// projected spend has reached it — the shared admission predicate for both
+// fresh dispatch and requeue (koryph-u7q). Zero/absent BudgetUSD means no cap.
+func (r *runner) budgetExhausted() bool {
+	return r.opts.BudgetUSD > 0 && r.projectedRunCostUSD() >= r.opts.BudgetUSD
 }
 
 // onlyBead narrows a frontier to the single bead with id, or empty when it is
@@ -448,11 +527,16 @@ func onlyBead(issues []beads.Issue, id string) []beads.Issue {
 // default_runtime precedence dispatchBead itself applies
 // (modelroute.ResolveRuntimeName) — so a wave mixing a runtime:<name> bead
 // alongside claude beads estimates each against the right per-runtime base
-// table instead of always assuming claude's.
+// table instead of always assuming claude's. Also prices each item against
+// ITS OWN holdout-arm assignment (koryph-3l1.3, registry.AgentProxy.ArmFor)
+// so a wave estimate is never systematically off by the proxied/holdout
+// split — the same arm computation dispatchBead itself will make for each
+// of these items when it actually dispatches them.
 //
 // Bias correction (koryph-6bl): once enough observations accumulate for a
-// (tier, size) bucket the corrected estimate replaces the raw base, so
-// systematic under/over-estimation self-corrects instead of persisting.
+// (tier, size[, @proxyID]) bucket the corrected estimate replaces the raw
+// base, so systematic under/over-estimation self-corrects instead of
+// persisting.
 func (r *runner) waveEstimate(items []sched.Item) float64 {
 	var est float64
 	for _, it := range items {
@@ -461,21 +545,34 @@ func (r *runner) waveEstimate(items []sched.Item) float64 {
 			model = modelroute.TierSonnet
 		}
 		runtimeName, _ := modelroute.ResolveRuntimeName(it.Issue.Labels, r.cfg.DefaultRuntime)
-		corrected, _ := quota.EstimateItemCorrectedForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(it.Issue.Description)))
+		// r.rec is nil in some estimator-only unit tests that build a bare
+		// &runner{cfg:..., quotaCfg:...} (no registry record) — guard rather
+		// than dereference, matching health.go's existing "r.rec != nil"
+		// defensive precedent. A nil rec has no agent_proxy either way, so ""
+		// (direct) is the correct fallback, not merely a crash-avoidance one.
+		var proxyID string
+		if r.rec != nil {
+			proxyID, _ = r.rec.AgentProxy.ArmFor(it.Issue.ID)
+		}
+		corrected, _ := quota.EstimateItemCorrectedForRuntimeProxy(r.quotaCfg, runtimeName, model, quota.SizeOf(len(it.Issue.Description)), proxyID)
 		est += corrected
 	}
 	return est
 }
 
 // itemEstimate returns the bias-corrected estimate for a single bead, using
-// the same model/runtime/size logic as waveEstimate (koryph-6bl). This is
-// called at dispatch time so the estimate can be persisted on the ledger
-// slot alongside the eventual actual, making estimator error observable.
-func (r *runner) itemEstimate(iss beads.Issue, model, runtimeName string) float64 {
+// the same model/runtime/size logic as waveEstimate (koryph-6bl), segmented
+// by proxyID (koryph-3l1.3) — the caller passes the SAME arm-assigned
+// proxyID it is about to stamp on the ledger slot, so the estimate and the
+// eventual actual (recorded via quota.RecordForProxy) land in the same
+// calibration population. This is called at dispatch time so the estimate
+// can be persisted on the ledger slot alongside the eventual actual, making
+// estimator error observable.
+func (r *runner) itemEstimate(iss beads.Issue, model, runtimeName, proxyID string) float64 {
 	if model == "" {
 		model = modelroute.TierSonnet
 	}
-	corrected, _ := quota.EstimateItemCorrectedForRuntime(r.quotaCfg, runtimeName, model, quota.SizeOf(len(iss.Description)))
+	corrected, _ := quota.EstimateItemCorrectedForRuntimeProxy(r.quotaCfg, runtimeName, model, quota.SizeOf(len(iss.Description)), proxyID)
 	return corrected
 }
 
@@ -602,7 +699,18 @@ type dispatchReq struct {
 	gateRequeues      int
 	mergeRequeues     int
 	rateLimitRequeues int
-	note              string
+	// budgetKillRequeues carries the warm-resume budget-kill counter forward
+	// (koryph-77r.10), the same way rateLimitRequeues does for rate-limit
+	// deaths — see requeueBudgetKilled and ledger.Slot.BudgetKillRequeues.
+	budgetKillRequeues int
+	note               string
+	// wipSnapshotPath threads a captured WIP snapshot's path (koryph-77r.10,
+	// worktree.PatchSnapshot via refreshWorktreeForRequeue) into the compiled
+	// prompt's RESUMING block (promptc.Input.WIPSnapshotPath) so the agent can
+	// restore uncommitted work from a prior attempt instead of orphaning it —
+	// whether that attempt's worktree was preserved or rebuilt. Empty on a
+	// fresh first-attempt dispatch and on any requeue with no WIP to capture.
+	wipSnapshotPath string
 	// footprint is the RW conflict footprint to persist on the ledger slot
 	// (koryph-2im.3, design L2 footprint persistence): the batch item's
 	// computed sched.Footprint on a fresh dispatch, or the prior slot's
@@ -619,28 +727,46 @@ type dispatchReq struct {
 	// attempt's cost rather than overwrite it (koryph-6bl). Zero on a fresh
 	// first-attempt dispatch.
 	accumulatedCostUSD float64
+	// accumulatedTokens carries forward the token composition already spent
+	// on previous attempts of this bead (koryph-77r.1), the same way
+	// accumulatedCostUSD carries CostUSD forward: the new slot's token
+	// fields start at this baseline and completeSlot's applyTokenUsage ADDs
+	// each attempt's usage rather than overwriting it. Zero value on a fresh
+	// first-attempt dispatch.
+	accumulatedTokens dispatch.TokenUsage
+	// frozenModel/frozenPersona/frozenModelWhy/frozenEffort carry the model
+	// resolution forward from the first attempt so every requeue re-runs the
+	// SAME model, persona, and effort the bead was originally dispatched with
+	// (koryph-ehx). Mirrors the footprint field's freeze rationale exactly: a
+	// requeue is the SAME bead attempt continuing, not a relabeled
+	// re-evaluation, so a `model:*`/`runtime:*` relabel mid-run (or any
+	// non-determinism in the persona-tier resolution chain) must NOT change
+	// which model a retry runs — otherwise a bead dispatched on opus can
+	// silently finish on haiku (or vice-versa). dispatchBead skips
+	// modelroute.Resolve entirely when frozenModel != "". Empty frozenModel on
+	// a fresh first-attempt dispatch means "resolve normally".
+	frozenModel    string
+	frozenPersona  string
+	frozenModelWhy string
+	frozenEffort   string
 }
 
-// dispatchBead runs the full dispatch flow for one bead: model routing,
-// worktree, prompt, backend launch, bd claim, ledger slot, manifest v2, audit.
-// Failures block the slot and never fall through.
-func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
-	beadID := q.issue.ID
-
-	// Runtime selection (koryph-v8u.3): bead `runtime:<name>` label > project
-	// default_runtime > "claude" (modelroute.ResolveRuntimeName). Dispatch
-	// itself only ever drives the claude CLI today — no other runtime's
-	// worktree/backend/ledger wiring exists yet — so anything other than
-	// "claude" blocks the slot right here, before any worktree or backend
-	// work happens, rather than silently falling back to claude (which would
-	// dispatch a bead under an identity/account/model policy the operator
-	// never asked for).
-	runtimeName, runtimeWhy := modelroute.ResolveRuntimeName(q.issue.Labels, r.cfg.DefaultRuntime)
-	if runtimeName != "claude" {
-		r.blockSlot(beadID, q, fmt.Sprintf(
-			"runtime %s not available (dispatch only supports claude today; resolved via %s)",
-			runtimeName, runtimeWhy))
-		return
+// resolveModel decides which model, persona, and effort a dispatch runs under.
+//
+// On a requeue (q.frozenModel set) the first attempt's resolution is reused
+// verbatim (koryph-ehx): a `model:*`/`runtime:*` relabel mid-run — or any
+// non-determinism in the persona-tier resolution chain — must NOT change which
+// model a retry runs, exactly as the persisted footprint cannot change what a
+// retry conflicts with. On a fresh dispatch it resolves from the bead's live
+// labels through the full modelroute precedence.
+func (r *runner) resolveModel(q dispatchReq, runtimeName string) (modelroute.Resolution, string, error) {
+	if q.frozenModel != "" {
+		return modelroute.Resolution{
+			Model:     q.frozenModel,
+			Persona:   q.frozenPersona,
+			Effort:    q.frozenEffort,
+			Rationale: q.frozenModelWhy,
+		}, q.frozenEffort, nil
 	}
 
 	// Auto-filed docs-update beads (epic validation §4b, label validation:docs)
@@ -658,27 +784,70 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		AllowedModels: r.rec.AllowedModels,
 		Stages:        r.cfg.Stages,
 		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
-		// step inside Resolve: a bead model:<tier> label (above) still wins
-		// unchanged; absent that, the implement-stage persona's `tier`
-		// frontmatter resolves through the selected runtime's ModelMap
-		// (overlaid with the project's ModelMap override) before falling
-		// back to the persona's legacy `model` pin and finally the
-		// runtime-namespaced hardcoded stage default (koryph-v8u.3).
+		// step inside Resolve: a bead model:<tier> label still wins unchanged;
+		// absent that, the implement-stage persona's `tier` frontmatter
+		// resolves through the selected runtime's ModelMap (overlaid with the
+		// project's ModelMap override) before falling back to the persona's
+		// legacy `model` pin and finally the runtime-namespaced hardcoded
+		// stage default (koryph-v8u.3).
 		RepoRoot: r.rec.Root,
 		ModelMap: r.cfg.ModelMap,
 		Runtime:  runtimeName,
 	})
 	if err != nil {
-		r.blockSlot(beadID, q, "model resolution: "+err.Error())
-		return
+		return modelroute.Resolution{}, "", err
 	}
-	// Persona metadata: the meta model/tier never override the resolved
-	// tier here (Resolve already folded persona tier/model into res.Model
-	// above, per koryph-v8u.10); only the effort hint is taken from this
-	// second read.
+	// Persona metadata: the meta model/tier never override the resolved tier
+	// here (Resolve already folded persona tier/model into res.Model above, per
+	// koryph-v8u.10); only the effort hint is taken from this second read.
 	effort := res.Effort
 	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, res.Persona); err == nil && effort == "" {
 		effort = metaEffort
+	}
+	return res, effort, nil
+}
+
+// dispatchBead runs the full dispatch flow for one bead: model routing,
+// worktree, prompt, backend launch, bd claim, ledger slot, manifest v2, audit.
+// Failures block the slot and never fall through.
+func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
+	beadID := q.issue.ID
+
+	// Holdout-arm assignment (koryph-3l1.3, design §3 L6): computed once,
+	// here, from beadID alone — BEFORE anything else in this function reads
+	// r.rec.ProxyBaseURL()/AgentProxy.ID() directly — so every downstream use
+	// (dispatch.Spec's env injection, the ledger slot stamp, the manifest
+	// stamp, and the dispatch-time estimate below) agrees on the same arm for
+	// this attempt. Because dispatchBead is the SOLE dispatch path shared by
+	// wave.go's fresh dispatches, rolling.go's fresh dispatches, and every
+	// requeue path in poll.go (requeueSlot/requeueRateLimited/
+	// requeueBudgetKilled all funnel back through here with the same
+	// q.issue.ID), and ArmFor hashes beadID alone, a requeued or resumed bead
+	// is guaranteed to land in the same arm on every attempt without any of
+	// those call sites needing to thread the arm forward themselves.
+	proxyID, proxyBaseURL := r.rec.AgentProxy.ArmFor(beadID)
+	proxyConfigured := r.rec.AgentProxy != nil && r.rec.AgentProxy.BaseURL != ""
+
+	// Runtime selection (koryph-v8u.3): bead `runtime:<name>` label > project
+	// default_runtime > "claude" (modelroute.ResolveRuntimeName). Dispatch
+	// itself only ever drives the claude CLI today — no other runtime's
+	// worktree/backend/ledger wiring exists yet — so anything other than
+	// "claude" blocks the slot right here, before any worktree or backend
+	// work happens, rather than silently falling back to claude (which would
+	// dispatch a bead under an identity/account/model policy the operator
+	// never asked for).
+	runtimeName, runtimeWhy := modelroute.ResolveRuntimeName(q.issue.Labels, r.cfg.DefaultRuntime)
+	if runtimeName != "claude" {
+		r.blockSlot(beadID, q, fmt.Sprintf(
+			"runtime %s not available (dispatch only supports claude today; resolved via %s)",
+			runtimeName, runtimeWhy))
+		return
+	}
+
+	res, effort, err := r.resolveModel(q, runtimeName)
+	if err != nil {
+		r.blockSlot(beadID, q, "model resolution: "+err.Error())
+		return
 	}
 
 	branch := worktree.BranchFor(beadID)
@@ -703,19 +872,20 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	policy := r.mergePolicy(ctx, q.epicID)
 
 	prompt := promptc.Compile(promptc.Input{
-		EngineVersion:  EngineVersion,
-		ProjectName:    r.rec.Name,
-		Gate:           r.cfg.Gate,
-		CommitStyle:    r.cfg.CommitStyle,
-		CommitTemplate: r.cfg.CommitTemplate,
-		Bootstrap:      r.cfg.Bootstrap,
-		Bead:           q.issue,
-		ResumeSHA:      q.resumeSHA,
-		ReviewPath:     q.reviewPath,
-		PhaseDir:       phaseDir,
-		SummaryPath:    filepath.Join(phaseDir, "SUMMARY.md"),
-		StatusPath:     filepath.Join(phaseDir, "status.json"),
-		LogPath:        filepath.Join(phaseDir, "session.log"),
+		EngineVersion:   EngineVersion,
+		ProjectName:     r.rec.Name,
+		Gate:            r.cfg.Gate,
+		CommitStyle:     r.cfg.CommitStyle,
+		CommitTemplate:  r.cfg.CommitTemplate,
+		Bootstrap:       r.cfg.Bootstrap,
+		Bead:            q.issue,
+		ResumeSHA:       q.resumeSHA,
+		WIPSnapshotPath: q.wipSnapshotPath,
+		ReviewPath:      q.reviewPath,
+		PhaseDir:        phaseDir,
+		SummaryPath:     filepath.Join(phaseDir, "SUMMARY.md"),
+		StatusPath:      filepath.Join(phaseDir, "status.json"),
+		LogPath:         filepath.Join(phaseDir, "session.log"),
 	})
 
 	sessionID := newSessionID()
@@ -745,6 +915,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Attempt:          q.attempt,
 		SSHAuthSock:      r.sshAuthSock,
 		EnvPassthrough:   r.rec.EnvPassthrough,
+		ProxyBaseURL:     proxyBaseURL,
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "dispatch refused: "+err.Error())
@@ -758,45 +929,54 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	// estimate (bias-corrected when enough samples exist), NOT accumulated —
 	// it is the prediction we are making for THIS attempt, used later by
 	// completeSlot to compute estimator error and update ErrorStats.
-	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName)
+	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName, proxyID)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	sl := &ledger.Slot{
-		PhaseID:           beadID,
-		BeadID:            beadID,
-		EpicID:            q.epicID,
-		Branch:            branch,
-		Worktree:          wt.Path,
-		SessionID:         sessionID,
-		SessionName:       sessionName,
-		Agent:             res.Persona,
-		Model:             res.Model,
-		ModelWhy:          res.Rationale,
-		Effort:            effort,
-		Runtime:           runtimeName,
-		AccountProfile:    r.rec.AccountProfile,
-		ClaudeConfigDir:   r.rec.ClaudeConfigDir,
-		VerifiedIdentity:  handle.VerifiedIdentity,
-		VerifiedAt:        now,
-		BillingMode:       string(r.billing),
-		PID:               handle.PID,
-		Stream:            handle.StreamPath,
-		StatusPath:        handle.StatusPath,
-		LogPath:           filepath.Join(phaseDir, "session.log"),
-		Status:            ledger.SlotRunning,
-		Attempts:          q.attempt,
-		ResumeSHA:         q.resumeSHA,
-		ReviewIters:       q.reviewIters,
-		GateRequeues:      q.gateRequeues,
-		MergeRequeues:     q.mergeRequeues,
-		DispatchedAt:      now,
-		Note:              q.note,
-		RateLimitRequeues: q.rateLimitRequeues,
-		Footprint:         q.footprint,
-		EstimateUSD:       estimateUSD,
+		PhaseID:            beadID,
+		BeadID:             beadID,
+		EpicID:             q.epicID,
+		Branch:             branch,
+		Worktree:           wt.Path,
+		SessionID:          sessionID,
+		SessionName:        sessionName,
+		Agent:              res.Persona,
+		Model:              res.Model,
+		ModelWhy:           res.Rationale,
+		Effort:             effort,
+		Runtime:            runtimeName,
+		AccountProfile:     r.rec.AccountProfile,
+		ClaudeConfigDir:    r.rec.ClaudeConfigDir,
+		VerifiedIdentity:   handle.VerifiedIdentity,
+		VerifiedAt:         now,
+		BillingMode:        string(r.billing),
+		ProxyID:            proxyID,
+		ProxyConfigured:    proxyConfigured,
+		PID:                handle.PID,
+		Stream:             handle.StreamPath,
+		StatusPath:         handle.StatusPath,
+		LogPath:            filepath.Join(phaseDir, "session.log"),
+		Status:             ledger.SlotRunning,
+		Attempts:           q.attempt,
+		ResumeSHA:          q.resumeSHA,
+		ReviewIters:        q.reviewIters,
+		GateRequeues:       q.gateRequeues,
+		MergeRequeues:      q.mergeRequeues,
+		DispatchedAt:       now,
+		Note:               q.note,
+		RateLimitRequeues:  q.rateLimitRequeues,
+		BudgetKillRequeues: q.budgetKillRequeues,
+		Footprint:          q.footprint,
+		EstimateUSD:        estimateUSD,
 		// CostUSD starts from accumulatedCostUSD so prior-attempt spend is
 		// not lost when completeSlot ADDs the new attempt's cost (koryph-6bl).
 		CostUSD: q.accumulatedCostUSD,
+		// Token fields start from accumulatedTokens for the same reason
+		// (koryph-77r.1): applyTokenUsage ADDs each attempt's usage.
+		InputTokens:         q.accumulatedTokens.InputTokens,
+		OutputTokens:        q.accumulatedTokens.OutputTokens,
+		CacheReadTokens:     q.accumulatedTokens.CacheReadTokens,
+		CacheCreationTokens: q.accumulatedTokens.CacheCreationTokens,
 	}
 	_ = r.store.SetSlot(r.run, sl)
 	r.dispatched++
@@ -821,8 +1001,8 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		MergePolicy:     string(policy),
 		AutoMerge:       r.opts.AutoMerge,
 		BillingMode:     string(r.billing),
+		ProxyID:         proxyID,
 		BootstrapCmds:   r.cfg.Bootstrap,
-		PromptCache:     r.rec.PromptCachePolicy,
 		BatchAllowed:    r.rec.BatchPolicy == "explicit",
 		ReviewStatus:    reviewStatus(q.reviewPath),
 	})

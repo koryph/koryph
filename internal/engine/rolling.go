@@ -128,6 +128,9 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if budgetHit {
 				reason = "budget-cap"
 			}
+			if gate.uncalibratedBlock {
+				reason = "governor-uncalibrated"
+			}
 			if gate.operatorDrain {
 				reason = "operator-drain"
 			}
@@ -184,6 +187,14 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 				stagger := r.staggerDelay()
 				dispatchedThisIter := 0
 				for i, it := range w.Items {
+					// Per-run budget cap, re-checked per item (koryph-u7q): in-flight
+					// estimates count toward projected spend, so a refill batch stops
+					// the moment projected cost reaches the cap.
+					if r.budgetExhausted() {
+						r.progress("refill: run budget reached ($%.2f projected >= $%.2f cap) — deferring %d bead(s)",
+							r.projectedRunCostUSD(), r.opts.BudgetUSD, len(w.Items)-i)
+						break
+					}
 					if i > 0 && stagger > 0 {
 						select {
 						case <-ctx.Done():
@@ -191,11 +202,12 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 						case <-time.After(stagger):
 						}
 					}
-					// Global concurrency cap (across all projects). A denial
-					// defers the REST of this refill batch — do not spin —
-					// the loop re-scans next tick.
+					// Global concurrency cap (across all projects) or the memory
+					// admission floor (koryph-930). A denial defers the REST of
+					// this refill batch — do not spin — the loop re-scans next
+					// tick. acquireGlobalSlot logs the specific reason for memory.
 					if !r.acquireGlobalSlot(it.Issue.ID) {
-						r.progress("refill: global governor cap reached — deferring %d bead(s) to a later tick",
+						r.progress("refill: global governor cap or memory floor reached — deferring %d bead(s) to a later tick",
 							len(w.Items)-i)
 						break
 					}

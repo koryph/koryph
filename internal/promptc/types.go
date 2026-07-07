@@ -51,9 +51,16 @@ type Input struct {
 	Bead           beads.Issue
 	PlanYAML       string // extracted koryph-plan block, if any
 	ResumeSHA      string // non-empty → RESUMING block
-	ReviewPath     string // non-empty → blocking review findings to address
-	PhaseDir       string // where status.json / SUMMARY.md / INBOX.md live
-	SummaryPath    string
-	StatusPath     string
-	LogPath        string
+	// WIPSnapshotPath is the path to a captured uncommitted-work patch from
+	// the previous attempt (koryph-77r.10, worktree.PatchSnapshot via
+	// engine's refreshWorktreeForRequeue), when one exists. Non-empty →
+	// RESUMING block cites it (independent of ResumeSHA: a zero-commit
+	// budget-kill requeue has WIP worth restoring but no committed SHA to
+	// resume from).
+	WIPSnapshotPath string
+	ReviewPath      string // non-empty → blocking review findings to address
+	PhaseDir        string // where status.json / SUMMARY.md / INBOX.md live
+	SummaryPath     string
+	StatusPath      string
+	LogPath         string
 }

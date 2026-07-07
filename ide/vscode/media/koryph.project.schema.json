@@ -2,6 +2,85 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://koryph.dev/schemas/config",
   "$defs": {
+    "CopyrightConfig": {
+      "properties": {
+        "holder": {
+          "type": "string",
+          "description": "Holder is the copyright holder, e.g. \"Acme, Inc.\" or \"The Foo Authors\"."
+        },
+        "year": {
+          "type": "string",
+          "description": "Year is the copyright year or range, e.g. \"2026\" or \"2024-2026\"."
+        },
+        "license": {
+          "type": "string",
+          "description": "License is the SPDX license identifier stamped into generated files\n(default \"Apache-2.0\")."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "EpicDocsUpdateConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enabled gates the docs-update stage (default true). When false a met\nverdict closes the epic immediately per auto_close."
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Labels are stamped on the auto-filed docs bead alongside\nvalidation:docs (default [\"area:docs\"]; fp:docs-nav is koryph's own\naddition — its nav block is a shared write)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "EpicDocsUpdateConfig is the docs_update sub-block of epic_validation."
+    },
+    "EpicValidationConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enabled gates the in-loop automatic trigger (default true). When false\nthe engine skips post-epic validation; koryph epic validate still runs on\ndemand regardless. Per-epic opt-out: label no-validate on the epic bead.\nA nil pointer means \"not set\" and resolves to the default of true via\nEffective()."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model is the tier or concrete model id for the validator agent (default\n\"opus\" — frontier tier; judging epic spirit and scheduler-correctness of\ngap-bead labels requires frontier quality)."
+        },
+        "persona": {
+          "type": "string",
+          "description": "Persona is the agent file (.claude/agents/\u003cpersona\u003e) used as the\nvalidator (default \"koryph-epic-validator\")."
+        },
+        "effort": {
+          "type": "string",
+          "description": "Effort overrides the reasoning-effort hint passed to the validator agent\n(default: resolved from the validator persona's own frontmatter `effort:`\nat the engine call site — koryph-77r.8 — since epic validation is\nquality-critical and unmeasured by design, this is left empty here so\noperators opt in explicitly rather than the engine guessing a default)."
+        },
+        "max_rounds": {
+          "type": "integer",
+          "description": "MaxRounds caps how many validation rounds the engine runs per epic before\nparking it (default 2). Beyond this cap the epic receives the label\nvalidation:parked and waits for operator intervention. Must be \u003e= 1 when\nexplicitly set (non-zero); zero resolves to the default via Effective()."
+        },
+        "auto_close": {
+          "type": "boolean",
+          "description": "AutoClose, when true (default), has the engine close the epic after the\nvalidator returns a \"met\" verdict. When false the epic stays open for\nmanual review even after a passing validation. A nil pointer means \"not\nset\" and resolves to the default of true via Effective()."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "TimeoutSeconds is the per-run wall-clock timeout for the validator agent\n(default 420 s). Exceeding it is treated as a Degraded verdict. Zero\nresolves to the default via Effective()."
+        },
+        "structural_parent": {
+          "type": "string",
+          "description": "StructuralParent, when non-empty, is the bead ID of the epic (or\nstandalone container bead) under which structural follow-up beads are\nfiled. When empty (default) structural findings stand alone as top-level\nbeads."
+        },
+        "docs_update": {
+          "$ref": "#/$defs/EpicDocsUpdateConfig",
+          "description": "DocsUpdate configures the post-validation documentation stage (design\n§4b): on a met verdict the engine files one docs-update child bead and\nthe epic closes when it merges. Nil resolves to the documented defaults\nvia EffectiveDocsUpdate()."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "EpicValidationConfig is the optional epic_validation sub-block of koryph.project.json."
+    },
     "FootprintRule": {
       "properties": {
         "pattern": {
@@ -21,6 +100,17 @@
         "tokens"
       ],
       "description": "FootprintRule maps a path glob (doublestar-lite: '*' within a segment, '**' across segments, evaluated by sched) to footprint tokens."
+    },
+    "GoreleaserBuild": {
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version constrains the GoReleaser action version, e.g. \"~\u003e v2.16\".\nDefaults to \"~\u003e v2\" when empty."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "GoreleaserBuild configures the GoReleaser build mode (mode A) for the project's release pipeline."
     },
     "IntakeSource": {
       "properties": {
@@ -99,6 +189,112 @@
       ],
       "description": "PipelineStage is one post-implement stage in the project pipeline."
     },
+    "PostureConfig": {
+      "properties": {
+        "profile": {
+          "type": "string",
+          "description": "Profile is the named posture profile, e.g. \"oss-solo-maintainer\".\nMust match a built-in profile name (koryph posture list) or a user\nprofile under ~/.koryph/postures/."
+        },
+        "parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Parameters maps profile parameter names to their values, e.g.\n{\"required_checks\": \"pre-commit,make gate\"}.  Omit or set to {} to\nuse the profile's defaults for all parameters."
+        },
+        "fragments": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Fragments lists the security-scanner fragment names this project has\nopted into (design §3.3).  Each name must match a built-in fragment\n(see `koryph posture list --fragments`).  Opted-in fragments are:\n  - installed into the project by `koryph posture apply`\n  - drift-checked by `koryph doctor --project`\nA profile's manifest.json may list recommended_fragments (informational\nonly — listing them here is what opts the project in)."
+        },
+        "org": {
+          "type": "string",
+          "description": "Org, when non-empty, names the GitHub organisation whose org-level\nrulesets should be drift-checked alongside the repo rulesets by\n`koryph doctor --project`.  Requires org owner / admin access; the\ndoctor check degrades gracefully when permission is absent."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "profile"
+      ],
+      "description": "PostureConfig is the optional desired-state posture sub-block of koryph.project.json."
+    },
+    "ReleaseBuildConfig": {
+      "properties": {
+        "goreleaser": {
+          "$ref": "#/$defs/GoreleaserBuild",
+          "description": "Goreleaser, when non-nil, selects mode A: GoReleaser-managed builds."
+        },
+        "commands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Commands, when non-empty, selects mode B: an ordered list of shell\ncommands (each run via sh -c) that build and stage artifacts."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ReleaseBuildConfig is the build sub-block of ReleaseConfig: exactly one of Goreleaser or Commands must be set (enforced by project.Config.Validate)."
+    },
+    "ReleaseConfig": {
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Type is the release-please release type, e.g. \"go\", \"simple\",\n\"node\". See https://github.com/googleapis/release-please#release-types."
+        },
+        "extra_files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "ExtraFiles lists additional files whose version strings release-please\nshould bump, e.g. [\"internal/version/version.go\"]."
+        },
+        "artifacts_dir": {
+          "type": "string",
+          "description": "ArtifactsDir is the directory where build artifacts land (default:\n\"dist\"). GoReleaser and mode-B commands should write outputs here."
+        },
+        "build": {
+          "$ref": "#/$defs/ReleaseBuildConfig",
+          "description": "Build is the build configuration: exactly one of Goreleaser or\nCommands must be set."
+        },
+        "sbom": {
+          "type": "boolean",
+          "description": "SBOM enables SBOM generation via anchore/sbom-action during the build."
+        },
+        "provenance": {
+          "type": "boolean",
+          "description": "Provenance enables SLSA provenance via\nslsa-framework/slsa-github-generator (generic, level 3)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "build"
+      ],
+      "description": "ReleaseConfig is the optional release sub-block of koryph.project.json."
+    },
+    "RuntimeConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enabled gates whether this project allows dispatching under this\nruntime at all; a bead or default_runtime naming a disabled runtime is\nrefused the same as an unregistered one. False (the default, also when\nthe whole entry is omitted) requires an explicit per-runtime opt-in —\nthe safer default while only claude is wired end-to-end in the engine."
+        },
+        "model_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "ModelMap sparsely overrides this runtime's own tier-\u003emodel table\n(mirrors Config.ModelMap's shape, scoped to just this runtime)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "RuntimeConfig is one runtime's per-project override (koryph-v8u.3), keyed by runtime name in Config.Runtimes."
+    },
     "SigningConfig": {
       "properties": {
         "required": {
@@ -119,9 +315,11 @@
             "protonpass",
             "onepassword",
             "file",
+            "encrypted-file",
+            "keychain",
             "command"
           ],
-          "description": "Provider names the vault backend: protonpass|onepassword|file|command."
+          "description": "Provider names the vault backend. Built-in no-vault providers:\n  encrypted-file  pure-Go age-encrypted file (all platforms)\n  keychain        macOS Keychain via security(1) (darwin only)\n  file            plaintext file path (legacy; WARN posture)"
         },
         "key_ref": {
           "type": "string",
@@ -153,6 +351,35 @@
         "required"
       ],
       "description": "Config is the per-project signing policy, stored as the \"signing\" block of koryph.project.json."
+    },
+    "SigningVaultDefaults": {
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": [
+            "protonpass",
+            "onepassword",
+            "file",
+            "encrypted-file",
+            "keychain",
+            "command",
+            "aws_secretsmanager",
+            "azure_keyvault",
+            "gcp_secretmanager",
+            "keepassxc",
+            "openbao",
+            "vault"
+          ],
+          "description": "Provider names the vault backend. Must be one of the recognized\nsigning.Provider* constants when non-empty."
+        },
+        "container": {
+          "type": "string",
+          "description": "Container is the provider-native grouping:\n  protonpass       vault name (e.g. \"Engineering\")\n  onepassword      vault (e.g. \"Personal\")\n  file / encrypted-file  directory under which key files are stored\n  aws_secretsmanager     secret path prefix\n  keepassxc              KeePassXC database path / group\n  HashiCorp / OpenBao    KV mount path\nEmpty means \"use the provider's default\"; not all providers have a\nmeaningful container concept."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "VaultDefaults is the vault block shared by koryph.project.json and the global ~/.koryph/config.json."
     }
   },
   "properties": {
@@ -208,6 +435,13 @@
         "type": "string"
       },
       "type": "object"
+    },
+    "model_map": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object",
+      "description": "ModelMap overrides the active runtime's tier -\u003e concrete-model-id map\n(koryph-v8u.10). Keys are the runtime-agnostic tier vocabulary a\npersona's `tier:` frontmatter carries (\"frontier\", \"standard\",\n\"light\" — see agents/README.md's frontmatter contract); values are\nconcrete model ids for whichever runtime is active (today, always\nClaude: \"opus\"/\"sonnet\"/\"haiku\", or \"fable\" as an explicit frontier\noverride). Sparse: only the tiers an operator wants to re-map need be\npresent, e.g. {\"frontier\": \"fable\"} — every other tier keeps\nruntime.ClaudeModelMap's default. A project-config host (rather than a\nregistry record) was chosen because AllowedModels/Tiers/Stages already\ncarry per-project model policy right here, and because this value is\nread on every dispatch (modelroute.Resolve), the same hot path as\nthose fields — see internal/modelroute/route.go's effectiveModelMap\nfor how it overlays onto the runtime default."
     },
     "pipeline": {
       "items": {
@@ -283,9 +517,17 @@
       "minimum": 0,
       "description": "RiskTierDefault is the recovery tier (0-3) for beads without rt:*."
     },
+    "vault": {
+      "$ref": "#/$defs/SigningVaultDefaults",
+      "description": "Vault sets the project-level default vault provider and container\n(provider-native grouping: Proton Pass vault name, 1Password vault, file\ndirectory, etc.). Commands that store or fetch secrets use this block when\nno explicit flags are supplied. Falls back to the global\n~/.koryph/config.json vault block when absent.\nManaged by `koryph signing setup` (sets provider/container on first run)."
+    },
     "signing": {
       "$ref": "#/$defs/SigningConfig",
       "description": "Signing is the vault-backed commit/artifact signing policy\n(nil = signing not configured; managed by `koryph signing setup`)."
+    },
+    "require_calibration": {
+      "type": "boolean",
+      "description": "RequireCalibration hard-blocks dispatch while the quota governor is\nuncalibrated (both ceilings 0), instead of the default advisory pass\n(koryph-grz). Opt-in spend safety for this project: runs refuse to\ndispatch until `koryph quota calibrate` sets a ceiling. The\n`--require-calibration` run flag also sets it for a single run."
     },
     "max_concurrent_slots": {
       "type": "integer",
@@ -294,6 +536,59 @@
     "dispatch_stagger_seconds": {
       "type": "integer",
       "description": "DispatchStaggerSeconds between agent launches (default 8)."
+    },
+    "poll_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "PollSeconds overrides the engine's slot poll tick for this project\n(default 10 when zero/omitted). KORYPH_POLL_SEC and an explicit\nprogrammatic Options.PollSec caller override still take precedence over\nthis value (see engine.runner.pollInterval; koryph-2im.2)."
+    },
+    "health_interval_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "HealthIntervalSeconds sets how often the engine's in-loop health patrol\nfires for this project (default 600 = 10 minutes when zero/omitted).\nKORYPH_HEALTH_INTERVAL_SEC env and Options.HealthIntervalSec take\nprecedence (koryph-gus)."
+    },
+    "dispatch_mode": {
+      "type": "string",
+      "enum": [
+        "wave",
+        "rolling"
+      ],
+      "description": "DispatchMode selects the engine's dispatch loop (koryph-2im.3,\ndocs/designs/2026-07-scheduler-throughput.md L1): \"wave\" (also\nwhen empty) dispatches a fixed-width batch and blocks until every slot\nin it lands before scanning the frontier again; \"rolling\" continuously\nrefills any slot that frees up without waiting for the rest of the\nbatch. A run's --dispatch-mode flag overrides this value; --once runs\ntoday's wave semantics in both modes."
+    },
+    "default_runtime": {
+      "type": "string",
+      "description": "DefaultRuntime selects the runtime (internal/runtime.Runtime) a bead\ndispatches under when it carries no `runtime:\u003cname\u003e` label\n(koryph-v8u.3). Empty means \"claude\" — today's only runtime the engine\nactually dispatches through; internal/engine's dispatchBead blocks\n(rather than silently substituting claude) any bead or default that\nresolves to anything else. Must be \"\", \"claude\", or a name registered\nin runtime.Default (enforced by Validate)."
+    },
+    "runtimes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RuntimeConfig"
+      },
+      "type": "object",
+      "description": "Runtimes configures per-runtime settings for this project, keyed by\nruntime name — the same string a bead's `runtime:\u003cname\u003e` label and\nDefaultRuntime use, and runtime.Runtime.Name()'s value. See\nRuntimeConfig's doc for how minimal this is today."
+    },
+    "release": {
+      "$ref": "#/$defs/ReleaseConfig",
+      "description": "Release, when non-nil, configures the project's release pipeline\n(managed by `koryph release setup`). It drives template rendering for\nthe caller GitHub Actions workflow and the release-please config.\nExactly one build mode (Build.Goreleaser or Build.Commands) must be\nset when this block is present (enforced by Validate)."
+    },
+    "copyright": {
+      "$ref": "#/$defs/CopyrightConfig",
+      "description": "Copyright configures the SPDX header koryph stamps onto files it\nGENERATES for this project — the CI/release workflow assets written by\n`koryph ci setup` / `koryph release setup` (koryph-s6g). It is\nper-project so a repository koryph builds carries ITS OWN copyright and\nlicense, not koryph's. Nil (and any omitted field) falls back to\nkoryph's built-in default, so an unconfigured project's generated output\nis byte-for-byte unchanged."
+    },
+    "posture": {
+      "$ref": "#/$defs/PostureConfig",
+      "description": "Posture, when non-nil, declares the desired-state posture profile for\nthis project's GitHub repository. koryph doctor --project reports any\ndrift between the live repo and the named profile as WARN, with the\nexact koryph posture apply command to remediate.\n\nManaged by `koryph project add` (interactive offer) and the future\n`koryph new` command (koryph-om7, HELD).  Nil means no profile is\ndeclared and the drift check is silently skipped."
+    },
+    "forge": {
+      "type": "string",
+      "enum": [
+        "github",
+        "gitlab"
+      ],
+      "description": "Forge names the git forge provider for this project. Supported values:\n\"github\" (default, also when empty — full back-compat; existing projects\nwithout this field continue to behave as GitHub projects) and \"gitlab\".\nRemote-URL sniffing may suggest a value during `koryph onboard`, but the\noperator always makes the final selection.\n\nThis field is the single source of truth for which internal/forge\nprovider is active; the registry record inherits it at\nonboard/add time."
+    },
+    "epic_validation": {
+      "$ref": "#/$defs/EpicValidationConfig",
+      "description": "EpicValidation configures the whole-epic implementation review that fires\nonce all children of an epic are closed (koryph-wo0.2,\ndocs/designs/2026-07-epic-validation.md §5). Nil = absent; use\nEffectiveEpicValidation() to get the resolved values with defaults."
     }
   },
   "additionalProperties": false,

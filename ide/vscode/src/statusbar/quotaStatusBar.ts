@@ -211,6 +211,7 @@ function refreshMinutes(): number {
 function levelColor(level: QuotaLevel): vscode.ThemeColor | undefined {
   switch (level) {
     case QuotaLevel.Warn:
+    case QuotaLevel.Throttle:
       return new vscode.ThemeColor('statusBarItem.warningBackground');
     case QuotaLevel.Drain:
     case QuotaLevel.Stop:

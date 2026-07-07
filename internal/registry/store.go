@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/netx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/quota"
 )
 
 // Store is the git-backed central registry rooted at Home (usually
@@ -141,7 +144,11 @@ func (s *Store) Add(ctx context.Context, rec *Record) error {
 	return s.commit(ctx, "feat(registry): register "+rec.ProjectID)
 }
 
-// Get loads one record by project id.
+// Get loads one record by project id. The agent_proxy block (if present) is
+// validated at load (koryph-3l1.1, I4: loopback-only is machine-checked, not
+// merely documented) — a record hand-edited (or written by a future version)
+// with a non-loopback base_url refuses to load rather than dispatching
+// through it silently.
 func (s *Store) Get(id string) (*Record, error) {
 	var rec Record
 	if err := fsx.ReadJSON(s.recordPath(id), &rec); err != nil {
@@ -150,10 +157,14 @@ func (s *Store) Get(id string) (*Record, error) {
 		}
 		return nil, err
 	}
+	if err := validateAgentProxy(&rec); err != nil {
+		return nil, err
+	}
 	return &rec, nil
 }
 
-// List returns every record sorted by ProjectID.
+// List returns every record sorted by ProjectID. Each record's agent_proxy
+// block is validated at load exactly as Get does (see Get's doc).
 func (s *Store) List() ([]*Record, error) {
 	entries, err := os.ReadDir(s.registryDir())
 	if err != nil {
@@ -171,6 +182,9 @@ func (s *Store) List() ([]*Record, error) {
 		if err := fsx.ReadJSON(filepath.Join(s.registryDir(), e.Name()), &rec); err != nil {
 			return nil, err
 		}
+		if err := validateAgentProxy(&rec); err != nil {
+			return nil, err
+		}
 		recs = append(recs, &rec)
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].ProjectID < recs[j].ProjectID })
@@ -180,6 +194,11 @@ func (s *Store) List() ([]*Record, error) {
 // Save updates an existing record. It refuses to change the account triple
 // (AccountProfile / ClaudeConfigDir / ExpectedIdentity) relative to the
 // on-disk record — those move only through SetAccount.
+//
+// When agent_proxy changes (by AgentProxy.ID()), the account's quota
+// calibration is marked stale (koryph-3l1.2): the ccusage-USD vs /usage-%
+// slope is not proven invariant under a compression change, so a re-run of
+// `koryph quota calibrate` is prompted via the doctor check.
 func (s *Store) Save(ctx context.Context, rec *Record) error {
 	old, err := s.Get(rec.ProjectID)
 	if err != nil {
@@ -191,6 +210,10 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 		return fmt.Errorf("registry: account fields are immutable via Save; use SetAccount")
 	}
 
+	// Detect proxy flip before stamping UpdatedAt so the diff is clear in the audit.
+	oldProxyID := old.AgentProxy.ID()
+	newProxyID := rec.AgentProxy.ID()
+
 	rec.UpdatedAt = nowRFC3339()
 	if err := s.put(rec); err != nil {
 		return err
@@ -198,6 +221,20 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 	if err := s.Audit(Event{Kind: "update", ProjectID: rec.ProjectID}); err != nil {
 		return err
 	}
+
+	// Best-effort: mark calibration stale when proxy identity changed. We use
+	// SetCalibrationStaleAt with s.quotaDir() so tests that point the Store at a
+	// temp home also write the stale flag there (not to the global KORYPH_HOME).
+	if oldProxyID != newProxyID {
+		qAccount := rec.QuotaProfile
+		if qAccount == "" {
+			qAccount = rec.AccountProfile
+		}
+		reason := fmt.Sprintf("agent_proxy changed for project %s (%q → %q); re-run `koryph quota calibrate --account %s`",
+			rec.ProjectID, oldProxyID, newProxyID, qAccount)
+		_ = quota.SetCalibrationStaleAt(qAccount, reason, s.quotaDir())
+	}
+
 	return s.commit(ctx, "chore(registry): update "+rec.ProjectID)
 }
 
@@ -317,6 +354,42 @@ func validate(rec *Record) error {
 	}
 	if !emailRe.MatchString(rec.ExpectedIdentity) {
 		return fmt.Errorf("registry: expected_identity %q must be an email", rec.ExpectedIdentity)
+	}
+	return validateAgentProxy(rec)
+}
+
+// validateAgentProxy enforces the agent_proxy loopback-only invariant
+// (koryph-3l1.1, design I4): absent AgentProxy (direct dispatch) is always
+// valid; a present one must have a base_url that parses as an "http" URL
+// (no https/other scheme — a loopback proxy has no need for TLS, and
+// permitting one invites configuring a non-local endpoint under the guise of
+// a scheme check) whose host is loopback (127.0.0.0/8, "localhost", or
+// "::1"). Called from validate (Store.Add) and directly from Get/List so
+// every load path machine-checks it, not just the docs. Also validates
+// Holdout (koryph-3l1.3, design §3 L6) when explicitly set: it is a
+// fraction, so anything outside [0, 1] is refused at load rather than
+// silently clamped or ignored.
+func validateAgentProxy(rec *Record) error {
+	if rec.AgentProxy == nil {
+		return nil
+	}
+	raw := rec.AgentProxy.BaseURL
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("registry: agent_proxy.base_url is required when agent_proxy is set")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("registry: agent_proxy.base_url %q: %w", raw, err)
+	}
+	if u.Scheme != "http" {
+		return fmt.Errorf("registry: agent_proxy.base_url %q must be an http URL (loopback-only; got scheme %q)", raw, u.Scheme)
+	}
+	host := u.Hostname()
+	if !netx.IsLoopbackHost(host) {
+		return fmt.Errorf("registry: agent_proxy.base_url %q host %q is not loopback (must be 127.0.0.1/127.0.0.0-8, localhost, or [::1])", raw, host)
+	}
+	if h := rec.AgentProxy.Holdout; h != nil && (*h < 0 || *h > 1) {
+		return fmt.Errorf("registry: agent_proxy.holdout %v must be in [0, 1]", *h)
 	}
 	return nil
 }

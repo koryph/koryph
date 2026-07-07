@@ -55,8 +55,13 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	if settings != SettingsCreated {
 		t.Errorf("settings action = %q, want created", settings)
 	}
-	// Hook scripts installed and executable.
-	for _, want := range []string{"agent-boundary-guard", "worktree-guard"} {
+	// Hook scripts installed and executable. koryph-spill.sh (koryph-77r.6)
+	// is not wired into settings.json hooks (it's a callable wrapper, not a
+	// PreToolUse/SessionStart hook) but rides along for free via
+	// scaffold.CopyEmbed's "every embedded file ships" contract — this
+	// assertion is the regression guard for that. koryph-prime.sh
+	// (koryph-77r.4) IS the SessionStart hook command.
+	for _, want := range []string{"agent-boundary-guard", "worktree-guard", "koryph-spill", "koryph-prime"} {
 		found := false
 		for _, r := range hookResults {
 			if r.Name == want && r.Action == scaffold.ActionInstalled {
@@ -80,7 +85,7 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	// Settings carry the koryph wiring, referenced via KORYPH_HOME (not the
 	// agent-writable project dir).
 	blob := settingsBlob(t, root)
-	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "bd prime", "Bash(git push --force*)", "${KORYPH_HOME:-$HOME/.koryph}/hooks/"} {
+	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "koryph-prime.sh", "bd prime", "Bash(git push --force*)", "${KORYPH_HOME:-$HOME/.koryph}/hooks/"} {
 		if !strings.Contains(blob, want) {
 			t.Errorf("settings.json missing %q:\n%s", want, blob)
 		}
@@ -128,6 +133,65 @@ func TestMergeMigratesLegacyHookPath(t *testing.T) {
 	if action, _ := MergeSettings(root, false); action != SettingsUnchanged {
 		t.Errorf("second merge = %q, want unchanged", action)
 	}
+}
+
+// TestMergeMigratesBarePrimeToWrapper proves a project's pre-existing bare
+// "bd prime --hook-json" SessionStart registration (from before koryph-77r.4)
+// is rewritten in place to the koryph-prime.sh wrapper, not duplicated
+// alongside it — the shared "bd prime" marker (kept alive in the new
+// command via a trailing shell comment) is what makes this migration work,
+// the same mechanism the CLAUDE_PROJECT_DIR guard migration above relies on.
+func TestMergeMigratesBarePrimeToWrapper(t *testing.T) {
+	centralHooks(t)
+	root := t.TempDir()
+	writeJSON(t, root, `{
+	  "hooks": {
+	    "SessionStart": [
+	      {"hooks":[{"type":"command","command":"bd prime --hook-json"}]}
+	    ]
+	  },
+	  "permissions": {"allow": [], "deny": []}
+	}`)
+
+	action, err := MergeSettings(root, false)
+	if err != nil {
+		t.Fatalf("MergeSettings: %v", err)
+	}
+	if action != SettingsMerged {
+		t.Errorf("action = %q, want merged (bare bd prime rewritten to wrapper)", action)
+	}
+	blob := settingsBlob(t, root)
+	if !strings.Contains(blob, "koryph-prime.sh") {
+		t.Errorf("migrated command missing koryph-prime.sh wrapper:\n%s", blob)
+	}
+	// No duplication: exactly one SessionStart hook entry (migrated in
+	// place, not appended alongside the old bare command).
+	if n := countSessionStartHooks(t, root); n != 1 {
+		t.Errorf("expected exactly one SessionStart hook entry, got %d:\n%s", n, blob)
+	}
+	// A second merge is now a no-op.
+	if action, _ := MergeSettings(root, false); action != SettingsUnchanged {
+		t.Errorf("second merge = %q, want unchanged", action)
+	}
+}
+
+// countSessionStartHooks counts the individual hook command entries under
+// hooks.SessionStart[*].hooks[*] in root's settings.json.
+func countSessionStartHooks(t *testing.T, root string) int {
+	t.Helper()
+	m := readSettings(t, root)
+	hks, _ := m["hooks"].(map[string]any)
+	arr, _ := hks["SessionStart"].([]any)
+	n := 0
+	for _, e := range arr {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		inner, _ := em["hooks"].([]any)
+		n += len(inner)
+	}
+	return n
 }
 
 func TestMergePreservesUserSettings(t *testing.T) {

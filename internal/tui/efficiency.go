@@ -92,6 +92,8 @@ func (m *efficiencyModel) View() string {
 	b.WriteString(m.renderQuotaSection(eff))
 	b.WriteRune('\n')
 	b.WriteString(m.renderEstimatorSection(eff))
+	b.WriteRune('\n')
+	b.WriteString(m.renderTokenSection(eff))
 
 	return b.String()
 }
@@ -476,4 +478,113 @@ func renderSparklineFromFloats(series []float64) string {
 		sb.WriteRune(runes[idx])
 	}
 	return sb.String()
+}
+
+// renderTokenSection renders the Token Economy section: per-bead token
+// composition table, fleet cache-hit ratio + I7 tripwire, and tokens-per-bead
+// trend sparkline. Added by koryph-77r.3 (design §3 L1).
+func (m *efficiencyModel) renderTokenSection(eff cockpit.EfficiencySnapshot) string {
+	title := m.sectionTitle("Token Economy (koryph-77r.3 §L1)")
+
+	var b strings.Builder
+
+	// --- fleet cache-hit ratio + tripwire ------------------------------------
+	if eff.FleetCacheHitRatio > 0 || len(eff.TokenRows) > 0 {
+		ratioStr := fmt.Sprintf("%.1f%%", eff.FleetCacheHitRatio*100)
+		ratioStyled := lipgloss.NewStyle().Foreground(m.cacheHitColor(eff.FleetCacheHitRatio)).Render(ratioStr)
+
+		tripwireStr := ""
+		if eff.CacheHitTripwire == "warn" {
+			tripwireStr = "  " + lipgloss.NewStyle().Foreground(m.theme.Warning).Render("⚠ I7 WARN: cache_read share collapsed — check prefix hygiene")
+		}
+
+		fmt.Fprintf(&b, "  fleet cache-hit ratio: %s%s\n", ratioStyled, tripwireStr)
+	} else {
+		b.WriteString(m.dimText("  no token data yet (accumulates from dispatches)") + "\n")
+		return title + "\n" + b.String()
+	}
+
+	// --- tokens-per-bead trend sparkline -------------------------------------
+	if len(eff.TokensPerBeadTrend) > 0 {
+		spk := renderSparklineFromFloats(eff.TokensPerBeadTrend)
+		// Find today's value.
+		today := eff.TokensPerBeadTrend[len(eff.TokensPerBeadTrend)-1]
+		fmt.Fprintf(&b, "  tokens/bead trend (%dd): %s  (%.0f today)\n",
+			cockpit.SparklineLen, spk, today)
+	}
+
+	// --- per-bead token composition table ------------------------------------
+	if len(eff.TokenRows) == 0 {
+		b.WriteString(m.dimText("  no per-bead token data") + "\n")
+		return title + "\n" + b.String()
+	}
+
+	// Column widths: bead (flexible) | total | fresh | cache_r | cache_c | out | ratio
+	beadW := 20
+	numW := 8
+	ratioW := 7
+	if m.width > 100 {
+		beadW = 28
+	}
+	header := m.tableHeader(
+		beadW, "Bead",
+		numW, "Total",
+		numW, "Fresh",
+		numW, "CacheR",
+		numW, "CacheC",
+		numW, "Output",
+		ratioW, "Hit%",
+	)
+	b.WriteString(header + "\n")
+
+	for _, row := range eff.TokenRows {
+		bead := truncate(row.BeadID, beadW)
+		total := formatTokenCount(row.TotalTokens)
+		fresh := formatTokenCount(row.InputFresh)
+		cacheR := formatTokenCount(row.CacheRead)
+		cacheC := formatTokenCount(row.CacheCreation)
+		out := formatTokenCount(row.Output)
+		hitPct := fmt.Sprintf("%.0f%%", row.CacheHitRatio*100)
+		hitStyled := lipgloss.NewStyle().Foreground(m.cacheHitColor(row.CacheHitRatio)).Render(hitPct)
+
+		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
+			beadW, bead,
+			numW, total,
+			numW, fresh,
+			numW, cacheR,
+			numW, cacheC,
+			numW, out,
+			hitStyled,
+		)
+	}
+
+	return title + "\n" + b.String()
+}
+
+// cacheHitColor returns a color for a cache-hit ratio value.
+// >=0.90 = green (healthy); >=0.80 = accent/blue (acceptable);
+// >=0.60 = warning (degraded); <0.60 = error (I7 tripwire zone).
+func (m *efficiencyModel) cacheHitColor(ratio float64) lipgloss.Color {
+	switch {
+	case ratio >= 0.90:
+		return m.theme.Done
+	case ratio >= 0.80:
+		return m.theme.Accent
+	case ratio >= 0.60:
+		return m.theme.Warning
+	default:
+		return m.theme.Error
+	}
+}
+
+// formatTokenCount formats a token count as a human-readable string with K/M suffix.
+func formatTokenCount(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }

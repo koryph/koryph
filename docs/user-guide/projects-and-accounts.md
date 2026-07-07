@@ -168,10 +168,10 @@ history is `git log ~/.koryph`.
 | `batch_policy` | `"deny"` \| `"explicit"` — whether the Batch API is available. |
 | `api_fallback` | `"off"` \| `"explicit"` — whether direct API key use is allowed. |
 | `api_key_env_var` | Env-var **name** holding the key (never the key value itself). |
-| `prompt_cache_policy` | `"on"` \| `"off"`. |
 | `billing_guard` | `"enforce"` (default) or `"advisory"` — whether the quota governor blocks or only warns. Automatically advisory while the account is uncalibrated. |
 | `quota_profile` | Quota governor bucket (defaults to `account_profile`). |
 | `visibility_sync` | `"off"` (GitHub/Linear sync is a later phase). |
+| `agent_proxy` | Optional local interception-proxy config (`base_url`, `health`, `pin`, `stats`, `holdout`). Absent = direct dispatch (no `ANTHROPIC_BASE_URL` override). `base_url` is validated at load as an `http://` loopback address. See [Headroom integration](headroom-integration.md) for the full field reference, doctor's four proxy checks, and the holdout workflow. |
 
 ### Migration lifecycle
 

@@ -60,6 +60,15 @@ func init() {
 				run:      cmdMetricsEstimator,
 				DocLinks: []string{"user-guide/billing-and-quota.md"},
 			},
+			{
+				name:    "tokens",
+				summary: "per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend",
+				run:     cmdMetricsTokens,
+				DocLinks: []string{
+					"user-guide/billing-and-quota.md",
+					"docs/designs/2026-07-token-economy.md",
+				},
+			},
 		},
 	})
 }
@@ -296,8 +305,13 @@ func cmdQuotaGuard(args []string, stdout, stderr io.Writer) int {
 
 // cmdMetricsDispatch dispatches the metrics sub-verbs.
 func cmdMetricsDispatch(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "estimator" {
-		return cmdMetricsEstimator(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "estimator":
+			return cmdMetricsEstimator(args[1:], stdout, stderr)
+		case "tokens":
+			return cmdMetricsTokens(args[1:], stdout, stderr)
+		}
 	}
 	return cmdMetrics(args, stdout, stderr)
 }
@@ -333,7 +347,16 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 // estimatorRow is one row in the estimator accuracy table.
 type estimatorRow struct {
 	Account string
-	Key     string // "<tier>:<size>"
+	Key     string // raw Calibration/ErrorStats key: "<tier>:<size>" or "<tier>:<size>@<proxyID>"
+	Tier    string
+	Size    string
+	// ProxyID is the segment this row's observations belong to (koryph-3l1.3,
+	// calibKey's proxyID segmentation): "" is the direct population — either
+	// no agent_proxy was ever configured, or this account's beads were
+	// dispatched through the holdout arm of one (see ledger.Slot.ProxyID's
+	// doc — the two share the same key by design). Non-empty is the proxied
+	// arm's own, disjoint population.
+	ProxyID string
 	N       int
 	BaseUSD float64 // static base estimate (pre-bias)
 	Bias    float64 // EWMA of actual/estimate ratio
@@ -400,20 +423,21 @@ func cmdMetricsEstimator(args []string, stdout, stderr io.Writer) int {
 			if es == nil {
 				continue
 			}
-			// Parse tier:size from key.
-			tier, size := k, ""
-			for i := len(k) - 1; i >= 0; i-- {
-				if k[i] == ':' {
-					tier, size = k[:i], k[i+1:]
-					break
-				}
-			}
-			base := quota.EstimateItemForRuntime(cfg, resolvedRuntimeName, tier, size)
+			// Parse tier:size[@proxyID] from key via the shared inverse of
+			// calibKey (koryph-3l1.3 carried contract): a naive last-colon or
+			// first-colon split corrupts once a proxyID (itself
+			// "<base_url>[#pin]", e.g. "http://127.0.0.1:8787", which
+			// contains colons of its own) is appended.
+			tier, size, proxyID := quota.ParseCalibKey(k)
+			base := quota.EstimateItemForRuntimeProxy(cfg, resolvedRuntimeName, tier, size, proxyID)
 			active := es.N >= quota.BiasCorrectionThreshold
 			warn := math.Abs(es.Bias-1) > 0.5
 			rows = append(rows, estimatorRow{
 				Account: a,
 				Key:     k,
+				Tier:    tier,
+				Size:    size,
+				ProxyID: proxyID,
 				N:       es.N,
 				BaseUSD: base,
 				Bias:    es.Bias,
@@ -437,7 +461,7 @@ func cmdMetricsEstimator(args []string, stdout, stderr io.Writer) int {
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ACCOUNT\tKEY\tN\tBASE\tBIAS\tMAPE\tCORR\tSTATUS")
+	fmt.Fprintln(tw, "ACCOUNT\tTIER:SIZE\tPROXY\tN\tBASE\tBIAS\tMAPE\tCORR\tSTATUS")
 	for _, r := range rows {
 		corrStr := "no"
 		if r.Active {
@@ -447,8 +471,12 @@ func cmdMetricsEstimator(args []string, stdout, stderr io.Writer) int {
 		if r.Warn {
 			status = "WARN(|bias-1|>0.5)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t$%.2f\t%.2f\t%.0f%%\t%s\t%s\n",
-			r.Account, r.Key, r.N, r.BaseUSD, r.Bias, r.MAPE, corrStr, status)
+		proxyCol := "direct"
+		if r.ProxyID != "" {
+			proxyCol = r.ProxyID
+		}
+		fmt.Fprintf(tw, "%s\t%s:%s\t%s\t%d\t$%.2f\t%.2f\t%.0f%%\t%s\t%s\n",
+			r.Account, r.Tier, r.Size, proxyCol, r.N, r.BaseUSD, r.Bias, r.MAPE, corrStr, status)
 	}
 	tw.Flush()
 
@@ -467,5 +495,63 @@ func cmdMetricsEstimator(args []string, stdout, stderr io.Writer) int {
 	}
 
 	_ = ctx
+	return 0
+}
+
+// cmdMetricsTokens prints per-bead and per-tier token composition, cache-hit
+// ratio, and a tokens-per-bead trend derived from the ledger's token fields
+// (koryph-77r.2, design docs/designs/2026-07-token-economy.md §3 L1).
+//
+// Token data is populated by the engine for every dispatched slot; older
+// ledger entries without token fields show as zero and are skipped from the
+// breakdown. Use --json for machine-readable output suitable for scripting or
+// further analysis. --experiment switches to the L6 two-arm (proxied vs
+// holdout) standing-canary comparison (koryph-3l1.3) instead of the plain
+// token report.
+func cmdMetricsTokens(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("metrics tokens", stderr)
+	projectID := fs.String("project", "", "limit to one project ID")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	experiment := fs.Bool("experiment", false,
+		"render the L6 two-arm (proxied vs holdout) standing-canary comparison instead")
+	setUsage(fs, stdout,
+		"per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend",
+		"[--project ID] [--json] [--experiment]")
+	if _, err := parseFlags(fs, args); err != nil {
+		return flagExit(err)
+	}
+
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	if *experiment {
+		erep, err := metrics.CollectExperiment(store, *projectID)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if *asJSON {
+			if err := printJSON(stdout, erep); err != nil {
+				return fail(stderr, err)
+			}
+			return 0
+		}
+		metrics.RenderExperiment(erep, stdout)
+		return 0
+	}
+
+	rep, err := metrics.CollectTokens(store, *projectID)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if *asJSON {
+		if err := printJSON(stdout, rep); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
+	}
+	metrics.RenderTokens(rep, stdout)
 	return 0
 }

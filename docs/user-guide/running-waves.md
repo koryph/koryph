@@ -23,10 +23,15 @@ actually sending anything, pass `--dry-run`.
 
 To build **one specific bead** instead of the whole frontier, pass `--only <bead-id>`:
 the wave is narrowed to that bead, and the run drains once it closes. To cap the
-run's spend, pass `--budget <USD>`: once the run's cumulative agent cost reaches
-the ceiling, no new agents are dispatched (active ones finish) and the run pauses
-with a `budget-cap` reason. This is a per-run ceiling, separate from the account
-cost governor and the global concurrency governor.
+run's spend, pass `--budget <USD>`: once the run's **projected** cost reaches the
+ceiling, no new agents are dispatched (active ones finish) and the run pauses
+with a `budget-cap` reason. Projected cost is settled spend **plus each in-flight
+agent's dispatch-time estimate** — so a wide wave or a retry cannot slip past the
+cap and only settle over it afterward. The check is re-evaluated per bead within
+a wave (dispatch stops mid-wave the moment the projection crosses the cap), and a
+requeue is refused once the budget is exhausted (the slot parks needs-attention
+rather than spending another attempt). This is a per-run ceiling, separate from
+the account cost governor and the global concurrency governor.
 
 ## Dispatch mode: wave vs rolling
 
@@ -322,6 +327,23 @@ retried agent never runs against a checkout that predates a main-side fix: a bea
 no commits is rebuilt from a fresh checkout, and one carrying commits is rebased onto the
 advanced base before re-dispatch.
 
+### Budget-killed agents
+
+An agent stopped by `--max-budget-usd` (see [Billing and
+quota](billing-and-quota.md#per-agent-budget-caps-and-the-turn-boundary-nuance))
+is classified distinctly from a crash or rate-limit death and gets its own
+warm-resume policy:
+
+| Situation | Action |
+|---|---|
+| Budget-killed, first time on this bead | Warm-resume requeue: worktree and branch are **preserved** (not rebuilt), so `--resume --fork-session` reattaches to the live Claude session and any uncommitted WIP snapshot is cited in the resume prompt |
+| Budget-killed a second consecutive time | Parked `blocked` with a `needs-attention` note instead of spending a third cap — raise the account's per-agent budget or split the bead |
+| Budget-killed with zero commits and pathological token volume (thrash guard) | Parked immediately, skipping even the first warm resume — the attempt is judged unrecoverable rather than retried |
+
+Parked budget-kill slots surface the same way as any other `blocked` slot —
+via `koryph board`, the TUI, and the health-patrol channels — with the note
+prefixed `needs-attention:` and the accumulated `CostUSD` so far.
+
 ## Poll interval
 
 The engine polls each running slot's `status.json` heartbeat every **10 seconds**
@@ -450,6 +472,33 @@ koryph resize --project myproject --clear
 `--all` applies the same `--max`/`--clear` to every registered project. Both `drain` and
 `resize` are recorded in the central audit log (`~/.koryph/audit.jsonl`), same as other
 operator actions.
+
+### Memory admission floor
+
+Every dispatched agent is a separate `claude` subprocess plus a git worktree, so a wide
+wave — especially with the [adaptive concurrency overlay](../developer-guide/global-governor.md)
+probing the cap upward — can exhaust host RAM and OOM the machine. The **memory admission
+floor** is a machine-wide guard: when the host's available memory drops below the floor, the
+scheduler defers new dispatches to a later wave (running agents are never touched), exactly
+like a concurrency-cap denial. It is a soft safety rail — a missing or unreadable memory
+signal always fails open (dispatch proceeds).
+
+The floor is a machine property (like the global concurrency cap), so it lives in
+`~/.koryph/governor.json`, per provider pool. It is **on by default**, sized to physical
+memory (~1/8 of total RAM, clamped to a 1–8 GB band) — e.g. ~3 GB on a 24 GB host. Override
+or turn it off with:
+
+```sh
+koryph governor set --min-free-memory-mb 4096          # explicit: defer while < 4 GB free
+koryph governor set --min-free-memory-mb 0             # reset to the auto (sized) floor
+koryph governor set --min-free-memory-mb -1            # disable the gate entirely
+```
+
+`koryph governor show` reports the active floor (auto, explicit, or disabled). For a one-off
+run without editing `governor.json`, set `KORYPH_MIN_FREE_MEMORY_MB` in the environment
+(same values: a positive floor, `0` for auto, negative to disable) — it overrides the
+configured floor for that run. The available-memory signal is read from `/proc/meminfo`
+(Linux) or `sysctl` + `vm_stat` (macOS); a platform with no probe fails open (gate off).
 
 ## Corpus audit: koryph plan audit
 

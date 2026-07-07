@@ -155,10 +155,9 @@ func buildRecord(projectID string, inv *Inventory, opts RegisterOpts) *registry.
 		ImplModel:           "sonnet",
 		RecoveryModelPolicy: "upgrade-opus",
 
-		BatchPolicy:       "explicit",
-		APIFallback:       "off",
-		PromptCachePolicy: "on",
-		BillingGuard:      "enforce",
+		BatchPolicy:  "explicit",
+		APIFallback:  "off",
+		BillingGuard: "enforce",
 
 		WorktreeRoot:   worktreeRoot,
 		QuotaProfile:   opts.AccountProfile,

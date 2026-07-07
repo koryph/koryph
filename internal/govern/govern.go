@@ -85,6 +85,24 @@ func (s *Store) Cap(provider string) int {
 	return c.MaxGlobalAgents
 }
 
+// MinFreeMemoryMB returns provider's RAW configured memory admission floor
+// setting (koryph-930): >0 an explicit floor in MB, <0 the gate explicitly
+// disabled, 0 unset (callers auto-size the floor to physical memory — the gate
+// is ON by default). Returns 0 (auto) when governor.json or the pool entry is
+// absent, or on any read error, matching the governor's fail-open posture.
+func (s *Store) MinFreeMemoryMB(provider string) int {
+	pool := NormalizeProvider(provider)
+	f, err := s.readFile()
+	if err != nil {
+		return 0
+	}
+	c, ok := f.Pools[pool]
+	if !ok {
+		return 0
+	}
+	return c.MinFreeMemoryMB
+}
+
 // SetCap writes provider's pool cap to governor.json, resetting that pool's
 // AIMD/settle/breaker/smoothing state wholesale (exactly today's single-pool
 // SetCap semantics — a plain `set` disables any previously-enabled overlay)
@@ -100,6 +118,27 @@ func (s *Store) SetCap(provider string, n int) error {
 			return err
 		}
 		f.Pools[pool] = Config{MaxGlobalAgents: n}
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
+}
+
+// SetMinFreeMemoryMB writes provider's memory admission floor (koryph-930) to
+// governor.json, PRESERVING every other field of that pool's config (cap, AIMD
+// overlay, breaker/settle state) — unlike SetCap, which resets the pool
+// wholesale. The value is interpreted by readers: mb>0 an explicit floor, mb<0
+// disables the gate, mb==0 resets to the auto floor (sized to physical memory,
+// the default). A pool that does not yet exist is created with only the floor
+// set (its cap defaults via Cap()). provider=="" is DefaultPool.
+func (s *Store) SetMinFreeMemoryMB(provider string, mb int) error {
+	pool := NormalizeProvider(provider)
+	return s.withLock(func() error {
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		c := f.Pools[pool] // zero Config when the pool is absent
+		c.MinFreeMemoryMB = mb
+		f.Pools[pool] = c
 		return fsx.WriteJSONAtomic(s.cfgPath, f)
 	})
 }

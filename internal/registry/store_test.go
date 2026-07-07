@@ -5,12 +5,16 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/quota"
 )
 
 // gitProject creates a fresh directory that is a valid git repository, usable
@@ -294,6 +298,188 @@ func TestSetAccountHappyPath(t *testing.T) {
 	}
 }
 
+// TestAgentProxyLoopbackValidation is the koryph-3l1.1 acceptance test for
+// I4: agent_proxy.base_url is machine-checked at load, not merely documented.
+// A record with an absent or loopback-hosted agent_proxy is accepted; any
+// other host, scheme, or shape is refused at Add (which itself loads through
+// validate).
+func TestAgentProxyLoopbackValidation(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+
+	cases := []struct {
+		name    string
+		proxy   *AgentProxy
+		wantErr bool
+	}{
+		{"absent (direct)", nil, false},
+		{"loopback IPv4", &AgentProxy{BaseURL: "http://127.0.0.1:8091"}, false},
+		{"loopback IPv4 non-.1", &AgentProxy{BaseURL: "http://127.0.0.42:8091"}, false},
+		{"localhost", &AgentProxy{BaseURL: "http://localhost:8091"}, false},
+		{"loopback IPv6", &AgentProxy{BaseURL: "http://[::1]:8091"}, false},
+		{"loopback with pin and health", &AgentProxy{BaseURL: "http://127.0.0.1:8091", Health: "http://127.0.0.1:8091/health", Pin: "v3"}, false},
+		{"non-loopback host refused", &AgentProxy{BaseURL: "http://example.com:8091"}, true},
+		{"public IP refused", &AgentProxy{BaseURL: "http://93.184.216.34:8091"}, true},
+		{"https scheme refused (loopback needs no TLS)", &AgentProxy{BaseURL: "https://127.0.0.1:8091"}, true},
+		{"empty base_url refused", &AgentProxy{Health: "http://127.0.0.1:8092/health"}, true},
+		{"unparseable URL refused", &AgentProxy{BaseURL: "http://[::not-valid"}, true},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newInitStore(t)
+			id := fmt.Sprintf("proj-%d", i)
+			rec := sampleRecord(id, root)
+			rec.AgentProxy = tc.proxy
+
+			err := s.Add(ctx, rec)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Add succeeded with an invalid agent_proxy; want refusal at load")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			got, err := s.Get(id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if tc.proxy == nil {
+				if got.AgentProxy != nil {
+					t.Fatalf("AgentProxy = %+v, want nil", got.AgentProxy)
+				}
+				return
+			}
+			if got.AgentProxy == nil || got.AgentProxy.BaseURL != tc.proxy.BaseURL || got.AgentProxy.Pin != tc.proxy.Pin {
+				t.Fatalf("AgentProxy roundtrip mismatch: %+v, want %+v", got.AgentProxy, tc.proxy)
+			}
+		})
+	}
+}
+
+// TestAgentProxyHoldoutValidation is the koryph-3l1.3 acceptance test for
+// AgentProxy.Holdout's load-time range check: unset (nil) and any value in
+// [0, 1] are accepted; anything outside that range is refused at Add, the
+// same "machine-checked, not just documented" contract as the loopback check
+// above.
+func TestAgentProxyHoldoutValidation(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+
+	f := func(v float64) *float64 { return &v }
+
+	cases := []struct {
+		name    string
+		holdout *float64
+		wantErr bool
+	}{
+		{"unset (default)", nil, false},
+		{"zero", f(0), false},
+		{"one", f(1), false},
+		{"typical 0.1", f(0.1), false},
+		{"negative refused", f(-0.01), true},
+		{"above one refused", f(1.01), true},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newInitStore(t)
+			id := fmt.Sprintf("proj-holdout-%d", i)
+			rec := sampleRecord(id, root)
+			rec.AgentProxy = &AgentProxy{BaseURL: "http://127.0.0.1:8091", Holdout: tc.holdout}
+
+			err := s.Add(ctx, rec)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Add succeeded with an out-of-range holdout; want refusal at load")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			got, err := s.Get(id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.AgentProxy == nil {
+				t.Fatal("AgentProxy = nil after roundtrip")
+			}
+			gotH, wantH := got.AgentProxy.Holdout, tc.holdout
+			switch {
+			case gotH == nil && wantH == nil:
+				// ok
+			case gotH == nil || wantH == nil:
+				t.Fatalf("Holdout roundtrip mismatch: got %v, want %v", gotH, wantH)
+			case *gotH != *wantH:
+				t.Fatalf("Holdout roundtrip = %v, want %v", *gotH, *wantH)
+			}
+		})
+	}
+}
+
+// TestAgentProxyValidatedIndependentlyAtLoad proves the loopback check runs
+// on every load path (Get and List), not merely inside Add — a record
+// hand-edited (or written by a future codepath that bypasses Add) with a
+// non-loopback agent_proxy must refuse to load rather than silently
+// dispatching agents through a non-local endpoint.
+func TestAgentProxyValidatedIndependentlyAtLoad(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	rec := sampleRecord("hand-edited", root)
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Bypass Add's validation entirely: write a bad agent_proxy straight to
+	// the record file via the unexported put(), simulating a hand-edit.
+	rec.AgentProxy = &AgentProxy{BaseURL: "http://evil.example.com"}
+	if err := s.put(rec); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	if _, err := s.Get("hand-edited"); err == nil {
+		t.Fatal("Get succeeded loading a non-loopback agent_proxy; want refusal at load")
+	}
+	if _, err := s.List(); err == nil {
+		t.Fatal("List succeeded loading a non-loopback agent_proxy; want refusal at load")
+	}
+}
+
+// TestAgentProxyIDAndProxyBaseURL covers AgentProxy.ID() (the ledger.Slot.
+// ProxyID / future quota proxyID value) and Record.ProxyBaseURL() (the
+// single accessor every spawn site threads into its ChildEnvSpec).
+func TestAgentProxyIDAndProxyBaseURL(t *testing.T) {
+	var nilProxy *AgentProxy
+	if got := nilProxy.ID(); got != "" {
+		t.Errorf("nil AgentProxy.ID() = %q, want \"\"", got)
+	}
+
+	p := &AgentProxy{BaseURL: "http://127.0.0.1:8091"}
+	if got, want := p.ID(), "http://127.0.0.1:8091"; got != want {
+		t.Errorf("ID() = %q, want %q", got, want)
+	}
+	p.Pin = "v3"
+	if got, want := p.ID(), "http://127.0.0.1:8091#v3"; got != want {
+		t.Errorf("ID() with pin = %q, want %q", got, want)
+	}
+
+	rec := &Record{}
+	if got := rec.ProxyBaseURL(); got != "" {
+		t.Errorf("ProxyBaseURL() with nil agent_proxy = %q, want \"\"", got)
+	}
+	rec.AgentProxy = p
+	if got, want := rec.ProxyBaseURL(), "http://127.0.0.1:8091"; got != want {
+		t.Errorf("ProxyBaseURL() = %q, want %q", got, want)
+	}
+}
+
 func TestListSorted(t *testing.T) {
 	ctx := context.Background()
 	root := gitProject(t)
@@ -317,4 +503,88 @@ func TestListSorted(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("list order = %v, want %v", got, want)
 	}
+}
+
+// TestSaveMarksCalibrationStaleOnProxyFlip verifies that Store.Save writes the
+// CalibrationStale flag to the quota config when agent_proxy.ID() changes
+// (koryph-3l1.2). The flag is written to s.quotaDir() so the test is hermetic
+// (no KORYPH_HOME dependency).
+func TestSaveMarksCalibrationStaleOnProxyFlip(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	// Register a project with an initial proxy.
+	rec := sampleRecord("proxy-proj", root)
+	rec.AgentProxy = &AgentProxy{
+		BaseURL: "http://127.0.0.1:8787",
+		Health:  "/health",
+		Pin:     "headroom-ai==0.30.0",
+	}
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Load the record back and flip to a different proxy pin.
+	saved, err := s.Get("proxy-proj")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	saved.AgentProxy = &AgentProxy{
+		BaseURL: "http://127.0.0.1:8787",
+		Health:  "/health",
+		Pin:     "headroom-ai==0.31.0", // pin changed → new proxy ID
+	}
+	if err := s.Save(ctx, saved); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Read the quota config from the store's own quota dir (not global KORYPH_HOME).
+	account := rec.AccountProfile // "personal"
+	qPath := filepath.Join(s.quotaDir(), account+".json")
+	data, err := os.ReadFile(qPath)
+	if err != nil {
+		t.Fatalf("read quota config %s: %v", qPath, err)
+	}
+	var cfg quota.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse quota config: %v", err)
+	}
+	if !cfg.CalibrationStale {
+		t.Errorf("CalibrationStale = false after proxy flip; want true")
+	}
+	if cfg.CalibrationStaleReason == "" {
+		t.Errorf("CalibrationStaleReason is empty; want a non-empty reason string")
+	}
+}
+
+// TestSaveNoStaleOnSameProxy verifies that Save does NOT mark calibration stale
+// when the proxy identity is unchanged (same base_url + same pin).
+func TestSaveNoStaleOnSameProxy(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	rec := sampleRecord("stable-proj", root)
+	rec.AgentProxy = &AgentProxy{BaseURL: "http://127.0.0.1:8787", Pin: "v1"}
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Save with identical proxy — same base_url and same pin.
+	saved, _ := s.Get("stable-proj")
+	saved.AgentProxy = &AgentProxy{BaseURL: "http://127.0.0.1:8787", Pin: "v1"}
+	if err := s.Save(ctx, saved); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Quota file should NOT be written (or should have CalibrationStale=false).
+	qPath := filepath.Join(s.quotaDir(), rec.AccountProfile+".json")
+	if data, err := os.ReadFile(qPath); err == nil {
+		var cfg quota.Config
+		if json.Unmarshal(data, &cfg) == nil && cfg.CalibrationStale {
+			t.Errorf("CalibrationStale = true after no-change save; want false")
+		}
+	}
+	// If file is absent (quota file never created), that's also fine — no stale.
 }

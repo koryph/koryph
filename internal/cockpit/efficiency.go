@@ -19,7 +19,6 @@ package cockpit
 
 import (
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
@@ -78,7 +77,137 @@ func computeEfficiency(inp efficiencyInput) EfficiencySnapshot {
 		snap.QuotaWindow5hFrac, snap.QuotaWindowWeeklyFrac =
 		buildQuotaWindow(inp.quotaCfg, inp.quotaUsage)
 
+	// --- token economy (koryph-77r.3, design §3 L1) ---------------------------
+	snap.TokenRows, snap.FleetCacheHitRatio, snap.CacheHitTripwire,
+		snap.TokensPerBeadTrend =
+		buildTokenEconomy(inp.runs, inp.now)
+
 	return snap
+}
+
+// maxTokenRows caps how many per-bead token rows are shown in the TUI.
+const maxTokenRows = 12
+
+// cacheHitWarnThreshold is the fleet-wide cache_read share below which the
+// I7 tripwire fires. Matching design §2 I7: WARN when "cache_read share
+// collapses mid-run".
+const cacheHitWarnThreshold = 0.80
+
+// buildTokenEconomy assembles the per-bead token table, fleet cache-hit ratio,
+// tripwire state, and tokens-per-bead trend from historical ledger runs.
+// All errors are soft; empty/zero values render gracefully in the TUI.
+func buildTokenEconomy(runs []*ledger.Run, now time.Time) (
+	rows []TokenCompositionRow,
+	fleetCacheHitRatio float64,
+	tripwire string,
+	trendSeries []float64,
+) {
+	// Collect one row per completed slot that has non-zero token fields.
+	// We use a slice to preserve ledger order (newest run first from caller).
+	var allRows []TokenCompositionRow
+	// Per-day totals for the trend sparkline (index 0 = oldest).
+	tokensByDay := make([]float64, SparklineLen) // total tokens
+	countsByDay := make([]float64, SparklineLen) // beads with data
+	todayUTC := now.UTC().Truncate(24 * time.Hour)
+
+	// Fleet-wide accumulators for the cache-hit ratio.
+	var (
+		fleetFresh    int64
+		fleetRead     int64
+		fleetCreation int64
+	)
+
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		// Sort slot keys for stable row ordering within a run.
+		ids := make([]string, 0, len(run.Slots))
+		for id := range run.Slots {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+
+		for _, id := range ids {
+			sl := run.Slots[id]
+			if sl == nil {
+				continue
+			}
+			total := sl.InputTokens + sl.OutputTokens +
+				sl.CacheReadTokens + sl.CacheCreationTokens
+			if total == 0 {
+				continue // ledger predates token fields or no data yet
+			}
+
+			// Compute per-slot cache-hit ratio.
+			inputTotal := sl.InputTokens + sl.CacheReadTokens + sl.CacheCreationTokens
+			ratio := 0.0
+			if inputTotal > 0 {
+				ratio = float64(sl.CacheReadTokens) / float64(inputTotal)
+			}
+
+			beadID := sl.BeadID
+			if beadID == "" {
+				beadID = sl.PhaseID
+			}
+
+			allRows = append(allRows, TokenCompositionRow{
+				BeadID:        beadID,
+				Title:         beadID, // no bd lookup in this path; caller may enrich
+				TotalTokens:   total,
+				InputFresh:    sl.InputTokens,
+				CacheRead:     sl.CacheReadTokens,
+				CacheCreation: sl.CacheCreationTokens,
+				Output:        sl.OutputTokens,
+				CacheHitRatio: ratio,
+				CostUSD:       sl.CostUSD,
+			})
+
+			// Fleet-wide accumulation.
+			fleetFresh += sl.InputTokens
+			fleetRead += sl.CacheReadTokens
+			fleetCreation += sl.CacheCreationTokens
+
+			// Trend: bucket by dispatch day.
+			if sl.DispatchedAt != "" {
+				if t, err := time.Parse(time.RFC3339, sl.DispatchedAt); err == nil {
+					delta := int(todayUTC.Sub(t.UTC().Truncate(24*time.Hour)).Hours() / 24)
+					if delta >= 0 && delta < SparklineLen {
+						idx := SparklineLen - 1 - delta
+						tokensByDay[idx] += float64(total)
+						countsByDay[idx]++
+					}
+				}
+			}
+		}
+	}
+
+	// Fleet cache-hit ratio.
+	fleetDenom := fleetFresh + fleetRead + fleetCreation
+	if fleetDenom > 0 {
+		fleetCacheHitRatio = float64(fleetRead) / float64(fleetDenom)
+	}
+
+	// I7 cache-hit tripwire: WARN when ratio is below threshold and we have data.
+	if fleetDenom > 0 && fleetCacheHitRatio < cacheHitWarnThreshold {
+		tripwire = "warn"
+	}
+
+	// Tokens-per-bead trend: mean for each day bucket.
+	trendSeries = make([]float64, SparklineLen)
+	for i := range trendSeries {
+		if countsByDay[i] > 0 {
+			trendSeries[i] = tokensByDay[i] / countsByDay[i]
+		}
+	}
+
+	// Trim allRows to the most recent maxTokenRows (the slice is already in
+	// run order with newest runs first from the caller's load order).
+	if len(allRows) > maxTokenRows {
+		allRows = allRows[:maxTokenRows]
+	}
+	rows = allRows
+	return
 }
 
 // buildDispatchSparkline counts slots dispatched per calendar day (UTC) for
@@ -324,12 +453,23 @@ func buildQuotaWindow(cfg *quota.Config, usage *quota.Usage) (
 	return
 }
 
-// splitBucket splits a "<tier>:<size>" bucket key into (tier, size).
+// splitBucket splits a "<tier>:<size>" or "<tier>:<size>@<proxyID>" bucket
+// key into (tier, size), discarding any proxy segment (koryph-3l1.3 carried
+// contract from koryph-3l1.1's operator notes): this used to split on the
+// bucket's first ':' directly, which corrupts once RecordForProxy starts
+// writing "@proxyID" suffixes, because size would come back as
+// "M@<proxyID>" — an unrecognized SizeMultiplier key (silently defaulting to
+// 1.0) and an unrecognized sizeOrder bucket (silently sorting last). Delegates
+// to quota.ParseCalibKey, which strips the proxy segment FIRST — see its doc
+// for why order matters (a proxyID like "http://127.0.0.1:8787" has colons
+// of its own). "M" is this function's own no-colon-found default (unchanged
+// from before this bead); ParseCalibKey itself has no opinion on defaults.
 func splitBucket(bucket string) (tier, size string) {
-	if idx := strings.Index(bucket, ":"); idx >= 0 {
-		return bucket[:idx], bucket[idx+1:]
+	tier, size, _ = quota.ParseCalibKey(bucket)
+	if size == "" {
+		size = "M"
 	}
-	return bucket, "M"
+	return tier, size
 }
 
 // baseEstimate returns the uncalibrated base cost for (tier, size) from cfg.

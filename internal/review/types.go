@@ -17,7 +17,7 @@
 //   - Review(ctx, Opts) Verdict — runs, in the worktree, the account-scoped
 //     claude CLI one-shot, retried up to Opts.Attempts times:
 //     claude -p --agent <persona> --permission-mode plan
-//     --model <model> --output-format json
+//     --model <model> [--effort <effort>] --output-format json
 //     with a prompt containing `git diff --stat <base>...<branch>` (tail 40
 //     lines) + the changed-file list, asking for STRICT JSON
 //     {"blocking": bool, "findings":[{"severity","file","summary"}]}.
@@ -43,6 +43,11 @@ type Verdict struct {
 	Reason   string    `json:"reason,omitempty"`   // why it degraded (never a black box)
 	Attempts int       `json:"attempts,omitempty"` // reviewer spawns made
 	Raw      string    `json:"-"`
+	// Envelope is the raw Claude CLI JSON envelope (including usage/cost fields)
+	// from a successful reviewer spawn. It is persisted beside the parsed verdict
+	// as review-envelope.json so cost/token data is available for audit and
+	// future metrics pickup (same pattern as stage-*.json, koryph-qbc).
+	Envelope string `json:"-"`
 }
 
 // Opts configures one review.
@@ -53,9 +58,16 @@ type Opts struct {
 	Base       string // default branch
 	Persona    string // default koryph-security-reviewer
 	Model      string // default opus
+	Effort     string // reasoning-effort hint; empty omits --effort (runtime default)
 	Profile    account.Profile
 	OutPath    string // review.json destination
 	ClaudeBin  string // default "claude"
 	TimeoutSec int    // default 240
 	Attempts   int    // reviewer spawn attempts before degrading (default 3)
+
+	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
+	// (koryph-3l1.1), threaded from the caller's registry.Record via
+	// registry.Record.ProxyBaseURL(). Empty (the common case) means direct —
+	// no ANTHROPIC_BASE_URL override. See account.ChildEnvSpec.ProxyBaseURL.
+	ProxyBaseURL string
 }

@@ -37,12 +37,61 @@ func TestGovernorShowDefaultAndSet(t *testing.T) {
 
 func TestGovernorSetRejectsNonPositive(t *testing.T) {
 	isolate(t)
+	// A non-positive cap with no memory floor requested is a no-op — reject it.
 	code, _, errs := runCmd("governor", "set", "--max-global", "0")
 	if code == 0 {
-		t.Errorf("governor set --max-global 0 should fail")
+		t.Errorf("governor set --max-global 0 (no floor) should fail")
 	}
-	if !strings.Contains(errs, "positive") {
-		t.Errorf("stderr = %q, want a positivity complaint", errs)
+	if !strings.Contains(errs, "max-global") {
+		t.Errorf("stderr = %q, want it to name the required --max-global", errs)
+	}
+}
+
+// TestGovernorSetMemoryFloor proves koryph-930: --min-free-memory-mb can be set
+// alone (no --max-global), persists to governor.json, and reads back — including
+// the negative (disable) and 0 (reset-to-auto) sentinels.
+func TestGovernorSetMemoryFloor(t *testing.T) {
+	isolate(t)
+
+	// Explicit floor.
+	code, out, errs := runCmd("governor", "set", "--min-free-memory-mb", "4096")
+	if code != 0 {
+		t.Fatalf("floor-only set failed: code %d stderr %q", code, errs)
+	}
+	if !strings.Contains(out, "4096 MB") {
+		t.Errorf("stdout = %q, want the floor confirmation", out)
+	}
+	if got := govern.NewStore().MinFreeMemoryMB(""); got != 4096 {
+		t.Errorf("persisted floor = %d, want 4096", got)
+	}
+
+	// Negative disables the gate (persists the -1 sentinel).
+	if code, out, _ := runCmd("governor", "set", "--min-free-memory-mb", "-1"); code != 0 || !strings.Contains(out, "disabled") {
+		t.Fatalf("disabling the gate: code %d out %q", code, out)
+	}
+	if got := govern.NewStore().MinFreeMemoryMB(""); got != -1 {
+		t.Errorf("floor after disable = %d, want -1", got)
+	}
+
+	// 0 resets to auto (sized to physical memory); the raw setting is 0.
+	if code, out, _ := runCmd("governor", "set", "--min-free-memory-mb", "0"); code != 0 || !strings.Contains(out, "auto") {
+		t.Fatalf("resetting to auto: code %d out %q", code, out)
+	}
+	if got := govern.NewStore().MinFreeMemoryMB(""); got != 0 {
+		t.Errorf("floor after reset = %d, want 0 (auto)", got)
+	}
+}
+
+// TestGovernorShowMemoryFloorAuto confirms `governor show` reports the auto
+// floor (default, no config) sized to physical memory.
+func TestGovernorShowMemoryFloorAuto(t *testing.T) {
+	isolate(t)
+	code, out, _ := runCmd("governor", "show")
+	if code != 0 {
+		t.Fatalf("governor show: code %d", code)
+	}
+	if !strings.Contains(out, "memory floor: auto") {
+		t.Errorf("governor show should report the auto memory floor by default:\n%s", out)
 	}
 }
 

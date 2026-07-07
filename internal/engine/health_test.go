@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
@@ -624,6 +626,252 @@ func TestRunPatrol_AllOK_NoLedgerEntry(t *testing.T) {
 	// A fully healthy patrol (no warnings) should NOT write a ledger entry.
 	if len(r.run.PatrolEvents) != 0 {
 		t.Errorf("all-ok patrol should not append to ledger; got %d events", len(r.run.PatrolEvents))
+	}
+}
+
+// --- completed-but-unvalidated epics (koryph-bbe) ---------------------------
+
+// TestPatrolCheckUnvalidatedEpics_ReQueuesAndValidationStarts is the AC's
+// fixture-locked test: a stranded completed epic (all children closed, no
+// validation label at all — the crash/cold-start gap epicvalidate.go's doc
+// comment calls out) is re-queued by the patrol, and validation starts on
+// the very next tick exactly as it would for an ordinary freshly-closed
+// child.
+func TestPatrolCheckUnvalidatedEpics_ReQueuesAndValidationStarts(t *testing.T) {
+	fake := closedEpicFixture() // ep1: open epic, unlabeled; c1: its one closed child
+	r, calls := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	findings := r.patrolCheckUnvalidatedEpics(t.Context(), time.Now())
+
+	if !r.epicPending["ep1"] {
+		t.Fatal("stranded completed epic was not re-queued into the pending set")
+	}
+	if got := countLevel(findings, "info"); got != 1 {
+		t.Fatalf("info findings = %d, want 1; findings = %+v", got, findings)
+	}
+	if !strings.Contains(findings[0].message, "ep1") {
+		t.Errorf("finding message = %q, want it to name ep1", findings[0].message)
+	}
+
+	// The pending set drains on the next tick, same as the ordinary
+	// bead-close trigger.
+	r.maybeStartEpicValidation(t.Context(), true)
+	if r.epicInFlight != "ep1" {
+		t.Fatalf("epicInFlight = %q, want ep1 (validation must start on the next tick)", r.epicInFlight)
+	}
+	drainVerdict(t, r)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("validator calls = %d, want 1", got)
+	}
+}
+
+func TestPatrolCheckUnvalidatedEpics_ValidationPassedRequeues(t *testing.T) {
+	fake := closedEpicFixture()
+	iss := fake.issues["ep1"]
+	iss.Labels = []string{epicreview.LabelPassed}
+	fake.issues["ep1"] = iss
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	findings := r.patrolCheckUnvalidatedEpics(t.Context(), time.Now())
+
+	if !r.epicPending["ep1"] {
+		t.Fatal("validation:passed epic with all children closed must be re-queued (close-after-docs path)")
+	}
+	found := false
+	for _, f := range findings {
+		if f.level == "info" && strings.Contains(f.message, "close-after-docs") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a close-after-docs finding; got %+v", findings)
+	}
+}
+
+func TestPatrolCheckUnvalidatedEpics_SkipsParkedDegradedNoValidate(t *testing.T) {
+	for _, label := range []string{epicreview.LabelParked, epicreview.LabelDegraded, epicreview.LabelNoValidate} {
+		fake := closedEpicFixture()
+		iss := fake.issues["ep1"]
+		iss.Labels = []string{label}
+		fake.issues["ep1"] = iss
+		r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+		r.patrolCheckUnvalidatedEpics(t.Context(), time.Now())
+		if r.epicPending["ep1"] {
+			t.Errorf("label %s: epic must not be re-queued", label)
+		}
+	}
+}
+
+func TestPatrolCheckUnvalidatedEpics_OpenChildSkipped(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.children["ep1"] = append(fake.children["ep1"], beads.Issue{ID: "c2", Status: "open", ParentID: "ep1"})
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	r.patrolCheckUnvalidatedEpics(t.Context(), time.Now())
+	if r.epicPending["ep1"] {
+		t.Error("epic with an open child must not be re-queued")
+	}
+}
+
+func TestPatrolCheckUnvalidatedEpics_NoListerAdapter_OK(t *testing.T) {
+	r := &runner{adapter: &fakeSource{}}
+	findings := r.patrolCheckUnvalidatedEpics(t.Context(), time.Now())
+	if len(findings) != 1 || findings[0].level != "ok" {
+		t.Errorf("findings = %+v, want a single ok finding for an adapter without List", findings)
+	}
+}
+
+// TestPatrolCheckUnvalidatedEpics_CadenceThrottlesRescans verifies the
+// coarser-cadence gate documented on epicListCadence: the bd-equivalent
+// List/ListChildren calls happen once per scan, are skipped (findings
+// replayed from cache) inside the cadence window, and resume once the window
+// elapses.
+func TestPatrolCheckUnvalidatedEpics_CadenceThrottlesRescans(t *testing.T) {
+	fake := closedEpicFixture()
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	now := time.Now()
+	r.patrolCheckUnvalidatedEpics(t.Context(), now)
+	if fake.listCalls != 1 {
+		t.Fatalf("listCalls after first scan = %d, want 1", fake.listCalls)
+	}
+
+	findings := r.patrolCheckUnvalidatedEpics(t.Context(), now.Add(time.Minute))
+	if fake.listCalls != 1 {
+		t.Errorf("listCalls after throttled scan = %d, want still 1 (cadence not elapsed)", fake.listCalls)
+	}
+	if countLevel(findings, "info") != 1 {
+		t.Errorf("throttled scan should replay the cached info finding; got %+v", findings)
+	}
+
+	r.patrolCheckUnvalidatedEpics(t.Context(), now.Add(epicListCadence+time.Minute))
+	if fake.listCalls != 2 {
+		t.Errorf("listCalls after cadence elapsed = %d, want 2", fake.listCalls)
+	}
+}
+
+// --- parked/degraded epic validations (koryph-wo0.7) ------------------------
+
+// TestPatrolCheckEpicValidations_ParkedWarns is the AC's fixture-locked test:
+// a validation:parked epic produces a WARN finding carrying the round and
+// reason parsed from its note via the shared epicreview codec.
+func TestPatrolCheckEpicValidations_ParkedWarns(t *testing.T) {
+	fake := closedEpicFixture()
+	iss := fake.issues["ep1"]
+	iss.Labels = []string{epicreview.LabelParked}
+	iss.Notes = epicreview.FormatParkedNote(3, 5, "koryph epic validate ep1 --project proj")
+	fake.issues["ep1"] = iss
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	findings := r.patrolCheckEpicValidations(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 1 {
+		t.Fatalf("warn findings = %d, want 1; findings = %+v", got, findings)
+	}
+	msg := findings[0].message
+	if !strings.Contains(msg, "ep1") || !strings.Contains(msg, "round=3") || !strings.Contains(msg, "max_rounds=5") {
+		t.Errorf("finding message = %q, want it to name ep1/round=3/max_rounds=5", msg)
+	}
+}
+
+// TestPatrolCheckEpicValidations_DegradedWarns is the AC's fixture-locked
+// test: a validation:degraded epic produces a WARN finding carrying the
+// round and reason parsed from its note via the shared epicreview codec.
+func TestPatrolCheckEpicValidations_DegradedWarns(t *testing.T) {
+	fake := closedEpicFixture()
+	iss := fake.issues["ep1"]
+	iss.Labels = []string{epicreview.LabelDegraded}
+	iss.Notes = epicreview.FormatDegradedNote(2, "validator timeout")
+	fake.issues["ep1"] = iss
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	findings := r.patrolCheckEpicValidations(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 1 {
+		t.Fatalf("warn findings = %d, want 1; findings = %+v", got, findings)
+	}
+	msg := findings[0].message
+	if !strings.Contains(msg, "ep1") || !strings.Contains(msg, "round=2") || !strings.Contains(msg, `reason="validator timeout"`) {
+		t.Errorf("finding message = %q, want it to name ep1/round=2/reason=validator timeout", msg)
+	}
+}
+
+// TestPatrolCheckEpicValidations_UnlabeledProducesNone is the AC's negative
+// fixture: an epic with neither validation:parked nor validation:degraded
+// produces no WARN finding.
+func TestPatrolCheckEpicValidations_UnlabeledProducesNone(t *testing.T) {
+	fake := closedEpicFixture() // ep1: open epic, unlabeled
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	findings := r.patrolCheckEpicValidations(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 0 {
+		t.Errorf("warn findings = %d, want 0; findings = %+v", got, findings)
+	}
+	if got := countLevel(findings, "ok"); got != 1 {
+		t.Errorf("ok findings = %d, want 1; findings = %+v", got, findings)
+	}
+}
+
+// TestPatrolCheckEpicValidations_ClosedEpicProducesNone is the AC's other
+// negative fixture: a closed epic carrying validation:parked must not be
+// reported — the state is moot once the epic itself is closed. The listing
+// is primed directly (bypassing the fake's own closed-issue filtering,
+// which mirrors bd's real List() contract) so this exercises the check's own
+// status guard rather than relying on the fake.
+func TestPatrolCheckEpicValidations_ClosedEpicProducesNone(t *testing.T) {
+	r := &runner{
+		adapter: &epicFakeStore{},
+		epicPatrolIssues: []beads.Issue{
+			{
+				ID: "ep-closed", Title: "closed epic", IssueType: "epic", Status: "closed",
+				Labels: []string{epicreview.LabelParked},
+				Notes:  epicreview.FormatParkedNote(1, 5, "koryph epic validate ep-closed"),
+			},
+		},
+		epicPatrolAt: time.Now(),
+	}
+
+	findings := r.patrolCheckEpicValidations(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 0 {
+		t.Errorf("warn findings = %d, want 0; findings = %+v", got, findings)
+	}
+}
+
+func TestPatrolCheckEpicValidations_NoListerAdapter_OK(t *testing.T) {
+	r := &runner{adapter: &fakeSource{}}
+	findings := r.patrolCheckEpicValidations(t.Context(), time.Now())
+	if len(findings) != 1 || findings[0].level != "ok" {
+		t.Errorf("findings = %+v, want a single ok finding for an adapter without List", findings)
+	}
+}
+
+// TestPatrolCheckEpicValidations_SharesCacheWithUnvalidatedEpics verifies the
+// bd-call-cadence decision recorded on patrolCheckEpicValidations: it reuses
+// patrolCheckUnvalidatedEpics's cached listing rather than issuing a second
+// bd call within the same patrol tick.
+func TestPatrolCheckEpicValidations_SharesCacheWithUnvalidatedEpics(t *testing.T) {
+	fake := closedEpicFixture()
+	iss := fake.issues["ep1"]
+	iss.Labels = []string{epicreview.LabelDegraded}
+	iss.Notes = epicreview.FormatDegradedNote(1, "boom")
+	fake.issues["ep1"] = iss
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true})
+
+	now := time.Now()
+	r.patrolCheckUnvalidatedEpics(t.Context(), now)
+	if fake.listCalls != 1 {
+		t.Fatalf("listCalls after unvalidated-epics scan = %d, want 1", fake.listCalls)
+	}
+
+	findings := r.patrolCheckEpicValidations(t.Context(), now)
+	if fake.listCalls != 1 {
+		t.Errorf("listCalls after epic-validations scan = %d, want still 1 (shared cache, no second bd call)", fake.listCalls)
+	}
+	if countLevel(findings, "warn") != 1 {
+		t.Errorf("expected 1 warn finding for the degraded epic; got %+v", findings)
 	}
 }
 

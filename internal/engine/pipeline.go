@@ -54,9 +54,21 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		if st.Persona != "" {
 			persona = st.Persona
 		}
+		// Effort precedence: explicit stage config (project.json pipeline[].effort)
+		// > res.Effort (currently always empty — Resolve never populates it; kept
+		// for forward compat) > the stage persona's own frontmatter `effort:`
+		// hint, resolved the same way wave.go's main-dispatch path already does
+		// (koryph-77r.8 audit finding: this persona fallback was missing here, so
+		// a stage persona's declared effort — e.g. koryph-feature-docs-author's
+		// `effort: low` — was silently never applied to pipeline-stage spawns).
 		effort := st.Effort
 		if effort == "" {
 			effort = res.Effort
+		}
+		if effort == "" {
+			if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, persona); err == nil {
+				effort = metaEffort
+			}
 		}
 
 		r.progress("bead %s: stage %q running (persona %s, model %s)", sl.PhaseID, st.Name, persona, res.Model)
@@ -81,6 +93,11 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,
 			PhaseDir:         phaseDir,
 			ClaudeBin:        os.Getenv(envClaudeBin),
+			// Follows sl's already-assigned holdout arm rather than the
+			// project's live config, so a stage spawned for a holdout-arm
+			// bead stays direct too (koryph-3l1.3) — see
+			// proxyBaseURLForSlot's doc (poll.go).
+			ProxyBaseURL: r.proxyBaseURLForSlot(sl),
 		})
 
 		// Emit stage duration for histograms (Section O2).
@@ -98,7 +115,10 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 				// (they are launched by the post-implement pipeline, not the
 				// main wave estimator), so pass 0 to skip error-stat updates
 				// while still updating the base EWMA calibration (koryph-6bl).
-				quota.Record(c, model, size, cost, 0)
+				// sl.ProxyID segments by the bead's assigned arm, same
+				// reasoning as completeSlot's RecordForProxy call
+				// (koryph-3l1.3).
+				quota.RecordForProxy(c, model, size, sl.ProxyID, cost, 0)
 				return nil
 			}); err == nil {
 				r.quotaCfg = cfg

@@ -107,6 +107,37 @@ type Slot struct {
 	VerifiedAt       string `json:"verified_at,omitempty"`
 	BillingMode      string `json:"billing_mode"`
 
+	// ProxyID is the proxy identity this slot dispatched through
+	// (koryph-3l1.1, registry.AgentProxy.ID(): "<base_url>" or
+	// "<base_url>#<pin>"), stamped at dispatch time; empty means direct — EITHER
+	// no agent_proxy was configured for the project at all, OR one was
+	// configured and this slot was assigned to the holdout arm
+	// (registry.AgentProxy.ArmFor, koryph-3l1.3, design §3 L6): the holdout
+	// arm deliberately reuses the exact same "" value as "no proxy" because it
+	// IS a direct dispatch — that is what makes it a valid control population
+	// for the estimator's calibKey segmentation ("tier:size@proxyID") and for
+	// quota.RecordForProxy/EstimateItemForRuntimeProxy, both of which are
+	// wired to pass this value starting with koryph-3l1.3. See
+	// ProxyConfigured below for how a reader distinguishes "no experiment
+	// running" from "this bead landed in the holdout arm of one."
+	ProxyID string `json:"proxy_id,omitempty"`
+
+	// ProxyConfigured records whether the project had a non-nil agent_proxy
+	// configured at THIS slot's dispatch time (koryph-3l1.3, design §3 L6),
+	// independent of which arm ProxyID above says the slot landed in. A
+	// two-arm experiment report needs this to tell "no proxy was ever
+	// configured for this project" (ProxyConfigured==false, ProxyID=="") apart
+	// from "a proxy was configured and this bead was the holdout arm's
+	// direct-dispatch control" (ProxyConfigured==true, ProxyID==="") — both
+	// dispatch identically (no ANTHROPIC_BASE_URL override), but only the
+	// latter belongs in the standing-canary comparison; the former predates
+	// (or postdates) any experiment and would silently inflate the holdout
+	// arm's bead count if not excluded. Additive: a Slot decoded from a
+	// ledger that predates this field unmarshals it to false, which correctly
+	// excludes every pre-koryph-3l1.3 slot from the two-arm report (no
+	// experiment could have been running before this field existed).
+	ProxyConfigured bool `json:"proxy_configured,omitempty"`
+
 	PID        int     `json:"pid,omitempty"`
 	Stream     string  `json:"stream,omitempty"`
 	StatusPath string  `json:"status_path,omitempty"`
@@ -117,6 +148,20 @@ type Slot struct {
 	LastCommit string  `json:"last_commit,omitempty"`
 	ResumeSHA  string  `json:"resume_sha,omitempty"`
 	CostUSD    float64 `json:"cost_usd"`
+
+	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are the
+	// per-slot token composition (koryph-77r.1, design
+	// docs/designs/2026-07-token-economy.md §3 L1), parsed off the stream-json
+	// result line's usage block (or, when absent, the session-transcript
+	// fallback — see internal/engine's completeSlot). They ACCUMULATE across
+	// requeues exactly like CostUSD, so total token spend per bead is never
+	// lost when a slot is replaced on requeue (see requeueSlot/
+	// requeueRateLimited threading accumulatedCostUSD). Additive: a Slot
+	// decoded from a ledger that predates these fields unmarshals them to 0.
+	InputTokens         int64 `json:"input_tokens,omitempty"`
+	OutputTokens        int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 
 	// EstimateUSD is the dispatch-time cost estimate stamped at the moment the
 	// slot was first created (koryph-6bl). Additive: a Slot decoded from a
@@ -151,6 +196,25 @@ type Slot struct {
 	// Slot decoded from a ledger that predates this field unmarshals it to
 	// zero, which behaves exactly like "none spent yet."
 	RateLimitRequeues int `json:"rate_limit_requeues,omitempty"`
+
+	// BudgetKillRequeues counts warm-resume requeues spent on a classified
+	// budget-kill death (koryph-77r.10, design
+	// docs/designs/2026-07-token-economy.md recovery-economics follow-up):
+	// unlike RateLimitRequeues, a budget-kill is bead-specific, not
+	// environmental, so this DOES count toward Attempts too (Attempts
+	// increments normally on a budget-killed requeue) — this counter only
+	// bounds the separate, much tighter warm-resume-then-park budget (see
+	// engine's budgetKillRequeueBudget). Additive: a Slot decoded from a
+	// ledger that predates this field unmarshals it to zero.
+	BudgetKillRequeues int `json:"budget_kill_requeues,omitempty"`
+
+	// DeathReason records completeSlot's classification of this slot's most
+	// recent attempt death when it is not an ordinary crash/no-commit exit
+	// (koryph-77r.10) — e.g. "budget-killed". Snapshotted per attempt (like
+	// Note), NOT accumulated across requeues: a fresh dispatch's Slot starts
+	// with DeathReason == "" until its own attempt dies. Additive: a Slot
+	// decoded from a ledger that predates this field unmarshals it to "".
+	DeathReason string `json:"death_reason,omitempty"`
 
 	// Footprint is the RW conflict footprint computed at dispatch time
 	// (koryph-2im.3, docs/designs/2026-07-scheduler-throughput.md L2 footprint
@@ -219,15 +283,16 @@ type Manifest struct {
 	OpenQuestions   []string  `json:"open_questions,omitempty"`
 	NextAction      string    `json:"next_action,omitempty"`
 	QuotaSnapshot   any       `json:"quota_snapshot,omitempty"`
-	PromptCache     string    `json:"prompt_cache_policy,omitempty"`
 	BatchAllowed    bool      `json:"batch_mode_allowed"`
 	RecoveryConf    string    `json:"recovery_confidence,omitempty"`
 	RecoveryTier    int       `json:"recovery_policy_tier"`
 	MergePolicy     string    `json:"merge_policy,omitempty"`
 	AutoMerge       bool      `json:"auto_merge_allowed"`
 	BillingMode     string    `json:"billing_mode"`
-	BootstrapCmds   []string  `json:"bootstrap_commands,omitempty"`
-	UpdatedAt       string    `json:"updated_at"`
+	// ProxyID mirrors Slot.ProxyID (koryph-3l1.1) — see its doc.
+	ProxyID       string   `json:"proxy_id,omitempty"`
+	BootstrapCmds []string `json:"bootstrap_commands,omitempty"`
+	UpdatedAt     string   `json:"updated_at"`
 
 	// Runtime is the runtime this slot dispatched under (koryph-v8u.3),
 	// mirroring Slot.Runtime — see its doc for the additive/"" == "claude"

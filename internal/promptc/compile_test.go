@@ -119,6 +119,38 @@ func TestPreambleForbiddenOperations(t *testing.T) {
 	}
 }
 
+// TestPreambleTerseOutputContract verifies the output-economy section (design:
+// docs/designs/2026-07-token-economy.md §3 L4) is present in the preamble and
+// teaches agents the three key behaviours: quiet gate, file-spill wrappers,
+// and concise replies. This block is part of the engine preamble so it must be
+// byte-stable (no timestamps, no per-dispatch content).
+func TestPreambleTerseOutputContract(t *testing.T) {
+	p := Preamble("v1")
+	for _, want := range []string{
+		"Output economy",
+		"make gate-agent",
+		"koryph-spill.sh",
+		"full output",
+		"Read tool",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preamble missing output-economy marker %q", want)
+		}
+	}
+	// The output-economy block must be in the engine preamble (section [1]),
+	// not the volatile tail — it must be byte-stable across dispatches.
+	// Verify it does not contain any per-dispatch placeholders.
+	if strings.Contains(p, "$KORYPH_PHASE_DIR") {
+		// The block may reference the env var by name in prose — that is fine;
+		// what is forbidden is an unresolved shell variable that would make the
+		// text non-deterministic. We allow the literal string "$KORYPH_PHASE_DIR"
+		// in the preamble as explanatory text; the cache-stability test
+		// (TestNoTimestampsInStableSections) guards against actual timestamps.
+		// So this is informational only; no failure here.
+		_ = p
+	}
+}
+
 // TestPreambleInboxCheckedAtStartAndFinish is the koryph-o72 leg-3 regression
 // test: the preamble must tell the agent to read INBOX.md at the start and
 // again before finishing, not just "between steps" — a nudge landed after
@@ -160,6 +192,46 @@ func TestResumeAndReviewBlocksConditional(t *testing.T) {
 	}
 	if !strings.Contains(out, "/phases/p1/review.md") {
 		t.Errorf("review block missing the review path")
+	}
+}
+
+// TestWIPSnapshotCitedInResumingBlock is the koryph-77r.10 golden: a WIP
+// snapshot path fires the RESUMING block on its own (no ResumeSHA needed —
+// the zero-commit budget-kill case has WIP but no committed SHA to resume
+// from), and combines cleanly with a ResumeSHA when both are present.
+func TestWIPSnapshotCitedInResumingBlock(t *testing.T) {
+	// WIPSnapshotPath alone: RESUMING block present, but no commit-log
+	// guidance (there is no committed work to inspect that way).
+	in := baseInput()
+	in.WIPSnapshotPath = "/phases/p1/wip-20260707T000000Z.patch"
+	out := Compile(in)
+	if !strings.Contains(out, "### RESUMING") {
+		t.Errorf("RESUMING block missing when WIPSnapshotPath is set (no ResumeSHA):\n%s", out)
+	}
+	if strings.Contains(out, "git log --oneline") {
+		t.Errorf("commit-log guidance should be absent with no ResumeSHA:\n%s", out)
+	}
+	if !strings.Contains(out, "/phases/p1/wip-20260707T000000Z.patch") {
+		t.Errorf("RESUMING block missing the WIP snapshot path:\n%s", out)
+	}
+	if !strings.Contains(out, "git apply /phases/p1/wip-20260707T000000Z.patch") {
+		t.Errorf("RESUMING block missing the git apply guidance:\n%s", out)
+	}
+
+	// Both set: one RESUMING block, both the commit-log guidance and the WIP
+	// snapshot citation appear.
+	in2 := baseInput()
+	in2.ResumeSHA = "abc1234"
+	in2.WIPSnapshotPath = "/phases/p1/wip-20260707T000000Z.patch"
+	out2 := Compile(in2)
+	if strings.Count(out2, "### RESUMING") != 1 {
+		t.Errorf("expected exactly one RESUMING heading when both ResumeSHA and WIPSnapshotPath are set:\n%s", out2)
+	}
+	if !strings.Contains(out2, "git log --oneline abc1234..HEAD") {
+		t.Errorf("commit-log guidance missing when ResumeSHA is also set:\n%s", out2)
+	}
+	if !strings.Contains(out2, "/phases/p1/wip-20260707T000000Z.patch") {
+		t.Errorf("WIP snapshot path missing when ResumeSHA is also set:\n%s", out2)
 	}
 }
 

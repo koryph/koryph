@@ -57,6 +57,11 @@ type Verdict struct {
 	Reason     string       `json:"reason,omitempty"`     // why it degraded (never a black box)
 	Attempts   int          `json:"attempts,omitempty"`   // validator spawns made
 	Raw        string       `json:"-"`
+	// Envelope is the raw Claude CLI JSON envelope (including usage/cost fields)
+	// from a successful validator spawn. It is persisted beside the parsed verdict
+	// as <epicID>-round<N>-envelope.json so cost/token data is available for audit
+	// and future metrics pickup (same pattern as stage-*.json, koryph-qbc).
+	Envelope string `json:"-"`
 }
 
 // Child describes one completed child bead of the epic.
@@ -95,9 +100,16 @@ type Opts struct {
 	Profile    account.Profile // account profile for billing
 	Persona    string          // default koryph-epic-validator
 	Model      string          // default opus
+	Effort     string          // reasoning-effort hint; empty omits --effort (runtime default)
 	ClaudeBin  string          // default "claude"
 	TimeoutSec int             // default 420
 	Attempts   int             // validator spawn attempts before degrading (default 3)
+
+	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
+	// (koryph-3l1.1), threaded from the caller's registry.Record via
+	// registry.Record.ProxyBaseURL(). Empty (the common case) means direct —
+	// no ANTHROPIC_BASE_URL override. See account.ChildEnvSpec.ProxyBaseURL.
+	ProxyBaseURL string
 
 	// OutDir is the directory for persisted verdict JSON.
 	// Default: <RepoRoot>/.koryph/epic-reviews

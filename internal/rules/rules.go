@@ -47,10 +47,20 @@ type hookSpec struct {
 // hook commands via `sh -c`, so ${KORYPH_HOME:-$HOME/.koryph} expands whether or
 // not KORYPH_HOME is exported (dispatched agents get it exported; interactive
 // sessions fall back to the default home).
+// The SessionStart entry wraps `bd prime --hook-json` in koryph-prime.sh
+// (koryph-77r.4, design: docs/designs/2026-07-token-economy.md §3 L2)
+// instead of invoking it directly: the wrapper measures the injected byte
+// size and substitutes a slim profile for secondary-spawn sessions
+// (review/stage/epicreview) that never touch bead workflow. The trailing
+// shell comment (harmless to `sh -c` — text after an unescaped `#` is
+// ignored) preserves "bd prime" as a literal substring of the new command
+// so ensureHook's marker match still finds and migrates a project's
+// pre-wrapper "bd prime --hook-json" registration in place, exactly like
+// the guards' CLAUDE_PROJECT_DIR migration.
 var koryphHooks = []hookSpec{
 	{event: "PreToolUse", matcher: "Bash", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh"`, marker: "agent-boundary-guard.sh"},
 	{event: "PreToolUse", matcher: "Bash|Edit|Write", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/worktree-guard.sh"`, marker: "worktree-guard.sh"},
-	{event: "SessionStart", command: "bd prime --hook-json", marker: "bd prime"},
+	{event: "SessionStart", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-prime.sh"  # replaces: bd prime --hook-json`, marker: "bd prime"},
 }
 
 var koryphAllow = []string{"Bash(*)", "Read(**)", "Glob(**)", "Grep(**)", "Edit(**)", "Write(**)"}

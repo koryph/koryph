@@ -125,6 +125,39 @@ re-run `koryph ci setup --gate-cmd <new-cmd>` and commit the updated file.
 
 ---
 
+## Copyright and license headers
+
+The CI/release assets koryph generates carry an SPDX header. By default that
+header attributes the file to koryph (`The Koryph Developers`, `Apache-2.0`) —
+correct for koryph's own repo, wrong for yours. Declare a `copyright` block in
+`koryph.project.json` so generated files carry **your** project's attribution:
+
+```json
+{
+  "copyright": {
+    "holder": "Acme, Inc.",
+    "year": "2024-2026",
+    "license": "MIT"
+  }
+}
+```
+
+Every field is optional and falls back to the built-in default
+(`year` → `2026`, `holder` → `The Koryph Developers`, `license` → `Apache-2.0`),
+so an unconfigured project attributes generated files to koryph
+(`(c) 2026 The Koryph Developers`, matching koryph's own source-header style).
+Re-run `koryph ci setup` (and `koryph release setup`) after adding or changing it
+to restamp the installed assets. The rendered header becomes:
+
+<!-- REUSE-IgnoreStart -->
+```yaml
+# SPDX-FileCopyrightText: (c) 2024-2026 Acme, Inc.
+# SPDX-License-Identifier: MIT
+```
+<!-- REUSE-IgnoreEnd -->
+
+This applies to both the GitHub Actions and GitLab CI generators.
+
 ## Checking for drift
 
 `koryph ci check` compares installed CI assets against the current render

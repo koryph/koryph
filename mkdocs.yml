@@ -55,6 +55,8 @@ nav:
       - Choosing a forge: user-guide/forges.md
       - Running waves: user-guide/running-waves.md
       - Billing & quota: user-guide/billing-and-quota.md
+      - Context economy: user-guide/context-economy.md
+      - "Experimental: headroom-ai integration": user-guide/headroom-integration.md
       - Signing: user-guide/signing.md
       - Posture profiles: user-guide/postures.md
       - Verifying a release: user-guide/supply-chain.md
@@ -64,6 +66,7 @@ nav:
       - Epic validation: user-guide/epic-validation.md
       - Observability: user-guide/observability.md
       - Doctor: user-guide/doctor.md
+      - VS Code extension: user-guide/vscode-extension.md
       - IDE integration: ide-integration.md
   - Developer guide:
       - Architecture: architecture.md

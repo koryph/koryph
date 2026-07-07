@@ -266,13 +266,47 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		// don't clobber each other's EWMA calibration (koryph-8iu.1).
 		// Pass sl.EstimateUSD so Record can also update error stats (koryph-6bl);
 		// 0 on an old-format slot is treated as "unknown" and skips error stats.
+		// sl.ProxyID segments the calibration key by the arm this slot's
+		// dispatch was assigned to (koryph-3l1.3, calibKey's proxyID
+		// segmentation): the holdout arm and "no proxy configured" share the
+		// same "" key by design (see ledger.Slot.ProxyID's doc), so a standing
+		// canary's direct-arm observations fold into the SAME baseline
+		// population Record always fed, while the proxied arm accumulates
+		// separately under "tier:size@proxyID" and can never pollute it.
 		if cfg, err := quota.UpdateConfig(r.quotaName(), func(c *quota.Config) error {
-			quota.Record(c, model, size, cost, sl.EstimateUSD)
+			quota.RecordForProxy(c, model, size, sl.ProxyID, cost, sl.EstimateUSD)
 			return nil
 		}); err == nil {
 			r.quotaCfg = cfg
 		}
 		logBeadCost(sl.PhaseID, model, cost, sl.EstimateUSD)
+	}
+
+	// Per-attempt token composition (koryph-77r.1, design
+	// docs/designs/2026-07-token-economy.md §3 L1): prefer the stream-json
+	// result line's own usage block; when absent, fall back to summing this
+	// attempt's session transcript (cheap — SessionTokens globs by the
+	// already-unique session id, no new full-tree scan). Leave the slot's
+	// token fields untouched (zeros on a fresh slot) when neither source
+	// yields a reading, rather than building heavier scan machinery.
+	//
+	// attemptUsage captures THIS attempt's own composition (not the slot's
+	// accumulated total) for the koryph-77r.10 thrash guard below — see
+	// totalAttemptTokens' doc for why the distinction matters.
+	var attemptUsage dispatch.TokenUsage
+	if usage, ok := dispatch.ParseResultUsage(sl.Stream); ok {
+		attemptUsage = usage
+		r.applyTokenUsage(sl.PhaseID, usage)
+	} else if tc, ok := quota.SessionTokens(r.profile.ConfigDir, sl.SessionID); ok {
+		attemptUsage = dispatch.TokenUsage{
+			InputTokens:         tc.InputTokens,
+			OutputTokens:        tc.OutputTokens,
+			CacheReadTokens:     tc.CacheReadTokens,
+			CacheCreationTokens: tc.CacheCreationTokens,
+		}
+		r.applyTokenUsage(sl.PhaseID, attemptUsage)
+	} else {
+		logBeadTokensUnavailable(sl.PhaseID)
 	}
 
 	// Rate-limit classification runs upstream of the commits/finishCandidate
@@ -304,6 +338,18 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		}
 	}
 
+	// Budget-kill classification runs upstream of finishCandidate too
+	// (koryph-77r.10), mirroring the rate-limit precedent immediately above:
+	// the agent was terminated by --max-budget-usd, not by its own choice, so
+	// even committed work should not short-circuit straight to review/merge —
+	// it gets the same warm-resume-then-park treatment via requeueBudgetKilled
+	// (which itself is Attempts-counted, unlike the environmental rate-limit
+	// path).
+	if dispatch.ParseBudgetKilled(sl.Stream) {
+		r.requeueBudgetKilled(ctx, sl, commits, attemptUsage)
+		return
+	}
+
 	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")
 	if commits > 0 || fsx.Exists(summary) {
 		r.finishCandidate(ctx, sl)
@@ -331,6 +377,67 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	r.requeueSlot(ctx, sl, "", deathDesc)
 }
 
+// cacheRatioFloor is the cache_read-share floor below which
+// checkCacheRatioTripwire WARNs (koryph-77r.1, design
+// docs/designs/2026-07-token-economy.md §2 I7, §3 L1): Claude Code resends
+// full conversation history every turn, so a healthy multi-turn session's
+// cache_read share should dominate input+cache_creation once the prefix is
+// established. A collapse below this floor on a material-token-volume
+// attempt is I7's named failure signature — a nondeterministic transform
+// busting the cached prefix and converting 90%-discounted cache reads into
+// 1.25x-cost cache writes, i.e. the quota multiplier this tripwire exists to
+// catch at runtime.
+const cacheRatioFloor = 0.5
+
+// cacheRatioMinTokens is the minimum attempt token volume (input+cache_read+
+// cache_creation) before the cache-ratio tripwire evaluates at all: a
+// session's first turn has no cache to read yet by construction, so a small
+// early attempt would false-positive on every single dispatch.
+const cacheRatioMinTokens = 20_000
+
+// applyTokenUsage accumulates one attempt's token composition onto the
+// slot's persisted totals — exactly like CostUSD accumulates across requeues
+// (koryph-77r.1, koryph-6bl) — logs it, and evaluates the I7 cache-ratio
+// tripwire against the attempt's OWN composition (not the accumulated
+// total), so a healthy early attempt can never mask a later attempt's
+// cache-prefix collapse.
+func (r *runner) applyTokenUsage(beadID string, u dispatch.TokenUsage) {
+	_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+		s.InputTokens += u.InputTokens
+		s.OutputTokens += u.OutputTokens
+		s.CacheReadTokens += u.CacheReadTokens
+		s.CacheCreationTokens += u.CacheCreationTokens
+	})
+	logBeadTokens(beadID, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens)
+	r.checkCacheRatioTripwire(beadID, u)
+}
+
+// cacheRatioWarn evaluates the I7 cache-ratio tripwire's pure decision logic
+// for one attempt's token composition — split out from
+// checkCacheRatioTripwire so the threshold arithmetic is unit-testable
+// without capturing log output. total is input+cache_read+cache_creation;
+// warn is true iff total >= cacheRatioMinTokens and cache_read's share of
+// total is below cacheRatioFloor. ratio/total are always returned (0 when
+// below the volume floor) for the caller's log record.
+func cacheRatioWarn(u dispatch.TokenUsage) (ratio float64, total int64, warn bool) {
+	total = u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+	if total < cacheRatioMinTokens {
+		return 0, total, false
+	}
+	ratio = float64(u.CacheReadTokens) / float64(total)
+	return ratio, total, ratio < cacheRatioFloor
+}
+
+// checkCacheRatioTripwire WARNs when one attempt's cache_read share collapses
+// below cacheRatioFloor on a session with at least cacheRatioMinTokens total
+// volume (koryph-77r.1, design §2 I7). Observability only — it never changes
+// dispatch behavior.
+func (r *runner) checkCacheRatioTripwire(beadID string, u dispatch.TokenUsage) {
+	if ratio, total, warn := cacheRatioWarn(u); warn {
+		logCacheRatioTripwire(beadID, ratio, total)
+	}
+}
+
 // requeueRateLimited re-dispatches a slot that died with a classified
 // rate-limit/overload marker in its stream (koryph-2im.4): it reports the
 // signal to the machine-wide governor (so the AIMD overlay backs off admission
@@ -345,6 +452,12 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 	r.reportRateLimit(sl.PhaseID)
+
+	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q), even
+	// though a rate-limit requeue burns no attempt — over the cap is over the cap.
+	if r.parkForRunBudget(sl) {
+		return
+	}
 
 	if sl.RateLimitRequeues >= rateLimitedRequeueBudget {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -362,7 +475,11 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		sl.PhaseID, requeues, rateLimitedRequeueBudget)
 	r.backoffSleep(ctx, requeues)
 
-	r.refreshWorktreeForRequeue(ctx, sl)
+	// Rate-limit requeues never preserve a no-commit worktree (koryph-77r.10
+	// scopes that behavior to budget-kill deaths only, which is bead-specific
+	// rather than environmental) — the WIP snapshot is still captured and
+	// threaded through so a rebuilt worktree's resume can cite it.
+	wipSnapshot := r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	resumeSession := ""
 	if m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID); err == nil &&
@@ -379,6 +496,14 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		reviewIters:       sl.ReviewIters,
 		note:              "rate-limited requeue",
 		rateLimitRequeues: requeues,
+		wipSnapshotPath:   wipSnapshot,
+		// Freeze the model resolution from the first attempt (koryph-ehx) —
+		// see requeueSlot's identical comment. A rate-limit requeue is the
+		// same attempt continuing, so it must re-run the same model.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward (koryph-2im.3): a requeue is
 		// the SAME bead attempt continuing, not a relabeled re-evaluation, so
 		// in-flight gating must stay exact across it rather than falling back
@@ -389,6 +514,175 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		// requeueSlot: rate-limited agents may have spent tokens before being
 		// throttled; that cost must not be lost across the requeue.
 		accumulatedCostUSD: sl.CostUSD,
+		// Carry accumulated token composition forward too (koryph-77r.1) —
+		// same reasoning as accumulatedCostUSD.
+		accumulatedTokens: dispatch.TokenUsage{
+			InputTokens:         sl.InputTokens,
+			OutputTokens:        sl.OutputTokens,
+			CacheReadTokens:     sl.CacheReadTokens,
+			CacheCreationTokens: sl.CacheCreationTokens,
+		},
+	})
+}
+
+// budgetKillRequeueBudget bounds how many warm-resume requeues a slot may
+// spend on a classified budget-kill death (koryph-77r.10, design
+// docs/designs/2026-07-token-economy.md recovery-economics follow-up)
+// before parking needs-attention instead of trying a third time. Unlike
+// rateLimitedRequeueBudget (5, an account-wide throttle that self-heals), a
+// budget-kill is bead-specific: every dispatch already runs under a
+// per-agent cap (dispatchBead's MaxBudgetUSD: r.quotaCfg.PerAgentMaxUSD), so
+// a SECOND consecutive kill on the SAME bead means the bead itself needs
+// more budget or a human's attention — a third blind cold-restart would
+// just burn another whole cap for nothing. Unlike RateLimitRequeues, a
+// budget-kill requeue DOES still count toward Attempts (see
+// requeueBudgetKilled), so this only bounds the warm-resume leg of that
+// normal attempt accounting.
+const budgetKillRequeueBudget = 1
+
+// thrashGuardTokenFloor is the per-ATTEMPT total token volume (input +
+// output + cache_read + cache_creation — see totalAttemptTokens) above
+// which a ZERO-commit budget-kill death is treated as thrashing rather than
+// an honest budget-starved attempt worth a warm resume (koryph-77r.10):
+// burning this many tokens with nothing committed is the token-economy
+// signature of an agent looping large tool-call cycles (Read/Bash) rather
+// than making progress — see design docs/designs/2026-07-token-economy.md
+// §3 L1's measured fleet baseline (94.7% of raw tokens are cache reads on a
+// healthy multi-turn session) — so a warm resume would likely just re-loop
+// and burn a second cap for nothing. A documented heuristic, not a proven
+// threshold; tune here if it over/under-fires in practice.
+const thrashGuardTokenFloor = 150_000
+
+// deathReasonBudgetKilled is the ledger.Slot.DeathReason value stamped when
+// completeSlot classifies a death as killed by --max-budget-usd
+// (koryph-77r.10).
+const deathReasonBudgetKilled = "budget-killed"
+
+// totalAttemptTokens sums one attempt's token composition — the thrash
+// guard's volume signal (koryph-77r.10). Deliberately the ATTEMPT's own
+// usage (dispatch.ParseResultUsage's/quota.SessionTokens' reading for THIS
+// death, not the slot's accumulated total), mirroring cacheRatioWarn's
+// identical reasoning: an early, healthy attempt must never mask a later
+// attempt's pathological one.
+func totalAttemptTokens(u dispatch.TokenUsage) int64 {
+	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens
+}
+
+// requeueBudgetKilled re-dispatches (or parks) a slot classified as killed
+// by --max-budget-usd (koryph-77r.10). Every dispatch already runs under a
+// per-agent budget cap, so this death shape is routine, not exceptional —
+// see events.go's budgetKillMarkers doc for the empirically pinned
+// stream-json shape. The dominant case (zero commits) previously restarted
+// cold: refreshWorktreeForRequeue's no-commit branch snapshotted WIP,
+// removed the worktree, and dropped the branch BEFORE the session-resume
+// precondition (m.SessionID != "" && fsx.Exists(sl.Worktree)) could ever
+// hold, re-paying the entire exploration from an empty context on every
+// requeue. This preserves the worktree and branch instead so --resume
+// --fork-session fires warm, but bounds the warm-resume budget tightly
+// (budgetKillRequeueBudget, far under rateLimitedRequeueBudget) and guards
+// against thrashing: a bead that keeps dying from budget with nothing
+// committed needs a human, not a third cap. Unlike requeueRateLimited, this
+// DOES increment Attempts (via the normal dispatchReq.attempt =
+// sl.Attempts+1) — a budget-kill is bead-specific, not an environmental
+// throttle — so it can never itself exceed ledger.MaxAttempts; it just
+// stops well short of that ceiling (park after budgetKillRequeueBudget)
+// rather than blindly spending every remaining attempt cold.
+func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commits int, usage dispatch.TokenUsage) {
+	// Same closed-bead guard as requeueSlot/requeueRateLimited: drop cleanly
+	// if the operator retired the bead while the budget-killed agent was
+	// running.
+	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
+		return
+	}
+
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.DeathReason = deathReasonBudgetKilled })
+	logBudgetKilled(sl.PhaseID, sl.Attempts, sl.CostUSD)
+
+	// Run --budget exhausted: park instead of a warm-resume requeue (koryph-u7q).
+	// The per-agent budget kill already fired; spending another attempt would
+	// also breach the whole-run ceiling.
+	if r.parkForRunBudget(sl) {
+		return
+	}
+
+	thrashing := commits == 0 && totalAttemptTokens(usage) >= thrashGuardTokenFloor
+	if sl.BudgetKillRequeues >= budgetKillRequeueBudget || thrashing {
+		why := "budget-killed twice in a row"
+		switch {
+		case thrashing && sl.BudgetKillRequeues < budgetKillRequeueBudget:
+			why = fmt.Sprintf("budget-killed with zero commits and %d tokens burned this attempt (thrash guard)",
+				totalAttemptTokens(usage))
+		case thrashing:
+			why = fmt.Sprintf("budget-killed twice in a row, and zero commits with %d tokens burned this attempt (thrash guard)",
+				totalAttemptTokens(usage))
+		}
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = fmt.Sprintf(
+				"needs-attention: %s — parked instead of spending another --max-budget-usd attempt (accumulated cost $%.2f so far); raise the account's per-agent budget or split the bead",
+				why, sl.CostUSD)
+		})
+		r.checkpointSlot(sl, "budget-killed-parked")
+		r.releaseGlobalSlot(sl.PhaseID) // terminal
+		r.progress("bead %s: blocked, needs-attention (%s)", sl.PhaseID, why)
+		logSlotBlocked(sl.PhaseID, why)
+		return
+	}
+
+	requeues := sl.BudgetKillRequeues + 1
+	attempt := sl.Attempts + 1
+	r.progress("bead %s: budget-killed — warm-resume requeue, attempt %d (budget-kill %d/%d)",
+		sl.PhaseID, attempt, requeues, budgetKillRequeueBudget)
+	logSlotRequeue(sl.PhaseID, "budget-killed requeue", attempt)
+	logRequeueEvent(sl.PhaseID, "budget-killed requeue", attempt, sl.CostUSD)
+	r.backoffSleep(ctx, sl.Attempts)
+
+	// Preserve the worktree/branch on a zero-commit death so the
+	// session-resume precondition holds (koryph-77r.10) — see
+	// refreshWorktreeForRequeue's preserveNoCommitWorktree doc. The flag is a
+	// no-op when commits > 0 (the existing rebase path applies unchanged).
+	wipSnapshot := r.refreshWorktreeForRequeue(ctx, sl, true)
+
+	resumeSession := ""
+	if m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID); err == nil &&
+		m.SessionID != "" && sl.Worktree != "" && fsx.Exists(sl.Worktree) {
+		resumeSession = m.SessionID
+	}
+
+	r.dispatchBead(ctx, dispatchReq{
+		issue:              r.issueFor(ctx, sl),
+		epicID:             sl.EpicID,
+		attempt:            attempt,
+		resumeSHA:          r.branchHead(ctx, sl.Branch),
+		resumeSessionID:    resumeSession,
+		reviewIters:        sl.ReviewIters,
+		gateRequeues:       sl.GateRequeues,
+		mergeRequeues:      sl.MergeRequeues,
+		note:               "budget-killed requeue",
+		budgetKillRequeues: requeues,
+		wipSnapshotPath:    wipSnapshot,
+		// Freeze the model resolution from the first attempt (koryph-ehx) —
+		// see requeueSlot's identical comment. A budget-kill warm-resume must
+		// re-run the same model the bead was originally dispatched with.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
+		// Carry the persisted footprint forward (koryph-2im.3) — see
+		// requeueRateLimited's identical comment.
+		footprint: sl.Footprint,
+		// Carry accumulated cost forward (koryph-6bl): the budget-killed
+		// attempt's own cost was already added to sl.CostUSD at the top of
+		// completeSlot, so this is the correct running total.
+		accumulatedCostUSD: sl.CostUSD,
+		// Carry accumulated token composition forward too (koryph-77r.1) —
+		// same reasoning as accumulatedCostUSD.
+		accumulatedTokens: dispatch.TokenUsage{
+			InputTokens:         sl.InputTokens,
+			OutputTokens:        sl.OutputTokens,
+			CacheReadTokens:     sl.CacheReadTokens,
+			CacheCreationTokens: sl.CacheCreationTokens,
+		},
 	})
 }
 
@@ -418,6 +712,25 @@ func (r *runner) beadClosedMidFlight(ctx context.Context, id string) bool {
 	r.releaseGlobalSlot(id)
 	r.progress("bead %s: bead closed while in flight — releasing slot", id)
 	return true
+}
+
+// proxyBaseURLForSlot resolves the ANTHROPIC_BASE_URL a secondary spawn tied
+// to slot sl (post-implement pipeline stage, review) should use
+// (koryph-3l1.3, design §3 L6): it follows the SAME arm sl's own main
+// dispatch was already assigned (registry.AgentProxy.ArmFor, computed once in
+// dispatchBead and stamped into sl.ProxyID) rather than recomputing or
+// defaulting to the project's live config — a stage/review spawned for a
+// holdout-arm bead must stay direct too, or proxied stage/review traffic
+// would leak into what is supposed to be the "no interception" control
+// population's telemetry, corrupting the comparison. sl.ProxyID=="" covers
+// both "no agent_proxy configured" and "this bead's holdout arm" identically
+// (see ledger.Slot.ProxyID's doc) — exactly the case where no
+// ANTHROPIC_BASE_URL override belongs in ChildEnvSpec.ProxyBaseURL.
+func (r *runner) proxyBaseURLForSlot(sl *ledger.Slot) string {
+	if sl.ProxyID == "" {
+		return ""
+	}
+	return r.rec.ProxyBaseURL()
 }
 
 // finishCandidate runs the configured post-implement pipeline stages, the
@@ -451,16 +764,29 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	if r.opts.Review {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = ledger.SlotReview })
 		outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
+		reviewPersona := modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages)
+		// The reviewer's model tier stays hardcoded opus (quality-critical, never
+		// auto-downgraded — koryph-77r.8 audit). Effort was previously never
+		// threaded through at all, so the persona's own frontmatter `effort:`
+		// hint (koryph-security-reviewer: xhigh) was silently dropped; resolve it
+		// here the same way wave.go's main-dispatch path does, so the already
+		// declared effort actually takes effect.
+		reviewEffort := ""
+		if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, reviewPersona); err == nil {
+			reviewEffort = metaEffort
+		}
 		v := review.Review(ctx, review.Opts{
-			RepoRoot:  r.rec.Root,
-			Worktree:  sl.Worktree,
-			Branch:    sl.Branch,
-			Base:      r.rec.DefaultBranch,
-			Persona:   modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages),
-			Model:     modelroute.TierOpus,
-			Profile:   r.profile,
-			OutPath:   outPath,
-			ClaudeBin: os.Getenv(envClaudeBin),
+			RepoRoot:     r.rec.Root,
+			Worktree:     sl.Worktree,
+			Branch:       sl.Branch,
+			Base:         r.rec.DefaultBranch,
+			Persona:      reviewPersona,
+			Model:        modelroute.TierOpus,
+			Effort:       reviewEffort,
+			Profile:      r.profile,
+			OutPath:      outPath,
+			ClaudeBin:    os.Getenv(envClaudeBin),
+			ProxyBaseURL: r.proxyBaseURLForSlot(sl),
 		})
 		if v.Degraded {
 			// Fail CLOSED: --review was explicitly requested, so a review we
@@ -792,6 +1118,31 @@ func prBody(iss beads.Issue, runID string) string {
 	return b.String()
 }
 
+// parkForRunBudget refuses a requeue when the per-run --budget cap is exhausted
+// (koryph-u7q): re-dispatching would spend past a ceiling the operator set, and
+// requeues run INSIDE pollUntilIdle where the wave-boundary budget gate never
+// sees them — that hole let a run sail past --budget one retry at a time.
+// Instead it parks the slot terminal (needs-attention) and returns true. false
+// means the budget still has room and the caller should proceed with the
+// requeue. Mirrors the budget-KILL park (SlotBlocked + note + release), so the
+// bead stays claimed for operator resolution rather than being silently retried.
+func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
+	if !r.budgetExhausted() {
+		return false
+	}
+	note := fmt.Sprintf(
+		"needs-attention: run --budget cap reached ($%.2f projected >= $%.2f) — parked without re-dispatch (accumulated cost $%.2f); raise --budget or resume the run",
+		r.projectedRunCostUSD(), r.opts.BudgetUSD, sl.CostUSD)
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotBlocked
+		s.Note = note
+	})
+	r.releaseGlobalSlot(sl.PhaseID) // terminal: free the reserved/held slot
+	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
+	logSlotBlocked(sl.PhaseID, note)
+	return true
+}
+
 // requeueSlot re-dispatches a slot: backoff, refresh the worktree onto current
 // main, then the same dispatch flow with the branch HEAD as ResumeSHA and (when
 // the manifest carries a session id and the worktree survives) a native session
@@ -805,6 +1156,10 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
 		return
 	}
+	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q).
+	if r.parkForRunBudget(sl) {
+		return
+	}
 	attempt := sl.Attempts + 1
 	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
 	logSlotRequeue(sl.PhaseID, why, attempt)
@@ -813,8 +1168,12 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 
 	// Never re-run an agent against a checkout that predates a main-side fix
 	// (koryph-137): rebuild a no-commit worktree from current main, or rebase
-	// one with landed work onto the advanced base, before re-dispatch.
-	r.refreshWorktreeForRequeue(ctx, sl)
+	// one with landed work onto the advanced base, before re-dispatch. This
+	// path never preserves a no-commit worktree (that is reserved for a
+	// budget-kill death — see requeueBudgetKilled, koryph-77r.10); the WIP
+	// snapshot is still captured and threaded through so a rebuilt worktree's
+	// resume can cite it.
+	wipSnapshot := r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	resumeSession := ""
 	if m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID); err == nil &&
@@ -830,12 +1189,22 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		resumeSessionID: resumeSession,
 		reviewPath:      reviewPath,
 		reviewIters:     sl.ReviewIters,
+		wipSnapshotPath: wipSnapshot,
 		// Carry the requeue counters forward: dispatchBead builds a brand-new
 		// ledger.Slot rather than mutating this one, so without this the
 		// budget below would reset to zero every requeue (koryph-2im.6).
 		gateRequeues:  sl.GateRequeues,
 		mergeRequeues: sl.MergeRequeues,
 		note:          why,
+		// Freeze the model resolution from the first attempt (koryph-ehx): a
+		// requeue re-runs the SAME model/persona/effort the bead was dispatched
+		// with, so a `model:*` relabel mid-run (or non-deterministic
+		// persona-tier resolution) cannot silently switch a retry to the wrong
+		// model. Same freeze rationale as the footprint just below.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward too (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,
@@ -843,6 +1212,14 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		// spend so far (koryph-6bl): completeSlot ADDs the next attempt's cost
 		// rather than overwriting, so the sum across all attempts is correct.
 		accumulatedCostUSD: sl.CostUSD,
+		// Carry accumulated token composition forward too (koryph-77r.1) —
+		// same reasoning as accumulatedCostUSD.
+		accumulatedTokens: dispatch.TokenUsage{
+			InputTokens:         sl.InputTokens,
+			OutputTokens:        sl.OutputTokens,
+			CacheReadTokens:     sl.CacheReadTokens,
+			CacheCreationTokens: sl.CacheCreationTokens,
+		},
 	})
 }
 
@@ -852,18 +1229,31 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 // across attempts, because dispatchBead's worktree.Ensure attaches to an
 // existing tree rather than rebuilding it.
 //
-//   - No commits to preserve → rebuild from the default branch: snapshot any
-//     WIP for forensics, remove the worktree, and drop the branch so Ensure
-//     recreates both from current main (a fresh checkout, re-bootstrapped).
+//   - No commits to preserve → by default, rebuild from the default branch:
+//     snapshot any WIP for forensics, remove the worktree, and drop the
+//     branch so Ensure recreates both from current main (a fresh checkout,
+//     re-bootstrapped). preserveNoCommitWorktree skips the remove/drop
+//     (koryph-77r.10, requeueBudgetKilled): a budget-kill death still has a
+//     live session id worth resuming from, and rebuilding would destroy the
+//     session-resume precondition (m.SessionID != "" &&
+//     fsx.Exists(sl.Worktree)) before it could ever hold. The WIP snapshot is
+//     still captured either way.
 //   - Landed commits → rebase the branch onto the advanced base via Refresh
 //     (Force, so the requeue always re-bases regardless of drift threshold or
-//     footprint overlap) and resume on top of current main.
+//     footprint overlap) and resume on top of current main. Completely
+//     unaffected by preserveNoCommitWorktree — that flag only matters in the
+//     no-commit branch below.
 //
 // Every failure is non-fatal: the slot still re-dispatches onto whatever
 // checkout survives, matching pre-137 behavior, with the reason logged.
-func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot) {
+//
+// Returns the WIP snapshot patch path when one was captured in the no-commit
+// branch (koryph-77r.10, so the caller can cite it in the RESUMING block via
+// promptc.Input.WIPSnapshotPath — see compile.go); "" in every other case,
+// including the commits>0 rebase branch and any failure path.
+func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot, preserveNoCommitWorktree bool) string {
 	if sl.Worktree == "" || sl.Branch == "" {
-		return
+		return ""
 	}
 
 	commits := sl.Commits
@@ -883,7 +1273,7 @@ func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot)
 		})
 		if err != nil {
 			r.progress("bead %s: requeue refresh error (resuming on existing checkout): %v", sl.PhaseID, err)
-			return
+			return ""
 		}
 		switch res.Action {
 		case "refreshed":
@@ -894,20 +1284,29 @@ func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot)
 		case "deferred-dirty":
 			r.progress("bead %s: requeue refresh deferred (worktree dirty) — resuming on existing checkout", sl.PhaseID)
 		}
-		return
+		return ""
 	}
 
-	// No landed work: rebuild from current main so a stale checkout can never
-	// survive the requeue.
+	// No landed work: snapshot WIP, then either rebuild from current main
+	// (default) or preserve the worktree+branch as-is so a native session
+	// resume can fire (preserveNoCommitWorktree).
+	var wipPatch string
 	if fsx.Exists(sl.Worktree) {
 		if patch, err := worktree.PatchSnapshot(ctx, sl.Worktree, r.store.PhaseDir(r.run.RunID, sl.PhaseID)); err == nil && patch != "" {
+			wipPatch = patch
 			r.progress("bead %s: captured WIP snapshot before worktree rebuild: %s", sl.PhaseID, patch)
+		}
+		if preserveNoCommitWorktree {
+			r.progress("bead %s: preserving worktree and branch (no commits, but a live session) for a warm resume", sl.PhaseID)
+			return wipPatch
 		}
 		if err := worktree.Remove(ctx, sl.Worktree, true); err != nil {
 			r.progress("bead %s: requeue worktree rebuild skipped, remove failed (dispatch will attach existing): %v",
 				sl.PhaseID, err)
-			return
+			return wipPatch
 		}
+	} else if preserveNoCommitWorktree {
+		return wipPatch
 	}
 	// Drop the stale branch so Ensure recreates it from the default branch tip
 	// rather than re-checking-out the old one. A "not found" error means the
@@ -916,6 +1315,7 @@ func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot)
 	if err := worktree.DeleteBranch(ctx, r.rec.Root, sl.Branch); err != nil && !strings.Contains(err.Error(), "not found") {
 		r.progress("bead %s: requeue branch reset skipped (%v) — dispatch may attach the old tip", sl.PhaseID, err)
 	}
+	return wipPatch
 }
 
 // slotLocker returns a bd-backed merge mutex when the project has a

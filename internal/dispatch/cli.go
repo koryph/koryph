@@ -284,6 +284,7 @@ func toRuntimeSpec(s Spec) runtime.DispatchSpec {
 		Attempt:          s.Attempt,
 		SSHAuthSock:      s.SSHAuthSock,
 		EnvPassthrough:   s.EnvPassthrough,
+		ProxyBaseURL:     s.ProxyBaseURL,
 	}
 }
 
@@ -304,6 +305,28 @@ func ParseResultCost(streamPath string) (float64, bool) {
 	}
 	defer f.Close()
 	return claude.ParseResultCost(f)
+}
+
+// TokenUsage is the dispatch-layer name for claude.TokenUsage (koryph-77r.1):
+// the per-attempt token composition off a stream-json result line's usage
+// block. Aliased rather than duplicated — unlike Spec/runtime.DispatchSpec
+// (deliberately decoupled via toRuntimeSpec so dispatch's public Spec shape
+// never leaks internal/runtime's), this is a plain data tuple with no
+// independent reason to diverge from its one source of truth.
+type TokenUsage = claude.TokenUsage
+
+// ParseResultUsage scans a stream.jsonl for the LAST "result" line and
+// returns its token composition (koryph-77r.1, design
+// docs/designs/2026-07-token-economy.md §3 L1) — the usage-block counterpart
+// to ParseResultCost; see its doc for the shared scan mechanics
+// (internal/runtime/claude, koryph-v8u.2) and last-wins semantics.
+func ParseResultUsage(streamPath string) (TokenUsage, bool) {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return TokenUsage{}, false
+	}
+	defer f.Close()
+	return claude.ParseResultUsage(f)
 }
 
 // ParseCleanExit scans a stream.jsonl for the LAST "result" line and reports
@@ -342,6 +365,23 @@ func ParseRateLimited(streamPath string) bool {
 	}
 	defer f.Close()
 	return claude.ParseRateLimited(f)
+}
+
+// ParseBudgetKilled scans a stream.jsonl for a death by the --max-budget-usd
+// cap (koryph-77r.10, design docs/designs/2026-07-token-economy.md
+// recovery-economics follow-up) — the marker was empirically pinned against
+// a live canary run; see internal/runtime/claude/events.go's
+// budgetKillMarkers doc for the captured line and the subscription-OAuth
+// enforcement finding. Returns false when the file is unreadable or no line
+// qualifies. Thin path-opening wrapper, matching ParseRateLimited's pattern
+// (the scan itself lives in internal/runtime/claude, koryph-v8u.2).
+func ParseBudgetKilled(streamPath string) bool {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	return claude.ParseBudgetKilled(f)
 }
 
 // Alive reports whether pid is a live process (signal 0 probe).

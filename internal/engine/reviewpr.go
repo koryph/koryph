@@ -307,15 +307,31 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	// AccountFor (koryph-v8u.5) falls back to rec.ClaudeConfigDir for every
 	// project today (no runtime_accounts entry) — same ConfigDir as before.
 	ra := rec.AccountFor(resolvedRuntimeName)
+	prReviewPersona := modelroute.PersonaFor(modelroute.StageReview, cfg.Stages)
+	// Same koryph-77r.8 fix as the in-loop reviewer call site (poll.go): honor
+	// the persona's declared frontmatter effort instead of silently dropping it.
+	prReviewEffort := ""
+	if _, metaEffort, _, err := modelroute.PersonaMeta(rec.Root, prReviewPersona); err == nil {
+		prReviewEffort = metaEffort
+	}
 	v := reviewer(ctx, review.Opts{
 		RepoRoot:  rec.Root,
 		Worktree:  wt,
 		Branch:    ref,
 		Base:      rec.DefaultBranch,
-		Persona:   modelroute.PersonaFor(modelroute.StageReview, cfg.Stages),
+		Persona:   prReviewPersona,
 		Model:     modelroute.TierOpus,
+		Effort:    prReviewEffort,
 		Profile:   account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
 		ClaudeBin: os.Getenv(envClaudeBin),
+		// Deliberately the project's live config, not a bead-scoped arm
+		// (koryph-3l1.3): `koryph review-pr`/review-queue reviews arbitrary
+		// open GitHub PRs on operator demand — outside the wave/rolling
+		// dispatch loop entirely, with no ledger.Slot and so no bead arm to
+		// follow (a PR here may not even have been dispatched by koryph). Out
+		// of scope for the standing-canary comparison, which is built from
+		// ledger data this call path never writes.
+		ProxyBaseURL: rec.ProxyBaseURL(),
 	})
 	res.Blocking, res.Degraded, res.Findings = v.Blocking, v.Degraded, v.Findings
 	switch {
