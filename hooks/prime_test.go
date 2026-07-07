@@ -306,12 +306,24 @@ func TestFullModeAgainstRealBdOnPath(t *testing.T) {
 	if err != nil {
 		t.Skipf("real bd prime --hook-json failed (%v); skipping golden check", err)
 	}
-	out, _, code := runPrime(t, runPrimeOpts{})
+	// Replay the captured bytes through a fake bd for the byte-identity
+	// check: bd prime's output reflects LIVE bead/memory state, so letting
+	// the wrapper invoke the real bd a second time races any bd write (or
+	// rolling relative timestamp) between the two invocations — observed as
+	// a 1-byte drift failing an unrelated bead's gate (koryph-yx4). The
+	// live capture above keeps the real-output-shape intent; the replay
+	// makes the comparison hermetic.
+	capture := filepath.Join(t.TempDir(), "bd-prime-capture.json")
+	if err := os.WriteFile(capture, raw, 0o644); err != nil {
+		t.Fatalf("write capture: %v", err)
+	}
+	dir := fakeBd(t, `cat `+shQuote(capture))
+	out, _, code := runPrime(t, runPrimeOpts{pathDirs: dir + string(filepath.ListSeparator) + os.Getenv("PATH")})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	if out != string(raw) {
-		t.Errorf("wrapper full-mode output diverges from real `bd prime --hook-json` (len %d vs %d)", len(out), len(raw))
+		t.Errorf("wrapper full-mode output diverges from captured `bd prime --hook-json` (len %d vs %d)", len(out), len(raw))
 	}
 }
 
