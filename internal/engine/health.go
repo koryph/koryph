@@ -19,6 +19,10 @@ package engine
 //     closed but that never entered (or fell out of) the runner's in-memory
 //     epic-validation pending set are re-queued, level info — self-
 //     remediating, not an operator action (koryph-bbe)
+//   - parked/degraded epic validations: OPEN epics carrying
+//     validation:parked or validation:degraded, level warn — an operator
+//     decision is required, mirroring internal/doctor's checkEpicValidations
+//     (koryph-wo0.7)
 //
 // Findings are:
 //  1. surfaced as progress WARN/INFO lines, throttled to once per hour per
@@ -196,6 +200,7 @@ func (r *runner) collectPatrolFindings(ctx context.Context, now time.Time) []pat
 	out = append(out, r.patrolCheckLedgerWritable()...)
 	out = append(out, r.patrolCheckGCFootprint()...)
 	out = append(out, r.patrolCheckUnvalidatedEpics(ctx, now)...)
+	out = append(out, r.patrolCheckEpicValidations(ctx, now)...)
 	return out
 }
 
@@ -736,4 +741,109 @@ func (r *runner) patrolCheckUnvalidatedEpics(ctx context.Context, now time.Time)
 	}
 	r.epicPatrolFindings = out
 	return out
+}
+
+// --- check: parked/degraded epic validations (koryph-wo0.7) ----------------
+
+// patrolCheckEpicVal is the check name for parked/degraded epic-validation
+// WARN findings — deliberately matching internal/doctor's
+// checkNameEpicValidations string so both surfaces report under the same
+// check label.
+const patrolCheckEpicVal = "epic-validations"
+
+// patrolCheckEpicValidations surfaces every OPEN epic carrying
+// validation:parked or validation:degraded as a WARN finding, with the round
+// number and reason parsed from the epic's notes via the shared epicreview
+// codec (koryph-qta.7). This closes the black-box gap design §4/§4b calls
+// out: a parked epic (round-cap exceeded — an "operator decides" state) or a
+// degraded epic (validator infra failure) must be visible from the live loop,
+// not only from a separately-run `koryph doctor`. Mirrors internal/doctor's
+// checkEpicValidations (koryph-wo0.6) exactly, including its "last matching
+// note line wins" scan order.
+//
+// bd-call cadence (decision recorded per this bead's AC): this check does
+// NOT issue its own bd call. It reuses r.patrolEpicIssues's cached open-issue
+// listing — the same cache patrolCheckUnvalidatedEpics populates (koryph-bbe)
+// — so the one bd subprocess call per epicListCadence window (1 h) is shared
+// between both epic-awareness checks rather than doubled. Deriving WARN
+// findings from that cached listing is pure in-memory regex/label work with
+// no per-epic bd call (no ListChildren, unlike patrolCheckUnvalidatedEpics),
+// so unlike that check this one recomputes on every patrol tick rather than
+// needing its own second-level findings cache — the outer patrolSeen
+// throttle (runPatrol, once per patrolThrottleWindow per unique finding) is
+// what keeps the operator from seeing the same WARN spammed every tick.
+func (r *runner) patrolCheckEpicValidations(ctx context.Context, now time.Time) []patrolFinding {
+	lister, ok := r.adapter.(epicLister)
+	if !ok {
+		return []patrolFinding{{check: patrolCheckEpicVal, level: "ok",
+			message: "adapter has no epic-listing verb"}}
+	}
+	issues, _, err := r.patrolEpicIssues(ctx, lister, now)
+	if err != nil {
+		return []patrolFinding{{check: patrolCheckEpicVal, level: "warn",
+			message: fmt.Sprintf("list epics: %v", err)}}
+	}
+
+	var out []patrolFinding
+	for _, epic := range issues {
+		if epic.IssueType != "epic" || epic.Status == "closed" || epic.Status == "done" {
+			continue
+		}
+		switch {
+		case epic.HasLabel(epicreview.LabelParked):
+			round, reason := parkedNoteForPatrol(epic.Notes)
+			out = append(out, patrolFinding{
+				check: patrolCheckEpicVal,
+				level: "warn",
+				message: fmt.Sprintf(
+					"parked epic: %s %q round=%d reason=%q — run `koryph epic validate %s` to recover",
+					epic.ID, epic.Title, round, reason, epic.ID),
+			})
+		case epic.HasLabel(epicreview.LabelDegraded):
+			round, reason := degradedNoteForPatrol(epic.Notes)
+			out = append(out, patrolFinding{
+				check: patrolCheckEpicVal,
+				level: "warn",
+				message: fmt.Sprintf(
+					"degraded epic: %s %q round=%d reason=%q — validator infra failure; run `koryph epic validate %s` to retry",
+					epic.ID, epic.Title, round, reason, epic.ID),
+			})
+		}
+	}
+
+	if len(out) == 0 {
+		return []patrolFinding{{check: patrolCheckEpicVal, level: "ok",
+			message: "no parked or degraded epic validations"}}
+	}
+	return out
+}
+
+// degradedNoteForPatrol scans an epic's notes field (most-recent line first)
+// and returns the round and reason from the last matching
+// "validation:degraded (round N): reason" line, via the shared epicreview
+// codec. Returns (0, "") when no matching line is found. Mirrors
+// internal/doctor's parseDegradedNote exactly.
+func degradedNoteForPatrol(notes string) (round int, reason string) {
+	lines := strings.Split(notes, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if n, r, ok := epicreview.ParseDegradedNote(strings.TrimSpace(lines[i])); ok {
+			return n, r
+		}
+	}
+	return 0, ""
+}
+
+// parkedNoteForPatrol scans an epic's notes field (most-recent line first)
+// and returns the round and a short description from the last matching
+// parked note line (canonical colon form or legacy space form), via the
+// shared epicreview codec. Returns (0, "") when no matching line is found.
+// Mirrors internal/doctor's parseParkedNote exactly.
+func parkedNoteForPatrol(notes string) (round int, reason string) {
+	lines := strings.Split(notes, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if n, maxRounds, ok := epicreview.ParseParkedNote(strings.TrimSpace(lines[i])); ok {
+			return n, fmt.Sprintf("exceeded max_rounds=%d", maxRounds)
+		}
+	}
+	return 0, ""
 }
