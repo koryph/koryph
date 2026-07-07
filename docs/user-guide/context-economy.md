@@ -38,11 +38,11 @@ koryph metrics tokens --json                 # machine-readable
    ratio for that bead.
 
 **The cache-hit ratio** is the key health metric. A healthy koryph fleet
-typically runs at ≥ 90 % cache reads. A ratio that collapses mid-run (below
-~70 %) usually indicates a context-bust: something caused the cached prompt
-prefix to be rewritten, turning cheap cache reads into expensive cache writes.
-The [I7 cache-ratio tripwire](#the-cache-ratio-tripwire) in the engine catches
-this automatically.
+typically runs at ≥ 90 % cache reads. A sudden drop in the ratio usually
+indicates a context-bust: something caused the cached prompt prefix to be
+rewritten, turning cheap cache reads into expensive cache writes. The engine's
+[I7 cache-ratio tripwire](#the-cache-ratio-tripwire) logs a warning when this
+happens on any session with material token volume.
 
 **Older ledger entries** without token fields (dispatched before koryph-77r.1
 landed) appear as zero and are excluded from the breakdown. Run the command
@@ -50,12 +50,25 @@ periodically after a few waves; the data accumulates automatically.
 
 ### The cache-ratio tripwire
 
-The engine tracks each session's `cache_read / (cache_read + input)` ratio.
-If it collapses below the configured minimum (default: log WARN when ratio
-falls below 0.70 in a session that previously exceeded 0.85), the ledger
-records the event and `koryph metrics tokens` flags the affected bead row.
-This detects nondeterministic transforms, prompt-prefix mutations, or session
-resets that silently convert quota-cheap reads into quota-expensive writes.
+The engine evaluates a separate ratio for each attempt:
+`cache_read / (input + cache_read + cache_creation)`. When this falls below
+the hard-coded floor of **0.50** on a session with at least **20 000** total
+tokens (`input + cache_read + cache_creation`), the engine emits one
+`slog.Warn` log record. This is **observability only** — it never changes
+dispatch behavior, does not write to the ledger, and is not surfaced in
+`koryph metrics tokens`. Check your structured log output (e.g.
+`koryph run --log-level warn`) to catch these events.
+
+The volume gate (20 000 tokens) prevents false positives on the first turn of
+any dispatch, which has no established cache prefix yet. The per-attempt
+evaluation (not accumulated totals) means a healthy early turn cannot mask a
+later attempt's prefix collapse.
+
+> **Note:** The tripwire ratio (`cache_read / (input + cache_read +
+> cache_creation)`) differs from the `CacheHitRatio` metric in
+> `koryph metrics tokens` (`cache_read / (cache_read + input)`), which
+> omits `cache_creation` from the denominator. Both capture the same
+> qualitative signal; the difference is small in practice.
 
 ---
 
