@@ -56,6 +56,7 @@ nav:
       - Running waves: user-guide/running-waves.md
       - Billing & quota: user-guide/billing-and-quota.md
       - Context economy: user-guide/context-economy.md
+      - "Experimental: headroom-ai integration": user-guide/headroom-integration.md
       - Signing: user-guide/signing.md
       - Posture profiles: user-guide/postures.md
       - Verifying a release: user-guide/supply-chain.md
