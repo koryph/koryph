@@ -64,6 +64,7 @@ nav:
       - Epic validation: user-guide/epic-validation.md
       - Observability: user-guide/observability.md
       - Doctor: user-guide/doctor.md
+      - VS Code extension: user-guide/vscode-extension.md
       - IDE integration: ide-integration.md
   - Developer guide:
       - Architecture: architecture.md

@@ -3,6 +3,9 @@
 
 # koryph VS Code extension — design (2026-07-03)
 
+> **User guide:** [VS Code extension](../user-guide/vscode-extension.md) —
+> installation, command reference, settings, and build/side-load instructions.
+
 A VS Code extension that makes running koryph waves *visible and steerable*
 from the editor: every agent thread across every project, its live line of
 thought, one-click worktree/diff navigation, quota burn, and project config
