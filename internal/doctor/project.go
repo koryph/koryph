@@ -122,6 +122,15 @@ type ProjectOptions struct {
 	// Render("gate"). nil means: detect the forge via git remote and use the
 	// real forge CIService.
 	CIService forge.CIService
+
+	// GitForgeRemote detects the forge provider name from the git remote URL
+	// (injectable for tests). nil means: run `git remote get-url origin` and
+	// call forge.SniffRemote — returns "" when the remote is not a recognised
+	// forge (GitHub or GitLab), which causes checkCIGatePipeline to skip.
+	// Other checks that require GitHub-specific information (release infra,
+	// secrets) keep using GitHubRepo; this field is used only by
+	// checkCIGatePipeline.
+	GitForgeRemote func(repoRoot string) (string, error)
 }
 
 func (o *ProjectOptions) home() string {
@@ -171,6 +180,13 @@ func (o *ProjectOptions) gitHubRepo(repoRoot string) (string, error) {
 		return o.GitHubRepo(repoRoot)
 	}
 	return defaultGitHubRepo(repoRoot)
+}
+
+func (o *ProjectOptions) gitForgeRemote(repoRoot string) (string, error) {
+	if o.GitForgeRemote != nil {
+		return o.GitForgeRemote(repoRoot)
+	}
+	return defaultGitForgeRemote(repoRoot)
 }
 
 func (o *ProjectOptions) ghSecretList(ownerRepo string) ([]string, error) {

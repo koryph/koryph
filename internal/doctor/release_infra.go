@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/bot"
+	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/release"
 )
@@ -311,6 +312,20 @@ func defaultGitHubRepo(repoRoot string) (string, error) {
 	}
 	slug, _ := parseGitHubSlug(strings.TrimSpace(string(out)))
 	return slug, nil
+}
+
+// defaultGitForgeRemote detects the forge provider name ("github" or "gitlab")
+// by running `git -C <repoRoot> remote get-url origin` and calling
+// forge.SniffRemote on the result.
+// Returns ("", nil) when the remote URL is not recognised as a known forge —
+// the ci-assets check will skip gracefully in that case.
+func defaultGitForgeRemote(repoRoot string) (string, error) {
+	out, err := exec.Command("git", "-C", repoRoot, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url origin: %w", err)
+	}
+	name := forge.SniffRemote(strings.TrimSpace(string(out)))
+	return name, nil
 }
 
 // defaultGHSecretList runs `gh secret list --repo <ownerRepo> --jq '.[].name'`

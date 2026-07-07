@@ -12,7 +12,7 @@ package doctor
 //     recognised forge git remote. Forge detection uses the injectable
 //     CIService field on ProjectOptions (test seam — skips remote detection
 //     entirely when set) or falls back to running `git remote get-url origin`
-//     and detecting a GitHub remote.
+//     and calling forge.SniffRemote to detect GitHub or GitLab remotes.
 //   - Returns LevelOK ("skipped — …") when the forge CIService cannot render
 //     "gate" (e.g. the render kind is not yet implemented — ErrUnsupported).
 //     This is the correct degraded path while koryph-lqz.1 (CIService gate
@@ -21,6 +21,12 @@ package doctor
 //     differs from the current render output. Both states include the exact
 //     `koryph ci setup` remediation command.
 //   - Returns LevelOK when the installed file matches the current render.
+//
+// Gate pipeline paths are resolved via ciinstall.KindPath so GitHub and GitLab
+// use their forge-native locations:
+//
+//	GitHub → .github/workflows/koryph-gate.yml
+//	GitLab → .koryph/ci/koryph-gate.yml
 
 import (
 	"crypto/sha256"
@@ -29,23 +35,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/koryph/koryph/internal/ciinstall"
 	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/project"
 )
 
 const checkNameCIAssets = "ci-assets"
-
-// gatePipelinePath returns the conventional repository-relative path of the
-// gate CI pipeline for the named forge. Returns "" for unrecognised forges
-// (the check will skip gracefully).
-func gatePipelinePath(forgeName string) string {
-	switch forgeName {
-	case "github", "":
-		return ".github/workflows/koryph-gate.yml"
-	default:
-		return ""
-	}
-}
 
 // checkCIGatePipeline is the project-mode doctor check for CI gate pipeline
 // drift. It is called from RunProject after the core structural checks.
@@ -113,24 +108,27 @@ func checkCIGatePipeline(opts ProjectOptions, repoRoot string, cfg *project.Conf
 // resolveCIForGate returns the forge CIService, the repository-relative gate
 // pipeline path, and a skip-message. When skipMsg is non-empty, the caller
 // should return an LevelOK finding with that message immediately.
+//
+// Gate pipeline paths are resolved via ciinstall.KindPath so both GitHub and
+// GitLab are handled without hardcoding forge-specific paths here.
 func resolveCIForGate(opts ProjectOptions, repoRoot string, cfg *project.Config) (ciSvc forge.CIService, relPath string, skipMsg string) {
 	// Test seam: when CIService is injected, skip forge detection entirely and
-	// derive the path from the config.
+	// derive the path from the config via ciinstall.KindPath.
 	if opts.CIService != nil {
 		forgeName := ""
 		if cfg != nil {
 			forgeName = cfg.ResolvedForge()
 		}
-		relPath = gatePipelinePath(forgeName)
-		if relPath == "" {
+		kindPath, ok := ciinstall.KindPath(forgeName, "gate")
+		if !ok {
 			return nil, "", fmt.Sprintf("ci-assets: no gate pipeline path defined for forge %q (skipped)", forgeName)
 		}
-		return opts.CIService, relPath, ""
+		return opts.CIService, kindPath, ""
 	}
 
-	// Real path: detect forge remote.
-	ownerRepo, gitErr := opts.gitHubRepo(repoRoot)
-	if gitErr != nil || ownerRepo == "" {
+	// Real path: detect forge from git remote URL (supports GitHub and GitLab).
+	forgeName, gitErr := opts.gitForgeRemote(repoRoot)
+	if gitErr != nil || forgeName == "" {
 		return nil, "", "ci-assets: no forge remote detected (skipped)"
 	}
 
@@ -138,16 +136,21 @@ func resolveCIForGate(opts ProjectOptions, repoRoot string, cfg *project.Config)
 		return nil, "", "ci-assets: no project config (skipped)"
 	}
 
-	forgeName := cfg.ResolvedForge()
-	relPath = gatePipelinePath(forgeName)
-	if relPath == "" {
+	// Prefer the project config's forge when explicitly set; the remote sniff
+	// confirms a forge is present but the config is the authoritative source.
+	if cfgForge := cfg.ResolvedForge(); cfgForge != "" {
+		forgeName = cfgForge
+	}
+
+	kindPath, ok := ciinstall.KindPath(forgeName, "gate")
+	if !ok {
 		return nil, "", fmt.Sprintf("ci-assets: no gate pipeline path defined for forge %q (skipped)", forgeName)
 	}
 
-	f, ok := forge.Default.Get(forgeName)
-	if !ok {
+	f, fOK := forge.Default.Get(forgeName)
+	if !fOK {
 		return nil, "", fmt.Sprintf("ci-assets: forge %q not registered (skipped)", forgeName)
 	}
 
-	return f.CI(), relPath, ""
+	return f.CI(), kindPath, ""
 }
