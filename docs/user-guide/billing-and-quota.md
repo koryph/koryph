@@ -18,26 +18,47 @@ audit log so you always have a per-dispatch record.
 
 ---
 
-## The 80 / 90 / 95 governor
+## The governor ladder
 
 The governor measures two usage windows per account and maps
-fraction-of-ceiling to one of four levels:
+fraction-of-ceiling to one of five levels (defaults; configurable per-account
+via `quota.Ladder`):
 
-| Fraction | Level   | Effect in loop mode                                              |
-|----------|---------|------------------------------------------------------------------|
-| < 80 %   | `ok`    | Full concurrency                                                 |
-| ≥ 80 %   | `warn`  | Log warning; concurrency linearly scaled toward 1 as 90 % nears |
-| ≥ 90 %   | `drain` | No new dispatch; active agents finish their current turn         |
-| ≥ 95 %   | `stop`  | No new dispatch; run paused (`paused-quota`) or switches to API-key billing if explicitly configured |
+| Fraction | Level      | Effect in loop mode                                                 |
+|----------|------------|---------------------------------------------------------------------|
+| < 90 %   | `ok`       | Full concurrency                                                    |
+| ≥ 90 %   | `warn`     | Log warning; full concurrency continues                             |
+| ≥ 94 %   | `throttle` | Concurrency linearly scaled toward 1 as 97 % nears                 |
+| ≥ 97 %   | `drain`    | No new dispatch; active agents finish their current turn            |
+| ≥ 99 %   | `stop`     | In-flight agents interrupted (SIGTERM); worktrees preserved for resume |
 
-**Concurrency scaling.** Between 80 % and 90 %, `ScaleSlots` linearly
-interpolates wave width from `max` down to 1. At 90 % the slot count is 0
+**Concurrency scaling.** Between 94 % and 97 %, `ScaleSlots` linearly
+interpolates wave width from `max` down to 1. At 97 % the slot count is 0
 and no new agents are launched. Manual dispatch (`koryph run --manual`) is
 exempt from all governor levels.
 
 **Preflight gate.** Before each wave the engine projects the estimated cost
 of the candidate items against the 5 h ceiling. A wave that would push the
-window to or past 90 % is refused before any agent is launched.
+window to or past 97 % (the graceful-stop threshold) is refused before any
+agent is launched.
+
+**Configuring thresholds.** All four thresholds are configurable per-account
+in `~/.koryph/quota/<account>.json` under the `ladder` key:
+
+```json
+{
+  "account": "personal",
+  "ladder": {
+    "warn": 0.90,
+    "throttle": 0.94,
+    "graceful_stop": 0.97,
+    "hard_stop": 0.99
+  }
+}
+```
+
+Zero fields use the package defaults shown in the table above. Fields must be
+strictly ascending.
 
 **Fail-closed windows.** A window whose source is `unavailable` reports
 fraction 1.0 and immediately triggers drain. An uncalibrated account (both

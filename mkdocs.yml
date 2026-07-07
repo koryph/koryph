@@ -55,6 +55,7 @@ nav:
       - Choosing a forge: user-guide/forges.md
       - Running waves: user-guide/running-waves.md
       - Billing & quota: user-guide/billing-and-quota.md
+      - Context economy: user-guide/context-economy.md
       - Signing: user-guide/signing.md
       - Posture profiles: user-guide/postures.md
       - Verifying a release: user-guide/supply-chain.md
