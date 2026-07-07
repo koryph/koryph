@@ -84,8 +84,14 @@ type Options struct {
 	// automatically advisory while the account is uncalibrated (baseline
 	// establishment is never blocked).
 	NoBillingGuard bool
-	PollSec        int // default 10; project config poll_seconds and KORYPH_POLL_SEC env can also set it (koryph-2im.2)
-	StuckSec       int // default 900
+	// RequireCalibration hard-blocks dispatch while the quota governor is
+	// uncalibrated (both ceilings 0), instead of the default advisory pass
+	// (koryph-grz). Opt-in spend safety: a run refuses to dispatch until
+	// `koryph quota calibrate` sets a ceiling. The `--require-calibration`
+	// flag or the project's require_calibration config sets it.
+	RequireCalibration bool
+	PollSec            int // default 10; project config poll_seconds and KORYPH_POLL_SEC env can also set it (koryph-2im.2)
+	StuckSec           int // default 900
 	// HealthIntervalSec sets how often the in-loop health patrol fires
 	// (default 600 = 10m; KORYPH_HEALTH_INTERVAL_SEC env and project config
 	// health_interval_seconds also participate — see runner.healthInterval;

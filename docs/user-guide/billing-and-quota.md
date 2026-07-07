@@ -194,10 +194,25 @@ The billing guard controls whether the governor's throttling constraints
 | **Enforced** (default) | `billing_guard` unset or `"enforce"` in the registry record | Governor blocks dispatch and scales concurrency |
 | **Advisory (registry)** | `billing_guard: advisory` in the registry record | Measure + log + warn; never block |
 | **Advisory (run flag)** | `--no-billing-guard` passed to `koryph run` | Advisory for that run only |
-| **Automatic baseline** | Account not yet calibrated | Always advisory until a ceiling is set |
+| **Automatic baseline** | Account not yet calibrated | Advisory until a ceiling is set — but **warned loudly every run** (see below) |
 
 In any advisory mode, billing stays on subscription regardless of governor
 level — the API-key stop-fallback never fires.
+
+### Uncalibrated governor (koryph-grz)
+
+An uncalibrated account (both ceilings `0`) cannot enforce the 5h/weekly ladder,
+so it runs **advisory** — but this is no longer *silent*. Every run emits a
+prominent warning that spend limits are **not** being enforced, naming the
+account and the `koryph quota calibrate` fix. If you want spend safety to be a
+hard guarantee rather than a nudge, opt into **fail-closed**:
+
+- **Per run:** `koryph run … --require-calibration` — the run refuses to
+  dispatch (reason `governor-uncalibrated`) until a ceiling is calibrated.
+- **Per project:** `"require_calibration": true` in `koryph.project.json` —
+  same block for every run of that project.
+
+Calibrating (below) clears both the warning and the block.
 
 > Spend-authorization gates (explicit API key, batch confirmation) are
 > independent of the billing guard and are never bypassed by advisory mode.
