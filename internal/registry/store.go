@@ -191,6 +191,62 @@ func (s *Store) List() ([]*Record, error) {
 	return recs, nil
 }
 
+// FindByPath returns the registered project whose Root is path itself or an
+// ancestor of path. When project roots are nested, the deepest (most specific)
+// root wins. It returns (nil, nil) when path lies inside no registered
+// project's root — that is a normal "not in a project here" outcome, not an
+// error, so the caller decides how to surface it (koryph tui turns it into a
+// "specify --project" usage message rather than opening an unrelated cockpit).
+//
+// Symlinks in both path and each record's Root are resolved before comparison
+// so a symlinked checkout still matches the registered root; a path that does
+// not resolve (e.g. does not yet exist) falls back to a lexical absolute clean.
+func (s *Store) FindByPath(path string) (*Record, error) {
+	recs, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	target := canonPath(path)
+	var best *Record
+	bestLen := -1
+	for _, rec := range recs {
+		root := canonPath(rec.Root)
+		if !withinOrEqual(root, target) {
+			continue
+		}
+		if len(root) > bestLen {
+			best, bestLen = rec, len(root)
+		}
+	}
+	return best, nil
+}
+
+// canonPath resolves p to an absolute, symlink-free path for comparison,
+// falling back to a lexical absolute clean when the path cannot be resolved
+// (e.g. it does not exist). Both the query path and each record's Root pass
+// through here so the comparison is apples-to-apples (macOS, for instance,
+// resolves /var → /private/var on only one side otherwise).
+func canonPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// withinOrEqual reports whether child is parent itself or a descendant of it.
+// Both paths must already be canonical (see canonPath).
+func withinOrEqual(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 // Save updates an existing record. It refuses to change the account triple
 // (AccountProfile / ClaudeConfigDir / ExpectedIdentity) relative to the
 // on-disk record — those move only through SetAccount.

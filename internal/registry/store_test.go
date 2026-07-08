@@ -505,6 +505,129 @@ func TestListSorted(t *testing.T) {
 	}
 }
 
+func TestFindByPathExactRoot(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+	if err := s.Add(ctx, sampleRecord("proj", root)); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	rec, err := s.FindByPath(root)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if rec == nil || rec.ProjectID != "proj" {
+		t.Fatalf("FindByPath(root) = %v, want project proj", rec)
+	}
+}
+
+func TestFindByPathDescendant(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+	if err := s.Add(ctx, sampleRecord("proj", root)); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	sub := filepath.Join(root, "internal", "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	rec, err := s.FindByPath(sub)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if rec == nil || rec.ProjectID != "proj" {
+		t.Fatalf("FindByPath(subdir) = %v, want project proj", rec)
+	}
+}
+
+func TestFindByPathNoMatchReturnsNil(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+	if err := s.Add(ctx, sampleRecord("proj", root)); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// A directory that is not inside any registered root.
+	outside := t.TempDir()
+	rec, err := s.FindByPath(outside)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if rec != nil {
+		t.Fatalf("FindByPath(outside) = %v, want nil (no match)", rec)
+	}
+}
+
+// TestFindByPathNestedDeepestWins covers overlapping roots: an inner project
+// registered inside an outer project's tree. A path in the inner tree must
+// resolve to the inner (most specific) project, not the outer one.
+func TestFindByPathNestedDeepestWins(t *testing.T) {
+	ctx := context.Background()
+	outer := gitProject(t)
+	inner := filepath.Join(outer, "vendor", "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatalf("mkdir inner: %v", err)
+	}
+	runGit(t, inner, "init")
+
+	s := newInitStore(t)
+	if err := s.Add(ctx, sampleRecord("outer", outer)); err != nil {
+		t.Fatalf("add outer: %v", err)
+	}
+	if err := s.Add(ctx, sampleRecord("inner", inner)); err != nil {
+		t.Fatalf("add inner: %v", err)
+	}
+
+	// A path inside the inner tree resolves to inner.
+	deep := filepath.Join(inner, "sub")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatalf("mkdir deep: %v", err)
+	}
+	rec, err := s.FindByPath(deep)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if rec == nil || rec.ProjectID != "inner" {
+		t.Fatalf("FindByPath(inner subdir) = %v, want inner (deepest root wins)", rec)
+	}
+
+	// A path inside outer but outside inner resolves to outer.
+	rec, err = s.FindByPath(outer)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if rec == nil || rec.ProjectID != "outer" {
+		t.Fatalf("FindByPath(outer root) = %v, want outer", rec)
+	}
+}
+
+// TestFindByPathResolvesSymlinks verifies a symlinked path still matches the
+// registered root: canonPath resolves symlinks on both sides.
+func TestFindByPathResolvesSymlinks(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+	if err := s.Add(ctx, sampleRecord("proj", root)); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	rec, err := s.FindByPath(link)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if rec == nil || rec.ProjectID != "proj" {
+		t.Fatalf("FindByPath(symlink) = %v, want project proj", rec)
+	}
+}
+
 // TestSaveMarksCalibrationStaleOnProxyFlip verifies that Store.Save writes the
 // CalibrationStale flag to the quota config when agent_proxy.ID() changes
 // (koryph-3l1.2). The flag is written to s.quotaDir() so the test is hermetic
