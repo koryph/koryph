@@ -277,7 +277,7 @@ stop an agent (or every agent with --all)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--all` | bool |  | stop active agents across ALL managed projects |
+| `--all` | bool |  | stop every active agent — across ALL managed projects, or one project with --project |
 | `--force` | bool |  | SIGKILL instead of SIGTERM — uncommitted worktree work is LOST |
 | `--project` | string |  | project id (default: the project containing the current directory; unless --all) |
 

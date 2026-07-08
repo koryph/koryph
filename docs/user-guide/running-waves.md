@@ -397,11 +397,13 @@ uncommitted in-progress work is lost:
 koryph stop --project myproject beads-042 --force
 ```
 
-To stop every live agent across all managed projects at once, use `--all` (combine
-with `--force` for SIGKILL):
+To stop every live agent at once, use `--all` (combine with `--force` for SIGKILL).
+On its own `--all` sweeps every managed project; add `--project` to scope the sweep
+to one project:
 
 ```sh
-koryph stop --all
+koryph stop --all                              # every agent, every project
+koryph stop --all --project myproject          # every agent in one project
 koryph stop --all --force
 ```
 

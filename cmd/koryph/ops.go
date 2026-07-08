@@ -398,10 +398,10 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 func cmdStop(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("stop", stderr)
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory; unless --all)")
-	all := fs.Bool("all", false, "stop active agents across ALL managed projects")
+	all := fs.Bool("all", false, "stop every active agent — across ALL managed projects, or one project with --project")
 	force := fs.Bool("force", false, "SIGKILL instead of SIGTERM — uncommitted worktree work is LOST")
 	setUsage(fs, stdout, "stop an agent (or every agent with --all) — SIGTERM, or SIGKILL with --force",
-		"[--project ID] <phase-id> [--force] | --all [--force]")
+		"[--project ID] <phase-id> [--force] | --all [--project ID] [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -419,10 +419,21 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *all {
-		if *projectID != "" || len(pos) > 0 {
-			return usageErr(stderr, "stop --all takes neither --project nor a phase-id")
+		if len(pos) > 0 {
+			return usageErr(stderr, "stop --all takes no phase-id — it stops every agent (scope it to one project with --project)")
 		}
-		return stopAll(ctx, store, stop, verb, stdout, stderr)
+		records, err := store.List()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if *projectID != "" {
+			rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "stop")
+			if code != 0 {
+				return code
+			}
+			records = []*registry.Record{rec}
+		}
+		return stopAll(ctx, store, records, stop, verb, stdout, stderr)
 	}
 
 	recSel, code := resolveProjectRecordCwd(stderr, store, *projectID, "stop")
@@ -453,14 +464,11 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// stopAll signals every live, non-terminal agent across all managed projects.
-// A project with no runs (or an unreadable ledger) is skipped, not fatal — one
-// bad project must not stop the sweep.
-func stopAll(ctx context.Context, store *registry.Store, stop func(int) error, verb string, stdout, stderr io.Writer) int {
-	records, err := store.List()
-	if err != nil {
-		return fail(stderr, err)
-	}
+// stopAll signals every live, non-terminal agent across the given projects —
+// the whole registry for a bare `--all`, or a single record when `--all` is
+// scoped with `--project`. A project with no runs (or an unreadable ledger) is
+// skipped, not fatal — one bad project must not stop the sweep.
+func stopAll(ctx context.Context, store *registry.Store, records []*registry.Record, stop func(int) error, verb string, stdout, stderr io.Writer) int {
 	stopped, projects := 0, 0
 	for _, rec := range records {
 		_, run, err := latestRun(ctx, store, rec.ProjectID)
