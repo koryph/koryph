@@ -68,7 +68,11 @@ func TestBuildTokenEconomy_ZeroTokenFields(t *testing.T) {
 // TestBuildTokenEconomy_SingleSlotHealthy verifies a single slot with a high
 // cache-hit ratio yields a populated row and no tripwire.
 func TestBuildTokenEconomy_SingleSlotHealthy(t *testing.T) {
-	now := time.Now()
+	// Fixed noon-UTC clock so the "1 hour ago" dispatch always lands in today's
+	// UTC bucket — with time.Now() the slot crosses into yesterday's bucket when
+	// the test runs in the first hour after UTC midnight, flaking the today-bucket
+	// assertion below. Matches the deterministic clock in the sibling trend tests.
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	// 94.7% cache_read share — mirrors the measured fleet profile in the design doc.
 	runs := []*ledger.Run{
 		{
