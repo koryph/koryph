@@ -220,12 +220,17 @@ func RecordForProxy(cfg *Config, tier, size, proxyID string, actualUSD, estimate
 		if cfg.ErrorStats == nil {
 			cfg.ErrorStats = map[string]*ErrorStat{}
 		}
-		ratio := actualUSD / estimateUSD
-		ape := math.Abs(actualUSD-estimateUSD) / estimateUSD * 100
+		// Winsorize this observation before folding: a near-zero estimate (or an
+		// anomalous actual) yields an astronomical ratio/APE that, unbounded,
+		// poisons the EWMA for every future estimate (see the bias-bound
+		// constants). clampBias on the folded result additionally heals a
+		// legacy-poisoned value loaded from disk on this first new observation.
+		ratio := clampBias(actualUSD / estimateUSD)
+		ape := math.Min(math.Abs(actualUSD-estimateUSD)/estimateUSD*100, maxObservedAPE)
 		if es, ok := cfg.ErrorStats[key]; ok {
 			es.N++
-			es.Bias = 0.7*es.Bias + 0.3*ratio
-			es.MAPE = 0.7*es.MAPE + 0.3*ape
+			es.Bias = clampBias(0.7*es.Bias + 0.3*ratio)
+			es.MAPE = math.Min(0.7*es.MAPE+0.3*ape, maxObservedAPE)
 		} else {
 			cfg.ErrorStats[key] = &ErrorStat{N: 1, Bias: ratio, MAPE: ape}
 		}
@@ -245,6 +250,42 @@ func RecordForProxy(cfg *Config, tier, size, proxyID string, actualUSD, estimate
 // is uncorrected — there is not enough evidence to trust the ratio.
 // Exported so the metrics/CLI layer can annotate rows that have reached it.
 const BiasCorrectionThreshold = 5
+
+// The bias factor is a slowly-varying multiplicative correction applied on top
+// of an already-calibrated base estimate, so a healthy value sits close to 1.
+// A value far outside a small band is not signal — it is the fallout of a
+// degenerate observation (an actual recorded against a near-zero estimate makes
+// actual/estimate astronomically large). Left unbounded, a single such
+// observation drove ErrorStats.Bias to ~8.8M on a live account; the estimator
+// then reported a ~$70M "wave estimate" that tripped the 5h governor's
+// graceful-stop and killed a wave loop on a phantom cost. These bounds clamp
+// the correction at three layers: the per-observation ratio folded into the
+// EWMA (poison can't get in), the stored EWMA result (a legacy-poisoned value
+// on disk self-heals on the next observation), and the applied factor (any
+// not-yet-refolded legacy value is neutralized at read time). A correction on
+// an already-calibrated base is never legitimately a 10x swing.
+const (
+	minBiasFactor = 0.1
+	maxBiasFactor = 10.0
+	// maxObservedAPE caps one observation's absolute-percentage error before it
+	// folds into the MAPE EWMA — same near-zero-estimate blow-up as the ratio —
+	// keeping the displayed confidence hint finite.
+	maxObservedAPE = 1000.0
+)
+
+// clampBias bounds a bias factor to the sane band. Applied both to the stored
+// EWMA (so a legacy-poisoned value heals) and to the factor at apply time (so
+// a legacy value not yet refolded cannot produce a phantom estimate).
+func clampBias(b float64) float64 {
+	switch {
+	case b < minBiasFactor:
+		return minBiasFactor
+	case b > maxBiasFactor:
+		return maxBiasFactor
+	default:
+		return b
+	}
+}
 
 // EstimateItemCorrected returns the bias-corrected and raw base estimates
 // for one dispatch (koryph-6bl). Once ErrorStats[key].N >= 5, the returned
@@ -274,7 +315,7 @@ func EstimateItemCorrectedForRuntimeProxy(cfg *Config, runtimeName, tier, size, 
 	if cfg.ErrorStats != nil {
 		key := calibKey(tier, size, proxyID)
 		if es, ok := cfg.ErrorStats[key]; ok && es.N >= BiasCorrectionThreshold {
-			corrected = base * es.Bias
+			corrected = base * clampBias(es.Bias)
 		}
 	}
 	return corrected, base

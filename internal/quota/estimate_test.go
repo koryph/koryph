@@ -144,6 +144,67 @@ func TestEstimateItemCorrected_AboveThreshold(t *testing.T) {
 	}
 }
 
+// TestBiasClampNeutralizesPoisonedStat reproduces the live-account defect
+// (koryph-hmm): ErrorStats.Bias grew unbounded to ~8.8M while calibration
+// stayed healthy at 1.6, so base*bias produced a ~$14M per-item / ~$70M wave
+// estimate that tripped the governor's graceful-stop. The applied factor must
+// now be clamped so the estimate is bounded regardless of the on-disk value.
+func TestBiasClampNeutralizesPoisonedStat(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	cfg.Calibration = map[string]float64{"sonnet:M": 1.6} // healthy base
+	cfg.ErrorStats = map[string]*ErrorStat{
+		"sonnet:M": {N: 175, Bias: 8_788_379.73, MAPE: 878_837_941}, // the real poisoned values
+	}
+
+	corrected, base := EstimateItemCorrected(cfg, "sonnet", "M")
+	if !approx(base, 1.6) {
+		t.Fatalf("base = %g, want 1.6 (calibration wins)", base)
+	}
+	// corrected is clamped to base * maxBiasFactor, not base * 8.79M.
+	if want := 1.6 * maxBiasFactor; !approx(corrected, want) {
+		t.Fatalf("corrected = %g, want %g (clamped), NOT %g", corrected, want, base*8_788_379.73)
+	}
+	// A whole wave of these must stay far below any real ceiling — the phantom
+	// $70M is gone.
+	wave := EstimateWaveCorrected(cfg, []struct{ Tier, Size string }{
+		{"sonnet", "M"}, {"sonnet", "M"}, {"sonnet", "M"}, {"sonnet", "M"}, {"sonnet", "M"},
+	})
+	if wave > 1000 {
+		t.Fatalf("5-item wave estimate = %g, want a bounded (sub-$1k) value", wave)
+	}
+}
+
+// TestBiasPoisonHealsOnNextObservation proves a legacy-poisoned on-disk Bias
+// self-heals: the very next real observation clamps the stored EWMA back into
+// the sane band instead of leaving millions persisted.
+func TestBiasPoisonHealsOnNextObservation(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	cfg.ErrorStats = map[string]*ErrorStat{"sonnet:M": {N: 175, Bias: 8_788_379.73, MAPE: 878_837_941}}
+
+	// A normal observation (actual 1.6, estimate 1.5 → ratio ~1.07).
+	Record(cfg, "sonnet", "M", 1.6, 1.5)
+	if got := cfg.ErrorStats["sonnet:M"].Bias; got > maxBiasFactor {
+		t.Fatalf("Bias after one observation = %g, want <= %g (healed)", got, maxBiasFactor)
+	}
+}
+
+// TestRecordCannotPoisonBias proves the source is closed: an observation with a
+// near-zero estimate (the mechanism that poisoned the live account) can no
+// longer drive Bias past the cap, however many times it repeats.
+func TestRecordCannotPoisonBias(t *testing.T) {
+	cfg := DefaultConfig("acct")
+	for i := 0; i < 50; i++ {
+		Record(cfg, "sonnet", "M", 1.6, 1e-7) // actual/estimate = 1.6e7 unclamped
+	}
+	es := cfg.ErrorStats["sonnet:M"]
+	if es.Bias > maxBiasFactor {
+		t.Fatalf("Bias = %g after 50 near-zero-estimate observations, want <= %g", es.Bias, maxBiasFactor)
+	}
+	if es.MAPE > maxObservedAPE {
+		t.Fatalf("MAPE = %g, want <= %g", es.MAPE, maxObservedAPE)
+	}
+}
+
 // TestEstimateItemForRuntimeClaudeParity proves EstimateItemForRuntime(cfg,
 // "claude", tier, size) is byte-for-byte EstimateItem(cfg, tier, size) —
 // including the unknown-tier fallback path — across every existing fixture
