@@ -8,6 +8,20 @@
 SHELL := /bin/sh
 BIN   := bin/koryph
 
+# Version stamping: `make build`/`make install` embed git provenance via
+# `-ldflags -X` so a binary self-reports the exact commit it came from — the
+# release tag on a tagged build, or an intermediate "v0.8.0-5-gabc1234[-dirty]"
+# for an untagged or dirty tree. Recursive (`=`) assignment defers the git
+# shell-outs until a build recipe expands LDFLAGS, so plain `make`/`make help`
+# never shells out to git. Values are empty outside a git checkout, in which
+# case the binary falls back to internal/version.Engine. Keep in parity with
+# the `-X` ldflags in .goreleaser.yaml.
+VERSION_PKG  := github.com/koryph/koryph/internal/version
+GIT_DESCRIBE  = $(shell git describe --tags --always --dirty --match 'v[0-9]*' 2>/dev/null)
+GIT_COMMIT    = $(shell git rev-parse --short HEAD 2>/dev/null)$(shell git diff --quiet HEAD 2>/dev/null || echo -dirty)
+BUILD_DATE    = $(shell git show -s --format=%cI HEAD 2>/dev/null)
+LDFLAGS       = -X $(VERSION_PKG).describe=$(GIT_DESCRIBE) -X $(VERSION_PKG).commit=$(GIT_COMMIT) -X $(VERSION_PKG).date=$(BUILD_DATE)
+
 ##@ General
 
 .PHONY: help
@@ -40,12 +54,12 @@ init: ## Bootstrap a fresh clone: pinned tools (nix), git hooks, and koryph
 	@echo "    koryph signing enable --project koryph   # if signing is required"
 
 .PHONY: build
-build: ## Build the koryph binary into bin/
-	go build -o $(BIN) ./cmd/koryph
+build: ## Build the koryph binary into bin/ (stamped with the git version)
+	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/koryph
 
 .PHONY: install
-install: ## Install koryph into GOPATH/bin (~/bin)
-	go install ./cmd/koryph
+install: ## Install koryph into GOPATH/bin (~/bin), stamped with the git version
+	go install -ldflags "$(LDFLAGS)" ./cmd/koryph
 
 .PHONY: run
 run: build ## Build then show the CLI help

@@ -19,6 +19,7 @@ import (
 
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/version"
 )
 
 func main() {
@@ -267,7 +268,20 @@ func init() {
 }
 
 func cmdVersion(_ []string, stdout, _ io.Writer) int {
+	// First line stays exactly "koryph <semver>": release tooling parses its
+	// last field (goreleaser's version-parity hook, `make version-check`). The
+	// build-provenance lines below appear only on a linker-stamped or VCS-stamped
+	// binary, so `go run`/`go test` still emit the single canonical line.
 	fmt.Fprintf(stdout, "koryph %s\n", engine.EngineVersion)
+	if b := version.Build(); b != "" && b != "v"+engine.EngineVersion {
+		fmt.Fprintf(stdout, "  build:  %s\n", b)
+	}
+	if c := version.Commit(); c != "" {
+		fmt.Fprintf(stdout, "  commit: %s\n", c)
+	}
+	if d := version.Date(); d != "" {
+		fmt.Fprintf(stdout, "  built:  %s\n", d)
+	}
 	return 0
 }
 
