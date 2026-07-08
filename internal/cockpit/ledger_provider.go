@@ -18,6 +18,12 @@ import (
 	"github.com/koryph/koryph/internal/sched"
 )
 
+// derivedTTL is how long the beads-sourced derived sections (burndown,
+// efficiency, graph, queue) are cached before the background goroutine
+// recomputes them. All four share one cadence; the per-section values were
+// identical (5 s) and the sections are now recomputed together.
+const derivedTTL = 5 * time.Second
+
 // agentStatus matches the shape that koryph dispatch seeds and agents rewrite
 // at each step boundary ({"state","step","pct"}).
 type agentStatus struct {
@@ -46,20 +52,25 @@ type LedgerProvider struct {
 	gs *govern.Store
 	bd *beads.Adapter
 
-	// burndown cache — refreshed at burndownTTL cadence (not every 100 ms tick).
-	burndownCache BurndownSnapshot
-	burndownAt    time.Time
+	// Derived sections (burndown, efficiency, graph, queue) are expensive to
+	// assemble: they shell out to bd, which costs several seconds on a large
+	// project — bd's digraph export alone is ~9 s. They are therefore served
+	// from these caches and recomputed by a single background goroutine
+	// (refreshDerived) so a cold or expired cache NEVER blocks the refresh tick.
+	// The cheap ledger data (slots/threads, run status, governor, events) is
+	// always assembled synchronously and returned immediately; the derived
+	// sections fill in a few seconds later when the background job completes.
+	// All four caches advance together and are stamped with derivedAt.
+	burndownCache     BurndownSnapshot
+	efficiencyCache   EfficiencySnapshot
+	graphCache        GraphSnapshot
+	queueCache        QueueSnapshot
+	derivedAt         time.Time // when the four caches above were last recomputed
+	derivedRefreshing bool      // a background refreshDerived is in flight
 
-	// efficiency cache — refreshed at efficiencyTTL cadence (not every 100 ms tick).
-	efficiencyCache EfficiencySnapshot
-	efficiencyAt    time.Time
-
-	// graph — shared dependency graph snapshot; refreshed at graphTTL cadence.
+	// graph — shared dependency graph provider (holds its own cache + TTL).
+	// Driven from refreshDerived and read synchronously by BeadDetail.
 	graph *GraphProvider
-
-	// queue cache — refreshed at queueTTL cadence.
-	queueCache QueueSnapshot
-	queueAt    time.Time
 
 	// events — live events feed collector (koryph-9af.5).
 	events *eventCollector
@@ -124,29 +135,23 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 	// --- governor ---------------------------------------------------------------
 	snap.Governor = p.refreshGovernor()
 
-	// --- burndown (cached) ------------------------------------------------------
-	if snap.CapturedAt.Sub(p.burndownAt) >= burndownTTL {
-		p.burndownCache = p.refreshBurndown(snap.CapturedAt)
-		p.burndownAt = snap.CapturedAt
-	}
+	// --- derived sections (burndown, efficiency, graph, queue) ------------------
+	// Served from cache and recomputed off the tick thread (see refreshDerived).
+	// bd's digraph export alone is ~9 s, so computing these synchronously would
+	// stall the whole snapshot — including the cheap slot/thread data above —
+	// for that long on every cold or expired cache. Instead we return the last
+	// good caches immediately and kick a single background recompute when they
+	// are stale, so the Threads tab paints in milliseconds.
 	snap.Burndown = p.burndownCache
-
-	// --- efficiency (cached) ----------------------------------------------------
-	if snap.CapturedAt.Sub(p.efficiencyAt) >= efficiencyTTL {
-		p.efficiencyCache = p.refreshEfficiency(snap, snap.CapturedAt)
-		p.efficiencyAt = snap.CapturedAt
-	}
 	snap.Efficiency = p.efficiencyCache
-
-	// --- graph (cached) ---------------------------------------------------------
-	snap.Graph = p.graph.Refresh(context.Background(), snap.CapturedAt)
-
-	// --- queue (cached) ---------------------------------------------------------
-	if snap.CapturedAt.Sub(p.queueAt) >= queueTTL {
-		p.queueCache = p.refreshQueue(context.Background(), snap)
-		p.queueAt = snap.CapturedAt
-	}
+	snap.Graph = p.graphCache
 	snap.Queue = p.queueCache
+	if !p.derivedRefreshing && snap.CapturedAt.Sub(p.derivedAt) >= derivedTTL {
+		p.derivedRefreshing = true
+		// Pass the inputs the background job needs by value; it must not read
+		// p's mutable cache fields without the lock.
+		go p.refreshDerived(snap.Slots, snap.Governor, snap.RunID, snap.CapturedAt)
+	}
 
 	// --- events (koryph-9af.5) --------------------------------------------------
 	// Collect is called on every tick — it is cheap (diff + audit tail).
@@ -154,6 +159,35 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 	snap.Events = p.events.Snapshot()
 
 	return snap, nil
+}
+
+// refreshDerived recomputes the expensive beads-sourced sections (graph,
+// burndown, efficiency, queue) off the refresh tick and stores them in the
+// provider caches. It is launched as a goroutine by Refresh when the caches are
+// stale, guarded by derivedRefreshing so at most one runs at a time.
+//
+// The expensive work (bd subprocess calls, ~15 s cold) runs WITHOUT holding
+// p.mu so concurrent cheap Refresh calls are never blocked; the lock is taken
+// only at the end to publish the results atomically. slots/gov/runID/now are
+// passed by value so the goroutine reads no mutable provider state unlocked
+// (p.ls, p.bd, p.gs, p.graph are set once at construction and are safe to read).
+func (p *LedgerProvider) refreshDerived(slots []SlotSnapshot, gov GovernorSnapshot, runID string, now time.Time) {
+	ctx := context.Background()
+
+	// Graph first — the queue computation consumes it.
+	graphSnap := p.graph.Refresh(ctx, now)
+	burndown := p.refreshBurndown(now)
+	efficiency := p.refreshEfficiency(Snapshot{RunID: runID, Governor: gov}, now)
+	queue := p.refreshQueue(ctx, Snapshot{Slots: slots, Graph: graphSnap, CapturedAt: now})
+
+	p.mu.Lock()
+	p.graphCache = graphSnap
+	p.burndownCache = burndown
+	p.efficiencyCache = efficiency
+	p.queueCache = queue
+	p.derivedAt = now
+	p.derivedRefreshing = false
+	p.mu.Unlock()
 }
 
 // refreshBurndown builds a fresh BurndownSnapshot, soft-failing on any

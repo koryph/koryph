@@ -13,11 +13,6 @@ import (
 	"github.com/koryph/koryph/internal/sched"
 )
 
-const (
-	// queueTTL is how long the queue snapshot is cached between bd calls.
-	queueTTL = 5 * time.Second
-)
-
 // QueueNodeState is the computed dispatch state of a bead in the project queue.
 type QueueNodeState string
 

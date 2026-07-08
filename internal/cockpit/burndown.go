@@ -32,9 +32,6 @@ import (
 )
 
 const (
-	// burndownTTL is how long beads-sourced burndown data is cached.
-	burndownTTL = 5 * time.Second
-
 	// burndownMaxRuns limits how many historical runs are scanned for stats.
 	burndownMaxRuns = 30
 

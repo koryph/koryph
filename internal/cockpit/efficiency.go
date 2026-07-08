@@ -27,10 +27,6 @@ import (
 )
 
 const (
-	// efficiencyTTL is how long the efficiency snapshot is cached.
-	// Matches burndownTTL so both expensive derivations share one cadence.
-	efficiencyTTL = 5 * time.Second
-
 	// efficiencyMaxRuns limits how many historical runs are scanned for the
 	// dispatch sparkline.
 	efficiencyMaxRuns = 30
