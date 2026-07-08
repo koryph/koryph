@@ -74,12 +74,12 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 // Works with the loop stopped; the enabled flag does not gate the explicit command.
 func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("epic validate", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	round := fs.Int("round", 0, "validation round override (0 = auto-detect from prior verdict files)")
 	asJSON := fs.Bool("json", false, "emit the raw verdict JSON; actions still apply")
 	setUsage(fs, stdout,
 		"on-demand epic validation: completeness + structural health review",
-		"<epic-id> --project ID [--round N] [--json]")
+		"<epic-id> [--project ID] [--round N] [--json]")
 
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -89,18 +89,15 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 		return usageErr(stderr, "epic validate: <epic-id> is required")
 	}
 	epicID := pos[0]
-	if *projectID == "" {
-		return usageErr(stderr, "epic validate: --project is required")
-	}
 
 	ctx := context.Background()
 	store, err := openStore(ctx)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "epic validate")
+	if code != 0 {
+		return code
 	}
 
 	// Load project config for epic_validation defaults (nil config is fine; all

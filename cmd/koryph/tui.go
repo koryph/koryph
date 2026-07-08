@@ -130,8 +130,10 @@ func resolveTUIProjects(stderr io.Writer, store *registry.Store, projectID strin
 // tuiSelectProjectHint reports that the current directory is outside every
 // registered project and tells the operator how to pick one: name it with
 // --project ID, or use --all-projects (-a) to view them all. The registered
-// ids and roots are listed so a valid choice is one glance away. Returns the
-// usage exit code.
+// ids and roots are listed so a valid choice is one glance away. tui keeps its
+// own hint (rather than the shared projectSelectHint) because it is the only
+// project-scoped command with an --all-projects option to advertise. Returns
+// the usage exit code.
 func tuiSelectProjectHint(stderr io.Writer, store *registry.Store) int {
 	fmt.Fprintln(stderr, "tui: the current directory is not inside a registered koryph project.")
 	recs, err := store.List()

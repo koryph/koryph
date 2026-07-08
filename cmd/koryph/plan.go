@@ -56,11 +56,11 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 // cmdPlanAudit runs the read-only corpus conflict analysis and prints a report.
 func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("plan audit", stderr)
-	projectFlag := fs.String("project", "", "project id (required)")
+	projectFlag := fs.String("project", "", "project id (default: the project containing the current directory)")
 	asJSON := fs.Bool("json", false, "emit the audit report as JSON (for agent consumption)")
 	setUsage(fs, stdout,
 		"deterministic corpus conflict analysis — footprint gaps, skip reasons, conflicting pairs, parallel width",
-		"--project ID [--json]")
+		"[<id> | --project ID] [--json]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -69,7 +69,7 @@ func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
 	if len(pos) > 0 {
 		posVal = pos[0]
 	}
-	projectID, code := resolveProjectID(stderr, "plan audit", posVal, *projectFlag)
+	projectID, code := mergeProjectID(stderr, "plan audit", posVal, *projectFlag)
 	if code != 0 {
 		return code
 	}
@@ -79,9 +79,9 @@ func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, projectID, "plan audit")
+	if code != 0 {
+		return code
 	}
 
 	cfg, err := project.Load(rec.Root)

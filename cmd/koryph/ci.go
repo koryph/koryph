@@ -82,7 +82,7 @@ func cmdCISetup(args []string, stdout, stderr io.Writer) int {
 		posVal = pos[0]
 	}
 
-	id, code := resolveProjectID(stderr, "ci setup", posVal, *flagProject)
+	id, code := mergeProjectID(stderr, "ci setup", posVal, *flagProject)
 	if code != 0 {
 		return code
 	}
@@ -92,9 +92,9 @@ func cmdCISetup(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(id)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, id, "ci setup")
+	if code != 0 {
+		return code
 	}
 
 	cfg, err := project.Load(rec.Root)
@@ -184,7 +184,7 @@ func cmdCICheck(args []string, stdout, stderr io.Writer) int {
 		posVal = pos[0]
 	}
 
-	id, code := resolveProjectID(stderr, "ci check", posVal, *flagProject)
+	id, code := mergeProjectID(stderr, "ci check", posVal, *flagProject)
 	if code != 0 {
 		return code
 	}
@@ -194,9 +194,9 @@ func cmdCICheck(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(id)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, id, "ci check")
+	if code != 0 {
+		return code
 	}
 
 	cfg, err := project.Load(rec.Root)

@@ -47,7 +47,7 @@ func init() {
 // cmdRun executes one engine run over a project.
 func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("run", stderr)
-	project := fs.String("project", "", "project id (required)")
+	project := fs.String("project", "", "project id (default: the project containing the current directory)")
 	once := fs.Bool("once", false, "run exactly one wave")
 	max := fs.Int("max", 0, "wave width cap (0 = project/engine default)")
 	parent := fs.String("parent", "", "epic scope for the bd frontier")
@@ -65,16 +65,29 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	noBillingGuard := fs.Bool("no-billing-guard", false, "disable quota throttling for this run (usage still measured; billing stays subscription)")
 	requireCalibration := fs.Bool("require-calibration", false, "refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run `koryph quota calibrate` first")
 	dispatchMode := fs.String("dispatch-mode", "", "dispatch mode: wave|rolling (default: project config, else wave)")
-	setUsage(fs, stdout, "execute one engine run over a project", "--project ID [flags]")
+	setUsage(fs, stdout, "execute one engine run over a project", "[--project ID] [flags]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
-	if *project == "" {
-		return usageErr(stderr, "run: --project is required")
+	// Default the project to the one containing the current directory when
+	// --project is omitted (matches every other project-scoped command). The
+	// engine validates an explicit id itself, so we only touch the registry to
+	// resolve the cwd default.
+	projectID := *project
+	if projectID == "" {
+		store, err := openStore(context.Background())
+		if err != nil {
+			return fail(stderr, err)
+		}
+		rec, code := resolveProjectRecordCwd(stderr, store, "", "run")
+		if code != 0 {
+			return code
+		}
+		projectID = rec.ProjectID
 	}
 
 	opts := engine.Options{
-		ProjectID:          *project,
+		ProjectID:          projectID,
 		Max:                *max,
 		Once:               *once,
 		DryRun:             *dryRun,
@@ -200,23 +213,20 @@ func slotSummary(slots map[string]int) string {
 // cmdStatus prints the latest-run per-slot detail for one project.
 func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("status", stderr)
-	project := fs.String("project", "", "project id (required)")
+	project := fs.String("project", "", "project id (default: the project containing the current directory)")
 	asJSON := fs.Bool("json", false, "emit the run as JSON")
-	setUsage(fs, stdout, "latest-run per-slot detail", "--project ID [--json]")
+	setUsage(fs, stdout, "latest-run per-slot detail", "[--project ID] [--json]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
-	}
-	if *project == "" {
-		return usageErr(stderr, "status: --project is required")
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*project)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *project, "status")
+	if code != 0 {
+		return code
 	}
 	run, err := ledger.NewStore(rec.Root).LoadLatest()
 	if err != nil {

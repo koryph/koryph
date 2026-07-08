@@ -248,7 +248,7 @@ func TestResizeAllRejectsProjectFlag(t *testing.T) {
 
 func TestDrainResizeUsageInHelp(t *testing.T) {
 	_, out, _ := runCmd("help")
-	for _, want := range []string{"drain --project ID", "resize (--project ID"} {
+	for _, want := range []string{"drain [--project ID]", "resize ([--project ID"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help output missing %q:\n%s", want, out)
 		}

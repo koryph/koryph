@@ -106,17 +106,14 @@ func latestRun(ctx context.Context, store *registry.Store, projectID string) (*r
 // and surfaces INBOX.md nudges with a prominent banner.
 func cmdTail(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("tail", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	n := fs.Int("n", 40, "number of trailing lines")
 	follow := fs.Bool("follow", false, "stream new lines as they appear (Ctrl-C to stop)")
 	setUsage(fs, stdout, "tail a phase's session.log + stderr.log; --follow streams new lines",
-		"--project ID <phase-id> [-n 40] [--follow]")
+		"[--project ID] <phase-id> [-n 40] [--follow]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "tail: --project is required")
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "tail: <phase-id> is required")
@@ -128,7 +125,11 @@ func cmdTail(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, run, err := latestRun(ctx, store, *projectID)
+	recSel, code := resolveProjectRecordCwd(stderr, store, *projectID, "tail")
+	if code != 0 {
+		return code
+	}
+	rec, run, err := latestRun(ctx, store, recSel.ProjectID)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -313,16 +314,13 @@ func tailFile(path string, n int) string {
 // internal/beads's package doc) — comments here are audit trail only.
 func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("nudge", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	setUsage(fs, stdout,
 		"nudge a bead — live INBOX.md if it's dispatched, else a bd note delivered at its next dispatch",
-		`--project ID <bead-id> "text"`)
+		`[--project ID] <bead-id> "text"`)
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "nudge: --project is required")
 	}
 	if len(pos) < 2 {
 		return usageErr(stderr, `nudge: <phase-id> "text" are required`)
@@ -334,9 +332,9 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "nudge")
+	if code != 0 {
+		return code
 	}
 
 	bd := beads.New(rec.Root)
@@ -399,11 +397,11 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 // cmdStop sends a graceful SIGTERM to a phase's agent process group.
 func cmdStop(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("stop", stderr)
-	projectID := fs.String("project", "", "project id (required unless --all)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory; unless --all)")
 	all := fs.Bool("all", false, "stop active agents across ALL managed projects")
 	force := fs.Bool("force", false, "SIGKILL instead of SIGTERM — uncommitted worktree work is LOST")
 	setUsage(fs, stdout, "stop an agent (or every agent with --all) — SIGTERM, or SIGKILL with --force",
-		"--project ID <phase-id> [--force] | --all [--force]")
+		"[--project ID] <phase-id> [--force] | --all [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -427,15 +425,16 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 		return stopAll(ctx, store, stop, verb, stdout, stderr)
 	}
 
-	if *projectID == "" {
-		return usageErr(stderr, "stop: --project is required (or use --all)")
+	recSel, code := resolveProjectRecordCwd(stderr, store, *projectID, "stop")
+	if code != 0 {
+		return code
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "stop: <phase-id> is required (or use --all)")
 	}
 	phaseID := pos[0]
 
-	_, run, err := latestRun(ctx, store, *projectID)
+	_, run, err := latestRun(ctx, store, recSel.ProjectID)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -492,20 +491,17 @@ func stopAll(ctx context.Context, store *registry.Store, stop func(int) error, v
 // cmdMerge lands a finished agent branch on the default branch.
 func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("merge", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	push := fs.Bool("push", false, "push the default branch after merge")
 	squash := fs.Bool("squash", false, "squash-merge instead of ff-only")
 	keepWorktree := fs.Bool("keep-worktree", false, "keep the worktree + branch after merge")
 	closeBead := fs.String("close-bead", "", "bead to close on a successful merge")
 	reason := fs.String("reason", "", "close reason for --close-bead")
 	setUsage(fs, stdout, "land a finished agent branch on the default branch",
-		"--project ID <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]")
+		"[--project ID] <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "merge: --project is required")
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "merge: <branch> is required")
@@ -517,9 +513,9 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "merge")
+	if code != 0 {
+		return code
 	}
 	cfg, err := project.Load(rec.Root)
 	if err != nil {
@@ -578,17 +574,14 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 // cmdLand lands an engine-opened PR (a pr-opened bead) fast-forward-only.
 func cmdLand(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("land", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	method := fs.String("method", "", "landing method override: ff|squash (default: project merge_method, else ff)")
 	reason := fs.String("reason", "", "bead close reason")
 	setUsage(fs, stdout, "land an engine-opened PR (a pr-opened bead) fast-forward-only; closes the bead on success",
-		"--project ID <bead> [--method ff|squash] [--reason R]")
+		"[--project ID] <bead> [--method ff|squash] [--reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "land: --project is required")
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "land: <bead> is required")
@@ -600,9 +593,9 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "land")
+	if code != 0 {
+		return code
 	}
 	cfg, err := project.Load(rec.Root)
 	if err != nil {
@@ -632,7 +625,7 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 // explicit approval of a single PR.
 func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("review-pr", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	all := fs.Bool("all", false, "analyze every open PR in the queue (skips drafts and PRs you authored)")
 	approve := fs.Bool("approve", false, "register an approving review (your explicit instruction — koryph never approves autonomously)")
 	comment := fs.Bool("comment", false, "post koryph's line-anchored findings as inline PR comments")
@@ -642,13 +635,10 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	closePR := fs.Bool("close", false, "close the PR (optionally with --body as the comment)")
 	body := fs.String("body", "", "review/approval body, or the --close comment")
 	setUsage(fs, stdout, "analyze another author's PR (or every open PR with --all); never approves autonomously",
-		"--project ID <pr> [--approve|--comment|--comment-on path:line:msg|--resume|--close] [--body B] | --all")
+		"[--project ID] <pr> [--approve|--comment|--comment-on path:line:msg|--resume|--close] [--body B] | --all")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "review-pr: --project is required")
 	}
 	if *all && (*approve || *comment || len(lines) > 0 || *resume || *closePR) {
 		return usageErr(stderr, "review-pr: --all cannot be combined with per-PR actions (act on one PR at a time)")
@@ -671,9 +661,9 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "review-pr")
+	if code != 0 {
+		return code
 	}
 	cfg, err := project.Load(rec.Root)
 	if err != nil {
@@ -702,22 +692,19 @@ func cmdReviewPR(args []string, stdout, stderr io.Writer) int {
 // cmdPRSync reconciles pr-opened beads against live PR state.
 func cmdPRSync(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("pr-sync", stderr)
-	projectID := fs.String("project", "", "project id (required)")
-	setUsage(fs, stdout, "reconcile pr-opened beads against live PR state (nothing stranded)", "--project ID")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
+	setUsage(fs, stdout, "reconcile pr-opened beads against live PR state (nothing stranded)", "[--project ID]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "pr-sync: --project is required")
 	}
 	ctx := context.Background()
 	store, err := openStore(ctx)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "pr-sync")
+	if code != 0 {
+		return code
 	}
 	if _, serr := engine.SyncPROpened(ctx, rec, nil, stdout); serr != nil {
 		return fail(stderr, serr)

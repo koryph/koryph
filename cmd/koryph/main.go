@@ -75,9 +75,9 @@ GETTING STARTED
   init                  create ~/.koryph, verify tools on PATH, print next steps (idempotent)
   project add <root> --account <personal|work> --identity <email> [--config-dir DIR] [--id slug] [--name N] [--branch B] [--force]
                         register a project (inspect + register + scaffold adapter + install agents, commands & rules)
-  validate <project-id>|--project ID
+  validate [<project-id>|--project ID]
                         run the pre-dispatch gate; promotes registered->migrated on green
-  run --project ID [--once] [--max N] [--parent EPIC] [--only BEAD] [--budget USD]
+  run [--project ID] [--once] [--max N] [--parent EPIC] [--only BEAD] [--budget USD]
       [--default-model M] [--auto-merge] [--direct] [--dry-run] [--resume] [--review]
       [--allow-api-spend] [--allow-unvalidated] [--manual]
                         execute one engine run over a project (--only dispatches a
@@ -85,34 +85,34 @@ GETTING STARTED
                         skips PRs and merges straight to the default branch)
 
 OPERATE
-  intake --project ID [--label triage] [--limit 20] [--dry-run] [--comment]
+  intake [--project ID] [--label triage] [--limit 20] [--dry-run] [--comment]
                         poll a project's labeled GitHub issues into no-dispatch planning beads
-  nudge --project ID <phase-id> "text"
+  nudge [--project ID] <phase-id> "text"
                         append an operator note to the phase INBOX (+ bd comment)
-  stop --project ID <phase-id> [--force] | stop --all [--force]
+  stop [--project ID] <phase-id> [--force] | stop --all [--force]
                         stop an agent (or every agent, --all) — SIGTERM, or
                         SIGKILL with --force (uncommitted work is lost)
-  drain --project ID | --all
+  drain [--project ID] | --all
                         graceful loop wind-down: stop new dispatch, let active
                         slots finish, exit drained (operator-drain); consumes
                         its own one-shot request so the next run starts clean
-  resize (--project ID | --all) (--max N [--force] | --clear)
+  resize ([--project ID] | --all) (--max N [--force] | --clear)
                         live wave-width override, re-read by the loop at every
                         boundary (no restart); clamped to max_concurrent_slots
                         unless --force; --clear removes the override
-  merge --project ID <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]
+  merge [--project ID] <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]
                         land a finished agent branch on the default branch
-  land --project ID <bead> [--method ff|squash] [--reason R]
+  land [--project ID] <bead> [--method ff|squash] [--reason R]
                         land an engine-opened PR (a pr-opened bead) fast-forward-only,
                         preserving signed SHAs; closes the bead on success
-  review-pr --project ID <pr> [--approve|--comment|--comment-on path:line:msg|--resume|--close] [--body B]
-  review-pr --project ID --all
+  review-pr [--project ID] <pr> [--approve|--comment|--comment-on path:line:msg|--resume|--close] [--body B]
+  review-pr [--project ID] --all
                         analyze another author's PR (or every open PR with --all) using
                         koryph's reviewer (prints findings, never approves). --comment posts
                         findings as inline comments; --comment-on adds your own line
                         comments; --resume replays a saved analysis after an IDE handoff;
                         --approve/--close register your approval or close the PR
-  pr-sync --project ID  reconcile pr-opened beads against live PR state: a PR merged or
+  pr-sync [--project ID]  reconcile pr-opened beads against live PR state: a PR merged or
                         closed by any means marks its slot merged/blocked (nothing stranded)
   bot create [--name N] [--org ORG] [--public] [--headless]
                         create a GitHub App via the Manifest flow (one browser click);
@@ -135,21 +135,21 @@ OPERATE
                         app_id match, installation exists/covers repo, secrets present
                         (best-effort), toggle on, caller workflow present; exit 0/1/2
 
-  signing setup --project ID --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]
+  signing setup [--project ID] --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]
       [--public-key "ssh-ed25519 ..."] [--artifacts]
                         write the vault-backed signing policy into the project adapter
                         (protonpass + no --public-key: auto-discover via the agent)
-  signing enable --project ID
+  signing enable [--project ID]
                         load the key into the SSH agent + apply repo git config
-  signing verify --project ID --branch BR
+  signing verify [--project ID] --branch BR
                         verify branch commit signatures against the default branch (exit 1 on any bad)
-  sign blob --project ID <path>
+  sign blob [--project ID] <path>
                         cosign sign-blob an artifact via the vault key (writes <path>.sig)
-  ci setup --project ID [--force]
+  ci setup [--project ID] [--force]
                         render and install the koryph gate pipeline
                         (.github/workflows/koryph-gate.yml) into the project from its gate
                         commands; re-run to update after changing koryph.project.json
-  release setup --project ID [--mode goreleaser|commands] [--version V]
+  release setup [--project ID] [--mode goreleaser|commands] [--version V]
                         render and install the caller release workflow, release-please-config.json,
                         and .release-please-manifest.json into the project; --mode selects the
                         build toolchain (goreleaser = mode A, commands = mode B) when the
@@ -162,12 +162,12 @@ OPERATE
 
 OBSERVE
   board [--json]        one-line-per-project run overview
-  roster --project ID [--run ID] [--json]
+  roster [--project ID] [--run ID] [--json]
                         per-bead titled roster grouped by lifecycle: MERGED /
                         RUNNING / QUEUED / DEFERRED (defaults to latest run)
-  status --project ID [--json]
+  status [--project ID] [--json]
                         latest-run per-slot detail
-  tail --project ID <phase-id> [-n 40] [--follow]
+  tail [--project ID] <phase-id> [-n 40] [--follow]
                         tail a phase's session.log + stderr.log; --follow streams
                         new lines and surfaces INBOX nudges live (Ctrl-C to stop)
   doctor [--project ID] [--json] [--fix] [--force]
@@ -177,11 +177,11 @@ OBSERVE
                         and stalled-run checks); --fix installs missing assets (project mode)
                         or removes zombies/stale-demand (global mode); --force (with --fix
                         --project) also overwrites stale asset files; exits 0/1/2 (ok/warn/err)
-  plan audit --project ID [--json]
+  plan audit [--project ID] [--json]
                         read-only corpus conflict analysis: footprint gaps, non-dispatchable
                         beads, dependency-unordered conflicting pairs, achievable parallel
                         width; --json for machine-readable output (koryph-replan input)
-  signing status --project ID
+  signing status [--project ID]
                         mode/provider/agent-ready/repo-config/allowed_signers summary
   governor [show]       show the machine-wide concurrency cap, active leases, and demand
   quota [--account A] [--json]
@@ -226,9 +226,9 @@ ADVANCED
   onboard <root> [--json]
                         read-only inventory of a project (mode-5 report; inspect before 'project add')
   project list          list managed projects (id, account, status, root)
-  project show <id>|--project ID
+  project show [<id>|--project ID]
                         print one project record as JSON
-  project set-account <id>|--project ID --profile P --identity EMAIL [--config-dir DIR] --reason "..."
+  project set-account [<id>|--project ID] --profile P --identity EMAIL [--config-dir DIR] --reason "..."
                         change a project's account (audited; resets validation)
   governor set --max-global N
                         set the machine-wide cap on concurrently running agents

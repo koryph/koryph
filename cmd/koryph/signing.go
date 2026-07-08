@@ -125,21 +125,24 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 }
 
 // signingProject loads the registry record + project config for a signing
-// command.
-func signingProject(ctx context.Context, projectID string) (*registry.Store, *registry.Record, *project.Config, error) {
+// command. projectID may be empty, in which case the project is resolved from
+// the current directory (like every other project-scoped command). It writes
+// any error to stderr and returns a non-zero exit code; cmd names the command
+// for messages (e.g. "signing setup").
+func signingProject(ctx context.Context, stderr io.Writer, projectID, cmd string) (*registry.Store, *registry.Record, *project.Config, int) {
 	store, err := openStore(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fail(stderr, err)
 	}
-	rec, err := store.Get(projectID)
-	if err != nil {
-		return nil, nil, nil, err
+	rec, code := resolveProjectRecordCwd(stderr, store, projectID, cmd)
+	if code != 0 {
+		return nil, nil, nil, code
 	}
 	cfg, err := project.Load(rec.Root)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fail(stderr, err)
 	}
-	return store, rec, cfg, nil
+	return store, rec, cfg, 0
 }
 
 // cmdSigningSetup writes the signing policy into the project's
@@ -171,9 +174,6 @@ func cmdSigningSetup(args []string, stdout, stderr io.Writer) int {
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
-	if *projectID == "" {
-		return usageErr(stderr, "signing setup: --project is required")
-	}
 	if *identity == "" {
 		return usageErr(stderr, "signing setup: --identity is required")
 	}
@@ -189,9 +189,9 @@ func cmdSigningSetup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
-	store, rec, cfg, err := signingProject(ctx, *projectID)
-	if err != nil {
-		return fail(stderr, err)
+	store, rec, cfg, code := signingProject(ctx, stderr, *projectID, "signing setup")
+	if code != 0 {
+		return code
 	}
 
 	// When --provider is omitted, walk the resolution ladder to fill it in:
@@ -329,22 +329,19 @@ func signingKeySource(sc *signing.Config) string {
 // repo configured.
 func cmdSigningEnable(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("signing enable", stderr)
-	projectID := fs.String("project", "", "project id (required)")
-	setUsage(fs, stdout, "load the key into the SSH agent + apply repo git config", "--project ID")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
+	setUsage(fs, stdout, "load the key into the SSH agent + apply repo git config", "[--project ID]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
-	if *projectID == "" {
-		return usageErr(stderr, "signing enable: --project is required")
-	}
 
 	ctx := context.Background()
-	_, rec, cfg, err := signingProject(ctx, *projectID)
-	if err != nil {
-		return fail(stderr, err)
+	_, rec, cfg, code := signingProject(ctx, stderr, *projectID, "signing enable")
+	if code != 0 {
+		return code
 	}
 	if cfg.Signing == nil {
-		return fail(stderr, fmt.Errorf("project %s has no signing policy (run `koryph signing setup` first)", *projectID))
+		return fail(stderr, fmt.Errorf("project %s has no signing policy (run `koryph signing setup` first)", rec.ProjectID))
 	}
 	vault, err := signing.LoadVault()
 	if err != nil {
@@ -396,20 +393,17 @@ type signingStatusJSON struct {
 // cmdSigningStatus prints the mode/provider/agent/repo summary.
 func cmdSigningStatus(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("signing status", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	asJSON := fs.Bool("json", false, "emit JSON")
-	setUsage(fs, stdout, "mode/provider/agent-ready/repo-config/allowed_signers summary", "--project ID [--json]")
+	setUsage(fs, stdout, "mode/provider/agent-ready/repo-config/allowed_signers summary", "[--project ID] [--json]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
-	if *projectID == "" {
-		return usageErr(stderr, "signing status: --project is required")
-	}
 
 	ctx := context.Background()
-	_, rec, cfg, err := signingProject(ctx, *projectID)
-	if err != nil {
-		return fail(stderr, err)
+	_, rec, cfg, code := signingProject(ctx, stderr, *projectID, "signing status")
+	if code != 0 {
+		return code
 	}
 	if cfg.Signing == nil {
 		if *asJSON {
@@ -531,21 +525,21 @@ func printSigningStatus(ctx context.Context, w io.Writer, rec *registry.Record, 
 // exits non-zero when any commit fails.
 func cmdSigningVerify(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("signing verify", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	branch := fs.String("branch", "", "branch to verify against the default branch (required)")
 	setUsage(fs, stdout, "verify branch commit signatures against the default branch (exit 1 on any bad)",
-		"--project ID --branch BR")
+		"[--project ID] --branch BR")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
-	if *projectID == "" || *branch == "" {
-		return usageErr(stderr, "signing verify: --project and --branch are required")
+	if *branch == "" {
+		return usageErr(stderr, "signing verify: --branch is required")
 	}
 
 	ctx := context.Background()
-	_, rec, cfg, err := signingProject(ctx, *projectID)
-	if err != nil {
-		return fail(stderr, err)
+	_, rec, cfg, code := signingProject(ctx, stderr, *projectID, "signing verify")
+	if code != 0 {
+		return code
 	}
 	bad, err := signing.Verify(ctx, rec.Root, rec.DefaultBranch, *branch)
 	if err != nil {
@@ -614,26 +608,23 @@ func printVerifyHints(ctx context.Context, w io.Writer, projectID, repoRoot stri
 // cmdSignBlob cosign-signs an artifact (requires signing.artifacts).
 func cmdSignBlob(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("sign blob", stderr)
-	projectID := fs.String("project", "", "project id (required)")
-	setUsage(fs, stdout, "cosign sign-blob an artifact via the vault key (writes <path>.sig)", "--project ID <path>")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
+	setUsage(fs, stdout, "cosign sign-blob an artifact via the vault key (writes <path>.sig)", "[--project ID] <path>")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "sign blob: --project is required")
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "sign blob: <path> is required")
 	}
 
 	ctx := context.Background()
-	_, _, cfg, err := signingProject(ctx, *projectID)
-	if err != nil {
-		return fail(stderr, err)
+	_, rec, cfg, code := signingProject(ctx, stderr, *projectID, "sign blob")
+	if code != 0 {
+		return code
 	}
 	if cfg.Signing == nil || !cfg.Signing.Artifacts {
-		return fail(stderr, fmt.Errorf("project %s does not enable artifact signing (signing.artifacts) — run `koryph signing setup ... --artifacts`", *projectID))
+		return fail(stderr, fmt.Errorf("project %s does not enable artifact signing (signing.artifacts) — run `koryph signing setup ... --artifacts`", rec.ProjectID))
 	}
 	vault, err := signing.LoadVault()
 	if err != nil {

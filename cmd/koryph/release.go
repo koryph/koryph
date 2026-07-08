@@ -75,20 +75,15 @@ func cmdRelease(args []string, stdout, stderr io.Writer) int {
 //  6. Prints the remaining HUMAN steps.
 func cmdReleaseSetup(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("release setup", stderr)
-	flagProject := fs.String("project", "", "project id (required)")
+	flagProject := fs.String("project", "", "project id (default: the project containing the current directory)")
 	flagMode := fs.String("mode", "", "build mode: goreleaser (mode A) or commands (mode B); required when the project has no release block yet")
 	flagVersion := fs.String("version", "0.0.0", "initial version for the release-please manifest (only used when the manifest does not yet exist)")
 	flagBot := fs.Bool("bot", false, "run scripts/provision-release-bot.sh --attach after setup")
 	setUsage(fs, stdout,
 		"render and install the release workflow + release-please config into a project",
-		"--project ID [--mode goreleaser|commands] [--version V] [--bot]")
+		"[--project ID] [--mode goreleaser|commands] [--version V] [--bot]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
-	}
-
-	id, code := resolveProjectID(stderr, "release setup", "", *flagProject)
-	if code != 0 {
-		return code
 	}
 
 	ctx := context.Background()
@@ -96,9 +91,9 @@ func cmdReleaseSetup(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(id)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *flagProject, "release setup")
+	if code != 0 {
+		return code
 	}
 
 	cfg, err := project.Load(rec.Root)

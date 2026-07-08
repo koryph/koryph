@@ -37,18 +37,15 @@ func init() {
 // registry remote with the flag values applied directly.
 func cmdIntake(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("intake", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	label := fs.String("label", "", "trigger label to poll (overrides per-source config; default \"triage\")")
 	limit := fs.Int("limit", 0, "max open issues to poll (overrides per-source config; default 20)")
 	dryRun := fs.Bool("dry-run", false, "print what would be ingested; mutate nothing")
 	comment := fs.Bool("comment", false, "comment the bead id back on each ingested issue")
 	setUsage(fs, stdout, "poll a project's labeled GitHub issues into no-dispatch planning beads",
-		"--project ID [--label triage] [--limit 20] [--dry-run] [--comment]")
+		"[--project ID] [--label triage] [--limit 20] [--dry-run] [--comment]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
-	}
-	if *projectID == "" {
-		return usageErr(stderr, "intake: --project is required")
 	}
 
 	ctx := context.Background()
@@ -56,9 +53,9 @@ func cmdIntake(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "intake")
+	if code != 0 {
+		return code
 	}
 
 	// Load the project config to discover configured intake sources.

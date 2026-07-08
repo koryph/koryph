@@ -554,9 +554,9 @@ func TestLeafDashHShowsPurposeAndSynopsis(t *testing.T) {
 		purpose, synopsis string
 	}{
 		{[]string{"init", "-h"}, "create ~/.koryph", "koryph init"},
-		{[]string{"validate", "-h"}, "pre-dispatch gate", "koryph validate <project-id>"},
-		{[]string{"sign", "blob", "-h"}, "cosign sign-blob", "koryph sign blob --project ID <path>"},
-		{[]string{"run", "-h"}, "execute one engine run", "koryph run --project ID"},
+		{[]string{"validate", "-h"}, "pre-dispatch gate", "koryph validate [<project-id>"},
+		{[]string{"sign", "blob", "-h"}, "cosign sign-blob", "koryph sign blob [--project ID] <path>"},
+		{[]string{"run", "-h"}, "execute one engine run", "koryph run [--project ID]"},
 		{[]string{"doctor", "-h"}, "health check", "koryph doctor"},
 	}
 	for _, c := range cases {

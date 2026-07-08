@@ -177,7 +177,7 @@ print one project record as JSON
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--project` | string |  | project id (alternative to positional <id>) |
+| `--project` | string |  | project id (alternative to positional <id>; default: the project containing the current directory) |
 
 ## `koryph project set-account` { #koryph-project-set-account }
 
@@ -190,7 +190,7 @@ change a project's account (audited; resets validation)
 | `--config-dir` | string |  | CLAUDE_CONFIG_DIR for the new account |
 | `--identity` | string |  | new expected login email (required) |
 | `--profile` | string |  | new account profile: personal\|work (required) |
-| `--project` | string |  | project id (alternative to positional <id>) |
+| `--project` | string |  | project id (alternative to positional <id>; default: the project containing the current directory) |
 | `--reason` | string |  | why the account is changing (required, audited) |
 
 
@@ -204,7 +204,7 @@ run the pre-dispatch gate
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--project` | string |  | project id (alternative to positional <project-id>) |
+| `--project` | string |  | project id (alternative to positional <project-id>; default: the project containing the current directory) |
 
 
 ---
@@ -231,7 +231,7 @@ execute one engine run over a project
 | `--once` | bool |  | run exactly one wave |
 | `--only` | string |  | dispatch only this specific ready bead id |
 | `--parent` | string |  | epic scope for the bd frontier |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--require-calibration` | bool |  | refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run `koryph quota calibrate` first |
 | `--resume` | bool |  | classify and re-dispatch the latest run first |
 | `--review` | bool |  | post-implementation review pass before merge |
@@ -251,7 +251,7 @@ poll labeled GitHub issues into planning beads
 | `--dry-run` | bool |  | print what would be ingested; mutate nothing |
 | `--label` | string |  | trigger label to poll (overrides per-source config; default "triage") |
 | `--limit` | int |  | max open issues to poll (overrides per-source config; default 20) |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -264,7 +264,7 @@ append an operator note to a phase INBOX
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -279,7 +279,7 @@ stop an agent (or every agent with --all)
 |------|------|---------|-------------|
 | `--all` | bool |  | stop active agents across ALL managed projects |
 | `--force` | bool |  | SIGKILL instead of SIGTERM — uncommitted worktree work is LOST |
-| `--project` | string |  | project id (required unless --all) |
+| `--project` | string |  | project id (default: the project containing the current directory; unless --all) |
 
 
 ---
@@ -293,7 +293,7 @@ gracefully wind down a run: finish active slots, dispatch nothing new
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--all` | bool |  | request a drain for every registered project |
-| `--project` | string |  | project id (required unless --all) |
+| `--project` | string |  | project id (default: the project containing the current directory; unless --all) |
 
 
 ---
@@ -310,7 +310,7 @@ live width override for a running loop
 | `--clear` | bool |  | remove the width override (revert to project config) |
 | `--force` | bool |  | allow --max to exceed the project's max_concurrent_slots |
 | `--max` | int |  | new width cap (must be > 0; use --clear to remove an override) |
-| `--project` | string |  | project id (required unless --all) |
+| `--project` | string |  | project id (default: the project containing the current directory; unless --all) |
 
 
 ---
@@ -325,7 +325,7 @@ land a finished agent branch
 |------|------|---------|-------------|
 | `--close-bead` | string |  | bead to close on a successful merge |
 | `--keep-worktree` | bool |  | keep the worktree + branch after merge |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--push` | bool |  | push the default branch after merge |
 | `--reason` | string |  | close reason for --close-bead |
 | `--squash` | bool |  | squash-merge instead of ff-only |
@@ -342,7 +342,7 @@ land an engine-opened PR fast-forward-only
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--method` | string |  | landing method override: ff\|squash (default: project merge_method, else ff) |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--reason` | string |  | bead close reason |
 
 
@@ -362,7 +362,7 @@ analyze another author's PR
 | `--close` | bool |  | close the PR (optionally with --body as the comment) |
 | `--comment` | bool |  | post koryph's line-anchored findings as inline PR comments |
 | `--comment-on` | multi |  | post an inline comment: 'path:line:message' (repeatable) |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--resume` | bool |  | re-display the saved analysis for a PR (after an IDE handoff) |
 
 
@@ -376,7 +376,7 @@ reconcile pr-opened beads against live PR state
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -497,7 +497,7 @@ load the key + apply repo git config
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 ## `koryph signing keygen` { #koryph-signing-keygen }
 
@@ -521,7 +521,7 @@ mode/provider/agent-ready summary
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit JSON |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 ## `koryph signing verify` { #koryph-signing-verify }
 
@@ -532,7 +532,7 @@ verify branch commit signatures
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--branch` | string |  | branch to verify against the default branch (required) |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -553,7 +553,7 @@ sign a file via the vault key
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -576,7 +576,7 @@ render and install release workflow + release-please config
 |------|------|---------|-------------|
 | `--bot` | bool |  | run scripts/provision-release-bot.sh --attach after setup |
 | `--mode` | string |  | build mode: goreleaser (mode A) or commands (mode B); required when the project has no release block yet |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--version` | string | `0.0.0` | initial version for the release-please manifest (only used when the manifest does not yet exist) |
 
 ## `koryph release kick` { #koryph-release-kick }
@@ -617,7 +617,7 @@ per-bead titled roster grouped by lifecycle
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit roster as JSON |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--run` | string |  | run id (default: latest) |
 
 
@@ -632,7 +632,7 @@ latest-run per-slot detail
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit the run as JSON |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -647,7 +647,7 @@ tail a phase's session.log + stderr.log
 |------|------|---------|-------------|
 | `--follow` | bool |  | stream new lines as they appear (Ctrl-C to stop) |
 | `--n` | int | `40` | number of trailing lines |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -687,7 +687,7 @@ read-only corpus conflict analysis: footprint gaps, non-dispatchable beads, para
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit the audit report as JSON (for agent consumption) |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
@@ -1129,7 +1129,7 @@ on-demand epic validation: completeness + structural health review
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit the raw verdict JSON; actions still apply |
-| `--project` | string |  | project id (required) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--round` | int |  | validation round override (0 = auto-detect from prior verdict files) |
 
 

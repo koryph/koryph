@@ -73,7 +73,7 @@ type rosterOutput struct {
 // one project's (latest or specified) run.
 func cmdRoster(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("roster", stderr)
-	projectID := fs.String("project", "", "project id (required)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	runID := fs.String("run", "", "run id (default: latest)")
 	asJSON := fs.Bool("json", false, "emit roster as JSON")
 	setUsage(fs, stdout, "per-bead titled roster grouped by lifecycle (MERGED/RUNNING/QUEUED/DEFERRED)",
@@ -81,18 +81,15 @@ func cmdRoster(args []string, stdout, stderr io.Writer) int {
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
-	if *projectID == "" {
-		return usageErr(stderr, "roster: --project is required")
-	}
 
 	ctx := context.Background()
 	store, err := openStore(ctx)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "roster")
+	if code != 0 {
+		return code
 	}
 
 	ls := ledger.NewStore(rec.Root)

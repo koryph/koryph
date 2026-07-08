@@ -280,8 +280,8 @@ func cmdProjectList(args []string, stdout, stderr io.Writer) int {
 
 func cmdProjectShow(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project show", stderr)
-	flagProject := fs.String("project", "", "project id (alternative to positional <id>)")
-	setUsage(fs, stdout, "print one project record as JSON", "<id>|--project ID")
+	flagProject := fs.String("project", "", "project id (alternative to positional <id>; default: the project containing the current directory)")
+	setUsage(fs, stdout, "print one project record as JSON", "[<id>|--project ID]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -290,7 +290,7 @@ func cmdProjectShow(args []string, stdout, stderr io.Writer) int {
 	if len(pos) > 0 {
 		posVal = pos[0]
 	}
-	id, code := resolveProjectID(stderr, "project show", posVal, *flagProject)
+	id, code := mergeProjectID(stderr, "project show", posVal, *flagProject)
 	if code != 0 {
 		return code
 	}
@@ -299,9 +299,9 @@ func cmdProjectShow(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, err := store.Get(id)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, id, "project show")
+	if code != 0 {
+		return code
 	}
 	if err := printJSON(stdout, rec); err != nil {
 		return fail(stderr, err)
@@ -311,13 +311,13 @@ func cmdProjectShow(args []string, stdout, stderr io.Writer) int {
 
 func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project set-account", stderr)
-	flagProject := fs.String("project", "", "project id (alternative to positional <id>)")
+	flagProject := fs.String("project", "", "project id (alternative to positional <id>; default: the project containing the current directory)")
 	profile := fs.String("profile", "", "new account profile: personal|work (required)")
 	identity := fs.String("identity", "", "new expected login email (required)")
 	configDir := fs.String("config-dir", "", "CLAUDE_CONFIG_DIR for the new account")
 	reason := fs.String("reason", "", "why the account is changing (required, audited)")
 	setUsage(fs, stdout, "change a project's account (audited; resets validation)",
-		"<id>|--project ID --profile P --identity EMAIL [--config-dir DIR] --reason R")
+		"[<id>|--project ID] --profile P --identity EMAIL [--config-dir DIR] --reason R")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -326,7 +326,7 @@ func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 	if len(pos) > 0 {
 		posVal = pos[0]
 	}
-	id, code := resolveProjectID(stderr, "project set-account", posVal, *flagProject)
+	id, code := mergeProjectID(stderr, "project set-account", posVal, *flagProject)
 	if code != 0 {
 		return code
 	}
@@ -335,6 +335,11 @@ func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	recSel, code := resolveProjectRecordCwd(stderr, store, id, "project set-account")
+	if code != 0 {
+		return code
+	}
+	id = recSel.ProjectID
 	if err := store.SetAccount(ctx, id, *profile, *configDir, *identity, *reason); err != nil {
 		return fail(stderr, err)
 	}
@@ -647,9 +652,9 @@ func orDash(s string) string {
 // green.
 func cmdValidate(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("validate", stderr)
-	flagProject := fs.String("project", "", "project id (alternative to positional <project-id>)")
+	flagProject := fs.String("project", "", "project id (alternative to positional <project-id>; default: the project containing the current directory)")
 	setUsage(fs, stdout, "run the pre-dispatch gate; promotes registered->migrated on green",
-		"<project-id>|--project ID")
+		"[<project-id>|--project ID]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -658,7 +663,7 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 	if len(pos) > 0 {
 		posVal = pos[0]
 	}
-	projectID, code := resolveProjectID(stderr, "validate", posVal, *flagProject)
+	id, code := mergeProjectID(stderr, "validate", posVal, *flagProject)
 	if code != 0 {
 		return code
 	}
@@ -667,6 +672,11 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	rec, code := resolveProjectRecordCwd(stderr, store, id, "validate")
+	if code != 0 {
+		return code
+	}
+	projectID := rec.ProjectID
 	v, err := onboard.Validate(ctx, store, projectID, stdout)
 	if err != nil {
 		return fail(stderr, err)

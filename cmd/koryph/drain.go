@@ -49,10 +49,10 @@ func init() {
 // decision and never touches a process directly.
 func cmdDrain(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("drain", stderr)
-	projectID := fs.String("project", "", "project id (required unless --all)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory; unless --all)")
 	all := fs.Bool("all", false, "request a drain for every registered project")
 	setUsage(fs, stdout, "request a graceful wind-down: stop new dispatch, finish active slots, exit drained",
-		"--project ID | --all")
+		"[--project ID] | --all")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -88,12 +88,9 @@ func cmdDrain(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if *projectID == "" {
-		return usageErr(stderr, "drain: --project is required (or use --all)")
-	}
-	rec, err := store.Get(*projectID)
-	if err != nil {
-		return fail(stderr, err)
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "drain")
+	if code != 0 {
+		return code
 	}
 	if err := requestDrain(store, rec); err != nil {
 		return fail(stderr, err)
@@ -122,13 +119,13 @@ func requestDrain(store *registry.Store, rec *registry.Record) error {
 // scheduling boundary — no restart needed.
 func cmdResize(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("resize", stderr)
-	projectID := fs.String("project", "", "project id (required unless --all)")
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory; unless --all)")
 	all := fs.Bool("all", false, "apply to every registered project")
 	max := fs.Int("max", 0, "new width cap (must be > 0; use --clear to remove an override)")
 	force := fs.Bool("force", false, "allow --max to exceed the project's max_concurrent_slots")
 	clear := fs.Bool("clear", false, "remove the width override (revert to project config)")
 	setUsage(fs, stdout, "live wave-width override: re-read by the loop at every boundary, no restart needed",
-		"(--project ID | --all) (--max N [--force] | --clear)")
+		"([--project ID] | --all) (--max N [--force] | --clear)")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -162,12 +159,9 @@ func cmdResize(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	} else {
-		if *projectID == "" {
-			return usageErr(stderr, "resize: --project is required (or use --all)")
-		}
-		rec, gerr := store.Get(*projectID)
-		if gerr != nil {
-			return fail(stderr, gerr)
+		rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "resize")
+		if code != 0 {
+			return code
 		}
 		records = []*registry.Record{rec}
 	}
