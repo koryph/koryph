@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.8.0](https://github.com/koryph/koryph/compare/v0.7.0...v0.8.0) (2026-07-08)
+
+
+### Features
+
+* **dispatch:** generic file-spill wrapper + output-cap env knobs (koryph-77r.6) ([5cb69c2](https://github.com/koryph/koryph/commit/5cb69c29569c44c0089d90cb56a5f25a44f9849f))
+* **doctor:** agent_proxy health/pin/routing checks + calibration-stale on config flip (koryph-3l1.2) ([5327055](https://github.com/koryph/koryph/commit/5327055ef14f768d454459deaf09312a561291f4))
+* **doctor:** positive proxy routing verification — upstream-seen vs dispatched counts (koryph-3l1.5) ([d8243c5](https://github.com/koryph/koryph/commit/d8243c5f20fb0f2ff6a7e3d1a63fedad66ba68cb))
+* **engine:** budget-kill classification + warm-resume requeue policy (koryph-77r.10) ([9d943a6](https://github.com/koryph/koryph/commit/9d943a6a76d497ce95c075db0247f84904c7fb3d))
+* **engine:** health patrol re-queues completed-but-unvalidated epics (koryph-bbe) ([4370a3a](https://github.com/koryph/koryph/commit/4370a3a07b8f7aa98c85a5e0b2ca570f77933d0c))
+* **engine:** health patrol WARNs for parked/degraded epic validations (koryph-wo0.7) ([26d96f3](https://github.com/koryph/koryph/commit/26d96f3b50ccea9ec07e9edf3eea03a588219b62))
+* **engine:** proxy holdout arm + two-arm experiment report, estimator [@proxy](https://github.com/proxy) keys live (koryph-3l1.3) ([14eff9f](https://github.com/koryph/koryph/commit/14eff9f73369108e175add1fc1cb4aa976d8adc5))
+* **engine:** secondary-spawn effort routing from token-telemetry audit (koryph-77r.8) ([efc30c7](https://github.com/koryph/koryph/commit/efc30c78c918cab9bb252ba45469ec792206bc98))
+* **gate:** agent-quiet gate target + verbose-command nudge policy (koryph-77r.5) ([9c03a3d](https://github.com/koryph/koryph/commit/9c03a3d75af8a430b9f78d8a78610b98918c6891))
+* **govern:** memory gate on by default, sized to physical memory (koryph-930) ([c56abad](https://github.com/koryph/koryph/commit/c56abadb5537ff5f4d804a4dd52d4d51de6aa1a3))
+* **govern:** memory-aware admission gate (koryph-930) ([a199be7](https://github.com/koryph/koryph/commit/a199be79b93e3638e5aed59450975c0853e40688))
+* **ide:** transcript webview — stream.jsonl line-of-thought panels (ext.5) ([28746e4](https://github.com/koryph/koryph/commit/28746e4bdbcac73dab874fb945b9178f78178826))
+* **metrics:** add koryph metrics tokens command (koryph-77r.2) ([0d740ff](https://github.com/koryph/koryph/commit/0d740ffff56bb4f38077e5dce23dd7f9863d4c10))
+* **project:** copyright '(c) &lt;year&gt; &lt;holder&gt;'; set koryph's own holder ([0c120b9](https://github.com/koryph/koryph/commit/0c120b94577442834f85975618f1544f24e6c1cc))
+* **project:** per-project copyright/license for generated CI assets (koryph-s6g) ([062fa75](https://github.com/koryph/koryph/commit/062fa755f305adea81fece977145249c59cefe39))
+* **promptc,agentsmd:** teaching pass — terse-output contract + quiet-gate/wrapper guidance ([d49ebb3](https://github.com/koryph/koryph/commit/d49ebb3b3d61f0ea5e0e0a20511e0c999802cf7b))
+* **quota:** per-slot token composition, estimator proxy-segmentation, cache-ratio tripwire (koryph-77r.1) ([af125a2](https://github.com/koryph/koryph/commit/af125a2c93a3a792ede457425f7964dac9fd9096))
+* **registry:** agent_proxy seam — loopback-validated base URL, uniform env injection, spawn-kind marker, ledger proxy stamp (koryph-3l1.1) ([05ecdbc](https://github.com/koryph/koryph/commit/05ecdbcba81643894bfded48dbc3775b73066dc1))
+* **review,epicreview:** persist raw Claude envelope beside parsed verdict (koryph-qbc) ([8d98fa7](https://github.com/koryph/koryph/commit/8d98fa70aa6a045651d544489a304ceed006f8d9))
+* **rules:** bd-prime SessionStart wrapper — size measurement + slim secondary-spawn profile (koryph-77r.4) ([46b273a](https://github.com/koryph/koryph/commit/46b273aabc0445c538c8141204f6419cbce3fa46))
+* **tui,cockpit:** add token composition + cache-hit dashboards (koryph-77r.3) ([2ad39c2](https://github.com/koryph/koryph/commit/2ad39c2719c0890683f35f2f2706769e86b87806))
+* **tui:** default to the cwd's project; add --all-projects/-a ([#13](https://github.com/koryph/koryph/issues/13)) ([3784ad0](https://github.com/koryph/koryph/commit/3784ad09ca6dbc4d47ac0d81e4589a18b8ba0a21))
+
+
+### Bug Fixes
+
+* **ci:** don't fail release publish when no PR maps to the release commit ([3d05a2d](https://github.com/koryph/koryph/commit/3d05a2d8c68b647763b3c5f17700c48cb07b5a97))
+* **cli:** escape link-reference brackets in generated CLI reference (koryph-cal) ([a2b4999](https://github.com/koryph/koryph/commit/a2b4999b261572e576fd179382ab59a46df81c66))
+* **cockpit:** pin token-economy trend test to fixed UTC clock ([#12](https://github.com/koryph/koryph/issues/12)) ([635d0c6](https://github.com/koryph/koryph/commit/635d0c6fe71eaf5778a77a4d31cd9b9dc5952475))
+* **docs:** tui design link → GitHub URL (unblock strict docs build) ([9b41aee](https://github.com/koryph/koryph/commit/9b41aeec6657a8b86e53b0373ab86c284853b1b5))
+* **docs:** vscode-extension design links → GitHub URLs (unblock strict docs build) ([087c635](https://github.com/koryph/koryph/commit/087c635ab035c139e224aa46467055eee8608832))
+* **doctor:** extend ci-assets check to GitLab gate pipeline ([dd3fbb4](https://github.com/koryph/koryph/commit/dd3fbb4d34d96060d244e66e6f1f25e000208a41))
+* **engine:** enforce --budget against projected (in-flight) spend (koryph-u7q) ([4bc0eeb](https://github.com/koryph/koryph/commit/4bc0eeb6f7a214c41667b611f826f068c66d6cfc))
+* **engine:** freeze model resolution across requeues (koryph-ehx) ([107a665](https://github.com/koryph/koryph/commit/107a665b7837d5188f3a7ca698f6b9d1d2bf4409))
+* **hooks:** make prime full-mode golden test hermetic (koryph-yx4) ([b8a9cc1](https://github.com/koryph/koryph/commit/b8a9cc1f5e7b7f7be16ac54ded507ccdedfd5754))
+* **project:** extend schema gen to mirror into ide/vscode/media ([df84035](https://github.com/koryph/koryph/commit/df84035b4429a0b8270128d142f33d8f7c5d6649))
+* **quota:** uncalibrated governor warns loudly + opt-in --require-calibration (koryph-grz) ([0e068bc](https://github.com/koryph/koryph/commit/0e068bc71582abe9b8d2935929fdf2924c9f99ec))
+* **vscode:** sync quota status bar thresholds to engine defaults ([70c1ab6](https://github.com/koryph/koryph/commit/70c1ab626b5ee96a0f755fdb0ca67604e1c90156))
+
 ## [0.7.0](https://github.com/koryph/koryph/compare/v0.6.0...v0.7.0) (2026-07-05)
 
 
