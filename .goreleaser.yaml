@@ -31,8 +31,16 @@ builds:
       - CGO_ENABLED=0
     flags:
       - -trimpath
+    # Stamp git provenance into internal/version (parity with the Makefile's
+    # LDFLAGS). .Summary is `git describe --tags --dirty --always`; on a real
+    # tagged release it is the exact tag, e.g. v0.8.0. Engine (the semver const)
+    # is intentionally left untouched — release-please keeps it aligned with the
+    # tag and the before-hook above verifies it.
     ldflags:
       - -s -w
+      - -X github.com/koryph/koryph/internal/version.describe={{ .Summary }}
+      - -X github.com/koryph/koryph/internal/version.commit={{ .ShortCommit }}
+      - -X github.com/koryph/koryph/internal/version.date={{ .CommitDate }}
     goos: [darwin, linux]
     goarch: [amd64, arm64]
 

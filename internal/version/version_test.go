@@ -5,6 +5,23 @@ package version
 
 import "testing"
 
+// Under `go test` (like `go run`) the Go toolchain embeds no VCS metadata and
+// the linker `-X` stamps are absent, so the provenance accessors must report
+// empty. This is the contract that keeps `koryph version` a single canonical
+// "koryph <semver>" line for the release-parity hooks (goreleaser's before-hook
+// and `make version-check`), which parse that line's last field.
+func TestBuildProvenanceEmptyWhenUnstamped(t *testing.T) {
+	if got := Build(); got != "" {
+		t.Errorf("Build() = %q, want empty for an unstamped test binary", got)
+	}
+	if got := Commit(); got != "" {
+		t.Errorf("Commit() = %q, want empty for an unstamped test binary", got)
+	}
+	if got := Date(); got != "" {
+		t.Errorf("Date() = %q, want empty for an unstamped test binary", got)
+	}
+}
+
 func TestSatisfied(t *testing.T) {
 	cases := []struct {
 		have, want string
