@@ -9,8 +9,19 @@
   },
   "go.formatTool": "gofmt",
   "go.useLanguageServer": true,
+  "gopls": {
+    "build.directoryFilters": ["-.claude", "-node_modules"]
+  },
   "files.trimTrailingWhitespace": true,
   "files.insertFinalNewline": true,
   "editor.tabSize": 2,
-  "editor.insertSpaces": true
+  "editor.insertSpaces": true,
+  "files.watcherExclude": {
+    "**/.claude/worktrees/**": true,
+    "**/*-worktrees/**": true
+  },
+  "search.exclude": {
+    "**/.claude/worktrees/**": true,
+    "**/*-worktrees/**": true
+  }
 }
