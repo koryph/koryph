@@ -16,11 +16,12 @@
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems (system: f system (import nixpkgs { inherit system; }));
 
-      # nixpkgs still packages go 1.26.3, which govulncheck flags for two
-      # reachable stdlib vulns (GO-2026-5037 crypto/x509, GO-2026-5039
-      # net/textproto) fixed in 1.26.4. Wrap the official prebuilt 1.26.4
-      # toolchain until nixpkgs catches up (then delete this and use pkgs.go).
-      goVersion = "1.26.4";
+      # nixpkgs lags the patched Go releases this project needs: 1.26.5 fixes
+      # GO-2026-5856 (crypto/tls Encrypted Client Hello privacy leak) that
+      # govulncheck flags on 1.26.4. Wrap the official prebuilt 1.26.5 toolchain
+      # until nixpkgs catches up (then delete this and use pkgs.go). Keep in sync
+      # with go.mod's `go` directive and .github/workflows/ci.yml's setup-go pin.
+      goVersion = "1.26.5";
       goPlatform = {
         aarch64-darwin = "darwin-arm64";
         x86_64-darwin = "darwin-amd64";
@@ -28,10 +29,10 @@
         x86_64-linux = "linux-amd64";
       };
       goSha256 = {
-        aarch64-darwin = "b62ad2b6d7d2464f12a5bcad7ff47f19d08325773b5efd21610e445a05a9bf53";
-        x86_64-darwin = "05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d";
-        aarch64-linux = "ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768";
-        x86_64-linux = "1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f";
+        aarch64-darwin = "efb87ff28af9a188d0536ef5d42e63dd52ba8263cd7344a993cc48dd11dedb6a";
+        x86_64-darwin = "6231d8d3b8f5552ec6cbf6d685bdd5482e1e703214b120e89b3bf0d7bf1ef725";
+        aarch64-linux = "fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49";
+        x86_64-linux = "5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053";
       };
       goFor = system: pkgs:
         pkgs.stdenv.mkDerivation {
@@ -66,7 +67,7 @@
             name = "koryph-dev";
 
             packages = [
-              # Go toolchain — official prebuilt 1.26.4; keep go.mod in sync.
+              # Go toolchain — official prebuilt 1.26.5; keep go.mod in sync.
               go
             ] ++ (with pkgs; [
               gopls
