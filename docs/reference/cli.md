@@ -1237,7 +1237,9 @@ interactive terminal cockpit (threads, queue, events)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--project` | string |  | project id (default: all registered projects) |
+| `--a` | bool |  | shorthand for --all-projects |
+| `--all-projects` | bool |  | show every registered project (aggregate cockpit) |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 | `--read-only` | bool |  | disable write actions (nudge, drain) — safe for shared/observer sessions |
 
 
