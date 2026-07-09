@@ -72,6 +72,11 @@ own claims:
 - Engine-loop / protected-path work carries `refactor-core`; operator-only
   steps carry `no-dispatch`.
 - `model:<tier>` routing is stated with a rationale where non-default.
+- Every bead whose acceptance criteria need something *running* (a kind/k8s
+  cluster, a docker compose stack, a dev server, a database, a browser suite)
+  carries a `res:<kind>` label per kind. Footprints protect the merge;
+  resources protect the machine — flag any bead whose description implies a
+  running dependency but carries no `res:*` label.
 
 ## Output format
 

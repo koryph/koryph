@@ -60,6 +60,12 @@ shape, boundary decisions, data-ownership changes, security-model changes.
    - Add `refactor-core` when the bead changes the engine's own
      dispatch/merge/governor machinery or a protected path; those are authored
      on main, never loop-dispatched.
+   - **Resource labels**: declare `res:<kind>` per external runtime resource
+     the bead needs *running* for its acceptance criteria — a kind/k8s
+     cluster, a docker compose stack, a dev server, a database, a browser
+     suite (vocabulary in `koryph.project.json` `resources`). Footprints
+     protect the merge; resources protect the machine. Undeclared resources
+     risk thrashing the host mid-wave; over-declared only costs parallelism.
 
 ## Output format
 

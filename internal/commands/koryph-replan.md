@@ -168,6 +168,37 @@ Work through beads in this priority order:
 
 ---
 
+### Step 3b — Repair missing resource declarations
+
+Scan every open bead's title and description for a mention of a running
+external dependency: `kind`, `k8s`, `docker`, `compose`, `dev server`,
+`database`, `browser` (browser-suite / e2e-in-browser wording). Any match
+that carries no `res:*` label is under-declared. Footprints protect the
+merge; resources protect the machine — an undeclared cluster/compose/server
+bead can thrash the host mid-wave with no admission-time signal.
+
+1. **Grep the corpus.** For each match, read the bead's description to name
+   the concrete kind(s) it will provision (`kind-cluster`, `docker`,
+   `dev-server`, `database`, `browser-suite`, …).
+2. **Add the label.** One `res:<kind>` per kind:
+   ```
+   bd update <id> --label res:<kind>
+   ```
+   If the kind is new to the project, note it in the report (step 7) — the
+   `koryph.project.json` `resources` vocabulary entry (with a `mem_mb`
+   estimate) is a protected-path, orchestrator-applied change; do not edit
+   `koryph.project.json` yourself.
+3. **Note the rationale:**
+   ```
+   bd update <id> --note "replan: added res:<kind> (description mentions <keyword>)"
+   ```
+
+This pass is deliberately keyword-driven, not judgment-gated like Step 3:
+over-declaring only costs parallelism, while a missed declaration leaves a
+real gap, so err toward labeling on any plausible match.
+
+---
+
 ### Step 4 — Wire missing dependency edges (frontier tier required)
 
 After re-labeling, scan the corpus for implied order that has no explicit
@@ -235,9 +266,9 @@ and explain what additional information the operator needs to provide.
 
 ### Step 6 — Apply mechanical updates
 
-Run the decided `bd update` and `bd dep add` commands from steps 3–5.  This
-step is mechanical — running already-decided commands is fine at any model
-tier.
+Run the decided `bd update` and `bd dep add` commands from steps 3, 3b, 4,
+and 5.  This step is mechanical — running already-decided commands is fine
+at any model tier.
 
 For large corpora, run updates per-epic and write progress notes as described
 in step 1 before moving to the next epic.  The note pattern is:
@@ -269,6 +300,7 @@ RELABELING SUMMARY
   dep edges added: <count>
   unlabeled remaining: <count>  (were <before_unlabeled_count>)
   conflicting pairs remaining: <count>  (were <before_conflict_count>)
+  res:* labels added (step 3b): <count>
 
 RESIDUAL SERIALIZATION (if any)
   <id>  <title>  → <reason: shared write token / refactor-core / domain:unknown / no-dispatch>

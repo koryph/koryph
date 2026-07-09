@@ -15,10 +15,16 @@ koryph sizes work by runtime-agnostic **tier**, mapped to your runtime's models 
 adapter:
 
 - **frontier** — strongest reasoning tier; required where an error poisons downstream
-  automation (decomposition, footprint/dependency assignment, plan scoring, security
-  review, recovery analysis).
+  automation (decomposition, footprint/dependency/resource assignment, plan scoring,
+  security review, recovery analysis).
 - **standard** — capable coding tier; implementation against a precise spec, tests, docs.
 - **light** — fast/cheap tier; exploration, summarization, log triage.
+
+Beads that need something *running* for their acceptance criteria (a kind/k8s
+cluster, docker compose stack, dev server, database, or browser suite) carry a
+`res:<kind>` label per kind. Footprints protect the merge; resources protect
+the machine — undeclared resources risk thrashing the host mid-wave,
+over-declared only costs parallelism.
 
 ## Task tracking: beads only
 

@@ -10,27 +10,28 @@ Argument (a design doc path, or paste the design inline): $ARGUMENTS
 
 ## Model requirements
 
-Steps 2–6 below (decompose, footprint discovery, dependency wiring,
-conflict validation, routing) are scheduler-correctness work: a mislabeled
-footprint or a missed dependency edge causes a false-parallel dispatch and a
-merge conflict downstream, discovered by a broken build rather than by
-re-reading the plan. These steps require the **frontier reasoning tier of
-your agent runtime** — Claude Opus-class, or the equivalent top tier of
-whatever runtime you are (codex, cursor, grok build, ...).
+Steps 2–7 below (decompose, footprint discovery, resource declaration,
+dependency wiring, conflict validation, routing) are scheduler-correctness
+work: a mislabeled footprint or a missed dependency edge causes a
+false-parallel dispatch and a merge conflict downstream, discovered by a
+broken build rather than by re-reading the plan. These steps require the
+**frontier reasoning tier of your agent runtime** — Claude Opus-class, or
+the equivalent top tier of whatever runtime you are (codex, cursor, grok
+build, ...).
 
 1. Check what model you are running as (your own system context states it,
    or run `/model`).
-2. Frontier tier or better: continue through steps 2–6 yourself.
-3. Below your runtime's frontier tier: do **not** attempt steps 2–6
+2. Frontier tier or better: continue through steps 2–7 yourself.
+3. Below your runtime's frontier tier: do **not** attempt steps 2–7
    yourself. Either:
    - tell the operator to re-run `/koryph-plan` on a frontier-tier model, or
-   - delegate steps 2–6 wholesale to the `koryph-architect` agent (pinned
+   - delegate steps 2–7 wholesale to the `koryph-architect` agent (pinned
      `tier: frontier`, `effort: xhigh` in its own frontmatter), then do only
      the mechanical `bd create`/`bd dep add` calls from its output yourself.
-4. Step 1 (ingest) and the mechanical parts of step 7 (running an
+4. Step 1 (ingest) and the mechanical parts of step 8 (running an
    already-decided `bd create`/`bd dep add` command, invoking the scorer,
-   printing the step 8 report) are fine at any tier — only the judgment
-   calls in 2–6 are gated.
+   printing the step 9 report) are fine at any tier — only the judgment
+   calls in 2–7 are gated.
 
 ## Do this
 
@@ -81,7 +82,16 @@ whatever runtime you are (codex, cursor, grok build, ...).
      note it lands in the catch-all `domain:unknown` write token, which
      collides with every other unlabeled bead and serializes the wave.
 
-4. **Discover dependencies.** Wire an edge wherever the design implies an
+4. **Declare external runtime resources — do not guess.** For every bead, ask
+   what must be *running* for its acceptance criteria: a kind/k8s cluster, a
+   docker compose stack, a dev server, a database, a browser suite. Label
+   `res:<kind>` per kind (vocabulary in `koryph.project.json` `resources`;
+   add new kinds there with a `mem_mb` estimate in the same change).
+   Footprints protect the merge; resources protect the machine. Undeclared
+   resources risk thrashing the host mid-wave; over-declared only costs
+   parallelism.
+
+5. **Discover dependencies.** Wire an edge wherever the design implies an
    order: producer API before its consumer, schema before the code that
    reads it, code before the docs that describe it, a feature flag before
    the change that flips it. A dependency edge is also the right fix
@@ -95,7 +105,7 @@ whatever runtime you are (codex, cursor, grok build, ...).
    `bd create --deps type:id` shorthand, whose direction is easy to get
    backwards under review).
 
-5. **Validate conflict-freedom.** Any two beads *not* ordered by the
+6. **Validate conflict-freedom.** Any two beads *not* ordered by the
    dependency graph must not share any token that **either** of them
    writes: writes(A) must be disjoint from writes(B) *and* from reads(B),
    and vice versa (write tokens are `area:*` + `fp:*` excluding
@@ -107,7 +117,7 @@ whatever runtime you are (codex, cursor, grok build, ...).
    width: the size of the largest antichain in the dependency graph whose
    members are pairwise write-disjoint.
 
-6. **Route + guard.**
+7. **Route + guard.**
    - `model:<tier>` per bead by difficulty; state a one-line rationale for
      every non-default choice.
    - `refactor-core` on any bead touching the engine's own
@@ -117,8 +127,8 @@ whatever runtime you are (codex, cursor, grok build, ...).
    - `no-dispatch` plus a `HUMAN:` title prefix for operator-only steps
      (credentials, external approvals, anything no agent can do).
 
-7. **File.** Create the epic, then each child with `--parent <epic-id>`,
-   its labels, and `--validate`; wire dependencies per step 4. This part is
+8. **File.** Create the epic, then each child with `--parent <epic-id>`,
+   its labels, and `--validate`; wire dependencies per step 5. This part is
    mechanical — running already-decided commands is fine at any model
    tier.
    **If a wave loop is RUNNING against this project, dependency edges
@@ -136,8 +146,8 @@ whatever runtime you are (codex, cursor, grok build, ...).
    swapped in its own scorer persona, respect whatever tier that persona
    pins.
 
-8. **Report.** The epic id, total bead count, dependency edge count,
-   achievable parallel width from step 5, and any residual serialization
+9. **Report.** The epic id, total bead count, dependency edge count,
+   achievable parallel width from step 6, and any residual serialization
    with the reason (shared write token, `refactor-core`, `domain:unknown`,
    or `no-dispatch`).
 

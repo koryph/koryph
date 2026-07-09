@@ -385,7 +385,10 @@ koryph plan audit --project <id>
 
 Fix any `domain:unknown` beads with real `area:*` labels; wire missing
 dependency edges between conflicting unordered beads. The audit shows
-achievable parallel width before and after.
+achievable parallel width before and after. Keep `res:<kind>` declarations
+just as honest: footprints protect the merge, resources protect the
+machine, and an undeclared cluster/compose/server bead can thrash the host
+mid-wave with no admission-time signal.
 
 ### Route by model tier
 

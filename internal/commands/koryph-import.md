@@ -104,6 +104,12 @@ batches. For each item:
    (grep for symbols, follow imports); apply the narrowest honest `area:*`
    keys from `area_map`. If the footprint is unclear and you are at frontier
    tier, reason about it; if below frontier, apply `area:unknown` and note it.
+2b. Declare external runtime resources — do not guess: if the item needs
+   something *running* (kind/k8s cluster, docker compose stack, dev server,
+   database, browser suite), label `res:<kind>` per kind (vocabulary in
+   `koryph.project.json` `resources`). Footprints protect the merge;
+   resources protect the machine — undeclared resources risk thrashing the
+   host mid-wave, over-declared only costs parallelism.
 3. Write a `--description` that states *why* the item exists, what "done"
    looks like, and carries a provenance pointer:
    ```
@@ -113,7 +119,7 @@ batches. For each item:
    ```
    bd create --type <type> --title "<title>" \
      --description "<description>" \
-     --label area:<key> [--label area:<key2>] \
+     --label area:<key> [--label area:<key2>] [--label res:<kind>] \
      --validate --silent
    ```
 
