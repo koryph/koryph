@@ -65,8 +65,9 @@ closed. Container beads (epics, features, decisions, merge-requests) and beads w
 engine reports each one **once per run** with a fix hint (`skipped <id>: … — file as
 task/bug/chore; area:* label; drop gt:*`). Beads labeled `no-dispatch` or
 `refactor-core`, already-active beads, container beads with open children, footprint
-collisions, and the width cap are **deferred**: the engine prints a per-wave
-`deferred N bead(s): …` summary. Under `--dry-run` every deferral is listed in full
+collisions, [resource](../concepts/resources.md) capacity collisions, and the width
+cap are **deferred**: the engine prints a per-wave `deferred N bead(s): …` summary.
+Under `--dry-run` every deferral is listed in full
 alongside the would-dispatch set, so you can see exactly why a ready bead is not running
 before committing to a wave. The remainder are sorted by priority (P0 first) and passed
 to the conflict filter.
@@ -102,8 +103,13 @@ unchanged); a token declared as both read and write collapses to write-only:
 fp:auth fp:billing   →  reads: [], writes: ["auth", "billing"]
 ```
 
-`fp:*` labels (either flavor) win outright over `area:*` labels — a bead with any
-`fp:` label ignores its `area:` labels entirely.
+**`fp:*` and `area:*` labels compose** — they do not override each other. Every
+`area:*` label contributes its mapped write tokens, every `fp:read:<token>` label
+contributes a read token, and every other `fp:<token>` label contributes a write
+token; the bead's footprint is the union of all of it (a token present in both the
+read and write sets collapses to write-only, since a write already excludes
+readers). Only when a bead carries **none** of the above — no `area:*` and no
+`fp:*` label at all — does the catch-all `domain:unknown` apply.
 
 **`area:` labels** — resolved through `koryph.project.json`'s `area_map` as **write** tokens:
 
@@ -113,10 +119,47 @@ fp:auth fp:billing   →  reads: [], writes: ["auth", "billing"]
 
 A bead with `area:api` gets write tokens `["auth", "billing", "routes"]` and conflicts
 with any bead carrying any of those tokens (whether via `fp:*` or another `area:*`
-mapping).
+mapping). A bead labeled `area:api fp:read:go:signing` gets write tokens
+`["auth", "billing", "routes"]` **and** the read token `go:signing` — both areas'
+worth of protection stack, they don't compete. (Before koryph-2im, `fp:*` used to
+suppress `area:*` outright; that behavior silently dropped write tokens on mixed
+`fp:read:` + `area:` beads and was fixed — see `internal/sched/footprint.go`'s
+`FootprintFor` doc comment for the full history. If you were narrowing an
+over-broad `area:*` with an `fp:*` label under the old precedence rule, drop the
+`area:*` label instead — that is the one authoring pattern the fix costs.)
 
 **No footprint label** — the bead receives the catch-all write token `domain:unknown`,
 which conflicts with every other unknown bead. Unknowns serialize: only one runs per wave.
+
+## Resource labels: res:\<kind\>
+
+Footprints prevent two agents from touching the same *code*. They don't know
+anything about what an agent starts *running* on the host — a kind/k8s dev
+cluster, a docker compose stack, a long-lived dev server — and those live
+outside the agent's process tree and worktree. [Resources](../concepts/resources.md)
+are a second, additive admission dimension for exactly that: a bead labels
+`res:<kind>` per external resource kind it will provision, and the scheduler
+and governor treat each kind as a **counted capacity** (default 1, i.e.
+exclusive, unless the machine is configured otherwise) rather than a
+read/write lock. A bead with no `res:*` labels — the common case — is
+unaffected; declaring nothing never serializes it against anything.
+
+A capacity-exhausted kind produces a deferral at one of two points:
+
+- **Wave packing** (`sched.BuildWave`, project-local): `resource <kind> at
+  capacity (held by <id>)` — the candidate is skipped and packing continues
+  past it, so a lower-priority resource-free bead behind it still dispatches.
+- **Global admission** (`govern.Store.Acquire`, cross-project, under the
+  flock): `bead <id>: deferred — resource <kind> at capacity (N/N, held by
+  <project>/<bead>)` — the authoritative, cross-engine check; a bead that
+  cleared wave packing can still be denied here by another engine's holdings.
+
+Both are per-bead skips, not batch-wide breaks: a resource-heavy bead
+deferring never stalls the lightweight beads behind it in the same wave.
+See [Machine: resources](../concepts/resources.md) for the label grammar,
+capacity/reservation semantics, and the agent contract, and
+[Global governor](../developer-guide/global-governor.md) for the
+`governor.json` schema and admission clauses.
 
 ## Model labels
 
@@ -484,6 +527,14 @@ floor** is a machine-wide guard: when the host's available memory drops below th
 scheduler defers new dispatches to a later wave (running agents are never touched), exactly
 like a concurrency-cap denial. It is a soft safety rail — a missing or unreadable memory
 signal always fails open (dispatch proceeds).
+
+A bead that declares [`res:<kind>` labels](#resource-labels-reskind) sharpens this check
+from reactive to demand-aware: the floor comparison also subtracts every other live
+lease's outstanding memory reservation for its declared kinds, so a wave of
+cluster-provisioning beads reserves memory for the ones already admitted instead of
+waiting for the host to actually feel the pressure. See
+[Machine: resources](../concepts/resources.md#reservation-aware-memory-admission-and-the-ramp-window)
+for the mechanics.
 
 The floor is a machine property (like the global concurrency cap), so it lives in
 `~/.koryph/governor.json`, per provider pool. It is **on by default**, sized to physical

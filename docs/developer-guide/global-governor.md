@@ -284,6 +284,137 @@ governor.json:
   `koryph doctor` iterate every pool with any live state (an explicit
   `governor.json` entry, a lease, or a demand heartbeat) — see CLI below.
 
+### Machine resource ledger: capacity + reservation admission (koryph-4ql)
+
+Concurrency pools bound *how many agents* run; they say nothing about what an
+agent starts running on the **host** once dispatched — a kind/k8s dev
+cluster, a docker compose stack, a long-lived dev server. Those consume
+machine capacity outside the agent's process tree, and two agents each
+starting a multi-gigabyte cluster is invisible to both the pool cap and to
+footprint conflict detection. The resource ledger is a second, additive
+admission dimension for exactly that (design
+`docs/designs/2026-07-resource-governor.md`, user-facing concept:
+[Machine: resources](../concepts/resources.md)): a bead declares external
+resource kinds with `res:<kind>` labels, and `govern` tracks per-kind
+capacity and cost the same way it tracks concurrency — files under
+`~/.koryph`, guarded by the same flock, fail-open on error.
+
+**Schema.** `governor.json` gains a **top-level** `resources` section,
+deliberately *outside* the per-provider `pools` map — RAM, dev clusters, and
+the docker daemon are machine properties shared across every provider, not
+scoped to one:
+
+```json
+{
+  "pools": { "anthropic": { "max_global_agents": 8 } },
+  "resources": {
+    "ramp_seconds": 600,
+    "kinds": {
+      "kind-cluster": { "capacity": 1, "mem_mb": 6144, "ramp_seconds": 900, "probe": "kind get clusters" },
+      "docker":       { "capacity": 3 }
+    }
+  }
+}
+```
+
+- `resources.ramp_seconds` — the global default ramp window (see reservation
+  admission below); a per-kind `ramp_seconds` overrides it. `<=0` falls back
+  to the package default of **600s** (`govern.DefaultRampSeconds`).
+- `resources.kinds.<kind>.capacity` — the max number of live leases allowed
+  to hold this kind at once, counted **across every provider pool and every
+  project** on the host (machine resources are cross-pool). `<=0`, or the
+  kind being absent from `kinds` entirely — including when the whole
+  `resources` section is absent — resolves to the fail-safe-serial default
+  of **1** (`govern.DefaultResourceCapacity`). That default always binds: two
+  beads declaring the same unconfigured kind can never co-dispatch, even on
+  a machine with no resource configuration at all. Distinct unconfigured
+  kinds do not collide with each other.
+- `resources.kinds.<kind>.mem_mb` — the per-holder memory reservation
+  charged while the lease is ramping (below). `0`/absent means uncalibrated:
+  the kind still serializes at its capacity, it just reserves no memory.
+- `resources.kinds.<kind>.ramp_seconds` — per-kind override of the global
+  ramp window.
+- `resources.kinds.<kind>.probe` — an operator-authored shell command that
+  lists live instance names for that kind, for leak detection. Never
+  consumed on the admission path (no subprocess runs under the flock);
+  read only by the health patrol / `koryph doctor`.
+- Schema mechanics: `govern.File` has a *custom* `UnmarshalJSON` that decodes
+  only the `"pools"` key; adding a struct field for `resources` alone would
+  be silently dropped on every read and then stripped from disk by the next
+  setter's whole-file rewrite. `UnmarshalJSON` decodes `resources` explicitly
+  on the pools-shaped document path; a legacy flat (pre-koryph-v8u.11)
+  document predates the resource ledger entirely and decodes it as `nil`
+  (no capacity configured — declared kinds still serialize at 1). Read with
+  `Store.Resources()` (fails open to the zero `ResourcesConfig{}` on any
+  read error, the `MinFreeMemoryMB` precedent); write with `Store.SetResource`
+  / remove with `Store.UnsetResource`, both preserve-don't-reset
+  read-modify-writes of the whole file, like `SetMinFreeMemoryMB`.
+
+**Resolution order per kind.** Capacity has no project-level equivalent — it
+is purely a machine fact. Memory cost layers two config surfaces (mirroring
+the `area_map`-vs-labels split): the machine ledger's `mem_mb` when set, else
+`koryph.project.json`'s `resources.<kind>.mem_mb` (the checked-in, portable
+planning estimate — see [Machine: resources](../concepts/resources.md)),
+else `0` (no reservation).
+
+**Lease schema.** `govern.Lease` gains `Resources []string` (the resolved
+kind tokens, not the raw labels) and `MemReserveMB int`, both `omitempty` —
+an old lease file decodes as resource-free. The engine resolves a bead's
+declaration once at dispatch and freezes both fields on the lease *and* on
+the ledger slot, so a relabel or vocabulary edit mid-run never re-prices an
+already-dispatched agent.
+
+**Admission clauses.** `Store.Acquire`/`AcquireEx` runs two machine-scoped
+checks under the flock, in addition to the existing pool cap/fair-share/AIMD
+checks — pure lease-file arithmetic, no subprocess, so running them inside
+the lock violates nothing:
+
+1. **Capacity.** For each kind the candidate declares, count live leases
+   holding that kind across **every** pool (the existing dead-pid prune pass
+   has already run). Admit iff `holders + 1 <= capacity(kind)`. A denial
+   names the kind, the resolved capacity, the holder count, and a
+   deterministic representative holder.
+2. **Reservation-aware memory.** Only runs when the caller supplies a memory
+   reading (the engine's pre-flock probe, `internal/sysmem`) and a positive
+   floor — a caller with no reading, or a disabled floor, skips this clause
+   and keeps only capacity. Admit iff:
+
+   ```
+   availMB − Σ(ramping leases' MemReserveMB) − candidate's MemReserveMB ≥ floorMB
+   ```
+
+   A lease is **ramping** while `now − AcquiredAt < ramp_seconds` (the max
+   ramp across every kind it holds). While ramping, its reservation is
+   subtracted from the reading as a stand-in for memory it hasn't finished
+   consuming; once the ramp elapses the reservation retires, since the cost
+   should now show up in the real `availMB` reading. `Hold` restamps
+   `AcquiredAt` on every rewrite, so the ramp clock restarts per (re)bind —
+   the over-reserving, and therefore safe, direction. A denial distinguishes
+   a **candidate-tipped** breach (would have passed at `MemReserveMB=0` —
+   per-bead, the engine skips just this candidate) from a **pure floor
+   breach** (fails even at zero reservation — machine-wide, every dispatch
+   attempt breaks for this boundary).
+
+   Both clauses also run on the half-open circuit-breaker probe grant, which
+   otherwise returns before the cap/fair-share section — a resource-declared
+   bead admitted as the probe still has to clear capacity and reservation.
+
+Every error path (an unreadable `governor.json`, a probe failure) fails
+**open**: dispatch proceeds. Capacity exhaustion is not an error — it is an
+ordinary deferral, retried at the next scheduling boundary, exactly like a
+pool-cap denial.
+
+**Observability.** `Store.ResourcesStatus()` returns the live per-kind
+ledger state across all pools: resolved capacity, configured `mem_mb`,
+resolved ramp window, the configured probe command, every live holder
+(project, bead, its reservation, whether it is still ramping), and the
+reserved-vs-materialized MB split. `koryph governor show` renders this as a
+resources section alongside the pool blocks — the operator's direct answer
+to "which threads are using which shared resources right now." Set a kind's
+machine capacity/cost/ramp/probe with `koryph governor set-resource`, and
+clear one with its `--unset` form; see the CLI reference for the full flag
+set.
+
 ### CLI
 
 - `koryph governor` — show EVERY provider pool's cap, active leases
@@ -311,6 +442,16 @@ governor.json:
   machine-wide lock, and fails open on any read error.
   `KORYPH_MIN_FREE_MEMORY_MB` overrides the configured floor for a single run
   (same `>0`/`0`/`<0` semantics).
+- `koryph governor set-resource <kind> ...` writes one kind's
+  capacity/mem-mb/ramp-seconds/probe in the top-level `resources` ledger
+  (`Store.SetResource`); its `--unset` form removes a kind
+  (`Store.UnsetResource`). Unlike the pool `set` subcommands, resources are
+  machine-wide, not per-provider. See the [CLI reference](../reference/cli.md)
+  for the full flag set. `koryph governor show` renders the resources section
+  described above; leak detection (a suspected leaked instance, via the
+  `<kind>-<bead-id>` naming convention and an optional probe) is a health
+  patrol / `koryph doctor` finding — see
+  [Machine: resources](../concepts/resources.md#leak-detection).
 - `board` / `status` prune stale leases and demand (across all pools) as a
   hygiene side effect.
 

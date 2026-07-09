@@ -40,6 +40,7 @@ nav:
       - Overview: concepts/index.md
       - "Work: beads and the ready-graph": concepts/beads.md
       - "Parallelism: footprints": concepts/footprints.md
+      - "Machine: resources": concepts/resources.md
       - "Time: rolling dispatch": concepts/rolling-dispatch.md
       - "Safety: worktrees and the green gate": concepts/worktrees.md
       - "Money: governors and quota": concepts/governors.md

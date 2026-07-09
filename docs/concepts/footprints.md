@@ -75,3 +75,6 @@ rest.
   `internal/sched/wave.go` (conflict-free selection).
 - Footprints feed [rolling dispatch](rolling-dispatch.md): the scheduler
   re-checks conflict-freedom every time a slot frees.
+- Footprints protect the merge; [resources](resources.md) protect the
+  machine — a second, additive admission dimension for beads that provision
+  external dependencies (dev clusters, docker stacks, servers).
