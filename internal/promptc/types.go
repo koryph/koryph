@@ -10,8 +10,10 @@
 //	                        cross-cutting gates, bootstrap notes).
 //	[3] volatile tail     — the bead (title/description/OPERATOR NOTES/plan),
 //	                        resume context (RESUMING block with commit log
-//	                        guidance + review findings path), nudge inbox
-//	                        pointer.
+//	                        guidance + review findings path), the RESOURCES
+//	                        block (koryph-4ql.4, present iff the bead
+//	                        declares res:<kind> labels — sched.ResourcesFor),
+//	                        nudge inbox pointer.
 //
 // OPERATOR NOTES (koryph-o72): Bead.Notes carries any addendum appended via
 // `bd update --append-notes` while the bead was still queued — i.e. before

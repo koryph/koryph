@@ -280,6 +280,83 @@ func TestOperatorNotesAppearVerbatim(t *testing.T) {
 	}
 }
 
+// TestResourcesBlockAbsentWithoutLabels is the koryph-4ql.4 golden: a bead
+// with no res:<kind> labels gets zero RESOURCES output (design L1's
+// inverted-default posture — "agent + worktree only" is silent, not an empty
+// section header).
+func TestResourcesBlockAbsentWithoutLabels(t *testing.T) {
+	out := Compile(baseInput())
+	if strings.Contains(out, "RESOURCES") {
+		t.Errorf("RESOURCES block should be absent when the bead declares no res:* labels:\n%s", out)
+	}
+}
+
+// TestResourcesBlockPresentWithNamingContract pins the design L6 "Agent
+// contract" content for a bead that declares exactly one res:<kind> label:
+// the block names the declared kind, the <kind>-<bead-id> instance-naming
+// convention, and the teardown/SIGTERM/SUMMARY.md directives.
+func TestResourcesBlockPresentWithNamingContract(t *testing.T) {
+	in := baseInput()
+	in.Bead.Labels = []string{"res:kind-cluster"}
+	out := Compile(in)
+
+	if !strings.Contains(out, "### RESOURCES") {
+		t.Fatalf("RESOURCES block missing when the bead declares res:kind-cluster:\n%s", out)
+	}
+	for _, want := range []string{
+		"kind-cluster",
+		"kind-cluster-bd-42", // <kind>-<bead-id> naming line
+		"Tear everything down before you exit, including when checkpointing on SIGTERM.",
+		"SUMMARY.md",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("RESOURCES block missing %q:\n%s", want, out)
+		}
+	}
+
+	// Must appear in the volatile tail (after the task heading), like the
+	// other conditional blocks.
+	iTask := strings.Index(out, "## Task bd-42")
+	iRes := strings.Index(out, "### RESOURCES")
+	if iRes < iTask {
+		t.Errorf("RESOURCES section should be in the volatile tail (after %d), got index %d", iTask, iRes)
+	}
+}
+
+// TestResourcesBlockMultiKindOrderingDeterministic pins design L1's
+// dedupe+sort contract end to end: labels declared out of order (and with a
+// duplicate) render as one sorted, comma-joined kind list, matching
+// sched.ResourcesFor's own ordering guarantee.
+func TestResourcesBlockMultiKindOrderingDeterministic(t *testing.T) {
+	in := baseInput()
+	in.Bead.Labels = []string{"res:docker", "res:kind-cluster", "res:docker"}
+	out := Compile(in)
+
+	if !strings.Contains(out, "external resource kind(s): docker, kind-cluster.") {
+		t.Errorf("RESOURCES block kinds not sorted/deduped as expected:\n%s", out)
+	}
+	if strings.Count(out, "### RESOURCES") != 1 {
+		t.Errorf("expected exactly one RESOURCES heading, got %d:\n%s", strings.Count(out, "### RESOURCES"), out)
+	}
+	// The naming-line example uses the first (sorted) kind.
+	if !strings.Contains(out, "docker-bd-42") {
+		t.Errorf("RESOURCES naming example should use the first sorted kind (docker):\n%s", out)
+	}
+}
+
+// TestResourcesBlockMalformedLabelsIgnored pins ResourcesFor's fail-open
+// posture (design L1/sched.isResKind) through promptc: a malformed res:
+// label (uppercase, here) contributes nothing, so a bead with only malformed
+// res: labels renders exactly like a bead with none.
+func TestResourcesBlockMalformedLabelsIgnored(t *testing.T) {
+	in := baseInput()
+	in.Bead.Labels = []string{"res:KindCluster"}
+	out := Compile(in)
+	if strings.Contains(out, "RESOURCES") {
+		t.Errorf("RESOURCES block should be absent for a bead with only malformed res:* labels:\n%s", out)
+	}
+}
+
 // TestNoTimestampsInStableSections asserts that neither the engine preamble
 // nor the project block leaks a timestamp — here proxied by the current year.
 func TestNoTimestampsInStableSections(t *testing.T) {

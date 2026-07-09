@@ -6,6 +6,9 @@ package promptc
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/sched"
 )
 
 // sectionSep joins the three prompt sections. A reader sees a "---" rule
@@ -199,6 +202,8 @@ func volatileTail(in Input) string {
 		b.WriteString(". Read that file and resolve every finding before you finish.")
 	}
 
+	writeResourcesBlock(&b, in.Bead)
+
 	b.WriteString("\n\n### Reporting paths")
 	b.WriteString("\n- Phase dir: ")
 	b.WriteString(in.PhaseDir)
@@ -212,6 +217,46 @@ func volatileTail(in Input) string {
 	b.WriteString(inboxPath(in.PhaseDir))
 
 	return b.String()
+}
+
+// writeResourcesBlock appends the RESOURCES section of the volatile tail
+// (koryph-4ql.4, design docs/designs/2026-07-resource-governor.md L6 "Agent
+// contract") — the runtime-provisioning half of the agent contract that
+// mirrors L1's declaration half (sched.ResourcesFor / res:<kind> labels).
+// It writes nothing when the bead declares no res:<kind> labels: zero output
+// change for the common (undeclared) case is the point, so every existing
+// golden/substring test on an undeclared bead keeps passing unmodified
+// (pinned by TestResourcesBlockAbsentWithoutLabels).
+//
+// sched.ResourcesFor is the single source of truth for the declared kinds —
+// same LabelValues("res:") + [a-z0-9-]+ + dedupe-sort mechanics BuildWave and
+// Acquire use (design L1/L4) — so promptc never re-implements the label
+// grammar and can never drift from what the scheduler/governor actually
+// admitted against.
+//
+// The five directives below are the design's "Agent contract" paragraph
+// verbatim: declared kinds, provision-at-most-declared, the
+// <kind>-<bead-id> naming convention leak detection (L7) keys off, teardown
+// before exit (including a SIGTERM checkpoint — the engine's requeue path
+// commits and requeues on SIGTERM, but the running process is still the only
+// thing that can tear down what it provisioned), and reporting anything left
+// behind in SUMMARY.md so a leaked instance is at least self-attributed.
+func writeResourcesBlock(b *strings.Builder, bead beads.Issue) {
+	kinds := sched.ResourcesFor(bead)
+	if len(kinds) == 0 {
+		return
+	}
+	b.WriteString("\n\n### RESOURCES\n")
+	b.WriteString("This task declares external resource kind(s): ")
+	b.WriteString(strings.Join(kinds, ", "))
+	b.WriteString(".")
+	writeBullets(b, []string{
+		"Provision at most what you declared — no other resource kinds.",
+		"Name every instance <kind>-" + bead.ID + " (e.g. " + kinds[0] + "-" + bead.ID +
+			") so leak detection can attribute it to this task.",
+		"Tear everything down before you exit, including when checkpointing on SIGTERM.",
+		"List anything you could not tear down in SUMMARY.md.",
+	})
 }
 
 // writeBullets appends "- <item>" lines for each item.
