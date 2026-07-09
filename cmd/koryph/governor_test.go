@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -379,5 +380,165 @@ func TestGovernorShowJSONNoSubVerb(t *testing.T) {
 	}
 	if len(snaps) == 0 {
 		t.Error("expected at least one pool snapshot")
+	}
+}
+
+// --- machine resource ledger (koryph-4ql.5, L7 CLI) -------------------------
+
+// TestGovernorSetResourceRoundTrip proves `governor set-resource <kind>
+// --capacity N --mem-mb M --ramp-seconds S --probe CMD` writes/reports every
+// field and Store.Resources() reads them back unchanged.
+func TestGovernorSetResourceRoundTrip(t *testing.T) {
+	isolate(t)
+	code, out, errs := runCmd("governor", "set-resource", "kind-cluster",
+		"--capacity", "2", "--mem-mb", "6144", "--ramp-seconds", "900", "--probe", "kind get clusters")
+	if code != 0 {
+		t.Fatalf("set-resource: code %d stderr %q", code, errs)
+	}
+	for _, want := range []string{"capacity=2", "mem_mb=6144", "ramp_seconds=900", `probe="kind get clusters"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout = %q, want it to contain %q", out, want)
+		}
+	}
+
+	k, ok := govern.NewStore().Resources().Kinds["kind-cluster"]
+	if !ok {
+		t.Fatal("kind-cluster not persisted")
+	}
+	if k.Capacity != 2 || k.MemMB != 6144 || k.RampSeconds != 900 || k.Probe != "kind get clusters" {
+		t.Errorf("persisted spec = %+v, want {Capacity:2 MemMB:6144 RampSeconds:900 Probe:%q}", k, "kind get clusters")
+	}
+}
+
+// TestGovernorSetResourcePartialUpdatePreservesOtherFields proves a follow-up
+// set-resource call touching only ONE flag leaves the others untouched — the
+// same presence-detection semantics `governor set --min-free-memory-mb` uses.
+func TestGovernorSetResourcePartialUpdatePreservesOtherFields(t *testing.T) {
+	isolate(t)
+	if code, _, errs := runCmd("governor", "set-resource", "kind-cluster", "--capacity", "2", "--mem-mb", "6144"); code != 0 {
+		t.Fatalf("initial set-resource: code %d stderr %q", code, errs)
+	}
+	if code, _, errs := runCmd("governor", "set-resource", "kind-cluster", "--ramp-seconds", "300"); code != 0 {
+		t.Fatalf("partial set-resource: code %d stderr %q", code, errs)
+	}
+	k := govern.NewStore().Resources().Kinds["kind-cluster"]
+	if k.Capacity != 2 || k.MemMB != 6144 || k.RampSeconds != 300 {
+		t.Errorf("partial update = %+v, want capacity=2 mem_mb=6144 preserved and ramp_seconds=300 updated", k)
+	}
+}
+
+// TestGovernorSetResourceUnsetRemovesExactlyOneKind proves --unset removes
+// only the named kind, preserving every OTHER configured kind.
+func TestGovernorSetResourceUnsetRemovesExactlyOneKind(t *testing.T) {
+	isolate(t)
+	if code, _, errs := runCmd("governor", "set-resource", "kind-cluster", "--capacity", "2"); code != 0 {
+		t.Fatalf("set kind-cluster: code %d stderr %q", code, errs)
+	}
+	if code, _, errs := runCmd("governor", "set-resource", "docker", "--capacity", "3"); code != 0 {
+		t.Fatalf("set docker: code %d stderr %q", code, errs)
+	}
+
+	code, out, errs := runCmd("governor", "set-resource", "docker", "--unset")
+	if code != 0 || !strings.Contains(out, `"docker"`) {
+		t.Fatalf("unset docker: code %d out %q stderr %q", code, out, errs)
+	}
+
+	rc := govern.NewStore().Resources()
+	if _, ok := rc.Kinds["docker"]; ok {
+		t.Error("docker survived --unset")
+	}
+	if _, ok := rc.Kinds["kind-cluster"]; !ok {
+		t.Error("kind-cluster removed by an unrelated docker --unset")
+	}
+
+	// Unsetting a kind that was never configured is idempotent, not an error.
+	if code, _, errs := runCmd("governor", "set-resource", "nonexistent", "--unset"); code != 0 {
+		t.Errorf("unset of a missing kind should be idempotent: code %d stderr %q", code, errs)
+	}
+}
+
+// TestGovernorSetResourceInvalidKindRejected proves a kind outside
+// [a-z0-9-]+ (design L1's res:<kind> grammar) is rejected rather than
+// silently accepted or dropped.
+func TestGovernorSetResourceInvalidKindRejected(t *testing.T) {
+	isolate(t)
+	code, _, errs := runCmd("governor", "set-resource", "Kind_Cluster!", "--capacity", "2")
+	if code == 0 {
+		t.Fatal("set-resource with an invalid kind charset should fail")
+	}
+	if !strings.Contains(errs, "invalid kind") {
+		t.Errorf("stderr = %q, want it to name the invalid kind", errs)
+	}
+	if _, ok := govern.NewStore().Resources().Kinds["Kind_Cluster!"]; ok {
+		t.Error("invalid kind must not be persisted")
+	}
+}
+
+// TestGovernorSetResourceUnsetRejectsOtherFlags proves --unset combined with
+// any configuration flag is a usage error, not a silent partial unset.
+func TestGovernorSetResourceUnsetRejectsOtherFlags(t *testing.T) {
+	isolate(t)
+	code, _, errs := runCmd("governor", "set-resource", "kind-cluster", "--unset", "--capacity", "2")
+	if code == 0 {
+		t.Fatal("--unset combined with --capacity should be rejected")
+	}
+	if !strings.Contains(errs, "--unset") {
+		t.Errorf("stderr = %q, want it to explain the --unset conflict", errs)
+	}
+}
+
+// TestGovernorShowRendersResourceHolders proves `governor show` gains a
+// resources section reporting capacity, live holders (project/bead), the
+// reserved-vs-materialized MB split, and ramp state, once a kind is
+// configured and held (koryph-4ql.5, design L7).
+func TestGovernorShowRendersResourceHolders(t *testing.T) {
+	isolate(t)
+	if code, _, errs := runCmd("governor", "set", "--max-global", "8"); code != 0 {
+		t.Fatalf("set cap: code %d stderr %q", code, errs)
+	}
+	if code, _, errs := runCmd("governor", "set-resource", "kind-cluster", "--capacity", "2", "--mem-mb", "6144"); code != 0 {
+		t.Fatalf("set-resource: code %d stderr %q", code, errs)
+	}
+
+	// Seed a live holder directly through the govern package (the CLI has no
+	// dispatch command of its own): PID = this test process's own pid so the
+	// real Store's default pid-liveness probe treats it as alive.
+	gs := govern.NewStore()
+	holder := govern.Lease{
+		Project:      "demo",
+		Bead:         "b1",
+		PID:          os.Getpid(),
+		EnginePID:    os.Getpid(),
+		Resources:    []string{"kind-cluster"},
+		MemReserveMB: 6144,
+	}
+	if ok, err := gs.Acquire(holder); err != nil || !ok {
+		t.Fatalf("seeding a holder lease: ok=%v err=%v", ok, err)
+	}
+
+	_, out, _ := runCmd("governor", "show")
+	for _, want := range []string{
+		"resources:",
+		"kind-cluster:",
+		"capacity: 2",
+		"demo",
+		"b1",
+		"6144",
+		"ramping", // fresh lease, inside the (default 600s) ramp window
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("governor show missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestGovernorShowOmitsResourcesSectionWhenEmpty proves the zero-noise
+// default (design §4 CLI compat row): a machine with no configured kind and
+// no live holder prints no resources section at all.
+func TestGovernorShowOmitsResourcesSectionWhenEmpty(t *testing.T) {
+	isolate(t)
+	_, out, _ := runCmd("governor", "show")
+	if strings.Contains(out, "resources:") {
+		t.Errorf("governor show should omit the resources section by default:\n%s", out)
 	}
 }

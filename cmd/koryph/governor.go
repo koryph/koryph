@@ -36,6 +36,12 @@ func init() {
 				run:      cmdGovernorSet,
 				DocLinks: []string{"concepts/governors.md", "developer-guide/global-governor.md"},
 			},
+			{
+				name:     "set-resource",
+				summary:  "configure or remove a machine resource kind (kind-cluster, docker, ...)",
+				run:      cmdGovernorSetResource,
+				DocLinks: []string{"concepts/governors.md", "developer-guide/global-governor.md"},
+			},
 		},
 	})
 }
@@ -50,15 +56,20 @@ func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 		return cmdGovernorShow(args[1:], stdout, stderr)
 	case "set":
 		return cmdGovernorSet(args[1:], stdout, stderr)
+	case "set-resource":
+		return cmdGovernorSetResource(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		parentHelp(stdout, "governor", "inspect and set per-provider agent concurrency pools", []subVerb{
-			{"show [--json]", "show every pool's cap, active leases, and demanding projects (default)"},
+			{"show [--json]", "show every pool's cap, active leases, and demanding projects, plus the machine resource ledger when any kind is configured or held (default)"},
 			{"set --max-global N [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]",
 				"set one pool's cap (--provider omitted = anthropic); --adaptive enables the AIMD overlay (settle/breaker/smoothing apply only with --adaptive)"},
+			{"set-resource <kind> --capacity N [--mem-mb M] [--ramp-seconds S] [--probe CMD]",
+				"configure a machine resource kind's cross-pool capacity/reservation/ramp/leak-probe (koryph-4ql.5); flags partially update, like `set`'s --min-free-memory-mb"},
+			{"set-resource <kind> --unset", "remove a machine resource kind (may not be combined with any other flag)"},
 		})
 		return 0
 	default:
-		return usageErr(stderr, fmt.Sprintf("unknown governor subcommand %q (want show|set)", args[0]))
+		return usageErr(stderr, fmt.Sprintf("unknown governor subcommand %q (want show|set|set-resource)", args[0]))
 	}
 }
 
@@ -85,7 +96,7 @@ type governorPoolJSON struct {
 func cmdGovernorShow(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("governor show", stderr)
 	asJSON := fs.Bool("json", false, "emit JSON array of pool snapshots")
-	setUsage(fs, stdout, "show every pool's cap, active leases, and demanding projects", "[--json]")
+	setUsage(fs, stdout, "show every pool's cap, active leases, demanding projects, and the machine resource ledger (koryph-4ql.5) when non-empty", "[--json]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -135,6 +146,9 @@ func cmdGovernorShow(args []string, stdout, stderr io.Writer) int {
 		if err := printPoolStatus(stdout, gs, pool); err != nil {
 			return fail(stderr, err)
 		}
+	}
+	if err := printResourcesSection(stdout, gs); err != nil {
+		return fail(stderr, err)
 	}
 	return 0
 }
@@ -202,6 +216,56 @@ func printPoolStatus(stdout io.Writer, gs *govern.Store, pool string) error {
 		fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\t%s\n", l.Project, l.Bead, pid, model, l.AcquiredAt)
 	}
 	_ = tw.Flush()
+	return nil
+}
+
+// printResourcesSection prints `governor show`'s machine resource ledger
+// (koryph-4ql.5, design L7): every CONFIGURED kind plus every kind any live
+// lease HOLDS, cross-pool (Store.ResourcesStatus, not per-pool like the
+// blocks above). Zero-noise default (design §4 CLI compat row): when no kind
+// is configured and none is held, ResourcesStatus returns an empty slice and
+// this prints nothing at all — a machine that has never touched
+// `set-resource` sees byte-for-byte today's `governor show` output.
+func printResourcesSection(stdout io.Writer, gs *govern.Store) error {
+	sts, err := gs.ResourcesStatus()
+	if err != nil {
+		return err
+	}
+	if len(sts) == 0 {
+		return nil
+	}
+
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "resources:")
+	for _, st := range sts {
+		fmt.Fprintf(stdout, "  %s:\n", st.Kind)
+		fmt.Fprintf(stdout, "    capacity: %d\n", st.Capacity)
+		if st.MemMB > 0 {
+			fmt.Fprintf(stdout, "    mem per holder: %d MB (ramp %ds)\n", st.MemMB, st.RampSeconds)
+		} else {
+			fmt.Fprintln(stdout, "    mem per holder: uncalibrated (no reservation)")
+		}
+		if st.Probe != "" {
+			fmt.Fprintf(stdout, "    probe: %s\n", st.Probe)
+		}
+		fmt.Fprintf(stdout, "    reserved: %d MB    materialized: %d MB\n", st.ReservedMB, st.MaterializedMB)
+
+		if len(st.Holders) == 0 {
+			fmt.Fprintln(stdout, "    no active holders")
+			continue
+		}
+		fmt.Fprintf(stdout, "    holders (%d):\n", len(st.Holders))
+		tw := tabwriter.NewWriter(stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "      PROJECT\tBEAD\tMEM_MB\tSTATE")
+		for _, h := range st.Holders {
+			state := "materialized"
+			if h.Ramping {
+				state = "ramping"
+			}
+			fmt.Fprintf(tw, "      %s\t%s\t%d\t%s\n", h.Project, h.Bead, h.MemReserveMB, state)
+		}
+		_ = tw.Flush()
+	}
 	return nil
 }
 
@@ -280,6 +344,114 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%s [pool %s]\n", memFloorMsg(*minFreeMem), pool)
 	}
+	return 0
+}
+
+// resourceKindPattern matches the `res:<kind>` label grammar (design L1,
+// docs/designs/2026-07-resource-governor.md): a non-empty run of lowercase
+// letters, digits, and hyphens, matched exactly. Mirrors
+// internal/sched/resources.go's isResKind (unexported there; `governor
+// set-resource` rejects a malformed kind outright rather than silently
+// dropping it the way ResourcesFor does at plan-parse time — this is an
+// interactive command, so a mistyped kind should fail loudly, not create a
+// dead entry nothing ever labels a bead with).
+func resourceKindPattern(kind string) bool {
+	if kind == "" {
+		return false
+	}
+	for _, r := range kind {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// cmdGovernorSetResource configures or removes one machine resource kind in
+// governor.json's top-level, cross-pool resources ledger (koryph-4ql.5,
+// design L2/L7): `governor set-resource <kind> --capacity N [--mem-mb M]
+// [--ramp-seconds S] [--probe CMD]` writes/replaces kind's spec via
+// Store.SetResource, which preserves every pool config and every OTHER kind
+// (the SetMinFreeMemoryMB preserve-don't-reset precedent). Each of
+// --capacity/--mem-mb/--ramp-seconds/--probe is independently
+// presence-detected (flagPassed, the same mechanism cmdGovernorSet uses for
+// --min-free-memory-mb): an omitted flag on a repeat call leaves that field
+// at whatever a PRIOR set-resource left it at, so `set-resource kind-cluster
+// --mem-mb 6144` after `set-resource kind-cluster --capacity 2` yields
+// {Capacity:2, MemMB:6144}, not a reset to {MemMB:6144} alone. `governor
+// set-resource <kind> --unset` instead removes the kind via
+// Store.UnsetResource and may not be combined with any other flag — there is
+// nothing to "partially" unset.
+func cmdGovernorSetResource(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("governor set-resource", stderr)
+	capacity := fs.Int("capacity", 0, "max concurrent holders of this kind across all pools (<=0 resolves to the fail-safe default of 1)")
+	memMB := fs.Int("mem-mb", 0, "per-holder memory reservation in MB during the ramp window (0 = uncalibrated, no reservation)")
+	rampSeconds := fs.Int("ramp-seconds", 0, "ramp window in seconds before a holder's reservation is assumed materialized (<=0 = machine/global default)")
+	probe := fs.String("probe", "", "leak-detection shell command listing live instance names (patrol/doctor only — never consulted on the admission path)")
+	unset := fs.Bool("unset", false, "remove this kind from the resources ledger (must be the only flag)")
+	setUsage(fs, stdout, "configure or remove one machine resource kind (koryph-4ql.5)",
+		"<kind> [--capacity N] [--mem-mb M] [--ramp-seconds S] [--probe CMD] | <kind> --unset")
+	rest, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if len(rest) != 1 {
+		return usageErr(stderr, "governor set-resource: exactly one <kind> argument required")
+	}
+	kind := rest[0]
+	if !resourceKindPattern(kind) {
+		return usageErr(stderr, fmt.Sprintf("governor set-resource: invalid kind %q (want [a-z0-9-]+)", kind))
+	}
+
+	capacityGiven := flagPassed(fs, "capacity")
+	memGiven := flagPassed(fs, "mem-mb")
+	rampGiven := flagPassed(fs, "ramp-seconds")
+	probeGiven := flagPassed(fs, "probe")
+
+	gs := govern.NewStore()
+
+	if *unset {
+		if capacityGiven || memGiven || rampGiven || probeGiven {
+			return usageErr(stderr, "governor set-resource --unset: may not be combined with --capacity/--mem-mb/--ramp-seconds/--probe")
+		}
+		if err := gs.UnsetResource(kind); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "resource kind %q removed\n", kind)
+		return 0
+	}
+
+	if !capacityGiven && !memGiven && !rampGiven && !probeGiven {
+		return usageErr(stderr, "governor set-resource: need --capacity/--mem-mb/--ramp-seconds/--probe, or --unset")
+	}
+
+	// Partial update: start from kind's CURRENT spec (zero value when kind is
+	// new) and overwrite only the fields the caller actually passed, so a
+	// second set-resource call tuning one knob does not clobber the others —
+	// exactly cmdGovernorSet's --min-free-memory-mb precedent, at kind
+	// granularity instead of pool granularity.
+	spec := gs.Resources().Kinds[kind]
+	if capacityGiven {
+		spec.Capacity = *capacity
+	}
+	if memGiven {
+		spec.MemMB = *memMB
+	}
+	if rampGiven {
+		spec.RampSeconds = *rampSeconds
+	}
+	if probeGiven {
+		spec.Probe = *probe
+	}
+	if err := gs.SetResource(kind, spec); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "resource kind %q set: capacity=%d mem_mb=%d ramp_seconds=%d probe=%q\n",
+		kind, spec.Capacity, spec.MemMB, spec.RampSeconds, spec.Probe)
 	return 0
 }
 

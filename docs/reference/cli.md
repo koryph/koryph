@@ -62,6 +62,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph governor`](#koryph-governor) | inspect and set the machine-wide concurrency cap |
 | ↳ [`koryph governor show`](#koryph-governor-show) | show the cap, active leases, and demand |
 | ↳ [`koryph governor set`](#koryph-governor-set) | set the machine-wide cap |
+| ↳ [`koryph governor set-resource`](#koryph-governor-set-resource) | configure or remove a machine resource kind (kind-cluster, docker, ...) |
 | [`koryph quota`](#koryph-quota) | per-account governor snapshot |
 | ↳ [`koryph quota calibrate`](#koryph-quota-calibrate) | calibrate a governor ceiling from an observed /usage reading |
 | ↳ [`koryph quota guard`](#koryph-quota-guard) | live billing-guard toggle — on\|advisory\|off \[--until <duration>]; re-read each wave without a restart |
@@ -725,6 +726,20 @@ set the machine-wide cap
 | `--min-free-memory-mb` | int |  | memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global |
 | `--provider` | string |  | governor pool to configure (default: anthropic) — koryph-v8u.11 independent per-provider pools |
 | `--settle-sec` | int |  | settle window after any cap change, under --adaptive (default 120) |
+
+## `koryph governor set-resource` { #koryph-governor-set-resource }
+
+configure or remove a machine resource kind (kind-cluster, docker, ...)
+
+**See also:** [Governors](../concepts/governors) · [Global governor](../developer-guide/global-governor)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--capacity` | int |  | max concurrent holders of this kind across all pools (<=0 resolves to the fail-safe default of 1) |
+| `--mem-mb` | int |  | per-holder memory reservation in MB during the ramp window (0 = uncalibrated, no reservation) |
+| `--probe` | string |  | leak-detection shell command listing live instance names (patrol/doctor only — never consulted on the admission path) |
+| `--ramp-seconds` | int |  | ramp window in seconds before a holder's reservation is assumed materialized (<=0 = machine/global default) |
+| `--unset` | bool |  | remove this kind from the resources ledger (must be the only flag) |
 
 
 ---
