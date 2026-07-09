@@ -3,7 +3,7 @@
 
 # Resource-aware dispatch: declared bead resources, machine capacity ledger, reservation-aware admission (2026-07-09)
 
-Status: approved for implementation (orchestrator-built inline, refactor-core core); beads at the end of this doc.
+Status: implemented 2026-07-09 (orchestrator-built inline; commits 52b77e8..606662d); only R9 (HUMAN host calibration, koryph-4ql.9) remains open. Beads at the end of this doc.
 Origin: operator direction (2026-07-09) — parallel bead threads spin up
 heavyweight external dependencies (kind dev clusters, docker compose stacks,
 long-running servers) that exhaust host memory; koryph must know what shared
