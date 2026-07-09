@@ -220,6 +220,239 @@ func TestPatrolCheckZombieLeases_OwnLivingEngine_LeaseSkipped(t *testing.T) {
 	}
 }
 
+// --- suspected leaked resources (koryph-4ql.8) ------------------------------
+
+func TestPatrolCheckLeakedResources_NoSlots(t *testing.T) {
+	r := &runner{run: &ledger.Run{RunID: "test-run", Slots: map[string]*ledger.Slot{}}}
+	findings := r.patrolCheckLeakedResources(time.Now())
+	if len(findings) != 1 || findings[0].level != "ok" {
+		t.Errorf("no slots: expected one ok finding, got %+v", findings)
+	}
+}
+
+func TestPatrolCheckLeakedResources_NilRun(t *testing.T) {
+	r := &runner{}
+	findings := r.patrolCheckLeakedResources(time.Now())
+	if len(findings) != 1 || findings[0].level != "ok" {
+		t.Errorf("nil run: expected one ok finding, got %+v", findings)
+	}
+}
+
+// TestPatrolCheckLeakedResources_DeadAgentWithResources_Flagged is this
+// bead's core fixture: a non-terminal slot (running) whose agent pid is
+// dead, carrying declared Slot.Resources, must be flagged WARN naming both
+// the bead and its declared kinds — and the finding must never mutate
+// anything (report-only, unlike the zombie-lease auto-fix above).
+func TestPatrolCheckLeakedResources_DeadAgentWithResources_Flagged(t *testing.T) {
+	r := &runner{run: &ledger.Run{RunID: "test-run", Slots: map[string]*ledger.Slot{
+		"my-bead": {
+			PhaseID:   "my-bead",
+			Status:    ledger.SlotRunning,
+			PID:       9999999, // clearly dead
+			Resources: []string{"kind-cluster", "docker"},
+		},
+	}}}
+	findings := r.patrolCheckLeakedResources(time.Now())
+
+	var warn *patrolFinding
+	for i := range findings {
+		if findings[i].level == "warn" {
+			warn = &findings[i]
+		}
+	}
+	if warn == nil {
+		t.Fatalf("expected a warn finding for a dead-agent slot with declared resources, got %+v", findings)
+	}
+	if warn.check != patrolCheckLeakedResources {
+		t.Errorf("check = %q, want %q", warn.check, patrolCheckLeakedResources)
+	}
+	for _, want := range []string{"my-bead", "kind-cluster", "docker", "agent died", "tear down manually"} {
+		if !strings.Contains(warn.message, want) {
+			t.Errorf("message = %q, want it to contain %q", warn.message, want)
+		}
+	}
+}
+
+// TestPatrolCheckLeakedResources_TerminalFailed_Flagged covers the design's
+// "or terminal-failed" clause: a slot already marked failed still carries
+// its resource declaration and must be flagged regardless of its stored PID.
+func TestPatrolCheckLeakedResources_TerminalFailed_Flagged(t *testing.T) {
+	r := &runner{run: &ledger.Run{RunID: "test-run", Slots: map[string]*ledger.Slot{
+		"failed-bead": {
+			PhaseID:   "failed-bead",
+			Status:    ledger.SlotFailed,
+			Resources: []string{"kind-cluster"},
+		},
+	}}}
+	findings := r.patrolCheckLeakedResources(time.Now())
+	found := false
+	for _, f := range findings {
+		if f.level == "warn" && strings.Contains(f.message, "failed-bead") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("terminal-failed slot with resources not flagged: %+v", findings)
+	}
+}
+
+// TestPatrolCheckLeakedResources_LivePID_NotFlagged proves a live agent
+// holding declared resources is never flagged — only a DEAD agent is
+// evidence of a possible leak.
+func TestPatrolCheckLeakedResources_LivePID_NotFlagged(t *testing.T) {
+	r := &runner{run: &ledger.Run{RunID: "test-run", Slots: map[string]*ledger.Slot{
+		"alive-bead": {
+			PhaseID:   "alive-bead",
+			Status:    ledger.SlotRunning,
+			PID:       os.Getpid(), // alive
+			Resources: []string{"kind-cluster"},
+		},
+	}}}
+	findings := r.patrolCheckLeakedResources(time.Now())
+	for _, f := range findings {
+		if f.level == "warn" {
+			t.Errorf("live agent incorrectly flagged as a leaked-resource suspect: %+v", f)
+		}
+	}
+}
+
+// TestPatrolCheckLeakedResources_NoResources_NotFlagged proves a dead-agent
+// slot with NO declared resources is out of scope for this check (the
+// zombie-lease check above is the right signal for a plain dead agent).
+func TestPatrolCheckLeakedResources_NoResources_NotFlagged(t *testing.T) {
+	r := &runner{run: &ledger.Run{RunID: "test-run", Slots: map[string]*ledger.Slot{
+		"plain-bead": {
+			PhaseID: "plain-bead",
+			Status:  ledger.SlotRunning,
+			PID:     9999999, // dead
+			// no Resources
+		},
+	}}}
+	findings := r.patrolCheckLeakedResources(time.Now())
+	for _, f := range findings {
+		if f.level == "warn" {
+			t.Errorf("resource-free dead slot incorrectly flagged: %+v", f)
+		}
+	}
+}
+
+// TestPatrolCheckLeakedResources_MergedWithResources_NotFlagged proves a
+// slot that reached a clean terminal state OTHER than "failed" (e.g.
+// merged) is not flagged even with a dead PID and declared resources — the
+// design's "or terminal-failed" clause is deliberately narrower than
+// ledger.Terminal.
+func TestPatrolCheckLeakedResources_MergedWithResources_NotFlagged(t *testing.T) {
+	r := &runner{run: &ledger.Run{RunID: "test-run", Slots: map[string]*ledger.Slot{
+		"merged-bead": {
+			PhaseID:   "merged-bead",
+			Status:    ledger.SlotMerged,
+			PID:       9999999, // dead — expected once merged
+			Resources: []string{"kind-cluster"},
+		},
+	}}}
+	findings := r.patrolCheckLeakedResources(time.Now())
+	for _, f := range findings {
+		if f.level == "warn" {
+			t.Errorf("merged slot incorrectly flagged: %+v", f)
+		}
+	}
+}
+
+// --- resource-probe diffing (koryph-4ql.8) ----------------------------------
+
+func TestPatrolCheckResourceProbes_NoGovernorFile(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	r := &runner{}
+	findings := r.patrolCheckResourceProbes(t.Context())
+	if len(findings) != 1 || findings[0].level != "ok" {
+		t.Errorf("no governor.json: expected one ok finding, got %+v", findings)
+	}
+}
+
+func TestPatrolCheckResourceProbes_NoProbeConfigured(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KORYPH_HOME", home)
+	writeGovernorFile(t, home, govern.File{Resources: &govern.ResourcesConfig{
+		Kinds: map[string]govern.ResourceKind{"kind-cluster": {Capacity: 1}}, // no Probe
+	}})
+	r := &runner{}
+	findings := r.patrolCheckResourceProbes(t.Context())
+	if len(findings) != 1 || findings[0].level != "ok" {
+		t.Errorf("no probe configured: expected one ok finding, got %+v", findings)
+	}
+}
+
+// TestPatrolCheckResourceProbes_OrphanFlagged exercises the full path via a
+// real `sh -c` echo probe (production RunProbeShell), diffed against an
+// EMPTY slots dir (no live lease anywhere) — the instance must be flagged.
+func TestPatrolCheckResourceProbes_OrphanFlagged(t *testing.T) {
+	home, _ := setupSlotsDir(t)
+	t.Setenv("KORYPH_HOME", home)
+	writeGovernorFile(t, home, govern.File{Resources: &govern.ResourcesConfig{
+		Kinds: map[string]govern.ResourceKind{"kind-cluster": {Probe: "echo kind-cluster-koryph-orphan"}},
+	}})
+	r := &runner{}
+	findings := r.patrolCheckResourceProbes(t.Context())
+	found := false
+	for _, f := range findings {
+		if f.level == "warn" && strings.Contains(f.message, "kind-cluster-koryph-orphan") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a warn finding naming the orphaned instance, got %+v", findings)
+	}
+}
+
+// TestPatrolCheckResourceProbes_LiveLeaseNotFlagged proves an instance whose
+// bead-id suffix has a live lease of the same kind is NOT flagged.
+func TestPatrolCheckResourceProbes_LiveLeaseNotFlagged(t *testing.T) {
+	home, slotsDir := setupSlotsDir(t)
+	t.Setenv("KORYPH_HOME", home)
+	writeGovernorFile(t, home, govern.File{Resources: &govern.ResourcesConfig{
+		Kinds: map[string]govern.ResourceKind{"kind-cluster": {Probe: "echo kind-cluster-koryph-live"}},
+	}})
+	writeLeaseFile(t, slotsDir, "koryph-live.json", govern.Lease{
+		Project: "my-project", Bead: "koryph-live",
+		PID: os.Getpid(), EnginePID: os.Getpid(),
+		Resources: []string{"kind-cluster"},
+	})
+	r := &runner{}
+	findings := r.patrolCheckResourceProbes(t.Context())
+	for _, f := range findings {
+		if f.level == "warn" {
+			t.Errorf("instance with a live lease incorrectly flagged: %+v", f)
+		}
+	}
+}
+
+// TestPatrolCheckResourceProbes_ProbeFailureSoftSkip proves a failing probe
+// command degrades to an OK "skipped" note, never a warn finding (I6
+// fail-soft).
+func TestPatrolCheckResourceProbes_ProbeFailureSoftSkip(t *testing.T) {
+	home, _ := setupSlotsDir(t)
+	t.Setenv("KORYPH_HOME", home)
+	writeGovernorFile(t, home, govern.File{Resources: &govern.ResourcesConfig{
+		Kinds: map[string]govern.ResourceKind{"kind-cluster": {Probe: "exit 1"}},
+	}})
+	r := &runner{}
+	findings := r.patrolCheckResourceProbes(t.Context())
+	for _, f := range findings {
+		if f.level == "warn" {
+			t.Errorf("a failing probe must never produce a warn finding: %+v", findings)
+		}
+	}
+	skipped := false
+	for _, f := range findings {
+		if f.level == "ok" && strings.Contains(f.message, "skipped") {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Errorf("expected an ok 'skipped' note for a failing probe, got %+v", findings)
+	}
+}
+
 // --- stale demand detection -----------------------------------------------
 
 func TestPatrolCheckStaleDemand_NoDemandDir(t *testing.T) {

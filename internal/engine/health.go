@@ -10,6 +10,15 @@ package engine
 //
 //   - zombie governor leases (stage-aware: skip post-build stages where the
 //     engine PID is still alive — same logic as koryph-p42)
+//   - suspected leaked external resources: a CURRENT-run slot whose agent
+//     died while it held declared Slot.Resources, level warn — report-only,
+//     NEVER auto-torn-down (koryph-4ql.8, design
+//     docs/designs/2026-07-resource-governor.md L7)
+//   - per-kind resource-probe diffing: an operator-configured probe command's
+//     output diffed against the `<kind>-<bead-id>` naming convention and the
+//     governor's live leases, level warn per suspected leaked instance
+//     (koryph-4ql.8, L7 "per-kind probe (opt-in)"), sharing the diff
+//     primitive with `koryph doctor` (internal/doctor.DiffResourceProbe)
 //   - stale demand heartbeats from OTHER engine PIDs (not our own)
 //   - governor pool sanity (cap > 0, settle/breaker timestamps not wedged)
 //   - quota window burn vs warn/drain/stop thresholds
@@ -55,11 +64,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
+	"github.com/koryph/koryph/internal/doctor"
 	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
@@ -193,6 +204,8 @@ func (r *runner) runPatrol(ctx context.Context) {
 func (r *runner) collectPatrolFindings(ctx context.Context, now time.Time) []patrolFinding {
 	var out []patrolFinding
 	out = append(out, r.patrolCheckZombieLeases(now)...)
+	out = append(out, r.patrolCheckLeakedResources(now)...)
+	out = append(out, r.patrolCheckResourceProbes(ctx)...)
 	out = append(out, r.patrolCheckStaleDemand(now)...)
 	out = append(out, r.patrolCheckGovernorPool(now)...)
 	out = append(out, r.patrolCheckQuotaBurn()...)
@@ -295,6 +308,140 @@ func (r *runner) beadIsTerminal(beadID string) bool {
 	}
 	sl, ok := r.run.Slots[beadID]
 	return ok && sl != nil && ledger.Terminal(sl.Status)
+}
+
+// --- check: suspected leaked external resources ----------------------------
+
+// patrolCheckLeakedResources is the check name for the suspected-leaked-
+// resources finding (koryph-4ql.8, design L7): "a slot whose agent died ...
+// with non-empty Slot.Resources and no clean-teardown marker in its
+// SUMMARY/status is a suspected leak — the cluster outlives the pid."
+const patrolCheckLeakedResources = "leaked-resources"
+
+// patrolCheckLeakedResources flags a CURRENT-run slot whose agent died — a
+// non-terminal status with a dead PID, or a terminal-failed status — while
+// it held declared external resources (ledger.Slot.Resources non-empty).
+// Report-only: unlike patrolCheckZombieLeases above, this NEVER signals a
+// process, deletes a lease file, or runs a teardown — the design is explicit
+// that leak remediation is always a manual operator action (design §7
+// "Leaked instances: ... auto-teardown is deliberately deferred behind an
+// explicit opt-in").
+//
+// Pragmatic scope note (koryph-4ql.8 deviation from the design's literal
+// wording): the design says "no clean-teardown marker in its SUMMARY/
+// status". That presumes parsing SUMMARY.md's CONTENT for such a marker, but
+// no such marker convention exists anywhere in this codebase today — the one
+// place this package touches SUMMARY.md (poll.go's finishCandidate) only
+// checks its mere EXISTENCE, as a "did the agent produce a result" signal
+// for the review/merge path, never its content. Per this bead's AC ("if
+// SUMMARY.md parsing is not an established pattern in health.go, treat ANY
+// dead-agent slot with declared resources as a suspected leak"), this check
+// flags every qualifying dead-agent slot unconditionally, with no
+// teardown-marker exemption. This is deliberately over-inclusive: a false
+// positive is cheap (report-only — the operator verifies before tearing
+// anything down), while a false negative would silently strand a
+// provisioned cluster.
+func (r *runner) patrolCheckLeakedResources(now time.Time) []patrolFinding {
+	if r.run == nil || len(r.run.Slots) == 0 {
+		return []patrolFinding{{check: patrolCheckLeakedResources, level: "ok", message: "no slots in this run"}}
+	}
+
+	ids := make([]string, 0, len(r.run.Slots))
+	for id := range r.run.Slots {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	var findings []patrolFinding
+	clean := 0
+	for _, id := range ids {
+		sl := r.run.Slots[id]
+		if sl == nil || len(sl.Resources) == 0 {
+			continue
+		}
+
+		agentDied := sl.Status == ledger.SlotFailed ||
+			(!ledger.Terminal(sl.Status) && sl.PID > 0 && !dispatch.Alive(sl.PID))
+		if !agentDied {
+			clean++
+			continue
+		}
+
+		findings = append(findings, patrolFinding{
+			check: patrolCheckLeakedResources,
+			level: "warn",
+			message: fmt.Sprintf(
+				"suspected leaked resources (%s) from bead %s — agent died; verify and tear down manually",
+				strings.Join(sl.Resources, ", "), id),
+		})
+	}
+
+	if len(findings) == 0 {
+		return []patrolFinding{{check: patrolCheckLeakedResources, level: "ok",
+			message: fmt.Sprintf("%d resource-declaring slot(s), none suspected leaked", clean)}}
+	}
+	return findings
+}
+
+// --- check: per-kind resource-probe diffing (leaked instances) -------------
+
+// patrolCheckResourceProbe is the check name for probe-diffing findings —
+// deliberately matching internal/doctor's checkNameResourceProbe string
+// (patrolCheckEpicVal/checkNameEpicValidations precedent) so both surfaces
+// report under the same check label.
+const patrolCheckResourceProbe = "resource-probe"
+
+// patrolCheckResourceProbes diffs each configured resource kind's probe
+// output against the governor's live leases (koryph-4ql.8, design L7
+// "per-kind probe (opt-in)"), sharing the diff primitive with `koryph
+// doctor` (internal/doctor.DiffResourceProbe/LiveResourceHolders/
+// LoadResourcesConfig) so both surfaces flag the same leak identically.
+// Kinds without a configured probe are skipped silently (opt-in per the
+// design). A probe command failure is fail-soft (I6): one OK "skipped" note,
+// never a leak finding — an unconfigured or flaky probe binary must not
+// manufacture false leaks. Report-only, like patrolCheckLeakedResources
+// above: never signals, deletes, or tears anything down.
+func (r *runner) patrolCheckResourceProbes(ctx context.Context) []patrolFinding {
+	rc := doctor.LoadResourcesConfig(paths.GovernorConfig())
+	if rc == nil || len(rc.Kinds) == 0 {
+		return []patrolFinding{{check: patrolCheckResourceProbe, level: "ok", message: "no resource kinds configured"}}
+	}
+
+	kinds := make([]string, 0, len(rc.Kinds))
+	for k, spec := range rc.Kinds {
+		if spec.Probe != "" {
+			kinds = append(kinds, k)
+		}
+	}
+	if len(kinds) == 0 {
+		return []patrolFinding{{check: patrolCheckResourceProbe, level: "ok", message: "no per-kind probes configured"}}
+	}
+	sort.Strings(kinds)
+
+	holders, err := doctor.LiveResourceHolders(paths.SlotsDir(), dispatch.Alive)
+	if err != nil {
+		return []patrolFinding{{check: patrolCheckResourceProbe, level: "warn",
+			message: fmt.Sprintf("read slots dir: %v", err)}}
+	}
+
+	var out []patrolFinding
+	for _, kind := range kinds {
+		leaks, perr := doctor.DiffResourceProbe(ctx, kind, rc.Kinds[kind].Probe, holders[kind], nil)
+		if perr != nil {
+			out = append(out, patrolFinding{check: patrolCheckResourceProbe, level: "ok",
+				message: fmt.Sprintf("kind %s: probe failed, skipped: %v", kind, perr)})
+			continue
+		}
+		if len(leaks) == 0 {
+			out = append(out, patrolFinding{check: patrolCheckResourceProbe, level: "ok",
+				message: fmt.Sprintf("kind %s: probe ok, no orphaned instances", kind)})
+			continue
+		}
+		for _, lk := range leaks {
+			out = append(out, patrolFinding{check: patrolCheckResourceProbe, level: "warn", message: lk.Message()})
+		}
+	}
+	return out
 }
 
 // --- check: stale demand from other engines --------------------------------

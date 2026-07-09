@@ -7,6 +7,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,6 +91,11 @@ type Options struct {
 	// registry.NewStoreAt(opts.home()).List(). Returning (nil, nil) means no
 	// records: proxy check is a no-op.
 	RegistryList func() ([]*registry.Record, error)
+	// RunProbe executes one resource kind's operator-authored leak-detection
+	// probe command (koryph-4ql.8, design L7 "per-kind probe (opt-in)") and
+	// returns its stdout. Injectable for tests; the real implementation is
+	// RunProbeShell (`sh -c <cmd>`, bounded by resourceProbeTimeout).
+	RunProbe func(ctx context.Context, cmd string) (string, error)
 }
 
 func (o *Options) home() string {
@@ -145,6 +151,13 @@ func (o *Options) registryList() ([]*registry.Record, error) {
 	return registry.NewStoreAt(o.home()).List()
 }
 
+func (o *Options) runProbe() func(ctx context.Context, cmd string) (string, error) {
+	if o.RunProbe != nil {
+		return o.RunProbe
+	}
+	return RunProbeShell
+}
+
 // Run executes all global checks and returns the report.
 func Run(opts Options) (*Report, error) {
 	r := &Report{
@@ -159,6 +172,7 @@ func Run(opts Options) (*Report, error) {
 	r.addAll(checkAdaptiveCapPinned(opts))
 	r.addAll(checkCircuitBreaker(opts))
 	r.addAll(checkZombieLeases(opts))
+	r.addAll(checkResourceProbes(opts))
 	r.addAll(checkStaleDemand(opts))
 	r.addAll(checkQuotaCalibration(opts))
 	r.addAll(checkQuotaGuardOverride(opts))
