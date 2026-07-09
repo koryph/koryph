@@ -39,6 +39,19 @@ type FootprintRule struct {
 	Tokens  []string `json:"tokens"`
 }
 
+// ResourceSpec is one external resource kind's portable planning estimate in
+// Config.Resources (koryph-4ql.3, design docs/designs/2026-07-resource-governor.md
+// L2): the memory one unit of the kind is expected to consume when a bead
+// declaring `res:<kind>` runs. It is the checked-in default that travels with
+// the repo; the machine capacity ledger (governor.json) overrides mem_mb per
+// host and adds capacity/ramp/probe. Additive/omitempty.
+type ResourceSpec struct {
+	// MemMB is the planning-time memory estimate in MB for one unit of the
+	// kind. 0/absent means uncalibrated (no reservation from this vocabulary —
+	// the machine ledger may still supply one).
+	MemMB int `json:"mem_mb,omitempty"`
+}
+
 // PipelineStage is one post-implement stage in the project pipeline. Stages run
 // sequentially in the implementer's worktree after its commits land and before
 // review/merge, each as a persona agent that may add its own commits (docs,
@@ -411,6 +424,19 @@ type Config struct {
 	// label to footprint tokens when no fp:* label is present.
 	Footprint []FootprintRule     `json:"footprint,omitempty"`
 	AreaMap   map[string][]string `json:"area_map,omitempty"`
+
+	// Resources is the portable vocabulary of external runtime resource kinds a
+	// bead may declare with a `res:<kind>` label (koryph-4ql.3, design
+	// docs/designs/2026-07-resource-governor.md L2): kind → its checked-in
+	// planning-time cost. It mirrors AreaMap's "portable label vocabulary" role
+	// for footprints — footprints protect the merge, resources protect the
+	// machine — while the per-machine capacity/override (and the ramp/probe)
+	// live in governor.json (the top-level `resources` ledger), which wins over
+	// this vocabulary. The engine sums each declared kind's mem_mb into a
+	// reservation-aware memory floor at dispatch. Additive/omitempty: an absent
+	// key is a nil map (no vocabulary), which is byte-for-byte today's behavior
+	// (no `res:*` labels = no reservations).
+	Resources map[string]ResourceSpec `json:"resources,omitempty"`
 
 	// Gate is the ordered green-gate command list run in the worktree after
 	// rebase and before merge (each entry runs via `sh -c` under direnv when

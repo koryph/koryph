@@ -135,48 +135,183 @@ func (r *runner) memoryAdmits(beadID string) bool {
 	return false
 }
 
+// admitVerdict is acquireGlobalSlot's typed decision (koryph-4ql.3, design L3):
+// the engine routes a per-bead denial differently from a machine-wide one so a
+// single deferred resource-heavy bead no longer stalls the lightweight beads
+// behind it.
+type admitVerdict int
+
+const (
+	// admitGranted: a global slot (and every machine-resource clause) admitted
+	// this bead — dispatch it.
+	admitGranted admitVerdict = iota
+	// admitSkip: a PER-BEAD denial (a declared resource kind at capacity, or the
+	// candidate's own memory reservation tipping the floor). Skip THIS bead and
+	// keep packing — the beads behind it may still fit.
+	admitSkip
+	// admitBreak: a MACHINE-WIDE denial (pool cap / fair share / breaker /
+	// smoothing, a pure memory floor breach, or the pre-flock koryph-930 floor).
+	// Nothing else fits this boundary either — break the batch and retry at the
+	// next boundary, exactly as every governor denial did before koryph-4ql.3.
+	admitBreak
+)
+
+// resolveMemReserveMB sums the per-kind memory reservation for the resolved
+// resource kinds (koryph-4ql.3, design L5). Resolution order per kind, matching
+// L2: the machine ledger's mem_mb (govern Store.Resources()) when set, else the
+// project vocabulary's mem_mb (cfg.Resources), else 0. Resolved once at dispatch
+// and frozen on the ledger slot (I8), so a vocabulary edit mid-run never
+// re-prices a live slot. A bead with no declared kinds reserves 0 — today's
+// behavior (I9).
+func (r *runner) resolveMemReserveMB(kinds []string) int {
+	if len(kinds) == 0 {
+		return 0
+	}
+	var machine map[string]govern.ResourceKind
+	if r.gov != nil {
+		machine = r.gov.Resources().Kinds
+	}
+	total := 0
+	for _, k := range kinds {
+		if rk, ok := machine[k]; ok && rk.MemMB > 0 {
+			total += rk.MemMB
+			continue
+		}
+		if r.cfg != nil {
+			if rk, ok := r.cfg.Resources[k]; ok {
+				total += rk.MemMB
+			}
+		}
+	}
+	return total
+}
+
+// resourceCapacities resolves the effective per-kind capacity map fed to
+// sched.BuildWave (koryph-4ql.3, design L4) — the machine ledger's per-kind
+// capacity (govern Store.Resources().Kinds). A kind absent here defaults to 1
+// inside sched (the fail-safe-serial default), so this deliberately omits the
+// unconfigured kinds. nil when there is no governor or no configured kinds,
+// which sched reads as "every kind is capacity 1".
+func (r *runner) resourceCapacities() map[string]int {
+	if r.gov == nil {
+		return nil
+	}
+	kinds := r.gov.Resources().Kinds
+	if len(kinds) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(kinds))
+	for k, rk := range kinds {
+		c := rk.Capacity
+		if c <= 0 {
+			c = govern.DefaultResourceCapacity
+		}
+		out[k] = c
+	}
+	return out
+}
+
 // acquireGlobalSlot reserves a global concurrency slot for beadID (keyed to the
 // project+bead under this engine's pid; the agent pid is attached later by
-// bindGlobalSlot). Returns true when granted or when governance is unavailable.
-func (r *runner) acquireGlobalSlot(beadID string) bool {
+// holdGlobalSlot), passing the bead's resolved resource kinds and memory
+// reservation (koryph-4ql.3, L2/L5) so the flocked governor can apply the
+// cross-pool capacity and reservation-aware memory clauses. Returns a typed
+// verdict (admitGranted / admitSkip / admitBreak); every error path fails OPEN
+// (admitGranted) because the governor is a safety rail, not a correctness
+// dependency (I6).
+func (r *runner) acquireGlobalSlot(beadID string, kinds []string, memReserveMB int) admitVerdict {
 	// Memory admission gate (koryph-930): refuse to stack another agent's
-	// subprocess+worktree when the host is under memory pressure. Checked
-	// BEFORE the flocked governor Acquire so the (possibly subprocess-backed)
-	// memory probe never runs while holding the machine-wide lock.
+	// subprocess+worktree when the host is already under memory pressure.
+	// Checked BEFORE the flocked governor Acquire so the (possibly
+	// subprocess-backed) memory probe never runs while holding the machine-wide
+	// lock (I7). A candidate-agnostic floor breach is machine-wide → break.
 	if !r.memoryAdmits(beadID) {
-		return false
+		return admitBreak
 	}
 	if r.gov == nil {
-		return true
+		return admitGranted
 	}
-	ok, err := r.gov.Acquire(govern.Lease{
-		Project:   r.opts.ProjectID,
-		Bead:      beadID,
-		EnginePID: os.Getpid(),
-		Provider:  providerAnthropic,
-	})
+	// Reservation-aware memory reading (L5), resolved OUTSIDE the flock (I7) and
+	// handed to AcquireEx, which subtracts every engine's ramping reservations
+	// under the lock. No usable reading (or a disabled floor) → MemInput{}, which
+	// skips the memory clause and keeps only the capacity clause (fail open, I6).
+	var mem govern.MemInput
+	if stat, ok := r.memStat(); ok {
+		if floor := r.memoryFloorMB(stat.TotalMB()); floor > 0 {
+			mem = govern.MemInput{AvailMB: stat.AvailableMB(), FloorMB: floor}
+		}
+	}
+	res, err := r.gov.AcquireEx(govern.Lease{
+		Project:      r.opts.ProjectID,
+		Bead:         beadID,
+		EnginePID:    os.Getpid(),
+		Provider:     providerAnthropic,
+		Resources:    kinds,
+		MemReserveMB: memReserveMB,
+	}, mem)
 	if err != nil {
 		r.progress("bead %s: global governor error (allowing dispatch): %v", beadID, err)
-		return true
+		return admitGranted
 	}
-	return ok
+	return r.classifyAdmit(beadID, memReserveMB, res)
+}
+
+// classifyAdmit maps a govern.AdmitResult to an engine admitVerdict (koryph-4ql.3,
+// design L3), emitting the deferral log line + structured deferral event for a
+// per-bead skip so the deferrals-by-token metric picks up the kind. A cap denial
+// (pool cap / fair share / breaker / smoothing) and a pure memory-floor breach
+// are machine-wide → break, and their message is left to the caller's existing
+// batch-break log so today's wording is unchanged. memReserveMB is the
+// candidate's own reservation, echoed on a candidate-tipped memory skip.
+func (r *runner) classifyAdmit(beadID string, memReserveMB int, res govern.AdmitResult) admitVerdict {
+	if res.Granted {
+		return admitGranted
+	}
+	switch res.Outcome {
+	case govern.AdmitDeniedResource:
+		holder := res.HolderBead
+		if res.HolderProject != "" && res.HolderProject != r.opts.ProjectID {
+			holder = res.HolderProject + "/" + res.HolderBead
+		}
+		r.progress("bead %s: deferred — resource %s at capacity (%d/%d, held by %s)",
+			beadID, res.DeniedKind, res.DeniedHolders, res.DeniedCapacity, holder)
+		logDeferral(beadID, "resource "+res.DeniedKind+" at capacity", "res:"+res.DeniedKind)
+		return admitSkip
+	case govern.AdmitDeniedMemory:
+		if res.CandidateTipped {
+			r.progress("bead %s: deferred — its %d MB memory reservation would breach the free-memory floor",
+				beadID, memReserveMB)
+			logDeferral(beadID, "memory reservation breach", "memory-reservation")
+			return admitSkip
+		}
+		// Pure floor breach: even a zero-reserve bead fails → machine-wide break.
+		return admitBreak
+	default: // AdmitDeniedCap and any unknown outcome: machine-wide → break.
+		return admitBreak
+	}
 }
 
 // holdGlobalSlot attaches the launched agent pid to the bead's lease (keyed to a
 // process that outlives the engine) so the running agent is always counted —
 // including a requeue/resume whose reservation was pruned. Cap admission already
-// happened at acquireGlobalSlot; this is an unconditional 1:1 update.
-func (r *runner) holdGlobalSlot(beadID string, agentPID int, model string) {
+// happened at acquireGlobalSlot; this is an unconditional 1:1 update. It carries
+// the frozen resource kinds + memory reservation (koryph-4ql.3, L2) so Hold
+// persists them on the (re)bound lease — the engine threads them from the
+// persisted ledger slot, never a govern-side read of a prior lease that a prune
+// gap may have removed.
+func (r *runner) holdGlobalSlot(beadID string, agentPID int, model string, kinds []string, memReserveMB int) {
 	if r.gov == nil {
 		return
 	}
 	_ = r.gov.Hold(govern.Lease{
-		Project:   r.opts.ProjectID,
-		Bead:      beadID,
-		PID:       agentPID,
-		EnginePID: os.Getpid(),
-		Model:     model,
-		Provider:  providerAnthropic,
+		Project:      r.opts.ProjectID,
+		Bead:         beadID,
+		PID:          agentPID,
+		EnginePID:    os.Getpid(),
+		Model:        model,
+		Provider:     providerAnthropic,
+		Resources:    kinds,
+		MemReserveMB: memReserveMB,
 	})
 }
 

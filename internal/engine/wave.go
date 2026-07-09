@@ -250,6 +250,14 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		level, calibrated, usage, budgetHit := gate.level, gate.calibrated, gate.usage, gate.budgetHit
 		width := gate.width
 
+		// Boundary admission tally (koryph-4ql.3): dispatchedThisBoundary counts
+		// beads actually admitted this wave; deniedThisBoundary records whether any
+		// admission denial (skip OR break) occurred. Together they drive the
+		// wave-mode pacing sleep below (dispatched nothing, nothing active, but a
+		// denial happened → sleep one tick instead of hot-spinning).
+		dispatchedThisBoundary := 0
+		deniedThisBoundary := false
+
 		// Frontier scan + wave build.
 		issues, err := r.adapter.Ready(ctx, beads.ReadyOpts{Parent: r.opts.Parent})
 		if err != nil {
@@ -262,11 +270,13 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		}
 		active := r.activeIDs()
 		w, err := sched.BuildWave(ctx, issues, r.cfg, sched.Opts{
-			Max:          width,
-			DefaultModel: r.opts.DefaultModel,
-			Parent:       r.opts.Parent,
-			ActiveIDs:    active,
-			Active:       r.activeFootprints(ctx, active),
+			Max:              width,
+			DefaultModel:     r.opts.DefaultModel,
+			Parent:           r.opts.Parent,
+			ActiveIDs:        active,
+			Active:           r.activeFootprints(ctx, active),
+			ActiveResources:  r.activeResources(ctx, active),
+			ResourceCapacity: r.resourceCapacities(),
 		}, r.childLister(ctx))
 		if err != nil {
 			return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
@@ -349,6 +359,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			r.refreshDemand()
 			r.warnIfOverFairShare()
 			stagger := r.staggerDelay()
+		dispatch:
 			for i, it := range w.Items {
 				// Per-run budget cap, re-checked per item (koryph-u7q): each
 				// dispatch above added its estimate to projected spend (via the
@@ -367,22 +378,50 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 					case <-time.After(stagger):
 					}
 				}
-				// Global concurrency cap (across all projects) or the memory
-				// admission floor (koryph-930). A denial defers the rest of this
-				// wave — same-project shares won't free up until a running agent
-				// finishes, and memory won't either — so break and re-scan next
-				// wave. acquireGlobalSlot logs the specific reason when it's memory.
-				if !r.acquireGlobalSlot(it.Issue.ID) {
+				// Machine admission (koryph-4ql.3, design L3): the global
+				// concurrency cap / memory floor (koryph-930) still batch-BREAKS —
+				// same-project shares won't free up until a running agent finishes,
+				// and neither will memory — but a per-bead resource-capacity or
+				// candidate-tipped-memory denial SKIPS just this bead so the
+				// lightweight beads behind it still dispatch. acquireGlobalSlot logs
+				// the skip reason (naming the kind + holder); the break message
+				// stays here, verbatim.
+				kinds := it.Resources
+				memReserveMB := r.resolveMemReserveMB(kinds)
+				switch r.acquireGlobalSlot(it.Issue.ID, kinds, memReserveMB) {
+				case admitSkip:
+					deniedThisBoundary = true
+					continue
+				case admitBreak:
+					deniedThisBoundary = true
 					r.progress("wave %d: global governor cap or memory floor reached — deferring %d bead(s) to a later wave",
 						r.run.Wave, len(w.Items)-i)
-					break
+					break dispatch
 				}
 				r.issues[it.Issue.ID] = it.Issue
 				fp := it.Footprint
-				r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp})
+				r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp,
+					resources: &dispatchResources{kinds: kinds, memReserveMB: memReserveMB}})
+				dispatchedThisBoundary++
 			}
 			// Emit refill dispatched count for the structured log record.
 			logRefillDispatched(r.run.RunID, r.opts.ProjectID, r.run.Wave, len(w.Items))
+		}
+
+		// Wave-mode boundary pacing (koryph-4ql.3, design L3/R3): a boundary that
+		// dispatched nothing with nothing active AND saw at least one admission
+		// denial would otherwise re-scan in a tight loop — tolerable for a cap
+		// denial that clears in minutes, a hot-spin for a capacity-1 resource held
+		// for hours by another project. Sleep one poll tick so I6's "retried at the
+		// next boundary" has a defined cadence. Rolling mode already ticks
+		// (waitTick), so this is wave-mode only. ctx cancellation is honored, like
+		// the stagger select above.
+		if dispatchedThisBoundary == 0 && len(active) == 0 && deniedThisBoundary {
+			select {
+			case <-ctx.Done():
+				return r.interrupted()
+			case <-time.After(r.pollInterval()):
+			}
 		}
 
 		// Poll this wave's slots (and any adopted ones) to a terminal state.
@@ -664,6 +703,58 @@ func (r *runner) activeFootprints(ctx context.Context, activeIDs map[string]bool
 	return out
 }
 
+// resolveDispatchResources returns the frozen resource kinds + memory
+// reservation for a dispatch (koryph-4ql.3, design L2/L3). A requeue (or the
+// fresh loop path) supplies q.resources, resolved once when the slot was first
+// admitted and carried verbatim so a relabel/vocabulary edit mid-run cannot
+// re-price a live slot (I8). Only a path that supplied none recomputes from the
+// bead's live labels — the same asymmetry-free fallback footprint uses. This is
+// the single seam the freeze test drives (mirrors resolveModel).
+func (r *runner) resolveDispatchResources(q dispatchReq) (kinds []string, memReserveMB int) {
+	if q.resources != nil {
+		return q.resources.kinds, q.resources.memReserveMB
+	}
+	kinds = sched.ResourcesFor(q.issue)
+	return kinds, r.resolveMemReserveMB(kinds)
+}
+
+// activeResources derives sched.BuildWave's in-flight resource holdings from the
+// currently non-terminal slots (koryph-4ql.3, design L3), the resource mirror of
+// activeFootprints. Each slot's kinds prefer the value PERSISTED at dispatch
+// (ledger.Slot.Resources) and fall back to recomputing sched.ResourcesFor from
+// the recovered issue only when nothing was persisted (a slot dispatched before
+// this bead, or a ledger predating the field).
+//
+// NOTE the asymmetry with activeFootprints, and why persistence is LOAD-BEARING
+// here rather than a fast path: activeFootprints' terminal fallback (an
+// unrecoverable bead) degrades to the maximally-CONSERVATIVE domain:unknown
+// (via issueFor's synthetic no-label issue → FootprintFor's TokenUnknown),
+// whereas ResourcesFor of that same no-label issue yields the EMPTY set —
+// maximally PERMISSIVE (L1's inverted default: undeclared means "agent +
+// worktree only", not "unknown, serialize"). So a slot whose bead can no longer
+// be recovered contributes NO holdings; only Slot.Resources keeps in-flight
+// resource gating exact across --resume and requeue.
+func (r *runner) activeResources(ctx context.Context, activeIDs map[string]bool) map[string][]string {
+	if len(activeIDs) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(activeIDs))
+	for id := range activeIDs {
+		sl := r.run.Slots[id]
+		if sl == nil {
+			continue
+		}
+		if len(sl.Resources) > 0 {
+			out[id] = sl.Resources
+			continue
+		}
+		if kinds := sched.ResourcesFor(r.issueFor(ctx, sl)); len(kinds) > 0 {
+			out[id] = kinds
+		}
+	}
+	return out
+}
+
 // childLister adapts beads.ListChildren for sched.BuildWave. Adapter errors
 // are treated as "no children" so a bd hiccup cannot wedge the wave.
 func (r *runner) childLister(ctx context.Context) func(string) (bool, error) {
@@ -679,6 +770,29 @@ func (r *runner) childLister(ctx context.Context) func(string) (bool, error) {
 		}
 		return false, nil
 	}
+}
+
+// dispatchResources is a slot's frozen external-resource claim (koryph-4ql.3,
+// design L2/L3): the resolved kinds and the memory reservation summed over them.
+// Threaded through dispatchReq so the value acquireGlobalSlot admits is the same
+// value the ledger slot persists and every requeue re-attaches (I8).
+type dispatchResources struct {
+	kinds        []string
+	memReserveMB int
+}
+
+// resourcesFromSlot rebuilds the frozen resource claim from a persisted slot for
+// a requeue's dispatchReq (koryph-4ql.3), the resource sibling of the
+// footprint-forwarding requeues use: the resolved kinds + reservation carried
+// verbatim so the requeue re-attaches exactly what the slot was admitted with.
+// Returns nil when the slot declared nothing (or predates the fields), which
+// dispatchBead treats as "resolve from live labels" — harmless for a truly
+// resource-free bead.
+func resourcesFromSlot(sl *ledger.Slot) *dispatchResources {
+	if len(sl.Resources) == 0 && sl.MemReserveMB == 0 {
+		return nil
+	}
+	return &dispatchResources{kinds: sl.Resources, memReserveMB: sl.MemReserveMB}
 }
 
 // dispatchReq describes one dispatch (fresh, requeue, or review bounce).
@@ -721,6 +835,18 @@ type dispatchReq struct {
 	// Footprint nil too, and activeFootprints falls back to its
 	// recompute-from-labels chain exactly as before this bead.
 	footprint *sched.Footprint
+	// resources is the frozen external-resource claim to persist on the ledger
+	// slot and re-attach to the govern lease (koryph-4ql.3, design L2/L3): the
+	// resolved kinds + memory reservation, computed once on the first dispatch
+	// and carried verbatim through every requeue — exactly like footprint above.
+	// A relabel or a project/machine vocabulary edit mid-run must NOT re-price a
+	// live slot (I8), so requeueSlot/requeueRateLimited/requeueBudgetKilled all
+	// rebuild this from the persisted slot (resourcesFromSlot) rather than
+	// re-deriving it. nil on a fresh dispatch means "resolve from the bead's live
+	// labels" (dispatchBead falls back to sched.ResourcesFor); the wave/rolling
+	// loops set it explicitly so the value acquireGlobalSlot admitted is the same
+	// value the slot persists.
+	resources *dispatchResources
 	// accumulatedCostUSD carries forward the total cost already spent on
 	// previous attempts of this bead, so that CostUSD on the new slot
 	// starts at the right baseline and completeSlot can ADD the new
@@ -922,8 +1048,17 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		return
 	}
 
+	// Resolve the frozen resource claim (koryph-4ql.3, design L2/L3): use the
+	// value threaded from the loop/requeue (q.resources) so the ledger slot
+	// persists exactly what acquireGlobalSlot admitted and what a requeue froze;
+	// only a path that supplied none (a synthetic/legacy dispatch) recomputes
+	// from the bead's live labels here. The resolved tokens — not the labels —
+	// are persisted and re-attached to the lease, so a relabel or vocabulary
+	// edit mid-run cannot re-price a live slot (I8).
+	resKinds, memReserveMB := r.resolveDispatchResources(q)
+
 	_ = r.adapter.Claim(ctx, beadID) // best-effort
-	r.holdGlobalSlot(beadID, handle.PID, res.Model)
+	r.holdGlobalSlot(beadID, handle.PID, res.Model, resKinds, memReserveMB)
 
 	// Stamp the dispatch-time estimate (koryph-6bl). This is the per-attempt
 	// estimate (bias-corrected when enough samples exist), NOT accumulated —
@@ -967,6 +1102,8 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		RateLimitRequeues:  q.rateLimitRequeues,
 		BudgetKillRequeues: q.budgetKillRequeues,
 		Footprint:          q.footprint,
+		Resources:          resKinds,
+		MemReserveMB:       memReserveMB,
 		EstimateUSD:        estimateUSD,
 		// CostUSD starts from accumulatedCostUSD so prior-attempt spend is
 		// not lost when completeSlot ADDs the new attempt's cost (koryph-6bl).

@@ -277,6 +277,17 @@
       ],
       "description": "ReleaseConfig is the optional release sub-block of koryph.project.json."
     },
+    "ResourceSpec": {
+      "properties": {
+        "mem_mb": {
+          "type": "integer",
+          "description": "MemMB is the planning-time memory estimate in MB for one unit of the\nkind. 0/absent means uncalibrated (no reservation from this vocabulary —\nthe machine ledger may still supply one)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ResourceSpec is one external resource kind's portable planning estimate in Config.Resources (koryph-4ql.3, design docs/designs/2026-07-resource-governor.md L2): the memory one unit of the kind is expected to consume when a bead declaring `res:\u003ckind\u003e` runs."
+    },
     "RuntimeConfig": {
       "properties": {
         "enabled": {
@@ -415,6 +426,13 @@
         "type": "array"
       },
       "type": "object"
+    },
+    "resources": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ResourceSpec"
+      },
+      "type": "object",
+      "description": "Resources is the portable vocabulary of external runtime resource kinds a\nbead may declare with a `res:\u003ckind\u003e` label (koryph-4ql.3, design\ndocs/designs/2026-07-resource-governor.md L2): kind → its checked-in\nplanning-time cost. It mirrors AreaMap's \"portable label vocabulary\" role\nfor footprints — footprints protect the merge, resources protect the\nmachine — while the per-machine capacity/override (and the ramp/probe)\nlive in governor.json (the top-level `resources` ledger), which wins over\nthis vocabulary. The engine sums each declared kind's mem_mb into a\nreservation-aware memory floor at dispatch. Additive/omitempty: an absent\nkey is a nil map (no vocabulary), which is byte-for-byte today's behavior\n(no `res:*` labels = no reservations)."
     },
     "gate": {
       "items": {

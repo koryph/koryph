@@ -72,12 +72,13 @@ func TestAcquireGlobalSlotMemoryGate(t *testing.T) {
 	t.Setenv("KORYPH_MIN_FREE_MEMORY_MB", "8000")
 
 	r.memProbe = func() (sysmem.Stat, bool) { return memStatMB(16000, 1000), true } // below floor
-	if r.acquireGlobalSlot("tb1") {
-		t.Error("acquireGlobalSlot admitted under memory pressure; want deferral")
+	// A candidate-agnostic floor breach is machine-wide → break (koryph-4ql.3).
+	if got := r.acquireGlobalSlot("tb1", nil, 0); got != admitBreak {
+		t.Errorf("acquireGlobalSlot under memory pressure = %v, want admitBreak (deferral)", got)
 	}
 
 	r.memProbe = func() (sysmem.Stat, bool) { return memStatMB(64000, 32000), true } // ample
-	if !r.acquireGlobalSlot("tb1") {
-		t.Error("acquireGlobalSlot deferred with ample memory and no governor; want admit")
+	if got := r.acquireGlobalSlot("tb1", nil, 0); got != admitGranted {
+		t.Errorf("acquireGlobalSlot with ample memory and no governor = %v, want admitGranted", got)
 	}
 }

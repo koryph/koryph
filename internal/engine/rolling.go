@@ -88,11 +88,13 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 				issues = onlyBead(issues, r.opts.Only)
 			}
 			w, err = sched.BuildWave(ctx, issues, r.cfg, sched.Opts{
-				Max:          capacity,
-				DefaultModel: r.opts.DefaultModel,
-				Parent:       r.opts.Parent,
-				ActiveIDs:    active,
-				Active:       r.activeFootprints(ctx, active),
+				Max:              capacity,
+				DefaultModel:     r.opts.DefaultModel,
+				Parent:           r.opts.Parent,
+				ActiveIDs:        active,
+				Active:           r.activeFootprints(ctx, active),
+				ActiveResources:  r.activeResources(ctx, active),
+				ResourceCapacity: r.resourceCapacities(),
 			}, r.childLister(ctx))
 			if err != nil {
 				return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
@@ -186,6 +188,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 				r.warnIfOverFairShare()
 				stagger := r.staggerDelay()
 				dispatchedThisIter := 0
+			dispatch:
 				for i, it := range w.Items {
 					// Per-run budget cap, re-checked per item (koryph-u7q): in-flight
 					// estimates count toward projected spend, so a refill batch stops
@@ -202,18 +205,28 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 						case <-time.After(stagger):
 						}
 					}
-					// Global concurrency cap (across all projects) or the memory
-					// admission floor (koryph-930). A denial defers the REST of
-					// this refill batch — do not spin — the loop re-scans next
-					// tick. acquireGlobalSlot logs the specific reason for memory.
-					if !r.acquireGlobalSlot(it.Issue.ID) {
+					// Machine admission (koryph-4ql.3, design L3): the global
+					// concurrency cap / memory floor (koryph-930) still batch-BREAKS
+					// the REST of this refill (the loop re-scans next tick), but a
+					// per-bead resource-capacity or candidate-tipped-memory denial
+					// SKIPS just this bead so the lightweight beads behind it still
+					// refill. acquireGlobalSlot logs the skip reason (kind + holder);
+					// the break message stays here. Rolling already ticks (waitTick),
+					// so no wave-mode pacing sleep is needed here.
+					kinds := it.Resources
+					memReserveMB := r.resolveMemReserveMB(kinds)
+					switch r.acquireGlobalSlot(it.Issue.ID, kinds, memReserveMB) {
+					case admitSkip:
+						continue
+					case admitBreak:
 						r.progress("refill: global governor cap or memory floor reached — deferring %d bead(s) to a later tick",
 							len(w.Items)-i)
-						break
+						break dispatch
 					}
 					r.issues[it.Issue.ID] = it.Issue
 					fp := it.Footprint
-					r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp})
+					r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp,
+						resources: &dispatchResources{kinds: kinds, memReserveMB: memReserveMB}})
 					dispatchedThisIter++
 				}
 				// run.Wave increments per refill that dispatches >= 1 bead

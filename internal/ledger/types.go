@@ -227,6 +227,32 @@ type Slot struct {
 	// unmarshals it to nil, which falls back to the pre-koryph-2im.3
 	// recompute-from-labels chain exactly as before.
 	Footprint *sched.Footprint `json:"footprint,omitempty"`
+
+	// Resources is the RESOLVED external resource kinds this slot's agent
+	// declared (koryph-4ql.3, docs/designs/2026-07-resource-governor.md L2/L3),
+	// frozen at dispatch exactly like Footprint. The engine resolves the bead's
+	// `res:*` labels once via sched.ResourcesFor and persists the resulting
+	// tokens here (not the labels), so a relabel mid-run cannot re-price a live
+	// slot (I8). runner.activeResources prefers this persisted value over
+	// recomputing from labels — and here persistence is LOAD-BEARING, not merely
+	// a fast path: unlike Footprint (whose terminal fallback is the conservative
+	// domain:unknown), the resource fallback degrades to the maximally-PERMISSIVE
+	// empty set (L1's inverted default — undeclared means "agent + worktree
+	// only"), so a slot whose bead can no longer be recovered contributes no
+	// holdings. Threaded through every requeue via engine.dispatchReq.resources
+	// and re-attached to the govern lease by holdGlobalSlot. Additive: a Slot
+	// decoded from a ledger that predates this field unmarshals it to nil, which
+	// is resource-free — exactly today's behavior (I9).
+	Resources []string `json:"resources,omitempty"`
+
+	// MemReserveMB is this slot's resolved memory reservation in MB (koryph-4ql.3,
+	// L5): Σ mem_mb over its declared kinds (machine ledger override → project
+	// vocabulary), frozen at dispatch alongside Resources per I8. Reserved from
+	// available memory while the lease ramps so admission sees declared future
+	// demand rather than only the current reading. 0 = undeclared (degrades to
+	// the koryph-930 floor, today's behavior). Additive: a Slot decoded from a
+	// ledger that predates this field unmarshals it to zero.
+	MemReserveMB int `json:"mem_reserve_mb,omitempty"`
 }
 
 // PatrolFinding is one in-loop health check result from a periodic patrol run.
