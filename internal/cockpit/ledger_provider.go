@@ -178,7 +178,7 @@ func (p *LedgerProvider) refreshDerived(slots []SlotSnapshot, gov GovernorSnapsh
 	graphSnap := p.graph.Refresh(ctx, now)
 	burndown := p.refreshBurndown(now)
 	efficiency := p.refreshEfficiency(Snapshot{RunID: runID, Governor: gov}, now)
-	queue := p.refreshQueue(ctx, Snapshot{Slots: slots, Graph: graphSnap, CapturedAt: now})
+	queue := p.refreshQueue(ctx, Snapshot{Slots: slots, Graph: graphSnap, Governor: gov, CapturedAt: now})
 
 	p.mu.Lock()
 	p.graphCache = graphSnap
@@ -334,7 +334,49 @@ func (p *LedgerProvider) refreshGovernor() GovernorSnapshot {
 			Dynamic:  govern.DefaultMaxGlobalAgents,
 		}
 	}
+
+	// Per-kind external resource ledger (koryph-4ql.1 L7, koryph-4ql.10).
+	// Fail open (I6): on any error gs.Resources stays nil, matching an old
+	// pre-resources snapshot — the TUI/IDE render no resources section.
+	if rs, err := p.gs.ResourcesStatus(); err == nil {
+		gs.Resources = convertResourceStatuses(rs)
+	}
 	return gs
+}
+
+// convertResourceStatuses maps govern.ResourceStatus to the cockpit-local
+// ResourceSnapshot wire shape (koryph-4ql.10), the same mirroring
+// refreshGovernor already does for PoolSnapshot.
+func convertResourceStatuses(in []govern.ResourceStatus) []ResourceSnapshot {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ResourceSnapshot, 0, len(in))
+	for _, rs := range in {
+		var holders []ResourceHolderSnapshot
+		if len(rs.Holders) > 0 {
+			holders = make([]ResourceHolderSnapshot, 0, len(rs.Holders))
+			for _, h := range rs.Holders {
+				holders = append(holders, ResourceHolderSnapshot{
+					Project:      h.Project,
+					Bead:         h.Bead,
+					MemReserveMB: h.MemReserveMB,
+					Ramping:      h.Ramping,
+				})
+			}
+		}
+		out = append(out, ResourceSnapshot{
+			Kind:           rs.Kind,
+			Capacity:       rs.Capacity,
+			MemMB:          rs.MemMB,
+			RampSeconds:    rs.RampSeconds,
+			Probe:          rs.Probe,
+			Holders:        holders,
+			ReservedMB:     rs.ReservedMB,
+			MaterializedMB: rs.MaterializedMB,
+		})
+	}
+	return out
 }
 
 // slotToSnapshot converts a ledger.Slot to a SlotSnapshot, reading the
@@ -427,6 +469,8 @@ func (p *LedgerProvider) refreshQueue(ctx context.Context, snap Snapshot) QueueS
 		runningIDs: runningIDs,
 		runningFPs: runningFPs,
 		graph:      snap.Graph,
+		resources:  snap.Governor.Resources,
+		projectID:  p.projectID,
 		now:        snap.CapturedAt,
 	})
 }

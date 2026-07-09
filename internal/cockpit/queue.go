@@ -26,6 +26,11 @@ const (
 	// QueueStateFootprintDeferred means the bead is in the ready frontier but
 	// its footprint conflicts with a currently-running bead's footprint.
 	QueueStateFootprintDeferred QueueNodeState = "footprint-deferred"
+	// QueueStateResourceDeferred means the bead is in the ready frontier but
+	// a declared res:<kind> label (sched.ResourcesFor) is at capacity across
+	// the live cross-project resource ledger (design
+	// docs/designs/2026-07-resource-governor.md L4/L7, koryph-4ql.10).
+	QueueStateResourceDeferred QueueNodeState = "resource-deferred"
 	// QueueStateHuman means the bead carries a no-dispatch or human-only label.
 	QueueStateHuman QueueNodeState = "human"
 	// QueueStateDeferredUntil means the bead carries a deferred-until:<date> label.
@@ -43,8 +48,17 @@ type QueueNode struct {
 	State QueueNodeState
 	// Reason is the human-readable deferral/block annotation. Non-empty for
 	// dep-blocked (lists the open blocker IDs), footprint-deferred (names
-	// the in-flight conflicting bead), and deferred-until (the date string).
+	// the in-flight conflicting bead), resource-deferred (names the kind and
+	// holder, formatResourceDeferralReason), and deferred-until (the date
+	// string).
 	Reason string
+	// ResourceKind and ResourceHolder are populated only for
+	// QueueStateResourceDeferred — the at-capacity kind and its current
+	// holder (bead id, or "project/bead" for a cross-project holder) — so
+	// the TUI/IDE can explain the wait without re-parsing Reason
+	// (koryph-4ql.10).
+	ResourceKind   string
+	ResourceHolder string
 	// Children are this node's direct open children (empty for leaf nodes).
 	Children []QueueNode
 }
@@ -74,6 +88,17 @@ type queueInput struct {
 	runningFPs map[string]sched.Footprint
 	// graph is the current dep-graph snapshot.
 	graph GraphSnapshot
+	// resources is the live per-kind external resource ledger (capacity +
+	// cross-project holders), from GovernorSnapshot.Resources
+	// (govern.Store.ResourcesStatus(), koryph-4ql.1 L7), used to classify
+	// ready-frontier res:<kind> beads as resource-deferred (koryph-4ql.10).
+	// Empty/nil means unavailable — fails open (no resource-deferred
+	// classifications), matching I6.
+	resources []ResourceSnapshot
+	// projectID is this queue's project, used to format a cross-project
+	// resource holder as "project/bead" (matching the engine's
+	// classifyAdmit) vs a same-project holder as just its bead id.
+	projectID string
 	// now is the reference time for ComputedAt.
 	now time.Time
 }
@@ -135,12 +160,24 @@ func buildQueueNode(iss beads.Issue, childrenOf map[string][]beads.Issue, in que
 	}
 
 	state, reason := deriveQueueState(iss, len(childNodes) > 0, in)
-	return QueueNode{
+	node := QueueNode{
 		Issue:    iss,
 		State:    state,
 		Reason:   reason,
 		Children: childNodes,
 	}
+	if state == QueueStateResourceDeferred {
+		// Re-derive the structured kind/holder from the same reason string
+		// deriveQueueState just built (formatResourceDeferralReason), rather
+		// than plumbing a second return value through every deriveQueueState
+		// case — keeps Reason the single source of truth for both the
+		// human-readable text and the typed fields.
+		if kind, holder, ok := parseResourceDeferralReason(reason); ok {
+			node.ResourceKind = kind
+			node.ResourceHolder = holder
+		}
+	}
+	return node
 }
 
 // deriveQueueState computes the QueueNodeState and reason annotation for a
@@ -198,7 +235,20 @@ func deriveQueueState(iss beads.Issue, hasChildren bool, in queueInput) (QueueNo
 		return QueueStateDepBlocked, "on " + strings.Join(shown, ", ") + suffix
 	}
 
-	// 6. Footprint-deferred: in the ready frontier but footprint conflicts
+	// 6. Resource-deferred: in the ready frontier but a declared res:<kind>
+	//    label (sched.ResourcesFor) is at capacity across the live
+	//    cross-project resource ledger (in.resources, from
+	//    govern.Store.ResourcesStatus()). Checked before footprint-deferred,
+	//    mirroring sched.BuildWave's resource-then-footprint ordering
+	//    (design L4): resources protect the machine, footprints protect the
+	//    merge.
+	if in.readyIDs[iss.ID] {
+		if kind, holder, blocked := resourceCapacityBlocker(iss, in); blocked {
+			return QueueStateResourceDeferred, formatResourceDeferralReason(kind, holder)
+		}
+	}
+
+	// 7. Footprint-deferred: in the ready frontier but footprint conflicts
 	//    with a running bead's footprint.
 	if in.readyIDs[iss.ID] && len(in.runningFPs) > 0 {
 		fp := sched.FootprintFor(iss, nil)
@@ -217,15 +267,99 @@ func deriveQueueState(iss beads.Issue, hasChildren bool, in queueInput) (QueueNo
 		return QueueStateReady, ""
 	}
 
-	// 7. Ready frontier.
+	// 8. Ready frontier.
 	if in.readyIDs[iss.ID] {
 		return QueueStateReady, ""
 	}
 
-	// 8. Not in ready frontier, not dep-blocked by the dep graph — could be
+	// 9. Not in ready frontier, not dep-blocked by the dep graph — could be
 	//    a footprint conflict that bd ready didn't surface, or an eligibility
 	//    issue. Surface as ready for now; the engine's wave log has specifics.
 	return QueueStateReady, ""
+}
+
+// resourceCapacityBlocker reports whether iss's declared res:<kind> labels
+// (sched.ResourcesFor) would push any one of them over capacity, using the
+// live cross-project resource ledger threaded through in.resources
+// (govern.Store.ResourcesStatus(), koryph-4ql.1 L7/L4). Kinds are checked in
+// ResourcesFor's sorted order for deterministic reporting, mirroring
+// sched/wave.go's resourceBlocker. A kind absent from in.resources (no
+// configured capacity override AND no live holder anywhere) is never
+// reported blocked here even though it would default-bind to capacity 1 at
+// dispatch (design L2) — zero holders can never be "at capacity". Fails open
+// (no report) when in.resources is empty: an unavailable/old governor
+// snapshot must not spuriously classify every declared-resource bead as
+// deferred (I6).
+func resourceCapacityBlocker(iss beads.Issue, in queueInput) (kind, holder string, blocked bool) {
+	if len(in.resources) == 0 {
+		return "", "", false
+	}
+	kinds := sched.ResourcesFor(iss)
+	if len(kinds) == 0 {
+		return "", "", false
+	}
+	byKind := make(map[string]ResourceSnapshot, len(in.resources))
+	for _, rs := range in.resources {
+		byKind[rs.Kind] = rs
+	}
+	for _, k := range kinds {
+		rs, ok := byKind[k]
+		if !ok || len(rs.Holders) == 0 {
+			continue
+		}
+		capacity := rs.Capacity
+		if capacity <= 0 {
+			capacity = 1 // defensive; ResourcesStatus always resolves a positive capacity
+		}
+		if len(rs.Holders) < capacity {
+			continue
+		}
+		h := rs.Holders[0]
+		id := h.Bead
+		if h.Project != "" && h.Project != in.projectID {
+			id = h.Project + "/" + h.Bead
+		}
+		return k, id, true
+	}
+	return "", "", false
+}
+
+// formatResourceDeferralReason builds the resource-deferral reason string in
+// the exact wording sched/wave.go's resourceBlocker and the engine's
+// classifyAdmit both use (design docs/designs/2026-07-resource-governor.md
+// L3/L4): "resource <kind> at capacity (held by <id>)".
+// parseResourceDeferralReason is its inverse.
+func formatResourceDeferralReason(kind, holder string) string {
+	return "resource " + kind + " at capacity (held by " + holder + ")"
+}
+
+// parseResourceDeferralReason extracts (kind, holder) from a reason string
+// built by formatResourceDeferralReason — used by buildQueueNode to populate
+// QueueNode.ResourceKind/ResourceHolder from the same Reason text the TUI/IDE
+// already display, so there is exactly one source of truth for the wording.
+// ok is false for any string that does not match the expected shape (an
+// empty kind or holder is treated as malformed, not a valid zero value).
+func parseResourceDeferralReason(reason string) (kind, holder string, ok bool) {
+	const prefix = "resource "
+	const mid = " at capacity (held by "
+	if !strings.HasPrefix(reason, prefix) {
+		return "", "", false
+	}
+	rest := reason[len(prefix):]
+	i := strings.Index(rest, mid)
+	if i <= 0 {
+		return "", "", false
+	}
+	kind = rest[:i]
+	tail := rest[i+len(mid):]
+	if len(tail) < 2 || !strings.HasSuffix(tail, ")") {
+		return "", "", false
+	}
+	holder = tail[:len(tail)-1]
+	if holder == "" {
+		return "", "", false
+	}
+	return kind, holder, true
 }
 
 // sortIssues sorts in place: epics/features first, then by priority asc,

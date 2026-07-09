@@ -11,6 +11,8 @@
 //   - ready             — dep-unblocked, no footprint conflict
 //   - dep-blocked       — has one or more open dependencies
 //   - footprint-deferred — ready but footprint conflicts with a running bead
+//   - resource-deferred — ready but a declared res:<kind> is at capacity
+//     (koryph-4ql.10; carries the kind + holder)
 //   - human             — carries a no-dispatch / human-only label
 //   - deferred-until    — carries a deferred-until:<date> label
 //   - parked            — parked label or status
@@ -358,6 +360,8 @@ func (m *queueModel) stateBadge(state cockpit.QueueNodeState) string {
 		return lipgloss.NewStyle().Foreground(m.theme.Error).Render("dep-blocked")
 	case cockpit.QueueStateFootprintDeferred:
 		return lipgloss.NewStyle().Foreground(m.theme.Warning).Render("fp-deferred")
+	case cockpit.QueueStateResourceDeferred:
+		return lipgloss.NewStyle().Foreground(m.theme.Warning).Render("res-deferred")
 	case cockpit.QueueStateHuman:
 		return lipgloss.NewStyle().Foreground(m.theme.Purple).Render("human")
 	case cockpit.QueueStateDeferredUntil:
@@ -382,6 +386,8 @@ func (m *queueModel) stateStyle(state cockpit.QueueNodeState) lipgloss.Style {
 	case cockpit.QueueStateDepBlocked:
 		return lipgloss.NewStyle().Foreground(m.theme.Error)
 	case cockpit.QueueStateFootprintDeferred:
+		return lipgloss.NewStyle().Foreground(m.theme.Warning)
+	case cockpit.QueueStateResourceDeferred:
 		return lipgloss.NewStyle().Foreground(m.theme.Warning)
 	case cockpit.QueueStateHuman:
 		return lipgloss.NewStyle().Foreground(m.theme.Purple)
@@ -464,6 +470,12 @@ func (m *queueModel) buildDetailLines(node *cockpit.QueueNode) []string {
 
 	if node.Reason != "" {
 		lines = append(lines, field("Reason:", node.Reason))
+	}
+	if node.ResourceKind != "" {
+		lines = append(lines, field("Resource:", node.ResourceKind))
+	}
+	if node.ResourceHolder != "" {
+		lines = append(lines, field("Held by:", node.ResourceHolder))
 	}
 
 	if len(iss.Labels) > 0 {
@@ -587,9 +599,12 @@ func (m *queueModel) stateVisible(state cockpit.QueueNodeState) bool {
 	case queueFilterReady:
 		return state == cockpit.QueueStateRunning || state == cockpit.QueueStateReady
 	case queueFilterBlocked:
-		return state == cockpit.QueueStateDepBlocked || state == cockpit.QueueStateFootprintDeferred
+		return state == cockpit.QueueStateDepBlocked ||
+			state == cockpit.QueueStateFootprintDeferred ||
+			state == cockpit.QueueStateResourceDeferred
 	case queueFilterDeferred:
 		return state == cockpit.QueueStateFootprintDeferred ||
+			state == cockpit.QueueStateResourceDeferred ||
 			state == cockpit.QueueStateDeferredUntil ||
 			state == cockpit.QueueStateHuman ||
 			state == cockpit.QueueStateParked

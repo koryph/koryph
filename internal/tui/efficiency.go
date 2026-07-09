@@ -13,6 +13,11 @@
 //  2. Top Deferral Tokens — write-tokens most frequently held by active slots
 //     (the coupling measurement: high counts mean serial bottlenecks).
 //  3. Governor Pools — per-pool cap / AIMD / probe / settle / breaker state.
+//     3b. Resources — per-kind external resource ledger (capacity, live
+//     holders, reserved-vs-materialized MB, ramp state), koryph-4ql.1 L7 /
+//     koryph-4ql.10 (design docs/designs/2026-07-resource-governor.md §4
+//     "Cockpit snapshots"). Empty when nothing has ever declared/configured
+//     a res:<kind> — old snapshots simply omit the section.
 //  4. Quota Windows — 5-hour and weekly burn bars (ceiling from config; live
 //     spend unavailable in the TUI path — marked with a hint).
 //  5. Estimator Calibration — per-(tier:size) bucket n / bias / MAPE /
@@ -88,6 +93,8 @@ func (m *efficiencyModel) View() string {
 	b.WriteString(m.renderDeferralSection(eff))
 	b.WriteRune('\n')
 	b.WriteString(m.renderGovernorSection(eff))
+	b.WriteRune('\n')
+	b.WriteString(m.renderResourcesSection(m.snap.Governor))
 	b.WriteRune('\n')
 	b.WriteString(m.renderQuotaSection(eff))
 	b.WriteRune('\n')
@@ -218,6 +225,60 @@ func (m *efficiencyModel) renderGovernorSection(eff cockpit.EfficiencySnapshot) 
 			probe := truncate(p.ProbeProject+"/"+p.ProbeBead, 24)
 			parts = append(parts, m.dimText("probe:"+probe))
 		}
+		lines = append(lines, strings.Join(parts, "  "))
+	}
+
+	return title + "\n" + strings.Join(lines, "\n")
+}
+
+// renderResourcesSection renders the per-kind external resource ledger
+// (koryph-4ql.1 L7, koryph-4ql.10): resolved capacity, live holders
+// (project/bead, with a "ramping" annotation), and reserved-vs-materialized
+// MB. One concise line per kind, mirroring renderGovernorSection's per-pool
+// label style (a fixed-width name column then colour-safe "key:value" parts
+// joined by "  ", rather than a fixed-width table — several rendered parts
+// here carry ANSI colour codes, which would misalign a %-*s column). Empty
+// when gov.Resources is nil — an old cockpit snapshot, an unavailable
+// governor, or simply a project that has never declared/configured a
+// res:<kind> (design §4 "Cockpit snapshots": old snapshots omit the
+// section).
+func (m *efficiencyModel) renderResourcesSection(gov cockpit.GovernorSnapshot) string {
+	title := m.sectionTitle("Resources")
+
+	if len(gov.Resources) == 0 {
+		return title + "\n" + m.dimText("  no declared resource kinds")
+	}
+
+	var lines []string
+	for _, rs := range gov.Resources {
+		n := len(rs.Holders)
+		capStr := fmt.Sprintf("cap:%d/%d", n, rs.Capacity)
+		if rs.Capacity > 0 && n >= rs.Capacity {
+			capStr = lipgloss.NewStyle().Foreground(m.theme.Warning).Render(capStr)
+		}
+
+		parts := []string{
+			fmt.Sprintf("  %-16s", truncate(rs.Kind, 16)),
+			capStr,
+			fmt.Sprintf("reserved:%dMB", rs.ReservedMB),
+			fmt.Sprintf("materialized:%dMB", rs.MaterializedMB),
+		}
+
+		holderParts := make([]string, 0, len(rs.Holders))
+		for _, h := range rs.Holders {
+			id := h.Bead
+			if h.Project != "" {
+				id = h.Project + "/" + h.Bead
+			}
+			if h.Ramping {
+				id += "(ramping)"
+			}
+			holderParts = append(holderParts, id)
+		}
+		if len(holderParts) > 0 {
+			parts = append(parts, m.dimText("held:"+truncate(strings.Join(holderParts, ", "), 40)))
+		}
+
 		lines = append(lines, strings.Join(parts, "  "))
 	}
 

@@ -162,3 +162,59 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// --- Resources section (koryph-4ql.1 L7, koryph-4ql.10) --------------------
+
+// TestRenderResourcesSection_Empty verifies the empty state (old snapshot, or
+// a governor with no res:* activity) renders a hint, not a crash or blank.
+func TestRenderResourcesSection_Empty(t *testing.T) {
+	m := newEfficiencyModel(DefaultTheme())
+	m.width = 100
+	out := m.renderResourcesSection(cockpit.GovernorSnapshot{})
+
+	if !strings.Contains(out, "Resources") {
+		t.Errorf("output missing section title; got: %q", out[:min(len(out), 80)])
+	}
+	if !strings.Contains(out, "no declared resource kinds") {
+		t.Errorf("empty state hint missing; got: %q", stripANSI(out))
+	}
+}
+
+// TestRenderResourcesSection_AtCapacity verifies a kind at capacity renders
+// its holder (project/bead) and the reserved/materialized MB split.
+func TestRenderResourcesSection_AtCapacity(t *testing.T) {
+	m := newEfficiencyModel(DefaultTheme())
+	m.width = 120
+
+	gov := cockpit.GovernorSnapshot{
+		Resources: []cockpit.ResourceSnapshot{
+			{
+				Kind:           "kind-cluster",
+				Capacity:       1,
+				MemMB:          6144,
+				ReservedMB:     6144,
+				MaterializedMB: 0,
+				Holders: []cockpit.ResourceHolderSnapshot{
+					{Project: "proj", Bead: "koryph-abc", MemReserveMB: 6144, Ramping: true},
+				},
+			},
+		},
+	}
+	out := stripANSI(m.renderResourcesSection(gov))
+
+	if !strings.Contains(out, "kind-cluster") {
+		t.Errorf("kind name missing; got: %q", out)
+	}
+	if !strings.Contains(out, "cap:1/1") {
+		t.Errorf("capacity 1/1 missing; got: %q", out)
+	}
+	if !strings.Contains(out, "reserved:6144MB") || !strings.Contains(out, "materialized:0MB") {
+		t.Errorf("reserved/materialized split missing; got: %q", out)
+	}
+	if !strings.Contains(out, "proj/koryph-abc") {
+		t.Errorf("holder proj/koryph-abc missing; got: %q", out)
+	}
+	if !strings.Contains(out, "ramping") {
+		t.Errorf("ramping annotation missing; got: %q", out)
+	}
+}

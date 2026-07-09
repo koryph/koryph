@@ -206,6 +206,214 @@ func TestComputeQueue_NodeCount(t *testing.T) {
 	}
 }
 
+// --- resource-deferred (koryph-4ql.10) --------------------------------------
+
+// TestFormatParseResourceDeferralReason pins the exact wording
+// formatResourceDeferralReason/parseResourceDeferralReason share with
+// sched/wave.go's resourceBlocker and the engine's classifyAdmit (design
+// docs/designs/2026-07-resource-governor.md L3/L4): "resource <kind> at
+// capacity (held by <id>)". Feeds a raw reason string (including a
+// cross-project "project/bead" holder) and asserts the parsed kind+holder.
+func TestFormatParseResourceDeferralReason(t *testing.T) {
+	cases := []struct {
+		name       string
+		kind       string
+		holder     string
+		wantReason string
+	}{
+		{"same-project holder", "kind-cluster", "koryph-abc", "resource kind-cluster at capacity (held by koryph-abc)"},
+		{"cross-project holder", "docker", "otherproj/koryph-xyz", "resource docker at capacity (held by otherproj/koryph-xyz)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatResourceDeferralReason(tc.kind, tc.holder)
+			if got != tc.wantReason {
+				t.Fatalf("formatResourceDeferralReason(%q, %q) = %q, want %q", tc.kind, tc.holder, got, tc.wantReason)
+			}
+			kind, holder, ok := parseResourceDeferralReason(got)
+			if !ok || kind != tc.kind || holder != tc.holder {
+				t.Errorf("parseResourceDeferralReason(%q) = (%q, %q, %v), want (%q, %q, true)",
+					got, kind, holder, ok, tc.kind, tc.holder)
+			}
+		})
+	}
+}
+
+// TestParseResourceDeferralReason_Malformed feeds strings that do not match
+// the expected shape and asserts ok == false rather than a garbage split.
+func TestParseResourceDeferralReason_Malformed(t *testing.T) {
+	cases := []string{
+		"",
+		"footprint conflict with t1",
+		"resource kind-cluster at capacity", // missing "(held by ...)"
+		"resource  at capacity (held by koryph-abc)",     // empty kind
+		"resource kind-cluster at capacity (held by )",   // empty holder
+		"resource kind-cluster at capacity (held by abc", // missing trailing paren
+	}
+	for _, reason := range cases {
+		if kind, holder, ok := parseResourceDeferralReason(reason); ok {
+			t.Errorf("parseResourceDeferralReason(%q) = (%q, %q, true), want ok=false", reason, kind, holder)
+		}
+	}
+}
+
+// TestComputeQueue_ResourceDeferred is the state+kind+holder assertion: a
+// ready-frontier bead declaring res:kind-cluster, with the live resource
+// ledger showing kind-cluster at capacity 1/1 held by another bead, must
+// classify as resource-deferred and carry the parsed kind/holder on the node
+// (koryph-4ql.10).
+func TestComputeQueue_ResourceDeferred(t *testing.T) {
+	now := time.Now()
+	t2 := makeIssue("t2", "Needs kind-cluster", "task", "res:kind-cluster")
+
+	resources := []ResourceSnapshot{
+		{
+			Kind:     "kind-cluster",
+			Capacity: 1,
+			Holders: []ResourceHolderSnapshot{
+				{Project: "proj", Bead: "t1", MemReserveMB: 6144},
+			},
+		},
+	}
+
+	snap := computeQueue(queueInput{
+		allIssues: []beads.Issue{t2},
+		readyIDs:  map[string]bool{"t2": true},
+		resources: resources,
+		projectID: "proj",
+		now:       now,
+	})
+
+	if len(snap.Roots) != 1 {
+		t.Fatalf("expected 1 root, got %d", len(snap.Roots))
+	}
+	node := snap.Roots[0]
+	if node.State != QueueStateResourceDeferred {
+		t.Fatalf("t2: expected resource-deferred, got %s", node.State)
+	}
+	if node.ResourceKind != "kind-cluster" {
+		t.Errorf("ResourceKind = %q, want kind-cluster", node.ResourceKind)
+	}
+	if node.ResourceHolder != "t1" {
+		t.Errorf("ResourceHolder = %q, want t1 (same-project holder, no prefix)", node.ResourceHolder)
+	}
+	wantReason := "resource kind-cluster at capacity (held by t1)"
+	if node.Reason != wantReason {
+		t.Errorf("Reason = %q, want %q", node.Reason, wantReason)
+	}
+}
+
+// TestComputeQueue_ResourceDeferredCrossProject asserts the "project/bead"
+// holder formatting when the holder belongs to a different project than the
+// queue being rendered.
+func TestComputeQueue_ResourceDeferredCrossProject(t *testing.T) {
+	now := time.Now()
+	t2 := makeIssue("t2", "Needs docker", "task", "res:docker")
+
+	resources := []ResourceSnapshot{
+		{
+			Kind:     "docker",
+			Capacity: 1,
+			Holders: []ResourceHolderSnapshot{
+				{Project: "otherproj", Bead: "koryph-xyz"},
+			},
+		},
+	}
+
+	snap := computeQueue(queueInput{
+		allIssues: []beads.Issue{t2},
+		readyIDs:  map[string]bool{"t2": true},
+		resources: resources,
+		projectID: "proj",
+		now:       now,
+	})
+
+	node := snap.Roots[0]
+	if node.State != QueueStateResourceDeferred {
+		t.Fatalf("expected resource-deferred, got %s", node.State)
+	}
+	if node.ResourceHolder != "otherproj/koryph-xyz" {
+		t.Errorf("ResourceHolder = %q, want otherproj/koryph-xyz", node.ResourceHolder)
+	}
+}
+
+// TestComputeQueue_ResourceUnderCapacityStaysReady: a declared kind with
+// holders below capacity does not defer.
+func TestComputeQueue_ResourceUnderCapacityStaysReady(t *testing.T) {
+	now := time.Now()
+	t2 := makeIssue("t2", "Needs kind-cluster", "task", "res:kind-cluster")
+
+	resources := []ResourceSnapshot{
+		{Kind: "kind-cluster", Capacity: 2, Holders: []ResourceHolderSnapshot{{Project: "proj", Bead: "t1"}}},
+	}
+
+	snap := computeQueue(queueInput{
+		allIssues: []beads.Issue{t2},
+		readyIDs:  map[string]bool{"t2": true},
+		resources: resources,
+		projectID: "proj",
+		now:       now,
+	})
+
+	if snap.Roots[0].State != QueueStateReady {
+		t.Errorf("expected ready (capacity 2, 1 holder), got %s", snap.Roots[0].State)
+	}
+}
+
+// TestComputeQueue_ResourceDeferredFailsOpenWithoutLedger: an empty/absent
+// resources ledger (old snapshot, or governor unavailable) must NOT
+// spuriously classify a res:*-declaring bead as deferred (I6 fail-open).
+func TestComputeQueue_ResourceDeferredFailsOpenWithoutLedger(t *testing.T) {
+	now := time.Now()
+	t1 := makeIssue("t1", "Needs kind-cluster", "task", "res:kind-cluster")
+
+	snap := computeQueue(queueInput{
+		allIssues: []beads.Issue{t1},
+		readyIDs:  map[string]bool{"t1": true},
+		// resources intentionally nil.
+		now: now,
+	})
+
+	if snap.Roots[0].State != QueueStateReady {
+		t.Errorf("expected ready (no resources ledger), got %s", snap.Roots[0].State)
+	}
+}
+
+// TestComputeQueue_ResourceDeferredCheckedBeforeFootprint: a bead that is
+// BOTH at resource capacity and would footprint-conflict must report
+// resource-deferred (design L4 ordering: resources checked before
+// footprints), matching sched.BuildWave.
+func TestComputeQueue_ResourceDeferredCheckedBeforeFootprint(t *testing.T) {
+	now := time.Now()
+	t1 := makeIssue("t1", "Running", "task") // no fp labels → domain:unknown write
+	t2 := makeIssue("t2", "Deferred", "task", "res:kind-cluster")
+
+	runningFPs := map[string]sched.Footprint{
+		"t1": {Writes: []string{"domain:unknown"}},
+	}
+	resources := []ResourceSnapshot{
+		{Kind: "kind-cluster", Capacity: 1, Holders: []ResourceHolderSnapshot{{Project: "proj", Bead: "t1"}}},
+	}
+
+	snap := computeQueue(queueInput{
+		allIssues:  []beads.Issue{t1, t2},
+		readyIDs:   map[string]bool{"t1": true, "t2": true},
+		runningIDs: map[string]bool{"t1": true},
+		runningFPs: runningFPs,
+		resources:  resources,
+		projectID:  "proj",
+		now:        now,
+	})
+
+	states := map[string]QueueNodeState{}
+	for _, n := range snap.Roots {
+		states[n.Issue.ID] = n.State
+	}
+	if states["t2"] != QueueStateResourceDeferred {
+		t.Errorf("t2: expected resource-deferred (resource checked before footprint), got %s", states["t2"])
+	}
+}
+
 func TestComputeQueue_FootprintDeferred(t *testing.T) {
 	now := time.Now()
 	// Two tasks in the ready frontier; t1 is running with domain:unknown footprint.

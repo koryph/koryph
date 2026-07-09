@@ -111,6 +111,46 @@ type SlotSnapshot struct {
 type GovernorSnapshot struct {
 	// Pools maps provider → PoolSnapshot.
 	Pools map[string]PoolSnapshot
+
+	// Resources is the per-kind external resource ledger state (capacity,
+	// live holders, reserved-vs-materialized MB, ramp state), sourced from
+	// govern.Store.ResourcesStatus() (koryph-4ql.1 L7, koryph-4ql.10 —
+	// design docs/designs/2026-07-resource-governor.md §4 "Cockpit
+	// snapshots"). Additive: nil on an old snapshot, when the governor is
+	// unavailable, or when nothing has ever declared/configured a res:<kind>
+	// — old TUI/IDE builds that don't know this field simply render no
+	// resources section.
+	Resources []ResourceSnapshot
+}
+
+// ResourceSnapshot is one external resource kind's live observable state for
+// the cockpit governor view (koryph-4ql.1 L7, koryph-4ql.10). It mirrors
+// govern.ResourceStatus field-for-field so the TUI and the VS Code extension
+// never need to import internal/govern directly — the same boundary
+// PoolSnapshot already draws for per-pool state.
+type ResourceSnapshot struct {
+	Kind        string
+	Capacity    int // resolved (default 1 when unconfigured — govern.DefaultResourceCapacity)
+	MemMB       int // configured per-holder reservation (0 = uncalibrated)
+	RampSeconds int // resolved ramp window
+	Probe       string
+	Holders     []ResourceHolderSnapshot
+
+	// ReservedMB is the sum of MemReserveMB across holders still ramping
+	// (still subtracted from the live memory reading); MaterializedMB is the
+	// rest (past ramp, assumed showing in the real reading). See
+	// govern.ResourceStatus for the accounting detail.
+	ReservedMB     int
+	MaterializedMB int
+}
+
+// ResourceHolderSnapshot identifies one live lease holding a resource kind,
+// mirroring govern.ResourceHolder.
+type ResourceHolderSnapshot struct {
+	Project      string
+	Bead         string
+	MemReserveMB int
+	Ramping      bool
 }
 
 // PoolSnapshot is one provider pool's live state.
