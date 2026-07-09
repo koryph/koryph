@@ -106,6 +106,54 @@ func TestConflicts(t *testing.T) {
 	}
 }
 
+func TestResourcesFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		labels []string
+		want   []string
+	}{
+		{"no labels", nil, nil},
+		{"unrelated labels ignored", []string{"area:api", "fp:go:engine"}, nil},
+		{"single kind", []string{"res:kind-cluster"}, []string{"kind-cluster"}},
+		{"multi-label dedupe+sort", []string{"res:docker", "res:kind-cluster", "res:docker"}, []string{"docker", "kind-cluster"}},
+		{"digits and hyphens allowed", []string{"res:v2-cluster9"}, []string{"v2-cluster9"}},
+		{"malformed uppercase dropped", []string{"res:Kind-Cluster"}, nil},
+		{"malformed underscore dropped", []string{"res:kind_cluster"}, nil},
+		{"malformed punctuation dropped", []string{"res:Bad!"}, nil},
+		{"empty value dropped (no LabelValues match)", []string{"res:"}, nil},
+		{"mixed valid+malformed keeps only valid", []string{"res:docker", "res:Bad!", "res:dev-server"}, []string{"dev-server", "docker"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResourcesFor(issue("i", 1, tc.labels...))
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ResourcesFor = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResourcesForFootprintNonInteraction pins design L1's SIBLING
+// requirement: ResourcesFor and FootprintFor never feed each other. A bead
+// whose only labels are res:* has no area:*/fp:* labels, so FootprintFor
+// still falls through to the TokenUnknown catch-all — exactly as if it had
+// declared no labels at all — even though ResourcesFor sees its kinds fine.
+func TestResourcesForFootprintNonInteraction(t *testing.T) {
+	iss := issue("i", 1, "res:kind-cluster", "res:docker")
+
+	if got, want := ResourcesFor(iss), []string{"docker", "kind-cluster"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResourcesFor = %v, want %v", got, want)
+	}
+
+	fp := FootprintFor(iss, testCfg())
+	if !reflect.DeepEqual(fp.Writes, []string{TokenUnknown}) {
+		t.Fatalf("footprint writes = %v, want [%s] (res:* must not feed footprint derivation)", fp.Writes, TokenUnknown)
+	}
+	if len(fp.Reads) != 0 {
+		t.Fatalf("footprint reads = %v, want none", fp.Reads)
+	}
+}
+
 func TestEligible(t *testing.T) {
 	active := map[string]bool{"busy-1": true}
 	cases := []struct {
@@ -310,6 +358,127 @@ func TestBuildWaveInFlightReadReadCoRuns(t *testing.T) {
 	}
 	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"docs-1"}) {
 		t.Fatalf("read/read in-flight should co-run, got items=%v deferred=%v", got, w.Deferred)
+	}
+}
+
+// TestBuildWaveResourceCapacityDefersSecondHolder covers design L4's core
+// packing check: two beads declaring the same kind, default capacity 1 (no
+// opts.ResourceCapacity entry), the second is deferred with the exact reason
+// string the design specifies, naming the kind and the first (selection-
+// order) holder.
+func TestBuildWaveResourceCapacityDefersSecondHolder(t *testing.T) {
+	t1 := issue("t1", 0, "res:kind-cluster", "fp:a")
+	t2 := issue("t2", 1, "res:kind-cluster", "fp:b")
+	w, err := BuildWave(context.Background(), []beads.Issue{t1, t2}, testCfg(), Opts{Max: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"t1"}) {
+		t.Fatalf("items = %v, want [t1]", got)
+	}
+	assertReason(t, deferMap(w.Deferred), "t2", "resource kind-cluster at capacity (held by t1)")
+}
+
+// TestBuildWaveResourceCapacityTwoAdmitsBoth covers the counted-capacity (not
+// purely binary) semantics: opts.ResourceCapacity raises kind-cluster to 2,
+// so both declared holders admit.
+func TestBuildWaveResourceCapacityTwoAdmitsBoth(t *testing.T) {
+	t1 := issue("t1", 0, "res:kind-cluster", "fp:a")
+	t2 := issue("t2", 1, "res:kind-cluster", "fp:b")
+	opts := Opts{Max: 5, ResourceCapacity: map[string]int{"kind-cluster": 2}}
+	w, err := BuildWave(context.Background(), []beads.Issue{t1, t2}, testCfg(), opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"t1", "t2"}) {
+		t.Fatalf("items = %v, want both dispatched at capacity 2", got)
+	}
+}
+
+// TestBuildWaveResourceCapacityMissingKindDefaultsToOne covers the "kind
+// absent from a non-nil ResourceCapacity map" case distinctly from the nil-map
+// case above: the map exists but doesn't mention kind-cluster, and the
+// fail-safe-serial default (capacity 1, design L2) must still bind.
+func TestBuildWaveResourceCapacityMissingKindDefaultsToOne(t *testing.T) {
+	t1 := issue("t1", 0, "res:kind-cluster", "fp:a")
+	t2 := issue("t2", 1, "res:kind-cluster", "fp:b")
+	opts := Opts{Max: 5, ResourceCapacity: map[string]int{"docker": 5}}
+	w, err := BuildWave(context.Background(), []beads.Issue{t1, t2}, testCfg(), opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"t1"}) {
+		t.Fatalf("items = %v, want [t1] (kind-cluster absent from map defaults to capacity 1)", got)
+	}
+	assertReason(t, deferMap(w.Deferred), "t2", "resource kind-cluster at capacity (held by t1)")
+}
+
+// TestBuildWaveResourcePerItemSkip covers the per-item (not per-batch) nature
+// of the resource check: mid is deferred on kind-cluster capacity, but lo —
+// lower priority than mid and resource-free — still dispatches behind it.
+// Priority order is otherwise preserved: hi (P0) still wins the resource slot
+// over mid (P1) by construction (candidates are processed in priority order).
+func TestBuildWaveResourcePerItemSkip(t *testing.T) {
+	hi := issue("hi", 0, "res:kind-cluster", "fp:a")
+	mid := issue("mid", 1, "res:kind-cluster", "fp:b")
+	lo := issue("lo", 2, "fp:c")
+	w, err := BuildWave(context.Background(), []beads.Issue{hi, mid, lo}, testCfg(), Opts{Max: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"hi", "lo"}) {
+		t.Fatalf("items = %v, want [hi lo] (mid deferred but skip, not break)", got)
+	}
+	assertReason(t, deferMap(w.Deferred), "mid", "resource kind-cluster at capacity (held by hi)")
+}
+
+// TestBuildWaveActiveResourcesGatesLikeInBatch covers opts.ActiveResources:
+// an in-flight holding gates a fresh candidate exactly like an in-batch
+// selection would, with the in-flight bead id named as holder.
+func TestBuildWaveActiveResourcesGatesLikeInBatch(t *testing.T) {
+	t1 := issue("t1", 0, "res:kind-cluster", "fp:a")
+	active := map[string][]string{"running-1": {"kind-cluster"}}
+	w, err := BuildWave(context.Background(), []beads.Issue{t1}, testCfg(), Opts{Max: 5, ActiveResources: active}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Items) != 0 {
+		t.Fatalf("expected no items dispatched, got %v", itemIDs(w.Items))
+	}
+	assertReason(t, deferMap(w.Deferred), "t1", "resource kind-cluster at capacity (held by running-1)")
+}
+
+// TestBuildWaveResourceMultiKindReportsFirstBlockedInSortedOrder covers a
+// candidate declaring more than one kind, more than one of which is at
+// capacity: the reported kind is deterministic (ResourcesFor's sorted order,
+// "alpha" before "beta"), not whichever the map happened to iterate first.
+func TestBuildWaveResourceMultiKindReportsFirstBlockedInSortedOrder(t *testing.T) {
+	holder := issue("holder", 0, "res:alpha", "res:beta", "fp:h")
+	cand := issue("cand", 1, "res:alpha", "res:beta", "fp:c")
+	w, err := BuildWave(context.Background(), []beads.Issue{holder, cand}, testCfg(), Opts{Max: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReason(t, deferMap(w.Deferred), "cand", "resource alpha at capacity (held by holder)")
+}
+
+// TestBuildWaveNilResourceMapsUnchanged pins that an unset (nil)
+// opts.ActiveResources/opts.ResourceCapacity, over beads with no res:* labels,
+// reproduces today's behavior byte-for-byte: both dispatch, and Item.Resources
+// is nil (not an allocated empty slice) for each — the fast-path bullet (L1.5)
+// made concrete.
+func TestBuildWaveNilResourceMapsUnchanged(t *testing.T) {
+	t1 := issue("t1", 0, "fp:go:api")
+	t2 := issue("t2", 1, "fp:app:web")
+	w, err := BuildWave(context.Background(), []beads.Issue{t1, t2}, testCfg(), Opts{Max: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemIDs(w.Items); !reflect.DeepEqual(got, []string{"t1", "t2"}) {
+		t.Fatalf("nil resource maps + unlabeled beads: items = %v, want both dispatched", got)
+	}
+	if w.Items[0].Resources != nil || w.Items[1].Resources != nil {
+		t.Fatalf("unlabeled beads should carry nil Resources, got %v / %v", w.Items[0].Resources, w.Items[1].Resources)
 	}
 }
 

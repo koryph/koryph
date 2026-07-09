@@ -122,15 +122,39 @@ func BuildWave(
 	}
 	sort.Strings(activeIDs)
 
-	// Greedy graph coloring: in-flight footprints (opts.Active) are checked
-	// first — a candidate conflicting with running work is deferred before
-	// intra-batch coloring even considers it (design L2, prerequisite for
-	// rolling/mid-wave dispatch: I1 must hold against the live in-flight set,
-	// not just within this batch) — then already-selected items in this wave.
+	// Same determinism fix for resource holdings (design L4, koryph-4ql.2):
+	// sorted once so a capacity breach always names the same first holder.
+	activeResourceIDs := make([]string, 0, len(opts.ActiveResources))
+	for id := range opts.ActiveResources {
+		activeResourceIDs = append(activeResourceIDs, id)
+	}
+	sort.Strings(activeResourceIDs)
+
+	// Greedy graph coloring: resource capacity (opts.ActiveResources ∪
+	// already-selected items, design L4) is checked first, then in-flight
+	// footprints (opts.Active) — a candidate conflicting/over-capacity with
+	// running work is deferred before intra-batch coloring even considers it
+	// (design L2, prerequisite for rolling/mid-wave dispatch: I1 must hold
+	// against the live in-flight set, not just within this batch) — then
+	// already-selected items in this wave. The resource check is per-item
+	// (packing continues past a blocked bead, unlike "wave full"), so a
+	// lower-priority resource-free bead can still dispatch behind a deferred
+	// resource-heavy one, preserving priority order among the beads that
+	// *can* run.
 	for _, iss := range candidates {
 		if opts.Max > 0 && len(w.Items) >= opts.Max {
 			w.Deferred = append(w.Deferred, reasonFor(iss, "wave full"))
 			continue
+		}
+		// Beads with no res:* labels bypass the resource check entirely —
+		// kinds is nil, so the fast path costs nothing beyond the label scan
+		// ResourcesFor already has to do (L1 bullet 5).
+		kinds := ResourcesFor(iss)
+		if len(kinds) > 0 {
+			if kind, holder, blocked := resourceBlocker(kinds, opts.ActiveResources, activeResourceIDs, w.Items, opts.ResourceCapacity); blocked {
+				w.Deferred = append(w.Deferred, reasonFor(iss, "resource "+kind+" at capacity (held by "+holder+")"))
+				continue
+			}
 		}
 		fp := FootprintFor(iss, cfg)
 		if id, clash := firstActiveConflict(fp, opts.Active, activeIDs); clash {
@@ -141,10 +165,63 @@ func BuildWave(
 			w.Deferred = append(w.Deferred, reasonFor(iss, "footprint conflict with "+id))
 			continue
 		}
-		w.Items = append(w.Items, buildItem(iss, fp, opts))
+		w.Items = append(w.Items, buildItem(iss, fp, kinds, opts))
 	}
 
 	return w, nil
+}
+
+// resourceBlocker reports whether admitting a candidate declaring kinds would
+// push any one of them over its effective capacity, counting holders from
+// in-flight resource holdings (active, in sortedActiveIDs order) unioned with
+// already-selected items in this wave (design L4, koryph-4ql.2). Kinds are
+// checked in ResourcesFor's sorted order, so the reported kind is
+// deterministic when a candidate declares more than one and multiple are at
+// capacity. Within a kind, the reported holder id is deterministic too:
+// in-flight holders win (sorted bead-id order, mirroring
+// firstActiveConflict) over in-batch holders (wave selection order) — an
+// already-running claim is more concrete than one this same call is still
+// assembling. A kind absent from capacity — including when the map itself is
+// nil — defaults to 1 (the fail-safe-serial default, design L2).
+func resourceBlocker(kinds []string, active map[string][]string, sortedActiveIDs []string, items []Item, capacity map[string]int) (kind, holder string, blocked bool) {
+	for _, k := range kinds {
+		kindCap := 1
+		if c, ok := capacity[k]; ok {
+			kindCap = c
+		}
+		count := 0
+		firstHolder := ""
+		for _, id := range sortedActiveIDs {
+			if containsString(active[id], k) {
+				count++
+				if firstHolder == "" {
+					firstHolder = id
+				}
+			}
+		}
+		for _, it := range items {
+			if containsString(it.Resources, k) {
+				count++
+				if firstHolder == "" {
+					firstHolder = it.Issue.ID
+				}
+			}
+		}
+		if count+1 > kindCap {
+			return k, firstHolder, true
+		}
+	}
+	return "", "", false
+}
+
+// containsString reports whether s is present in list.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // firstActiveConflict returns the id of the first in-flight footprint (in
@@ -169,13 +246,17 @@ func firstConflict(fp Footprint, items []Item) (string, bool) {
 	return "", false
 }
 
-// buildItem assembles a schedulable item, resolving its model. Persona and
-// effort are left for the engine to resolve from stage/persona metadata.
-func buildItem(iss beads.Issue, fp Footprint, opts Opts) Item {
+// buildItem assembles a schedulable item, resolving its model. kinds is the
+// already-parsed ResourcesFor result, threaded through rather than
+// re-derived so the caller's single label scan is the only one (design L4).
+// Persona and effort are left for the engine to resolve from stage/persona
+// metadata.
+func buildItem(iss beads.Issue, fp Footprint, kinds []string, opts Opts) Item {
 	model, why := resolveModel(iss, opts)
 	return Item{
 		Issue:     iss,
 		Footprint: fp,
+		Resources: kinds,
 		Model:     model,
 		ModelWhy:  why,
 		Persona:   "",

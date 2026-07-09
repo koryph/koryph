@@ -3,7 +3,7 @@
 
 // Package sched builds conflict-free waves from a project's ready frontier.
 //
-// Implementation contract (footprint.go, wave.go, bdsource.go):
+// Implementation contract (footprint.go, resources.go, wave.go, bdsource.go):
 //   - FootprintFor(issue, cfg) Footprint — labels COMPOSE: area:* labels
 //     contribute their cfg.AreaMap write tokens AND fp:read:*/fp:* labels
 //     add read/write tokens on top; only a bead with no resolvable labels
@@ -13,12 +13,18 @@
 //   - Conflicts(a, b) bool — RW conflict: true iff some token is shared AND
 //     at least one side holds it as a write (koryph-2im.1). Two readers of
 //     the same token co-run; only a writer excludes.
+//   - ResourcesFor(issue) []string — a SIBLING of FootprintFor, not a
+//     contributor: parses res:<kind> labels into deduped, sorted kinds
+//     (design docs/designs/2026-07-resource-governor.md L1, koryph-4ql.2).
+//     Counted capacity, not RW exclusion — footprints protect the merge,
+//     resources protect the machine.
 //   - BuildWave(issues, cfg, opts) Wave — filter dispatch-eligible issues
 //     (see package beads rules), preserve priority order, defer anything
-//     conflicting with an in-flight (opts.Active) footprint, then
-//     greedy-color the remainder by footprint into at most opts.Max
-//     non-conflicting items; the rest go to Deferred with reasons;
-//     dependency-unready → Blocked.
+//     conflicting with an in-flight (opts.Active) footprint or over
+//     capacity against in-flight/in-batch resource holdings
+//     (opts.ActiveResources, design L4), then greedy-color the remainder by
+//     footprint into at most opts.Max non-conflicting items; the rest go to
+//     Deferred with reasons; dependency-unready → Blocked.
 //   - Markdown source is out of scope for v1 BuildWave (legacy projects run
 //     their fork until migrated); the WorkSource field exists so the engine
 //     can refuse politely.
@@ -60,11 +66,17 @@ func (f Footprint) String() string {
 type Item struct {
 	Issue     beads.Issue `json:"issue"`
 	Footprint Footprint   `json:"footprint"`
-	Model     string      `json:"model"`
-	ModelWhy  string      `json:"model_rationale"`
-	Persona   string      `json:"persona"`
-	Effort    string      `json:"effort,omitempty"`
-	EpicID    string      `json:"epic_id,omitempty"`
+	// Resources is the parsed res:<kind> kinds (ResourcesFor), attached at
+	// build time (buildItem) so the engine never has to re-derive them from
+	// labels (design L4, koryph-4ql.2). nil/empty for the common case of a
+	// bead with no res:* labels — L1's inverted default (undeclared means
+	// "agent + worktree only", not "unknown, serialize").
+	Resources []string `json:"resources,omitempty"`
+	Model     string   `json:"model"`
+	ModelWhy  string   `json:"model_rationale"`
+	Persona   string   `json:"persona"`
+	Effort    string   `json:"effort,omitempty"`
+	EpicID    string   `json:"epic_id,omitempty"`
 }
 
 // Wave is the scheduler output.
@@ -103,4 +115,28 @@ type Opts struct {
 	// safe: a freshly built batch can never clash with work already running.
 	// nil/empty reproduces pre-L2 behavior exactly (no in-flight gating).
 	Active map[string]Footprint
+
+	// ActiveResources is the in-flight resource holdings of every currently-
+	// dispatched bead, keyed by bead id (design docs/designs/
+	// 2026-07-resource-governor.md L4, koryph-4ql.2) — the sched-side mirror
+	// of the engine's activeResources() persisted-first fallback (L3). A
+	// candidate whose declared kind would push a shared resource over
+	// capacity against these holdings (unioned with already-selected items
+	// in this wave) is deferred before it is admitted, exactly like Active
+	// does for footprints — but per-item (the batch keeps packing), not
+	// per-batch. nil reproduces today's behavior: no in-flight resource
+	// gating, which is also exactly right for a bead with no res:* labels
+	// (L1's inverted default — undeclared is the common, lightweight case).
+	ActiveResources map[string][]string
+
+	// ResourceCapacity is the effective per-kind capacity, resolved by the
+	// engine from governor.json machine config falling back to the project
+	// vocabulary (design L2); sched itself stays pure and config-free here,
+	// the same posture AreaMap has via project.Config for footprints. A kind
+	// absent from this map — including when the map itself is nil — defaults
+	// to capacity 1, the fail-safe-serial default (L2): two beads declaring
+	// the same unconfigured kind never co-dispatch on a machine with no
+	// resources section, unlike domain:unknown's collide-with-everything
+	// behavior (distinct kinds never collide with each other).
+	ResourceCapacity map[string]int
 }
