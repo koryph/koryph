@@ -103,6 +103,71 @@ func (s *Store) MinFreeMemoryMB(provider string) int {
 	return c.MinFreeMemoryMB
 }
 
+// Resources returns the machine's top-level resource ledger (koryph-4ql.1,
+// docs/designs/2026-07-resource-governor.md L2): the configured per-kind
+// capacities/costs shared across every provider pool. Fails open to the zero
+// ResourcesConfig{} (no kinds — every declared kind still binds at the default
+// capacity 1, reservations off) when governor.json is absent, unreadable, or
+// has no resources section, matching the MinFreeMemoryMB fail-open precedent.
+// The engine (R3) reads it to resolve effective capacities and per-bead memory
+// reservations at dispatch; unlike Acquire's own accounting, this is a plain
+// read, so it is deliberately unlocked (like Cap/MinFreeMemoryMB).
+func (s *Store) Resources() ResourcesConfig {
+	f, err := s.readFile()
+	if err != nil || f.Resources == nil {
+		return ResourcesConfig{}
+	}
+	return *f.Resources
+}
+
+// SetResource writes (or replaces) kind's machine capacity/cost in
+// governor.json's top-level resources ledger (koryph-4ql.1, L2), PRESERVING
+// every pool config and every OTHER kind — the SetMinFreeMemoryMB
+// preserve-don't-reset precedent, NOT SetCap's wholesale reset. The resources
+// section (and its kinds map) is created on first use. Backs `koryph governor
+// set-resource <kind> --capacity N [--mem-mb M] [--ramp-seconds S] [--probe
+// CMD]` (R5). Relies on File.UnmarshalJSON decoding the section on read, so an
+// earlier `set`/`set-resource` is not stripped by this whole-file rewrite.
+func (s *Store) SetResource(kind string, spec ResourceKind) error {
+	if kind == "" {
+		return errors.New("govern: resource kind must be non-empty")
+	}
+	return s.withLock(func() error {
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		if f.Resources == nil {
+			f.Resources = &ResourcesConfig{}
+		}
+		if f.Resources.Kinds == nil {
+			f.Resources.Kinds = map[string]ResourceKind{}
+		}
+		f.Resources.Kinds[kind] = spec
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
+}
+
+// UnsetResource removes kind from the resources ledger (koryph-4ql.1),
+// preserving every pool config and every other kind. A missing kind (or an
+// absent section) is not an error — idempotent, like DropDemand. After removal
+// the kind reverts to the fail-safe default (capacity 1, no reservation), so
+// beads declaring it still serialize. Backs `governor set-resource <kind>
+// --unset` (R5).
+func (s *Store) UnsetResource(kind string) error {
+	return s.withLock(func() error {
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		if f.Resources == nil || f.Resources.Kinds == nil {
+			return nil
+		}
+		delete(f.Resources.Kinds, kind)
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
+}
+
 // SetCap writes provider's pool cap to governor.json, resetting that pool's
 // AIMD/settle/breaker/smoothing state wholesale (exactly today's single-pool
 // SetCap semantics — a plain `set` disables any previously-enabled overlay)
@@ -190,10 +255,34 @@ func (s *Store) DropDemand(provider, project string) error {
 // the probe (the flock serializes concurrent callers, so exactly one wins the
 // race) and nothing else in this pool until it resolves; closed admission is
 // further spaced by the jittered minimum dispatch interval.
+//
+// Acquire is the compatibility shape (koryph-4ql.1): it routes through
+// AcquireEx with an empty MemInput, so a resource-free lease with no memory
+// reading behaves byte-for-byte as before. The engine keeps calling it until
+// it adopts AcquireEx in R3.
 func (s *Store) Acquire(l Lease) (bool, error) {
+	res, err := s.AcquireEx(l, MemInput{})
+	return res.Granted, err
+}
+
+// AcquireEx is Acquire with the two machine-resource admission clauses
+// (koryph-4ql.1, L2/L5) layered onto the pool cap / fair share / breaker /
+// smoothing checks, and a typed verdict so the engine (R3) can route
+// skip-vs-break (see AdmitOutcome). mem carries an optional current-memory
+// reading (MemInput{} skips the memory clause); both new clauses are pure
+// lease-file arithmetic under the existing flock, so they satisfy I7 (no
+// subprocess probes under the lock).
+//
+// The clauses ALSO gate the half-open circuit-breaker probe grant, which
+// returns early before the cap/fair-share section: a resource-declared probe
+// must still pass capacity, and a resource-denied probe candidate leaves the
+// probe slot open for the next caller (it never claims the probe). Every
+// clause fails open on error (I6): a denial is a normal deferral with a
+// reason, never an error.
+func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 	pool := NormalizeProvider(l.Provider)
 	l.Provider = pool // stored state never has an empty key (koryph-v8u.11)
-	granted := false
+	var result AdmitResult
 	var grantedCap, grantedActive int
 	err := s.withLock(func() error {
 		if err := s.prune(); err != nil {
@@ -203,7 +292,8 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		// operator cap when this pool's AIMD overlay is off (byte-for-byte
 		// the prior s.Cap() admission via c.EffectiveCap() below), or the
 		// probed/backed-off dynamic cap — plus current settle/breaker/
-		// smoothing state — when adaptive is enabled for this pool.
+		// smoothing state — when adaptive is enabled for this pool. f carries
+		// the decoded top-level resource ledger (f.Resources) too.
 		c, f, err := s.loadAndProbeLocked(pool)
 		if err != nil {
 			return err
@@ -213,10 +303,20 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		if c.Adaptive {
 			switch c.BreakerState {
 			case "open":
+				result = AdmitResult{Outcome: AdmitDeniedCap}
 				return nil // deny: zero admission in this pool while open
 			case "half-open":
 				if c.ProbeProject != "" || c.ProbeBead != "" {
+					result = AdmitResult{Outcome: AdmitDeniedCap}
 					return nil // a probe is already outstanding; deny everyone else
+				}
+				// A resource-declared probe must clear the machine clauses
+				// (L2/L5) before claiming the probe; a resource/memory-denied
+				// candidate returns WITHOUT taking the probe, leaving the slot
+				// open for the next caller.
+				if denial := s.checkResourcesLocked(f.Resources, l, mem, now); denial != nil {
+					result = *denial
+					return nil
 				}
 				c.ProbeProject = l.Project
 				c.ProbeBead = l.Bead
@@ -225,7 +325,7 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 				if err := s.grantLease(l, now); err != nil {
 					return err
 				}
-				granted = true
+				result = AdmitResult{Granted: true, Outcome: AdmitGranted}
 				grantedCap = c.EffectiveCap()
 				f.Pools[pool] = c
 				return fsx.WriteJSONAtomic(s.cfgPath, f) // persist the probe claim
@@ -237,6 +337,7 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 			// NOT touch LastAdmitAt (smoothingDenies reads it fresh on the
 			// engine's next refill-tick retry).
 			if smoothingDenies(c, now, s.jitter()) {
+				result = AdmitResult{Outcome: AdmitDeniedCap}
 				return nil
 			}
 		}
@@ -247,6 +348,7 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 			return err
 		}
 		if len(leases) >= cap {
+			result = AdmitResult{Outcome: AdmitDeniedCap}
 			return nil // pool full
 		}
 
@@ -259,13 +361,23 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		// frontier and drops its demand — that shrinks the denominator and
 		// raises everyone else's share on the next acquire.
 		if myActive >= fairShare(cap, demanders, l.Project, s.epoch()) {
+			result = AdmitResult{Outcome: AdmitDeniedCap}
+			return nil
+		}
+
+		// Machine resource clauses (L2 capacity + L5 reservation-aware memory):
+		// a SECOND, additive admission dimension checked only once the pool has
+		// room for this lease (I1 — resources never relax a footprint/cap
+		// conflict, only add one). Cross-pool, pure arithmetic.
+		if denial := s.checkResourcesLocked(f.Resources, l, mem, now); denial != nil {
+			result = *denial
 			return nil
 		}
 
 		if err := s.grantLease(l, now); err != nil {
 			return err
 		}
-		granted = true
+		result = AdmitResult{Granted: true, Outcome: AdmitGranted}
 		grantedCap = c.EffectiveCap()
 		grantedActive = len(leases) + 1 // +1: the lease just written
 
@@ -279,14 +391,95 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 		return nil
 	})
 	if err == nil {
-		if granted {
+		if result.Granted {
 			logGranted(pool, l.Project, l.Bead, grantedCap, grantedActive)
 		} else {
 			// For denied: read cap outside the lock for the log (best-effort).
 			logDenied(pool, l.Project, l.Bead, s.Cap(pool), 0)
 		}
 	}
-	return granted, err
+	return result, err
+}
+
+// checkResourcesLocked runs the two machine-scoped admission clauses for
+// candidate cand under the flock (koryph-4ql.1, L2/L5): capacity, then
+// reservation-aware memory. rc is the decoded machine ledger (may be nil).
+// Returns a denial AdmitResult (naming the kind/holder, or the memory verdict)
+// when a clause refuses, or nil when both pass. Pure lease-file arithmetic —
+// no subprocess (I7) — and every error path fails OPEN (returns nil, i.e.
+// admit) per I6. Callers must already hold the store's flock and have pruned.
+//
+// The candidate's own lease (same project+bead — a re-acquire or a stale
+// reservation) is excluded from both the capacity count and the ramping
+// reservation sum so it is never charged against itself.
+func (s *Store) checkResourcesLocked(rc *ResourcesConfig, cand Lease, mem MemInput, now time.Time) *AdmitResult {
+	memActive := mem.AvailMB > 0 && mem.FloorMB > 0
+	if len(cand.Resources) == 0 && !memActive {
+		return nil // nothing declared and no reading → no machine clause applies
+	}
+	all, err := s.leases() // every pool: machine resources are cross-pool
+	if err != nil {
+		return nil // fail open (I6)
+	}
+	others := make([]Lease, 0, len(all))
+	for _, l := range all {
+		if l.Project == cand.Project && l.Bead == cand.Bead {
+			continue // never count the candidate against itself
+		}
+		others = append(others, l)
+	}
+
+	// Clause 1 — capacity (L2). For each declared kind, count cross-pool
+	// holders; admit iff holders+1 <= capacity(kind). The default capacity 1
+	// always binds (even with no resources section), so two holders of an
+	// unconfigured kind cannot co-dispatch.
+	for _, kind := range cand.Resources {
+		capK := rc.capacityOf(kind)
+		holders := 0
+		var holderProj, holderBead string
+		for _, l := range others {
+			if containsStr(l.Resources, kind) {
+				holders++
+				if holderBead == "" { // first (leases() is sorted) → deterministic
+					holderProj, holderBead = l.Project, l.Bead
+				}
+			}
+		}
+		if holders+1 > capK {
+			return &AdmitResult{
+				Outcome:        AdmitDeniedResource,
+				DeniedKind:     kind,
+				DeniedCapacity: capK,
+				DeniedHolders:  holders,
+				HolderProject:  holderProj,
+				HolderBead:     holderBead,
+			}
+		}
+	}
+
+	// Clause 2 — reservation-aware memory (L5), only with a real reading:
+	//   availMB − Σ(ramping leases' MemReserveMB) − candidate MemReserveMB ≥ floorMB
+	// Signed arithmetic avoids uint underflow when reservations exceed avail.
+	if memActive {
+		reserved := 0
+		for _, l := range others {
+			if l.MemReserveMB > 0 && leaseRamping(l, rc, now) {
+				reserved += l.MemReserveMB
+			}
+		}
+		availLessReserved := int64(mem.AvailMB) - int64(reserved)
+		withCand := availLessReserved - int64(cand.MemReserveMB)
+		if withCand < int64(mem.FloorMB) {
+			return &AdmitResult{
+				Outcome: AdmitDeniedMemory,
+				// Would it have passed at MemReserveMB=0? Then the candidate's
+				// own reservation tipped it (per-bead skip); otherwise a pure
+				// floor breach (batch-break) — even a 0-reserve bead fails.
+				CandidateTipped: availLessReserved >= int64(mem.FloorMB),
+			}
+		}
+	}
+	return nil
 }
 
 // grantLease writes l's lease file, stamping AcquiredAt if unset. l.Provider
@@ -319,6 +512,17 @@ func (s *Store) jitter() float64 {
 // Because it skips the cap check it also correctly re-counts a requeued or
 // resumed agent whose reservation was pruned in the death→relaunch gap — a 1:1
 // replacement for an already-admitted bead, so it cannot breach the cap.
+//
+// Resource ledger (koryph-4ql.1, L2): Hold persists the caller-supplied lease
+// verbatim, so l.Resources / l.MemReserveMB are written to the lease file and
+// counted by every subsequent Acquire's capacity/reservation clauses — the
+// engine threads them in from the persisted ledger slot (never a govern-side
+// read of the prior lease, which after a prune gap does not exist). Hold does
+// NOT re-check the machine clauses (the no-recheck 1:1 contract stands; §7
+// documents the bounded requeue-window capacity breach this accepts). It
+// stamps AcquiredAt when unset — and the engine always leaves it unset — so
+// the ramp clock (L5) restarts per (re)bind, the over-reserving, safe
+// direction.
 func (s *Store) Hold(l Lease) error {
 	l.Provider = NormalizeProvider(l.Provider)
 	return s.withLock(func() error {
@@ -436,6 +640,83 @@ func (s *Store) PoolStatus(provider string) (PoolStatus, error) {
 		return nil
 	})
 	return ps, err
+}
+
+// ResourcesStatus returns the live per-kind resource ledger state across ALL
+// pools (koryph-4ql.1, L7), for `koryph governor show` / the cockpit: every
+// CONFIGURED kind plus every kind any live lease HOLDS (a lease may hold an
+// unconfigured kind, which binds at default capacity 1), each with its
+// resolved capacity/cost/ramp/probe, its live holders and their ramp state,
+// and the reserved-vs-materialized memory split. Prunes stale state first (the
+// PoolStatus precedent). Sorted by kind. The CLI/IDE bead only renders this;
+// all accounting lives here. Machine resources are cross-pool, so this has no
+// provider parameter.
+func (s *Store) ResourcesStatus() ([]ResourceStatus, error) {
+	var out []ResourceStatus
+	err := s.withLock(func() error {
+		if err := s.prune(); err != nil {
+			return err
+		}
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+		rc := f.Resources
+		all, err := s.leases()
+		if err != nil {
+			return err
+		}
+		now := s.Now()
+
+		// Union of configured kinds and held kinds → a stable sorted set.
+		kinds := map[string]struct{}{}
+		if rc != nil {
+			for k := range rc.Kinds {
+				kinds[k] = struct{}{}
+			}
+		}
+		for _, l := range all {
+			for _, k := range l.Resources {
+				kinds[k] = struct{}{}
+			}
+		}
+		names := make([]string, 0, len(kinds))
+		for k := range kinds {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+
+		out = make([]ResourceStatus, 0, len(names))
+		for _, kind := range names {
+			st := ResourceStatus{
+				Kind:        kind,
+				Capacity:    rc.capacityOf(kind),
+				MemMB:       rc.memMBOf(kind),
+				RampSeconds: rc.rampSecondsOf(kind),
+				Probe:       rc.probeOf(kind),
+			}
+			for _, l := range all {
+				if !containsStr(l.Resources, kind) {
+					continue
+				}
+				ramping := leaseRamping(l, rc, now)
+				st.Holders = append(st.Holders, ResourceHolder{
+					Project:      l.Project,
+					Bead:         l.Bead,
+					MemReserveMB: l.MemReserveMB,
+					Ramping:      ramping,
+				})
+				if ramping {
+					st.ReservedMB += l.MemReserveMB
+				} else {
+					st.MaterializedMB += l.MemReserveMB
+				}
+			}
+			out = append(out, st)
+		}
+		return nil
+	})
+	return out, err
 }
 
 // Pools returns the sorted set of every pool with any live state: an
@@ -795,6 +1076,17 @@ func indexOf(s []string, v string) int {
 		}
 	}
 	return -1
+}
+
+// containsStr reports whether v is in ss (a lease's resolved resource kinds
+// are a small slice, so a linear scan is fine). koryph-4ql.1.
+func containsStr(ss []string, v string) bool {
+	for _, x := range ss {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // --- small utilities ------------------------------------------------------

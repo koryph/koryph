@@ -35,7 +35,10 @@
 // --max-global choice, made per pool).
 package govern
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // DefaultMaxGlobalAgents is the cap used when a pool has no configured
 // max_global_agents (governor.json absent, or the pool has no entry). Raised
@@ -200,6 +203,18 @@ type RateLimitEvent struct {
 // once, here, rather than being re-implemented at each call site.
 type File struct {
 	Pools map[string]Config `json:"pools"`
+	// Resources is the machine's top-level external-resource ledger
+	// (koryph-4ql.1, docs/designs/2026-07-resource-governor.md L2),
+	// deliberately OUTSIDE the per-provider pools because RAM/clusters/daemons
+	// are machine properties shared across every provider. nil means "no
+	// resources configured" — which is NOT resource-free behavior: every kind
+	// a bead declares still binds at the fail-safe default capacity 1 (see
+	// ResourcesConfig). Additive/omitempty: a governor.json with no "resources"
+	// key round-trips unchanged, and the legacy flat-document migration leaves
+	// this nil. There is NO custom MarshalJSON, so default marshaling emits
+	// this field — but UnmarshalJSON is custom and MUST decode it explicitly
+	// (see below), or every readFile would silently drop it.
+	Resources *ResourcesConfig `json:"resources,omitempty"`
 }
 
 // UnmarshalJSON implements the legacy-shape migration described on File.
@@ -214,12 +229,28 @@ func (f *File) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		f.Pools = pools
+		// koryph-4ql.1 (L2): the machine resource ledger rides the
+		// pools-shaped document. This custom decoder only copies keys it names,
+		// so a struct field alone would be silently dropped on every readFile
+		// and then stripped from disk by the next setter's whole-file rewrite —
+		// decode "resources" explicitly here. Absent on this path → nil
+		// (no capacity configured; declared kinds still serialize at default 1).
+		if rraw, ok := probe["resources"]; ok {
+			var rc ResourcesConfig
+			if err := json.Unmarshal(rraw, &rc); err != nil {
+				return err
+			}
+			f.Resources = &rc
+		}
 		return nil
 	}
 	// No "pools" key: this is a pre-koryph-v8u.11 document. The whole thing
 	// IS one flat Config — decode it as such and wrap it as the sole
 	// anthropic pool so every existing field (cap, AIMD overlay, settle,
-	// breaker, smoothing) round-trips unchanged.
+	// breaker, smoothing) round-trips unchanged. A legacy flat document
+	// predates the resource ledger entirely, so f.Resources genuinely stays
+	// nil here (koryph-4ql.1) — the first setter rewrite reshapes it into the
+	// pools envelope, still resource-free.
 	var legacy Config
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
@@ -257,6 +288,23 @@ type Lease struct {
 	// existed decodes with Provider=="" and is treated as anthropic, which is
 	// exactly what it always was.
 	Provider string `json:"provider,omitempty"`
+
+	// Resources are the machine resource kinds this agent declared it will
+	// provision/consume (koryph-4ql.1, docs/designs/2026-07-resource-governor.md
+	// L2): the RESOLVED kind tokens (not the res:* labels — the engine resolves
+	// them at dispatch and freezes them here per I8). Empty = "agent + worktree
+	// only", the common lightweight case, which is byte-for-byte today's
+	// behavior (I9). Counted cross-pool against per-kind capacity in Acquire.
+	Resources []string `json:"resources,omitempty"`
+
+	// MemReserveMB is this agent's declared memory reservation (koryph-4ql.1,
+	// L5): Σ mem_mb over its declared kinds, resolved by the engine at dispatch
+	// (machine ledger override → project vocabulary). Subtracted from availMB
+	// while the lease is ramping (now-AcquiredAt < ramp_seconds) so admission
+	// sees declared future demand, not just the current reading. 0 = undeclared
+	// (degrades to the koryph-930 floor, today's behavior). Both fields are
+	// omitempty/additive: an old lease file decodes as resource-free.
+	MemReserveMB int `json:"mem_reserve_mb,omitempty"`
 }
 
 // Demand is a project's "I have ready work and want slots" heartbeat in one
@@ -270,4 +318,224 @@ type Demand struct {
 	// Provider identifies the pool this demand heartbeat counts in
 	// (koryph-v8u.11); see Lease.Provider for the "" == DefaultPool contract.
 	Provider string `json:"provider,omitempty"`
+}
+
+// --- machine resource ledger (koryph-4ql.1, L2/L5) -------------------------
+
+const (
+	// DefaultResourceCapacity is the capacity a DECLARED but unconfigured
+	// resource kind binds at (L2): the fail-safe-serial default. It ALWAYS
+	// binds — even for a nil ResourcesConfig / a governor.json with no
+	// resources section at all — so two beads declaring the same unconfigured
+	// kind can never co-dispatch (the whole point of §1.2). Distinct unknown
+	// kinds do NOT collide with each other (unlike footprints' domain:unknown).
+	DefaultResourceCapacity = 1
+
+	// DefaultRampSeconds is the ramp window (L5) applied when neither the kind
+	// nor the top-level resources config sets one. A lease's declared
+	// MemReserveMB is reserved for this long after AcquiredAt, then assumed
+	// materialized (retired to avoid double-counting the real availMB reading).
+	// Sized to worst-case time-to-provision, per §7's late-provisioning risk.
+	DefaultRampSeconds = 600
+)
+
+// ResourcesConfig is governor.json's top-level machine resource ledger
+// (koryph-4ql.1, L2): the shared external-resource kinds this host can run.
+// See File.Resources for why it lives outside the per-provider pools and for
+// the nil-means-"default-1-still-binds" contract. Growth is bounded (kinds × 4
+// scalar fields, no per-event history — the aimd.go maxRecentEvents
+// convention, §7).
+type ResourcesConfig struct {
+	// RampSeconds is the global default ramp window in seconds (L5); a per-kind
+	// ResourceKind.RampSeconds overrides it. <=0 falls back to
+	// DefaultRampSeconds.
+	RampSeconds int `json:"ramp_seconds,omitempty"`
+	// Kinds maps an opaque resource kind token ([a-z0-9-]+, matched exactly)
+	// to its machine capacity/cost. A kind declared on a bead but ABSENT here
+	// still resolves to {Capacity:1, MemMB:0} (see capacityOf) — configured
+	// only to raise the capacity above 1 or to attach a reservation/probe.
+	Kinds map[string]ResourceKind `json:"kinds,omitempty"`
+}
+
+// ResourceKind is one external resource kind's machine configuration
+// (koryph-4ql.1, L2). Every field is additive/omitempty; an absent kind
+// resolves to {Capacity:1, MemMB:0, ramp default, no probe}.
+type ResourceKind struct {
+	// Capacity is the max number of live leases that may hold this kind at
+	// once ACROSS ALL POOLS (machine resources are cross-pool). <=0 resolves
+	// to DefaultResourceCapacity (1). Capacity 1 is the exclusive case;
+	// capacity N is "up to N threads may share this kind".
+	Capacity int `json:"capacity,omitempty"`
+	// MemMB is the per-holder memory reservation charged during the ramp
+	// window (L5). 0 = uncalibrated (no reservation) — an unconfigured machine
+	// gets capacity serialization but no reservations (R9 calibrates this).
+	MemMB int `json:"mem_mb,omitempty"`
+	// RampSeconds overrides ResourcesConfig.RampSeconds for this kind (L5);
+	// <=0 falls back to the global default.
+	RampSeconds int `json:"ramp_seconds,omitempty"`
+	// Probe is an operator-authored shell command that lists live instance
+	// names for leak detection (L7); consumed only by the patrol/doctor
+	// (R8), NEVER on the admission path (I7). Stored here so
+	// `governor set-resource --probe` round-trips; admission ignores it.
+	Probe string `json:"probe,omitempty"`
+}
+
+// capacityOf returns the effective capacity for kind (koryph-4ql.1, L2): the
+// machine Kinds[kind].Capacity when >0, else DefaultResourceCapacity. The
+// default ALWAYS binds — including for a nil rc — which is what serializes two
+// holders of a declared-but-unconfigured kind. Safe on a nil receiver.
+func (rc *ResourcesConfig) capacityOf(kind string) int {
+	if rc != nil {
+		if k, ok := rc.Kinds[kind]; ok && k.Capacity > 0 {
+			return k.Capacity
+		}
+	}
+	return DefaultResourceCapacity
+}
+
+// memMBOf returns kind's configured per-holder reservation (0 when unconfigured
+// or nil rc). Safe on a nil receiver.
+func (rc *ResourcesConfig) memMBOf(kind string) int {
+	if rc != nil {
+		if k, ok := rc.Kinds[kind]; ok {
+			return k.MemMB
+		}
+	}
+	return 0
+}
+
+// probeOf returns kind's configured leak-probe command ("" when unset). Safe
+// on a nil receiver.
+func (rc *ResourcesConfig) probeOf(kind string) string {
+	if rc != nil {
+		if k, ok := rc.Kinds[kind]; ok {
+			return k.Probe
+		}
+	}
+	return ""
+}
+
+// globalRampSeconds returns the machine default ramp window (L5): the
+// top-level RampSeconds when >0, else DefaultRampSeconds. Safe on a nil
+// receiver.
+func (rc *ResourcesConfig) globalRampSeconds() int {
+	if rc != nil && rc.RampSeconds > 0 {
+		return rc.RampSeconds
+	}
+	return DefaultRampSeconds
+}
+
+// rampSecondsOf returns kind's effective ramp window (L5): the per-kind
+// override when >0, else the global default. Safe on a nil receiver.
+func (rc *ResourcesConfig) rampSecondsOf(kind string) int {
+	if rc != nil {
+		if k, ok := rc.Kinds[kind]; ok && k.RampSeconds > 0 {
+			return k.RampSeconds
+		}
+	}
+	return rc.globalRampSeconds()
+}
+
+// leaseRamping reports whether l is still inside its ramp window at now (L5):
+// its declared MemReserveMB is reserved (subtracted from availMB), not yet
+// assumed materialized in the real reading. The window is the MAX ramp_seconds
+// across the kinds l holds — a lease holding several kinds ramps until the
+// slowest is assumed up — falling back to the global default when l holds no
+// configured kind. An unparseable AcquiredAt is treated as ramping (the
+// over-reserving, safe direction, per §7's double-count note). Pure.
+func leaseRamping(l Lease, rc *ResourcesConfig, now time.Time) bool {
+	acq := parseTime(l.AcquiredAt)
+	if acq.IsZero() {
+		return true // unknown age → assume ramping (safe: over-reserve)
+	}
+	ramp := rc.globalRampSeconds()
+	for _, kind := range l.Resources {
+		if r := rc.rampSecondsOf(kind); r > ramp {
+			ramp = r
+		}
+	}
+	return now.Sub(acq) < time.Duration(ramp)*time.Second
+}
+
+// MemInput carries an optional current-memory reading into AcquireEx for the
+// reservation-aware memory clause (koryph-4ql.1, L5). A zero value (AvailMB==0
+// or FloorMB<=0) SKIPS the memory clause entirely, so a caller with no reading
+// (or a disabled floor) passes MemInput{} and keeps only the capacity clause.
+// The engine resolves the reading and floor OUTSIDE the flock (I7) and hands
+// the pair in; Acquire admits under the flock where it can see every engine's
+// reservations.
+type MemInput struct {
+	AvailMB uint64 // current host available memory, MB (0 = no reading)
+	FloorMB int    // effective admission floor, MB (<=0 = clause off)
+}
+
+// AdmitOutcome classifies an AcquireEx verdict (koryph-4ql.1, L3) so the engine
+// (R3) can route skip-vs-break: a pool-wide denial breaks the batch as today,
+// while a per-bead resource/memory denial skips just that bead and keeps
+// packing.
+type AdmitOutcome int
+
+const (
+	// AdmitGranted: a slot was taken.
+	AdmitGranted AdmitOutcome = iota
+	// AdmitDeniedCap: a pool-wide condition — pool cap, fair share, the circuit
+	// breaker (open, or half-open with a probe already outstanding), or
+	// dispatch smoothing. The engine batch-breaks (nothing else fits either).
+	AdmitDeniedCap
+	// AdmitDeniedResource: a declared kind is at capacity across all pools
+	// (L2). Per-bead — the engine skips this bead. DeniedKind/DeniedCapacity/
+	// DeniedHolders/HolderProject/HolderBead describe it for the deferral line.
+	AdmitDeniedResource
+	// AdmitDeniedMemory: the reservation-aware memory floor (L5) refused the
+	// candidate. CandidateTipped splits a per-bead skip (the candidate's own
+	// MemReserveMB tipped the inequality — it would have passed at 0) from a
+	// pure floor breach (batch-break: even a 0-reserve bead fails).
+	AdmitDeniedMemory
+)
+
+// AdmitResult is AcquireEx's typed verdict (koryph-4ql.1, L3). Granted is the
+// boolean the legacy Acquire returns; Outcome plus the descriptive fields drive
+// the engine's typed deferrals. Only the fields relevant to Outcome are set.
+type AdmitResult struct {
+	Granted bool
+	Outcome AdmitOutcome
+
+	// Populated only for AdmitDeniedResource:
+	DeniedKind     string // the kind at capacity
+	DeniedCapacity int    // that kind's resolved capacity (the "/1" in "1/1")
+	DeniedHolders  int    // live holders counted (the "1" in "1/1")
+	HolderProject  string // a representative current holder (deterministic)
+	HolderBead     string
+
+	// Populated only for AdmitDeniedMemory:
+	CandidateTipped bool // the candidate's own MemReserveMB tipped the floor
+}
+
+// ResourceStatus is one kind's live observable state for `koryph governor show`
+// and the cockpit (koryph-4ql.1, L7), computed from the machine ledger + live
+// leases (the PoolStatus precedent) so the CLI/IDE bead only RENDERS it. All
+// accounting lives here.
+type ResourceStatus struct {
+	Kind        string
+	Capacity    int    // resolved (default 1 when unconfigured)
+	MemMB       int    // configured per-holder reservation (0 = uncalibrated)
+	RampSeconds int    // resolved ramp window
+	Probe       string // configured leak-probe command ("" = none)
+	Holders     []ResourceHolder
+	// ReservedMB is Σ MemReserveMB of holders still ramping (the live
+	// reservation still subtracted from availMB); MaterializedMB is the rest
+	// (holders past their ramp, assumed showing in the real reading). A holder
+	// spanning multiple kinds has its full MemReserveMB attributed to EACH
+	// kind here (rare; observability only, not the admission accounting).
+	ReservedMB     int
+	MaterializedMB int
+}
+
+// ResourceHolder identifies one live lease holding a kind, with its ramp
+// state, for ResourceStatus (koryph-4ql.1, L7).
+type ResourceHolder struct {
+	Project      string
+	Bead         string
+	MemReserveMB int
+	Ramping      bool
 }
