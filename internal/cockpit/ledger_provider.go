@@ -383,17 +383,24 @@ func convertResourceStatuses(in []govern.ResourceStatus) []ResourceSnapshot {
 // agent's status.json when StatusPath is set.
 func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 	ss := SlotSnapshot{
-		PhaseID:     sl.PhaseID,
-		BeadID:      sl.BeadID,
-		Title:       titleFor(sl),
-		Stage:       sl.Status,
-		Model:       sl.Model,
-		Attempt:     sl.Attempts,
-		PID:         sl.PID,
-		Branch:      sl.Branch,
-		Worktree:    sl.Worktree,
-		CostUSD:     sl.CostUSD,
-		EstimateUSD: sl.EstimateUSD,
+		PhaseID:            sl.PhaseID,
+		BeadID:             sl.BeadID,
+		Title:              titleFor(sl),
+		Stage:              sl.Status,
+		Model:              sl.Model,
+		ModelWhy:           sl.ModelWhy,
+		Attempt:            sl.Attempts,
+		PID:                sl.PID,
+		Branch:             sl.Branch,
+		Worktree:           sl.Worktree,
+		CostUSD:            sl.CostUSD,
+		EstimateUSD:        sl.EstimateUSD,
+		GateRequeues:       sl.GateRequeues,
+		MergeRequeues:      sl.MergeRequeues,
+		ConflictRequeues:   sl.ConflictRequeues,
+		RateLimitRequeues:  sl.RateLimitRequeues,
+		BudgetKillRequeues: sl.BudgetKillRequeues,
+		Terminal:           ledger.Terminal(sl.Status),
 	}
 	if sl.DispatchedAt != "" {
 		if t, err := time.Parse(time.RFC3339, sl.DispatchedAt); err == nil {

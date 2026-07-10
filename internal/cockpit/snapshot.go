@@ -85,10 +85,29 @@ type SlotSnapshot struct {
 	Title    string // from bd, or PhaseID if unavailable
 	Stage    string // ledger status: running/review/merge-pending/merged/…
 	Model    string
+	ModelWhy string // ledger ModelWhy: rationale for the model tier (escalation, etc.)
 	Attempt  int
 	PID      int
 	Branch   string
 	Worktree string
+
+	// Requeue counters, mirrored from the ledger slot (koryph-2im.*, koryph-3as,
+	// koryph-77r.10). Each records retries already spent for a specific cause;
+	// the Threads tab surfaces them so an operator can see WHY a thread has been
+	// re-dispatched (retries + model-escalation visibility). All zero on a
+	// first, still-clean attempt.
+	GateRequeues       int
+	MergeRequeues      int
+	ConflictRequeues   int
+	RateLimitRequeues  int
+	BudgetKillRequeues int
+
+	// Terminal reports whether Stage is a terminal ledger status (merged, done,
+	// failed, conflict, blocked, pr-opened, merge-pending). The Threads tab
+	// hides terminal slots from its default "active" filter — a merged thread is
+	// finished work retained in the ledger for history/recovery, not a live
+	// worker — so they no longer masquerade as active threads.
+	Terminal bool
 
 	// Cost and estimate (zero means unknown/not-yet-set).
 	CostUSD     float64

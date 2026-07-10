@@ -62,7 +62,7 @@ func TestDetailRendersFields(t *testing.T) {
 
 	// Wait for the threads table rows to actually appear (so the snap is loaded).
 	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Add widget support")
+		return strings.Contains(string(bts), "abc-1")
 	})
 
 	// Press Enter to open detail for the first row (abc-1).
@@ -86,7 +86,7 @@ func TestDetailShowsDepLinks(t *testing.T) {
 
 	// Wait for the threads table rows to actually appear (so the snap is loaded).
 	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Add widget support")
+		return strings.Contains(string(bts), "abc-1")
 	})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -122,7 +122,7 @@ func TestDetailNotTabReachable(t *testing.T) {
 	// deterministically in TestHiddenTabExcludedFromBarAndCycle.)
 	waitFor(t, tm, func(bts []byte) bool {
 		s := string(bts)
-		return strings.Contains(s, "Add widget support") &&
+		return strings.Contains(s, "abc-1") &&
 			!strings.Contains(s, "No bead selected")
 	})
 }
@@ -139,7 +139,7 @@ func TestDetailDepNavigation(t *testing.T) {
 
 	// Wait for the Threads table row (abc-1) to appear.
 	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Add widget support")
+		return strings.Contains(string(bts), "abc-1")
 	})
 
 	// Enter on the first thread opens the Detail overlay for abc-1; j/k then
@@ -167,7 +167,7 @@ func TestDetailBackstack(t *testing.T) {
 
 	// Wait for threads to render.
 	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Add widget support")
+		return strings.Contains(string(bts), "abc-1")
 	})
 
 	// Open detail via Enter.
@@ -196,7 +196,7 @@ func TestDetailBlockerHighlight(t *testing.T) {
 	defer func() { _ = tm.Quit() }()
 
 	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Add widget support")
+		return strings.Contains(string(bts), "abc-1")
 	})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -220,7 +220,7 @@ func TestDetailLogTail(t *testing.T) {
 	defer func() { _ = tm.Quit() }()
 
 	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Add widget support")
+		return strings.Contains(string(bts), "abc-1")
 	})
 	// Open detail.
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
