@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/procx"
@@ -96,6 +97,16 @@ type Options struct {
 	// returns its stdout. Injectable for tests; the real implementation is
 	// RunProbeShell (`sh -c <cmd>`, bounded by resourceProbeTimeout).
 	RunProbe func(ctx context.Context, cmd string) (string, error)
+	// BeadsVersion reports the resolved bd binary's version/capability.
+	// Injectable for tests; the real implementation is beads.ProbeVersion.
+	BeadsVersion func() beads.VersionInfo
+}
+
+func (o *Options) beadsVersion() beads.VersionInfo {
+	if o.BeadsVersion != nil {
+		return o.BeadsVersion()
+	}
+	return beads.ProbeVersion(context.Background())
 }
 
 func (o *Options) home() string {
@@ -167,6 +178,7 @@ func Run(opts Options) (*Report, error) {
 
 	r.add(checkLayout(opts))
 	r.addAll(checkBinaries(opts))
+	r.add(checkBeadsVersion(opts))
 	r.add(checkRegistry(opts))
 	r.addAll(checkGovernorConfig(opts))
 	r.addAll(checkAdaptiveCapPinned(opts))
@@ -201,6 +213,7 @@ func (r *Report) addAll(fs []Finding) {
 
 const checkNameLayout = "layout"
 const checkNameBinaries = "binaries"
+const checkNameBeadsVersion = "beads-version"
 const checkNameRegistry = "registry"
 const checkNameGovernor = "governor"
 const checkNameAdaptiveCap = "adaptive-cap"
@@ -256,6 +269,24 @@ func checkBinaries(opts Options) []Finding {
 		}
 	}
 	return findings
+}
+
+// checkBeadsVersion verifies the resolved bd binary is new enough to emit the
+// `parent` field koryph's queue grouping and parent-linked views depend on. An
+// older bd (<= 1.0.3) omits `parent` from `bd list --json`, which silently
+// degrades the TUI Queue tab to a flat, ungrouped list — a failure with no
+// error, so doctor is the surface that must catch it.
+func checkBeadsVersion(opts Options) Finding {
+	info := opts.beadsVersion()
+	switch {
+	case !info.Found:
+		return Finding{Check: checkNameBeadsVersion, Level: LevelWarn, Message: info.Remediation()}
+	case !info.OK:
+		return Finding{Check: checkNameBeadsVersion, Level: LevelWarn, Message: info.Remediation()}
+	default:
+		return Finding{Check: checkNameBeadsVersion, Level: LevelOK,
+			Message: fmt.Sprintf("bd %s (parent-capable, >= %s)", info.Version, beads.MinVersion)}
+	}
 }
 
 // checkRegistry parses every *.json in registry.d to detect corruption.

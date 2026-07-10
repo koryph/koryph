@@ -39,6 +39,20 @@ is an **error** — run `koryph init` to repair.
 Checks that `git`, `claude`, and `bd` are on `PATH`. Missing binaries are
 **warnings** (the CLI can still run for some commands).
 
+### beads-version
+Checks that the resolved `bd` binary (the `KORYPH_BD_BIN` override, else `bd`
+on `PATH`) is new enough to emit the `parent` field koryph relies on. Older
+`bd` releases (≤ 1.0.3) omit `parent` from `bd list --json`, which **silently**
+degrades koryph — the TUI Queue tab renders flat (every issue a top-level row,
+no epic folds) and parent-linked views mis-group — with no error anywhere else.
+A too-old `bd` is a **warning** whose remediation is tailored to how `bd` was
+installed: a `bd` resolved from a `/nix/store/` path is flagged as
+nix-provided, with advice to bump the flake/devshell pin (or set
+`KORYPH_BD_BIN` to a newer `bd` as a stopgap); otherwise it suggests a
+package-manager upgrade. The same preflight prints a one-line warning at the
+top of `koryph run` and in the `koryph tui` header, so the degradation is never
+silent.
+
 ### registry
 Parses every `*.json` file in `registry.d/`. A file that is not valid JSON
 is an **error**.

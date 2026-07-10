@@ -11,9 +11,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/quota"
 )
+
+// TestCheckBeadsVersion covers the bd-capability check: an older bd that omits
+// the `parent` field warns (with nix-aware remediation); a new-enough bd is OK.
+func TestCheckBeadsVersion(t *testing.T) {
+	old := opts("")
+	old.BeadsVersion = func() beads.VersionInfo {
+		return beads.VersionInfo{Found: true, OK: false, Version: "1.0.3",
+			Path: "/nix/store/x-beads-1.0.3/bin/bd", FromNix: true}
+	}
+	if f := checkBeadsVersion(old); f.Level != LevelWarn {
+		t.Errorf("old bd: level = %q, want warn", f.Level)
+	} else if !strings.Contains(f.Message, "nix environment") {
+		t.Errorf("old nix bd remediation missing nix guidance: %q", f.Message)
+	}
+
+	missing := opts("")
+	missing.BeadsVersion = func() beads.VersionInfo { return beads.VersionInfo{Found: false} }
+	if f := checkBeadsVersion(missing); f.Level != LevelWarn {
+		t.Errorf("missing bd: level = %q, want warn", f.Level)
+	}
+
+	ok := opts("")
+	ok.BeadsVersion = func() beads.VersionInfo {
+		return beads.VersionInfo{Found: true, OK: true, Version: beads.MinVersion, Path: "/opt/homebrew/bin/bd"}
+	}
+	if f := checkBeadsVersion(ok); f.Level != LevelOK {
+		t.Errorf("current bd: level = %q, want ok (%q)", f.Level, f.Message)
+	}
+}
 
 // fabricate creates a minimal valid ~/.koryph skeleton in t.TempDir().
 func fabricate(t *testing.T) string {

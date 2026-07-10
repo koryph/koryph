@@ -267,6 +267,14 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		adapter.Bin = v
 	}
 
+	// bd capability preflight (non-fatal): a bd older than beads.MinVersion
+	// omits `parent` from `bd list --json`, silently flattening the TUI queue
+	// and any parent-linked view. It never errors, so warn loudly at startup so
+	// the operator isn't left guessing why epic folds vanished.
+	if info := beads.ProbeVersion(ctx); info.Found && !info.OK {
+		fmt.Fprintf(opts.Out, "koryph: warning: %s\n", info.Remediation())
+	}
+
 	store := ledger.NewStore(rec.Root)
 	lock, err := store.RunLock(opts.ProjectID)
 	if err != nil {

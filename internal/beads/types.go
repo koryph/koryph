@@ -94,10 +94,13 @@ func (i Issue) LabelValues(prefix string) []string {
 type Adapter struct {
 	RepoRoot string
 	BeadsDir string // usually <RepoRoot>/.beads; exported as BEADS_DIR to agents
-	Bin      string // "bd" unless overridden (tests)
+	Bin      string // bd binary; ResolveBin() unless overridden (tests)
 }
 
-// New returns an adapter for the project rooted at repoRoot.
+// New returns an adapter for the project rooted at repoRoot. The bd binary
+// honors the KORYPH_BD_BIN override (via ResolveBin) so every koryph surface —
+// including the cockpit/TUI, which previously hardcoded "bd" — resolves the same
+// bd, and setting KORYPH_BD_BIN to a newer bd is a working stopgap everywhere.
 func New(repoRoot string) *Adapter {
-	return &Adapter{RepoRoot: repoRoot, BeadsDir: repoRoot + "/.beads", Bin: "bd"}
+	return &Adapter{RepoRoot: repoRoot, BeadsDir: repoRoot + "/.beads", Bin: ResolveBin()}
 }

@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/cockpit"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/tui"
@@ -74,6 +75,15 @@ func cmdTUI(args []string, stdout, stderr io.Writer) int {
 	}
 
 	app := tui.NewApp(providers, *readOnly)
+
+	// bd capability preflight: a bd older than beads.MinVersion omits `parent`
+	// from `bd list --json`, so the Queue tab renders flat (no epic folds). It
+	// never errors — surface it in the header (where the flat queue is) and on
+	// stderr so the failure isn't silent.
+	if info := beads.ProbeVersion(ctx); info.Found && !info.OK {
+		app.SetNotice(fmt.Sprintf("bd %s too old (< %s) — queue grouping degraded; run `koryph doctor`", info.Version, beads.MinVersion))
+		fmt.Fprintf(stderr, "koryph: warning: %s\n", info.Remediation())
+	}
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

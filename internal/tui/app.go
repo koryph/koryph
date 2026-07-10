@@ -108,6 +108,7 @@ type App struct {
 	theme     Theme
 	lastError string // non-empty on the last failed action or refresh; cleared on next snapshot
 	lastInfo  string // non-empty on the last succeeded action; shown with ✓ (no warning glyph)
+	notice    string // persistent startup notice (e.g. bd too old); shown in the header
 
 	// last snapshot.
 	snap cockpit.Snapshot
@@ -171,6 +172,10 @@ func NewApp(providers []cockpit.Provider, readOnly bool) *App {
 	}
 	return a
 }
+
+// SetNotice sets a persistent startup notice shown in the header (e.g. a
+// too-old bd that silently degrades the queue). Empty clears it.
+func (a *App) SetNotice(s string) { a.notice = s }
 
 // Init implements tea.Model. It emits the first tick to kick off polling.
 func (a App) Init() tea.Cmd {
@@ -419,6 +424,9 @@ func (a App) renderHeader() string {
 			a.snap.RunID, a.snap.Wave, a.snap.RunStatus)
 	}
 	title := fmt.Sprintf("koryph tui  project %s%s", projectID, runInfo)
+	if a.notice != "" {
+		title += "   ⚠ " + a.notice
+	}
 	return a.theme.Header.Width(a.width).Render(title)
 }
 
