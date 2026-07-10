@@ -175,6 +175,16 @@ type runner struct {
 type slotResUsage struct {
 	pid   int
 	usage resmon.Usage
+
+	// lastCPU/lastActiveAt implement the implicit CPU heartbeat (koryph-2rf):
+	// each poll pass that observes the cohort's cumulative CPU time advancing
+	// stamps lastActiveAt. An agent blocked inside one long tool call (a
+	// build, a Playwright e2e) cannot write the agent-authored JSON heartbeat
+	// or commit — but its cohort burns CPU, and isStuck treats that as
+	// activity. A 0%-CPU hung cohort stamps nothing and still trips stuck,
+	// which is exactly the case worth flagging.
+	lastCPU      float64
+	lastActiveAt time.Time
 }
 
 // Run executes one engine run over one project per the package contract in

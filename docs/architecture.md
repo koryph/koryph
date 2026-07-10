@@ -434,8 +434,13 @@ so the agent continues its own session rather than starting cold. A slot with
 no commits is re-dispatched fresh. The recovery *tier* (`rt:0`..`rt:3`, label
 overrides `risk_tier_default`) is recorded on the manifest to govern how
 aggressively work is retried. Stuck detection (`stuck_sec`, default 900)
-compares heartbeat/commit mtime and flags a slot informationally without
-killing the poll.
+flags a slot informationally without killing the poll when it shows no sign
+of life: no agent-written heartbeat, no commit, **and no process-cohort CPU
+activity** — an agent blocked inside one long tool call (a build, a
+Playwright e2e) burns CPU and is treated as alive even though it cannot
+heartbeat. Slots with declared `res:*` resources get 4× the threshold
+(known-slow external-resource work); the progress line says the process is
+alive and that koryph is deliberately not interrupting it.
 
 ## Review, merge policies & protected paths
 

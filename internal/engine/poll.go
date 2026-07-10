@@ -264,6 +264,12 @@ func (r *runner) sampleSlotResources(sl *ledger.Slot, procs *resmon.ProcTable) {
 		r.resUsage[sl.PhaseID] = u
 	}
 	u.usage.Add(sample)
+	// Implicit CPU heartbeat (koryph-2rf): cumulative CPU advancing since the
+	// last pass means the cohort is computing, whatever the status file says.
+	if u.usage.CPUSeconds > u.lastCPU {
+		u.lastCPU = u.usage.CPUSeconds
+		u.lastActiveAt = time.Now()
+	}
 
 	peakMB := int(u.usage.PeakRSSKB / 1024)
 	avgMB := int(u.usage.AvgRSSKB() / 1024)
@@ -330,7 +336,8 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 		if sl.Status != status {
 			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = status })
 			if status == ledger.SlotStuck {
-				r.progress("bead %s: stuck (no heartbeat or commit for >%ds); still polling", sl.PhaseID, r.opts.StuckSec)
+				r.progress("bead %s: silent — no heartbeat, commit, or CPU activity for >%ds (process alive; still polling — koryph never interrupts a running agent)",
+					sl.PhaseID, int(r.stuckThreshold(sl).Seconds()))
 			}
 		}
 		r.checkpointSlot(sl, "running")
@@ -1640,10 +1647,39 @@ func (r *runner) checkpointSlot(sl *ledger.Slot, execState string) {
 	_ = r.store.SaveManifest(r.run.RunID, sl.PhaseID, m)
 }
 
-// isStuck reports whether an alive slot shows neither heartbeat nor commit
-// progress within StuckSec. Informational only — polling continues.
-func (r *runner) isStuck(ctx context.Context, sl *ledger.Slot) bool {
+// resStuckMultiplier scales the silence threshold for slots that declared
+// external resources (res:* labels, persisted on the slot — koryph-2rf):
+// cluster bring-up, browser suites, and full-stack e2e journeys routinely
+// exceed the default 900 s window while blocking the agent inside a single
+// tool call, so flagging them at the plain threshold is mostly false alarm.
+const resStuckMultiplier = 4
+
+// stuckThreshold is the silence window for one slot: StuckSec, scaled by
+// resStuckMultiplier when the slot holds declared resources (koryph-2rf).
+func (r *runner) stuckThreshold(sl *ledger.Slot) time.Duration {
 	threshold := time.Duration(r.opts.StuckSec) * time.Second
+	if len(sl.Resources) > 0 {
+		threshold *= resStuckMultiplier
+	}
+	return threshold
+}
+
+// isStuck reports whether an alive slot shows no sign of life — no
+// agent-written heartbeat, no commit, and no cohort CPU activity
+// (koryph-2rf) — within its silence threshold. Informational only — polling
+// continues; koryph never interrupts a running agent.
+func (r *runner) isStuck(ctx context.Context, sl *ledger.Slot) bool {
+	threshold := r.stuckThreshold(sl)
+
+	// Implicit CPU heartbeat (koryph-2rf): an actively-computing cohort is
+	// never stuck, no matter how long the agent-authored heartbeat has been
+	// silent — it is blocked inside a long tool call, not wedged. Zero
+	// lastActiveAt (resmon disabled/unsupported) falls through to the
+	// pre-existing signals unchanged.
+	if u := r.resUsage[sl.PhaseID]; u != nil && u.pid == sl.PID &&
+		!u.lastActiveAt.IsZero() && time.Since(u.lastActiveAt) <= threshold {
+		return false
+	}
 
 	if fi, err := os.Stat(sl.StatusPath); err == nil {
 		if time.Since(fi.ModTime()) <= threshold {
