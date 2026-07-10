@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
 # --- BEGIN BEADS INTEGRATION v1.0.5 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then
@@ -31,3 +33,8 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.0.5 ---
+
+# --- koryph: pre-commit.com framework (pre-push stage: the gate's lint) ---
+if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
+  pre-commit run --hook-stage pre-push --all-files || exit 1
+fi
