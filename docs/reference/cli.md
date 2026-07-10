@@ -101,6 +101,8 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
 | ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
 | [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
+| [`koryph models`](#koryph-models) | model-routing insight: learn starting tiers from escalation history |
+| ↳ [`koryph models learn`](#koryph-models-learn) | recommend (and --apply) learned model labels from escalation history |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail, export, prune |
 | ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
 | ↳ [`koryph obs level`](#koryph-obs-level) | set the log level for a component (or default) |
@@ -1176,6 +1178,33 @@ apply data lifecycle policy: compress old run dirs, rotate audit logs
 | `--dry-run` | bool |  | report without making any changes |
 | `--json` | bool |  | emit the result as JSON |
 | `--project` | string |  | apply run-dirs gc for this project |
+
+
+---
+
+## `koryph models` { #koryph-models }
+
+model-routing insight: learn starting tiers from escalation history
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--apply` | bool |  | write model:<tier> + model-learned:<date> labels onto matching ready beads |
+| `--min-evidence` | int |  | escalated-then-merged beads required per (area,size) bucket (0 = default 2) |
+| `--project` | string |  | project id (defaults to the project owning the current directory) |
+
+## `koryph models learn` { #koryph-models-learn }
+
+recommend (and --apply) learned model labels from escalation history
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--apply` | bool |  | write model:<tier> + model-learned:<date> labels onto matching ready beads |
+| `--min-evidence` | int |  | escalated-then-merged beads required per (area,size) bucket (0 = default 2) |
+| `--project` | string |  | project id (defaults to the project owning the current directory) |
 
 
 ---

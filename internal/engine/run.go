@@ -127,6 +127,11 @@ type runner struct {
 	// ready bead is surfaced once per run, not every wave (koryph-6g2.1).
 	reportedSkips map[string]bool
 
+	// lastLearn throttles the wave-boundary learned-model pass
+	// (koryph-qf6.6, see applyLearnedModels): rolling mode hits the boundary
+	// on every freed slot, far more often than escalation evidence changes.
+	lastLearn time.Time
+
 	// Epic validation state (koryph-wo0.4, design §2/§4b). In-memory only:
 	// `koryph epic validate` is the crash-recovery path.
 	epicPending    map[string]bool                                           // epic id → completion candidate

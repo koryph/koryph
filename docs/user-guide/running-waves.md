@@ -177,6 +177,47 @@ Precedence (highest first):
 labels (`model:implement:*`) take precedence over bare `model:*` labels so a bead can
 pin the implement tier without affecting review.
 
+### Final-attempt escalation
+
+Retries re-run the model the bead was first dispatched with (the freeze —
+a mid-run relabel never switches a live retry). The one exception: when a
+bead-fault requeue (gate failure, review bounce, rebase conflict, crash — not
+a transient merge error, rate limit, or budget kill) is about to burn the
+**final** attempt on `haiku`/`sonnet`, that last attempt runs on `opus`
+instead, provided `opus` is in the project's `allowed_models`. The slot's
+model rationale records `escalated from <tier> …`, the TUI marks the row with
+`↑`, and a bead that merges this way gains a `model-observed:<tier>` label as
+durable provenance.
+
+### Learned model labels (adaptive escalation)
+
+Escalations are also a training signal. `koryph models learn` aggregates
+escalated-then-merged beads by `(area:* label, size bucket)` and — once a
+bucket has enough evidence (default 2) that outweighs its clean cheap-tier
+merges — recommends starting similar beads on the stronger tier directly:
+
+```console
+$ koryph models learn            # dry run: show recommendations + evidence
+$ koryph models learn --apply    # label matching ready beads
+```
+
+`--apply` stamps `model:<tier>` plus a `model-learned:<yyyy-mm-dd>`
+provenance label on every matching **ready** bead that is a dispatchable type
+and carries no `model:*` label of its own — a human (or earlier) `model:*`
+label always wins, which also makes re-applying a no-op. To undo a learned
+routing, remove the two labels (`bd update <id> --remove-label …`).
+
+Projects can run the same pass automatically at every wave boundary:
+
+```json
+"adaptive_escalation": { "enabled": true, "min_evidence": 2 }
+```
+
+in `koryph.project.json`. The engine then labels matching frontier beads
+before each wave builds, so they dispatch on the learned tier immediately;
+the pass is throttled, best-effort, and visible both in progress output and
+as `engine.bead.model_learned` telemetry.
+
 ## Merge policies
 
 After an agent finishes, the engine applies a _merge policy_:

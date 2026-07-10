@@ -167,6 +167,17 @@ func logModelEscalated(beadID, from, to string, attempt int, reason string) {
 	)
 }
 
+// logModelLearnApplied emits an INFO record when the wave-boundary learner
+// stamps a learned model label onto a frontier bead (koryph-qf6.6).
+func logModelLearnApplied(beadID, tier, area, size string) {
+	log.Info("engine.bead.model_learned",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.String(obs.KeyModel, tier),
+		slog.String("area", area),
+		slog.String("size", size),
+	)
+}
+
 // logSlotConflict emits a WARN record when a slot hits a merge conflict.
 func logSlotConflict(beadID, details string) {
 	log.Warn("engine.slot.conflict",

@@ -87,6 +87,9 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if r.opts.Only != "" {
 				issues = onlyBead(issues, r.opts.Only)
 			}
+			// Learned-model pass (koryph-qf6.6) — see waveLoop's identical
+			// hook; the in-function throttle keeps rolling refills cheap.
+			issues = r.applyLearnedModels(ctx, issues)
 			w, err = sched.BuildWave(ctx, issues, r.cfg, sched.Opts{
 				Max:              capacity,
 				DefaultModel:     r.opts.DefaultModel,

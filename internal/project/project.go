@@ -52,6 +52,19 @@ type ResourceSpec struct {
 	MemMB int `json:"mem_mb,omitempty"`
 }
 
+// AdaptiveEscalation configures the learned-model auto-apply
+// (koryph-qf6.6) — see Config.AdaptiveEscalation.
+type AdaptiveEscalation struct {
+	// Enabled turns on the engine's wave-boundary hook. Off by default: label
+	// writes to beads are a visible, syncing side effect an operator should
+	// opt into per project.
+	Enabled bool `json:"enabled"`
+	// MinEvidence is the minimum count of escalated-then-merged beads a
+	// (area, size) bucket needs before its recommendation applies.
+	// 0/absent = modellearn.DefaultMinEvidence (2).
+	MinEvidence int `json:"min_evidence,omitempty" jsonschema:"minimum=0"`
+}
+
 // PipelineStage is one post-implement stage in the project pipeline. Stages run
 // sequentially in the implementer's worktree after its commits land and before
 // review/merge, each as a persona agent that may add its own commits (docs,
@@ -532,6 +545,15 @@ type Config struct {
 	// dispatch until `koryph quota calibrate` sets a ceiling. The
 	// `--require-calibration` run flag also sets it for a single run.
 	RequireCalibration bool `json:"require_calibration,omitempty"`
+
+	// AdaptiveEscalation gates the learned-model auto-apply (koryph-qf6.6):
+	// when enabled, the engine's wave boundary mines run-ledger escalation
+	// history (internal/modellearn) and stamps `model:<tier>` +
+	// `model-learned:<date>` labels onto matching ready beads, so beads
+	// similar to ones that only merged after escalating start on the stronger
+	// tier first-pass. nil/absent = off (today's behavior); `koryph models
+	// learn` offers the same pass manually regardless of this gate.
+	AdaptiveEscalation *AdaptiveEscalation `json:"adaptive_escalation,omitempty"`
 
 	// MaxConcurrentSlots caps wave width for this project (default 3).
 	MaxConcurrentSlots int `json:"max_concurrent_slots,omitempty"`

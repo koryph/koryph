@@ -71,6 +71,7 @@ func fullConfig() *Config {
 			Artifacts: true,
 		},
 		RequireCalibration:     true,
+		AdaptiveEscalation:     &AdaptiveEscalation{Enabled: true, MinEvidence: 3},
 		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 6,
 		PollSeconds:            5,

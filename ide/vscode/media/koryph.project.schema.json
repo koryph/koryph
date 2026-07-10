@@ -2,6 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://koryph.dev/schemas/config",
   "$defs": {
+    "AdaptiveEscalation": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enabled turns on the engine's wave-boundary hook. Off by default: label\nwrites to beads are a visible, syncing side effect an operator should\nopt into per project."
+        },
+        "min_evidence": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "MinEvidence is the minimum count of escalated-then-merged beads a\n(area, size) bucket needs before its recommendation applies.\n0/absent = modellearn.DefaultMinEvidence (2)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "description": "AdaptiveEscalation configures the learned-model auto-apply (koryph-qf6.6) — see Config.AdaptiveEscalation."
+    },
     "CopyrightConfig": {
       "properties": {
         "holder": {
@@ -546,6 +565,10 @@
     "require_calibration": {
       "type": "boolean",
       "description": "RequireCalibration hard-blocks dispatch while the quota governor is\nuncalibrated (both ceilings 0), instead of the default advisory pass\n(koryph-grz). Opt-in spend safety for this project: runs refuse to\ndispatch until `koryph quota calibrate` sets a ceiling. The\n`--require-calibration` run flag also sets it for a single run."
+    },
+    "adaptive_escalation": {
+      "$ref": "#/$defs/AdaptiveEscalation",
+      "description": "AdaptiveEscalation gates the learned-model auto-apply (koryph-qf6.6):\nwhen enabled, the engine's wave boundary mines run-ledger escalation\nhistory (internal/modellearn) and stamps `model:\u003ctier\u003e` +\n`model-learned:\u003cdate\u003e` labels onto matching ready beads, so beads\nsimilar to ones that only merged after escalating start on the stronger\ntier first-pass. nil/absent = off (today's behavior); `koryph models\nlearn` offers the same pass manually regardless of this gate."
     },
     "max_concurrent_slots": {
       "type": "integer",

@@ -268,6 +268,10 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		if r.opts.Only != "" {
 			issues = onlyBead(issues, r.opts.Only)
 		}
+		// Learned-model pass (koryph-qf6.6): stamp escalation-history
+		// recommendations onto the frontier BEFORE the wave builds, so this
+		// very wave routes on them.
+		issues = r.applyLearnedModels(ctx, issues)
 		active := r.activeIDs()
 		w, err := sched.BuildWave(ctx, issues, r.cfg, sched.Opts{
 			Max:              width,
