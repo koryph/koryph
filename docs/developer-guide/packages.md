@@ -18,6 +18,32 @@ billing modes.
 - **`Env(p, billing, apiKey)`** — full `[]string` child env; scrubs/re-injects credentials
 - **`Verify(ctx, p)`** / **`VerifyExpected(ctx, p, email)`** — read and compare identity
 
+## agentjson
+
+Helpers for parsing Claude CLI JSON-envelope output: the outer
+`{result, is_error}` envelope whose `result` field carries the model's text,
+which itself is expected to be strict JSON. The single authoritative
+implementation shared by `internal/review` and `internal/epicreview` so
+escape/`is_error` edge-case fixes propagate to every caller.
+
+- **`ParseEnvelope(out)`** — unwrap the CLI envelope, error on `is_error`
+- **`SelectJSON(s, requiredKeys...)`** — pick the first *valid* JSON block
+  carrying the schema keys (skips non-JSON brace tokens the model quoted)
+- **`JSONBlocks`** / **`FirstJSONBlock`** / **`FencedJSONBlocks`** — balanced-block extraction
+- **`Tail(s, n)`** — bound an error/log excerpt
+
+## agentsmd
+
+Installs the koryph operating contract as `AGENTS.md` at a managed project's
+root — the canonical, runtime-neutral instruction file read natively by Codex,
+Cursor, Grok, Copilot, opencode, amp, and (as a fallback) Claude Code; the
+cross-runtime counterpart of `CLAUDE.md`. Installed unconditionally during
+`project add` with the same hash-aware overwrite policy as
+`scaffold.CopyEmbed` (identical → no-op, differing → skipped unless force).
+
+- **`Install(root, force)`** — write `<root>/AGENTS.md`; returns a `scaffold.Action*` constant
+- **`Template()`** — the embedded contract bytes
+
 ## anthro
 
 Thin wrapper around `anthropic-sdk-go` for the two operations koryph uses
@@ -36,6 +62,48 @@ packages consume its types.
 - **`Adapter`** — wraps a repo root; `New(repoRoot)` is the constructor
 - **`Issue`** — parsed beads issue (ID, title, status, labels, …)
 - **`ReadyOpts`** — filters for `bd ready` queries
+
+## bot
+
+Implements the GitHub App Manifest flow for the `koryph bot` command family:
+app creation (the localhost-redirect manifest dance), credential persistence,
+and installation URL generation. Credentials live at
+`~/.koryph/bots/<name>.json` (mode 0600) in **pointer mode** (a vault
+`Provider` + `KeyRef`; `ResolveKey` fetches the PEM at JWT-mint time) or
+legacy **inline mode** (PEM in the file, opt-in via `--plaintext`). GitLab has
+no App identity, so the `*GitLab` variants run a project/group access-token
+flow instead.
+
+- **`Create`** / **`Attach`** / **`Check`** / **`List`** / **`Load`** — the `koryph bot` verbs (GitHub)
+- **`CreateGitLab`** / **`AttachGitLab`** / **`CheckGitLab`** — the token-flow equivalents
+- **`ResolveKey`** — fetch the private key from its vault pointer
+- State: `~/.koryph/bots/<name>.json`
+
+## ciinstall
+
+Forge-native CI asset installation shared by `koryph ci setup` and future
+installers. `Install` renders an asset kind through a `forge.CIService` and
+writes it to the forge-native path (`gate` → `.github/workflows/koryph-gate.yml`
+on GitHub, `.koryph/ci/koryph-gate.yml` includable fragment on GitLab);
+`Check` compares the on-disk asset against the current render and reports
+drift. Both are idempotent.
+
+- **`Install(...)`** / **`Check(...)`** — the stable API; import, never copy
+- **`KindPath(forgeName, kind)`** — forge-native destination for a kind
+- **`AllKinds`** / action constants (`installed`/…)
+
+## cockpit
+
+The read-only data layer shared by the TUI and the VS Code extension:
+assembles a per-project `Snapshot` from the run ledger, the beads adapter
+(cached at a coarser TTL than the refresh tick), and the quota config —
+file reads only, cheap enough to call every 100 ms. Also computes the
+burndown, efficiency, and queue views, surfacing P50/P90 projections and an
+explicit "insufficient history" state below `MinSamples` observations.
+
+- **`Provider`** — `Refresh() (Snapshot, error)`; **`DetailProvider`** — optional per-bead detail
+- **`NewLedgerProvider`** / **`NewGraphProvider`** — production constructors
+- **`Snapshot`** — slots, queue, burndown, efficiency, events for one project
 
 ## commands
 
@@ -57,6 +125,19 @@ worktree and tracks the resulting PID/stream.
 - **`Backend`** / **`CLIBackend`** — interface + production implementation over the `claude` binary
 - **`ParseResultCost(streamPath)`** — extract USD spend from transcript
 - **`Alive(pid)`** / **`StopGraceful(pid)`** — process lifecycle helpers
+
+## doctor
+
+Runs system-health checks against the `~/.koryph` state tree (global mode)
+and per-project checks (project mode). All I/O and OS interactions are
+injected so checks are unit-testable without touching the real filesystem or
+spawning processes. Checks include zombie leases, orphan worktrees, GC
+footprint, CI-gate and posture drift, asset drift, proxy loopback safety,
+bot credentials, and unvalidated epics; some support `--fix`.
+
+- **`Run(opts)`** / **`RunProject(opts)`** — execute checks, return a `*Report`
+- **`Finding`** — one result (`Check`, `Level`, `Message`, `Fixed`); levels `ok`/`warn`/`error`
+- **`Matrix`** — the integration-status matrix behind `koryph doctor --matrix`
 
 ## engine
 
@@ -81,6 +162,24 @@ share poll primitives; rolling additionally passes active in-flight footprints
 cannot clash with running beads. Poll interval is `poll_seconds` from project
 config (default 10), overridden by `KORYPH_POLL_SEC` or `Options.PollSec`.
 
+## epicreview
+
+Whole-epic implementation validation (see
+`docs/designs/2026-07-epic-validation.md`): after the last child of an epic
+closes, `Validate` runs the `koryph-epic-validator` persona (opus by default,
+with exponential-backoff retries) over the union of the epic's merged work and
+returns a `Verdict` — met, gaps, and/or structural findings. `Act` applies a
+verdict deterministically: stamps `validation:passed`/`parked`/`degraded`
+labels, files gap and structural follow-up beads with round labels, files the
+docs-update bead, and closes the epic when appropriate. Both the engine hook
+and `koryph epic validate` call this package so the two paths cannot drift.
+
+- **`Validate(ctx, Opts)`** — run the frontier validator, return a `Verdict`
+- **`Act(ctx, BeadStore, ActOpts, Verdict)`** — deterministic verdict actuation
+- **`BeadStore`** — the bd-verb subset `Act` needs (`*beads.Adapter` satisfies it)
+- **`RoundLabel`** / **`DetectNextRound`** / **`LoadPriorVerdicts`** — round bookkeeping
+- Labels: `LabelPassed`, `LabelParked`, `LabelDegraded`, `LabelStructural`, `LabelDocs`, `LabelNoValidate`
+
 ## execx
 
 Runs external commands with an explicit working directory and environment.
@@ -91,6 +190,23 @@ All engine subprocess calls go through here.
 - **`BaseEnv(remove...)`** — current environment with named vars stripped
 - **`LookPath(name)`** — reports whether `name` is on `$PATH`
 
+## forge
+
+The contract between koryph and hosted git forge services (GitHub, GitLab, …).
+Contract-only: the `Forge` interface, `Capabilities` flags, and per-domain
+service interfaces (`RepoService`, `ProtectionService`, `PRService`,
+`SecretsService`, `ReleaseService`, `CIService`, `BotService`). Providers live
+under `internal/forge/github/` and `internal/forge/gitlab/` and self-register
+into `Default` via `init()`. Only the edges of the loop talk to a forge —
+everything git-native (worktrees, merges, signing, the green gate) stays
+forge-neutral.
+
+- **`Forge`** / **`Capabilities`** — provider identity + feature flags
+  (`DraftReleases`, `Rulesets`, `AppIdentity`, `WorkflowDispatch`, …); callers
+  branch on capabilities, never provider names
+- **`Default`** — the global `Registry`; **`ErrUnsupported`** — operation absent on this forge
+- **`SniffRemote`** — detect the forge from a git remote URL
+
 ## fsx
 
 Small filesystem helpers shared across the engine. All writes are atomic
@@ -99,6 +215,24 @@ Small filesystem helpers shared across the engine. All writes are atomic
 - **`WriteAtomic`** / **`WriteJSONAtomic`** — atomic byte-slice and JSON writes
 - **`ReadJSON(path, v)`** — unmarshal file into `v`
 - **`AppendLine(path, line)`** — append one newline-terminated record; **`Exists(path)`** — stat check
+
+## gc
+
+Data lifecycle management for koryph outputs: compress/delete old run
+phase-dirs, size-rotate `audit.jsonl`/`runs.jsonl` (default retention:
+forever), leave telemetry to `internal/obs` and posture snapshots exempt by
+design. Config surface is `~/.koryph/retention.json` with per-project
+overrides in `<repo>/.koryph/retention.json`; `"never"` is accepted for every
+retention value. gc refuses to touch any run whose ledger shows non-terminal
+slots, the active run, or the `latest` symlink target. See the
+[gc user guide](../user-guide/gc.md).
+
+- **`Run(Options)`** — apply the policy (honours `DryRun`); returns per-class `Result`
+- **`Footprint(repoRoot)`** — reclaimable bytes without deleting (health patrol input)
+- **`LoadConfig(repoRoot)`** — global + project overlay with defaults applied
+- **`Config`** / **`RunDirPolicy`** / **`RotatePolicy`** — the retention.json schema
+  (incl. `GCAuto`, the opt-in health-patrol auto-gc flag)
+- State: `~/.koryph/retention.json`, `<repo>/.koryph/retention.json`
 
 ## govern
 
@@ -136,6 +270,20 @@ decrease). Hardened by three koryph-2im.11 mechanisms — all Adaptive-gated:
 - **Dispatch smoothing** (`MinDispatchIntervalSeconds`, default 3 s): machine-wide
   minimum inter-dispatch spacing, jittered ±50%, to prevent thundering-herd refills.
 
+## intake
+
+Polls a project's external issue tracker for trigger-labeled issues and files
+one planning bead per issue, idempotently (a bead carrying the
+`gh-<owner>/<repo>#<number>` external-ref is skipped). Every ingested bead is
+labeled `no-dispatch` — an ingested issue is planning input a human or planner
+must triage first; intake never mutates tracker state except the opt-in
+comment-back. Sources: GitHub (via the `gh` CLI, never a raw token), Linear,
+and JIRA, plus a multi-source runner.
+
+- **`Run(ctx, Options)`** — one GitHub intake pass; **`RunLinear`** / **`RunJIRA`** / **`RunMulti`**
+- **`Source`** — the pluggable issue-tracker provider interface
+- Defaults: trigger label `triage`, limit 20
+
 ## ledger
 
 Owns the per-run ledger (JSONL on disk) and per-slot checkpoints. Classifies
@@ -168,6 +316,21 @@ reporting and quota decisions.
 - **`Collect(store, projectID)`** — read ledger, compute `*Report`
 - **`Render(r, w)`** — pretty-print report to an `io.Writer`
 
+## modellearn
+
+Closes the escalation feedback loop (koryph-qf6.6): mines run ledgers for
+beads that only merged after their final attempt escalated to a stronger tier,
+aggregates that evidence by the similarity features frozen on each slot (area
+label + size bucket), and recommends a starting tier for future beads sharing
+those features. The actuator is deliberately a bead label, not a routing-table
+entry: `Apply` stamps `model:<tier>` plus a `model-learned:<date>` provenance
+marker on matching ready beads; any pre-existing `model:*` label wins, making
+re-apply idempotent and human overrides durable.
+
+- **`Collect`** / **`Recommend`** / **`Apply`** — mine evidence → propose tiers → label beads
+- **`DefaultMinEvidence`** (2) — minimum escalated-then-merged count per bucket
+- **`ProvenancePrefix`** — `model-learned:`
+
 ## modelroute
 
 Resolves a (stage, bead-labels, run-defaults, project-config) tuple to a
@@ -191,6 +354,34 @@ precedence" section.
 - **`PersonaMeta(repoRoot, persona)`** — reads persona file →
   `(model, effort, tier)`
 
+## netx
+
+Shared network-address predicates used across koryph's security gates.
+Centralised so independent copies cannot drift (design I4: loopback-only
+routing for dispatched-agent Anthropic traffic).
+
+- **`IsLoopbackHost(host)`** — the single authoritative loopback predicate
+  (`localhost`, `127.0.0.0/8`, `::1`, IPv4-mapped forms); used by both the
+  registry load-time validation and the doctor proxy check
+
+## obs
+
+koryph's observability foundation: a custom TRACE slog level, per-component
+loggers with independently-settable minimum levels, and a swappable handler
+pipeline (console / JSON / text / multi / OTLP-HTTP). Configured by
+`~/.koryph/observability.json` with on-demand reload (no restart) and env
+overrides (`KORYPH_LOG_LEVEL`, `KORYPH_LOG_FORMAT`, `KORYPH_OTEL_ENDPOINT`).
+A central `RedactingHandler` scrubs every record so no secret reaches a
+handler; canonical attribute keys (`run_id`, `bead_id`, `model_actual`, …)
+keep logs, spans, and metrics correlated. Also owns telemetry-file rotation
+and pruning (`PruneFromConfig`).
+
+- **`Init(cfg, handler)`** / **`LoadConfig`** / **`ReloadConfig`** — startup + live reload
+- **`For(component)`** — a component-scoped `*slog.Logger`
+- **`RunAttrs`** / **`BeadAttrs`** / **`ForgeAttrs`** / **`Err`** — canonical attribute helpers
+- **`RedactAttr`** / **`RedactValue`** — exported for no-secret-leak assertions
+- State: `~/.koryph/observability.json`, `~/.koryph/telemetry/`
+
 ## onboard
 
 Inspects a repository, registers it in the registry, and validates that all
@@ -210,6 +401,47 @@ Resolves all koryph machine-local state locations from `$KORYPH_HOME`
 
 `KoryphHome` · `RegistryDir` · `QuotaDir` · `AuditLog` · `RunsIndex` ·
 `PlanLogs(repoRoot)` · `KoryphRoot(repoRoot)`
+
+## personas
+
+Installs the fallback Claude sub-agent persona files (embedded from
+`agents/` in the binary) into a project's `.claude/agents` using the shared
+scaffold hash-aware, force-guarded copy policy — no network access at onboard
+time. For non-Claude runtimes, `InstallForRuntime` rewrites each persona's
+`model:` frontmatter through the target runtime's `ModelMap`, keyed by the
+persona's `tier:` scalar, so a codex/cursor/grok project never receives a
+Claude model name it cannot honor.
+
+- **`Install(root, force)`** — byte-identical copy (equivalent to runtime `"claude"`)
+- **`InstallForRuntime(root, force, runtimeName)`** — tier-mapped render; also
+  reports untiered personas
+
+## plan
+
+Corpus-level plan analysis. `Audit` performs a deterministic, read-only
+conflict analysis of a project's open bead corpus under the current sched
+rules (`FootprintFor` + `Conflicts`), surfacing unlabeled beads (the
+`domain:unknown` serializers), non-dispatchable ready beads, dependency-
+unordered conflicting pairs, and achievable vs. potential parallel width.
+
+- **`AuditReport`** — the JSON-marshalable result (behind `koryph plan audit`)
+- **`ConflictPair`** / **`WidthReport`** / **`ItemSummary`** / **`SkipSummary`** — report parts
+
+## posture
+
+Desired-state checking and applying for repository hygiene: branch-protection
+rulesets (`.github/rulesets/*.json`) and administrative settings
+(`repo-settings.json`), delegated to `gh api` passthrough — no token
+management in-package. Named posture profiles compile forge-neutral `Intents`
+to forge-native files (`CompileGitHub`); fragments, org-level rulesets,
+snapshots, and rollback round out the `koryph posture`/`koryph repo` surface.
+Posture snapshots are never auto-deleted (exempt from gc by design).
+
+- **`CheckRulesets`** / **`ApplyRulesets`** / **`CheckSettings`** / **`ApplySettings`** — diff-first check/apply
+- **`CheckOrgRulesets`** / **`ApplyOrgRulesets`** — org-level equivalents
+- **`CompileGitHub(intents, params, ghDir)`** — profile → GitHub-native desired state
+- **`CaptureSnapshot`** / **`Rollback`** — pre-apply state capture + restore
+- **`Source`** — desired-state provider seam (`LocalSource` reads `.github/`)
 
 ## project
 
@@ -264,6 +496,34 @@ One JSON file per project.
 
 Key `Store` methods: `Get`, `Put`, `Delete`, `List`, `All`.
 
+## release
+
+Implements `koryph release setup` — rendering and installing the
+forge-specific release pipeline plus release-please config/manifest into a
+target project — and `koryph release kick`, the bot-less fallback that
+close+reopens the open Release PR so GitHub fires check workflows under the
+user's real `gh` auth. The caller workflow is rendered via the project's
+forge CI service (`forge.CIService.Render("caller")`); the release-please
+config and manifest come from templates embedded in this package. The
+manifest is written once and never overwritten.
+
+- **`Setup(repoRoot, rc, initialVersion)`** / **`SetupForge(..., ci)`** — install the pipeline files
+- **`Kick`** (via `KickOptions`/`KickResult`) — close+reopen the Release PR, optional `--wait` check polling
+- **`ReleasePRLabel`** — `autorelease: pending`, the Release PR detection label
+
+## resmon
+
+Samples the OS resource usage (CPU time, resident memory, and — where the
+platform exposes it — disk I/O) of an agent process tree, so the engine can
+record per-bead efficiency metrics and the cockpit can surface avg/peak memory
+and CPU per bead. Callers take ONE process-table `Snapshot` per tick and
+aggregate the subtree rooted at each slot's PID — one syscall sweep regardless
+of slot count. Build-tagged backends: linux reads `/proc`, darwin shells out
+to `ps` (no per-process disk I/O there), other platforms report unavailable.
+
+- **`Snapshot()`** — one whole-machine process table (`ProcTable`)
+- **`ProcTable`** / **`Sample`** / **`Usage`** — table, per-process reading, per-slot aggregate
+
 ## review
 
 Runs a read-only post-implementation review pass before a branch is merged.
@@ -272,6 +532,22 @@ Runs a read-only post-implementation review pass before a branch is merged.
 - **`Finding`** — one review comment (file, line, severity, message)
 - **`Verdict`** — pass/fail + `[]Finding`
 - **`Review(ctx, o)`** — launch reviewer agent, collect `Verdict`
+
+## runtime
+
+Defines the pluggable agent-runtime contract (koryph-v8u.1): the runtime
+interface, `Capabilities` flags, a normalized event envelope, and a
+`Registry` — as a pure addition that deliberately imports nothing from
+`internal/dispatch`/`internal/account`. Every type is a small local mirror of
+the corresponding dispatch/account field set (e.g. `dispatch.Spec` ↔
+`runtime.DispatchSpec`, with the mapping documented in doc comments) so a
+second adapter can exist without wiring the contract to Claude's shape. The
+Claude adapter lives in `internal/runtime/claude`; `runtimetest` holds shared
+conformance fixtures.
+
+- **`Capabilities`** — feature flags (`Personas`, `ModelSelect`, `EffortFlag`, `Resume`, `BudgetFlag`, …)
+- **`DispatchSpec`** / **`Profile`** / **`BillingMode`** — runtime-neutral request mirrors
+- **`NewRegistry()`** — named-runtime registry; each runtime carries its own model map
 
 ## sched
 
@@ -322,6 +598,26 @@ content is `skipped` (warned) unless `force`, then `overwritten`.
 - **`CopyEmbed(fsys, destDir, force, perm)`** — copy every embedded file with perm
 - **`Conflicts(results)`** / **`Count(results, action)`** — reporting helpers
 
+## signing
+
+SSH commit signing and koryph's secret-vault layer. Configures a repo for
+signed commits, moves the signing key from a vault into an SSH agent (memory
+only — a fetched key is piped to `ssh-add -t 3600 -`, never written to disk),
+and provides the **scoped agent**: a koryph-managed ssh-agent holding only the
+commit-signing key, which is what dispatched agents receive instead of the
+operator's ambient `SSH_AUTH_SOCK`. Vault providers (Proton Pass, 1Password,
+KeePassXC, macOS Keychain, age-encrypted file, generic command) are argv
+templates in `~/.koryph/vault.json`, so CLI drift is a config edit, not a code
+change. `FetchSecret` is the generic secret path other packages (bot keys,
+GitLab PATs) reuse; cosign key handling and signing-posture checks also live
+here.
+
+- **`ConfigureRepo(ctx, repoRoot, cfg)`** — write the repo's signing git config
+- **`EnsureAgent`** / **`EnsureScopedAgent`** — key into the system / scoped agent
+- **`FetchSecret(ctx, provider, ref)`** — resolve any secret through the vault seam
+- **`VaultConfig`** / **`ProviderTemplates`** — the `vault.json` schema
+- State: `~/.koryph/vault.json`, `~/.koryph/signing/config.json`
+
 ## stage
 
 Runs one post-implement pipeline stage: a write-capable persona agent executed
@@ -331,6 +627,33 @@ account/billing/identity guarantees as a dispatch.
 - **`Opts`** — worktree, branch, resolved persona + model, per-stage prompt, profile/billing
 - **`Result`** — `Ran` / `OK` / `CostUSD` / `Note`
 - **`Run(ctx, o)`** — verify identity, run the `dontAsk` claude one-shot, persist the envelope, report cost
+
+## sysmem
+
+Reports coarse system memory availability with no external dependencies and
+no cgo, so the scheduler can refuse to admit another agent when the host is
+under memory pressure (koryph-930). `AvailableBytes` is a deliberately
+conservative estimate (Linux: `/proc/meminfo` `MemAvailable`; macOS:
+reclaimable page classes from `vm_stat`) used as a soft admission floor, never
+a hard accounting number. Callers MUST fail open on `ErrUnsupported` — the
+gate is a safety rail, not a correctness dependency.
+
+- **`Available()`** — current `Stat` (`TotalBytes`, `AvailableBytes`)
+- **`DefaultFloorMB(totalMB)`** — auto-floor sizing, clamped for small/large hosts
+- **`ErrUnsupported`** — platform has no probe; fail open
+
+## tui
+
+The koryph terminal cockpit (`koryph tui`), built on Bubble Tea. `App` is the
+root model — tab framework, project switcher, help overlay, status bar, and
+refresh loop; each tab is a `TabModel` registered once via `tabRegistry`
+(adding a tab = one file with `init()`), and only the active tab receives
+`Update` calls. Data comes from `cockpit.Provider`, polled every 100 ms while
+agents run (1 s when idle). Minimum terminal floor: 80×24. User docs:
+[user-guide/tui.md](../user-guide/tui.md).
+
+- **`NewApp`** — construct the root model
+- **`DefaultKeyMap`** / **`DefaultTheme`** — keybindings and styling defaults
 
 ## version
 

@@ -91,6 +91,7 @@ flowchart LR
 | `internal/modelroute` | stage/label model resolution + rationale |
 | `internal/promptc` | cache-stable prompt compiler |
 | `internal/review` | optional security-reviewer / merge-readiness pass |
+| `internal/epicreview` | whole-epic validation after the last child closes (validator verdict → labels + gap/structural follow-up beads via `Act`) |
 | `internal/stage` | post-implement pipeline stages (docs/test/…) run in-worktree before merge |
 | `internal/version` | `engine_version` pinning (semver-minimum satisfaction) |
 | `internal/project` | per-project adapter config (`koryph.project.json`) |
@@ -282,6 +283,19 @@ Each iteration:
    slots are reviewed and merged. Requeues refresh the worktree onto current main
    first, so a retry never runs a stale checkout. The ledger and manifest are
    updated so a later `--resume` can re-classify anything left running.
+
+**Epic validation.** After every engine-side bead close, the parent epic
+becomes a completion *candidate* (`internal/epicreview`). Each tick drains at
+most one candidate: when all of the epic's children are terminal, the engine
+either closes the epic (validation already passed — the docs bead was the
+last child), parks it (round cap reached), or spawns the frontier validator
+in a goroutine — never blocking the tick — and acts on its verdict
+deterministically via `epicreview.Act` on a later tick: `validation:*`
+labels, gap/structural follow-up beads carrying the next round's label, and
+the docs-update bead. The pending set is in-memory only; `koryph epic
+validate` is the recovery path after a crash, and the health patrol sweeps
+for completed-but-unvalidated epics. See
+[Epic validation](user-guide/epic-validation.md).
 
 **Footprint batching.** A bead's *footprint* is split into **read** and
 **write** token sets. Two footprints conflict only when they share a token *and*

@@ -60,6 +60,9 @@ nav:
       - "Experimental: headroom-ai integration": user-guide/headroom-integration.md
       - Signing: user-guide/signing.md
       - Posture profiles: user-guide/postures.md
+      - Releasing projects: user-guide/releasing-projects.md
+      - Release pipeline setup: user-guide/release.md
+      - "Release bot: GitHub App provisioning": user-guide/release-bot.md
       - Verifying a release: user-guide/supply-chain.md
       - Collaboration: user-guide/collaboration.md
       - Intake: user-guide/intake.md
@@ -67,6 +70,8 @@ nav:
       - Epic validation: user-guide/epic-validation.md
       - Observability: user-guide/observability.md
       - Doctor: user-guide/doctor.md
+      - Data retention & gc: user-guide/gc.md
+      - Terminal cockpit (TUI): user-guide/tui.md
       - VS Code extension: user-guide/vscode-extension.md
       - IDE integration: ide-integration.md
   - Developer guide:

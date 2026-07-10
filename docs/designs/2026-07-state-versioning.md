@@ -3,6 +3,12 @@
 
 # State versioning: schema gates, a write ceiling, and explicit migrations (2026-07-07)
 
+**Status:** proposed — not yet implemented. As of 2026-07-10 no
+`internal/schemaver` package exists in the tree; implementation is filed and
+tracked under epic **koryph-r0l** (children cover the schemaver package, the
+per-surface gates, doctor integration, and docs). Everything below describes
+the *intended* design, not current behavior.
+
 Multiple koryph binaries of different versions run against the same shared
 state: KORYPH_HOME is one per machine, several flake environments each pin
 their own koryph, and the cross-project governor is *designed* for concurrent

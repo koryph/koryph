@@ -111,10 +111,23 @@ step 2 (account profile name, account email).
 - [Choosing a forge](https://github.com/koryph/koryph/blob/main/docs/user-guide/forges.md): the `forge` field + remote sniffing, GitHub vs GitLab capability table, GitLab setup end-to-end (token flow, CI variables, release pipeline, supply-chain gap).
 - [Running waves](https://github.com/koryph/koryph/blob/main/docs/user-guide/running-waves.md): the wave loop (scan → batch → preflight → dispatch → poll → review → merge), `--once`/`--only`/`--budget`.
 - [Billing & quota](https://github.com/koryph/koryph/blob/main/docs/user-guide/billing-and-quota.md): subscription-first dispatch, the quota governor, throttling, calibration.
+- [Context economy](https://github.com/koryph/koryph/blob/main/docs/user-guide/context-economy.md): the native levers that keep agent context lean so quota goes to real work.
+- [Headroom integration](https://github.com/koryph/koryph/blob/main/docs/user-guide/headroom-integration.md): EXPERIMENTAL — pointing the `agent_proxy` seam at the third-party headroom-ai context-compression proxy.
 - [Signing](https://github.com/koryph/koryph/blob/main/docs/user-guide/signing.md): SSH commit signing via vault providers (Proton Pass, KeePassXC, 1Password, …).
+- [Posture profiles](https://github.com/koryph/koryph/blob/main/docs/user-guide/postures.md): named desired-state security bundles — branch protection, required checks, signed commits — applied with one command.
+- [Releasing projects](https://github.com/koryph/koryph/blob/main/docs/user-guide/releasing-projects.md): the reusable release pipeline any managed project opts into — tag, build, SBOM/provenance, publish.
+- [Release pipeline setup](https://github.com/koryph/koryph/blob/main/docs/user-guide/release.md): `koryph release setup` — the caller workflow, release-please config, and manifest it installs.
+- [Release bot](https://github.com/koryph/koryph/blob/main/docs/user-guide/release-bot.md): provisioning the GitHub App bot identity with `koryph bot` (GitLab: access-token flow).
+- [Supply-chain verification](https://github.com/koryph/koryph/blob/main/docs/user-guide/supply-chain.md): verifying a release's checksums, keyless cosign signature, SLSA provenance, and SBOM.
 - [Collaboration](https://github.com/koryph/koryph/blob/main/docs/user-guide/collaboration.md): the shared beads/Dolt task graph across collaborators.
 - [Intake](https://github.com/koryph/koryph/blob/main/docs/user-guide/intake.md): pluggable issue intake — GitHub, Linear, JIRA — into planning beads.
+- [CI pipeline setup](https://github.com/koryph/koryph/blob/main/docs/user-guide/ci-setup.md): `koryph ci setup` — forge-native CI assets that give koryph its green gate.
+- [Epic validation](https://github.com/koryph/koryph/blob/main/docs/user-guide/epic-validation.md): the whole-epic review after the last child closes — gap/structural follow-ups, rounds, parking.
+- [Observability](https://github.com/koryph/koryph/blob/main/docs/user-guide/observability.md): structured logs/traces/metrics under `~/.koryph/telemetry/`; optional OTLP export.
 - [Doctor](https://github.com/koryph/koryph/blob/main/docs/user-guide/doctor.md): `koryph doctor` — config validation, zombie-lease and orphan-worktree detection, `--fix`.
+- [Data retention & gc](https://github.com/koryph/koryph/blob/main/docs/user-guide/gc.md): `koryph gc` — the retention policy, `retention.json`, the `never` sentinel, opt-in auto-gc.
+- [Terminal cockpit (TUI)](https://github.com/koryph/koryph/blob/main/docs/user-guide/tui.md): `koryph tui` — watch and lightly operate running projects from any terminal.
+- [VS Code extension](https://github.com/koryph/koryph/blob/main/docs/user-guide/vscode-extension.md): agent-wave visibility and steering inside the editor — threads, transcripts, quota burn.
 - [IDE integration](https://github.com/koryph/koryph/blob/main/docs/ide-integration.md): editor/account isolation and IDE setup.
 
 ## Developer guide
@@ -124,6 +137,8 @@ step 2 (account profile name, account email).
 - [Global governor](https://github.com/koryph/koryph/blob/main/docs/developer-guide/global-governor.md): the cross-process, daemonless concurrency governor (flock + fair-share leases under `~/.koryph`).
 - [Testing](https://github.com/koryph/koryph/blob/main/docs/developer-guide/testing.md): test layout, fixtures, and the green gate.
 - [Releasing & versioning](https://github.com/koryph/koryph/blob/main/docs/developer-guide/releasing.md): semver, engine-version pinning, keyless cosign.
+- [Self-hosting](https://github.com/koryph/koryph/blob/main/docs/developer-guide/self-hosting.md): koryph builds koryph — what the loop's own data buys during development.
+- [Editor setup](https://github.com/koryph/koryph/blob/main/docs/developer-guide/ide-setup.md): workspace setup for contributors working on koryph itself.
 
 ## Optional
 
