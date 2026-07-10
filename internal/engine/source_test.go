@@ -16,6 +16,8 @@ import (
 // `bd` binary — the seam koryph-8iu.2 opened. Unused methods return zero values.
 type fakeSource struct {
 	setStatus   [][2]string   // (id, status) calls, in order
+	comments    [][2]string   // (id, text) calls, in order (koryph-qf6.5 write-back)
+	addLabels   [][2]string   // (id, label) calls, in order (koryph-qf6.5 write-back)
 	readyIssues []beads.Issue // Ready() frontier; nil (default) reproduces the old "no frontier" fake
 }
 
@@ -28,7 +30,14 @@ func (f *fakeSource) Show(_ context.Context, id string) (beads.Issue, error) {
 func (f *fakeSource) ListChildren(context.Context, string) ([]beads.Issue, error) { return nil, nil }
 func (f *fakeSource) Claim(context.Context, string) error                         { return nil }
 func (f *fakeSource) Close(context.Context, string, string) error                 { return nil }
-func (f *fakeSource) Comment(context.Context, string, string) error               { return nil }
+func (f *fakeSource) Comment(_ context.Context, id, text string) error {
+	f.comments = append(f.comments, [2]string{id, text})
+	return nil
+}
+func (f *fakeSource) AddLabel(_ context.Context, id, label string) error {
+	f.addLabels = append(f.addLabels, [2]string{id, label})
+	return nil
+}
 func (f *fakeSource) SetStatus(_ context.Context, id, status string) error {
 	f.setStatus = append(f.setStatus, [2]string{id, status})
 	return nil

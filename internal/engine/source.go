@@ -23,6 +23,7 @@ type WorkSource interface {
 	Claim(ctx context.Context, id string) error
 	Close(ctx context.Context, id, reason string) error
 	Comment(ctx context.Context, id, text string) error
+	AddLabel(ctx context.Context, id, label string) error
 	SetStatus(ctx context.Context, id, status string) error
 	MergeSlotAcquire(ctx context.Context, slotID, owner string, retries int) error
 	MergeSlotRelease(ctx context.Context, slotID string) error

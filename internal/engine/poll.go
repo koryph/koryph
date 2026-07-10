@@ -507,6 +507,13 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		r.progress("bead %s: blocked (%s, %d attempts)", sl.PhaseID, deathDesc, sl.Attempts)
 		logSlotBlocked(sl.PhaseID, fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts),
 			sl.Model, sl.ModelActual, sl.Attempts)
+		// Failure write-back (koryph-qf6.5): without this comment the attempt
+		// count, model, and death summary are stranded in this machine's
+		// gitignored ledger — invisible to whoever (human or learner) next
+		// picks the bead up. Best-effort; a bd failure never blocks the loop.
+		_ = r.adapter.Comment(ctx, sl.PhaseID, fmt.Sprintf(
+			"engine: blocked after %d attempts on %s — %s (run %s)",
+			sl.Attempts, blockedModelDesc(sl), deathDesc, r.run.RunID))
 		return
 	}
 	r.requeueSlot(ctx, sl, "", deathDesc)
@@ -776,6 +783,11 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		r.releaseGlobalSlot(sl.PhaseID) // terminal
 		r.progress("bead %s: blocked, needs-attention (%s)", sl.PhaseID, why)
 		logSlotBlocked(sl.PhaseID, why, sl.Model, sl.ModelActual, sl.Attempts)
+		// Needs-attention write-back (koryph-qf6.5) — see the attempts-
+		// exhausted block's comment for why this lands on the bead itself.
+		_ = r.adapter.Comment(ctx, sl.PhaseID, fmt.Sprintf(
+			"engine: needs-attention — %s on %s; parked with $%.2f accumulated (run %s). Raise the account's per-agent budget or split the bead.",
+			why, blockedModelDesc(sl), sl.CostUSD, r.run.RunID))
 		return
 	}
 
@@ -1047,6 +1059,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		})
 		r.checkpointSlot(sl, "merged")
 		_ = r.adapter.Close(ctx, sl.PhaseID, "merged: "+res.MergedSHA)
+		r.writeBackEscalatedMerge(ctx, sl.PhaseID)
 		r.noteEpicCandidate(ctx, sl.PhaseID)
 		_ = r.reg.Audit(registry.Event{
 			Kind:      "merge",
@@ -1303,6 +1316,53 @@ func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
 	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
 	logSlotBlocked(sl.PhaseID, note, sl.Model, sl.ModelActual, sl.Attempts)
 	return true
+}
+
+// slotEscalated reports whether a slot's model rationale records an in-run
+// escalation (koryph-qf6.4) — the same substring the TUI's ↑ marker keys on
+// (tui/threads.go), so ledger, display, and write-back agree on what counts.
+func slotEscalated(sl *ledger.Slot) bool {
+	return sl != nil && strings.Contains(strings.ToLower(sl.ModelWhy), "escalat")
+}
+
+// blockedModelDesc renders the model a blocked slot's failure write-back
+// should cite (koryph-qf6.5): the tier, expanded with the escalation
+// rationale when the final attempt escalated ("opus" alone would hide that
+// the first attempts ran sonnet) and with the actual model when the CLI's
+// fallback diverged from the request (koryph-qf6.2).
+func blockedModelDesc(sl *ledger.Slot) string {
+	desc := sl.Model
+	if desc == "" {
+		desc = "unknown model"
+	}
+	if slotEscalated(sl) {
+		desc = fmt.Sprintf("%s (%s)", desc, sl.ModelWhy)
+	}
+	if sl.ModelActual != "" && sl.ModelActual != sl.Model {
+		desc += fmt.Sprintf(" — actually ran %s", sl.ModelActual)
+	}
+	return desc
+}
+
+// writeBackEscalatedMerge leaves durable provenance ON THE BEAD when it only
+// merged after its final attempt escalated (koryph-qf6.5): a
+// model-observed:<tier> label, which syncs through the beads DB across
+// machines — unlike the gitignored run ledger — and is the evidence the
+// similarity learner (koryph-qf6.6) and humans read. Deliberately NOT a
+// model:<tier> routing label: observations and routing are separate
+// vocabularies, and routing labels stay owned by humans and the learner.
+// Best-effort, like the Close preceding it — a bd failure never blocks the
+// loop.
+func (r *runner) writeBackEscalatedMerge(ctx context.Context, phaseID string) {
+	sl := r.run.Slots[phaseID]
+	if !slotEscalated(sl) || sl.Model == "" {
+		return
+	}
+	if err := r.adapter.AddLabel(ctx, phaseID, "model-observed:"+sl.Model); err != nil {
+		r.progress("bead %s: model-observed label write-back failed: %v", phaseID, err)
+		return
+	}
+	r.progress("bead %s: labeled model-observed:%s (merged after escalation)", phaseID, sl.Model)
 }
 
 // requeueSlot re-dispatches a slot: backoff, refresh the worktree onto current
