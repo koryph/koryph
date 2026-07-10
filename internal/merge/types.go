@@ -48,6 +48,21 @@ var DefaultProtected = []string{
 	".envrc",
 }
 
+// LiftableProtected is the subset of DefaultProtected an operator may
+// consciously lift with `koryph merge --allow-protected` / `koryph land
+// --allow-protected` (koryph-dcn): routine CI/build surfaces whose changes
+// are a legitimate bead outcome. Everything else in DefaultProtected —
+// agent-governance files (CLAUDE.md, agents/, hooks/, .claude/),
+// project/tracker state (koryph.project.json, .beads/), and gate plumbing —
+// stays refused even under the flag, as do the project's extra protected
+// paths. The engine's auto-merge path never sets AllowProtected at all: the
+// protected gate is the agent sandbox, and only an explicit operator CLI
+// invocation may lift its liftable part.
+var LiftableProtected = []string{
+	".github/",
+	"Makefile",
+}
+
 // Opts configures one merge.
 type Opts struct {
 	RepoRoot      string
@@ -70,6 +85,15 @@ type Opts struct {
 	// Result{Status: "unsigned"} listing the offending SHAs; the tree is
 	// untouched and the merge slot is released.
 	RequireSigned bool
+
+	// AllowProtected lifts ONLY the LiftableProtected subset of the
+	// protected-path preflight (koryph-dcn) — routine CI/build paths
+	// (.github/, Makefile) an operator explicitly chooses to land. Diffs
+	// touching any other DefaultProtected entry or a project Extra path are
+	// still refused. Set exclusively by the `koryph merge`/`koryph land`
+	// CLI flags; the engine's auto-merge path MUST never set it — dispatched
+	// agents do not get to lift their own sandbox.
+	AllowProtected bool
 
 	// RequireConventional rejects the merge when any commit subject in
 	// <default>..<branch> fails the Conventional Commits grammar

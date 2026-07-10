@@ -24,6 +24,13 @@ type LandOpts struct {
 	Method string    // "" → project merge_method (default ff)
 	Reason string    // close reason for the bead
 	Out    io.Writer // human-readable notices; nil = silent
+
+	// AllowProtected lifts merge.LiftableProtected (.github/, Makefile) for
+	// this one landing (koryph-dcn). Set exclusively by the `koryph land
+	// --allow-protected` CLI flag — Land is only ever invoked by cmdLand, an
+	// explicit operator action; the engine's auto-merge poll loop neither
+	// calls Land nor may it ever set merge.Opts.AllowProtected.
+	AllowProtected bool
 }
 
 // LandResult reports a landing attempt.
@@ -78,6 +85,7 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 		SlotRetries:         3,
 		RequireSigned:       cfg.Signing != nil && cfg.Signing.Required,
 		RequireConventional: cfg.EnforceConventional(),
+		AllowProtected:      o.AllowProtected,
 	})
 	if err != nil {
 		return LandResult{Status: string(res.Status), Branch: branch}, err

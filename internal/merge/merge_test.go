@@ -188,6 +188,85 @@ func TestMergeProtectedRejection(t *testing.T) {
 	}
 }
 
+// TestMergeAllowProtected is the koryph-dcn matrix: the operator flag lifts
+// ONLY the routine CI/build subset (.github/, Makefile); the same diff is
+// refused without the flag; and a project extra (governance) path is refused
+// even WITH the flag.
+func TestMergeAllowProtected(t *testing.T) {
+	isolateGit(t)
+	ctx := context.Background()
+
+	t.Run("flag lands a CI-workflow diff", func(t *testing.T) {
+		repo := initRepo(t)
+		wt := worktreeOn(t, repo, "agent/ci")
+		commitIn(t, wt.Path, ".github/workflows/x.yml", "on: push\n", "ci: add workflow")
+
+		res, err := Merge(ctx, Opts{
+			RepoRoot: repo, Branch: "agent/ci", DefaultBranch: "main",
+			Gate: []string{"true"}, AllowProtected: true,
+		})
+		if err != nil {
+			t.Fatalf("Merge: %v", err)
+		}
+		if res.Status != StatusMerged {
+			t.Fatalf("Status=%q, want merged (AllowProtected must lift .github/)", res.Status)
+		}
+	})
+
+	t.Run("same diff refused without the flag", func(t *testing.T) {
+		repo := initRepo(t)
+		wt := worktreeOn(t, repo, "agent/ci2")
+		commitIn(t, wt.Path, ".github/workflows/x.yml", "on: push\n", "ci: add workflow")
+
+		res, err := Merge(ctx, Opts{
+			RepoRoot: repo, Branch: "agent/ci2", DefaultBranch: "main", Gate: []string{"true"},
+		})
+		if err != nil {
+			t.Fatalf("Merge: %v", err)
+		}
+		if res.Status != StatusProtected {
+			t.Fatalf("Status=%q, want protected (the default gate is the sandbox)", res.Status)
+		}
+	})
+
+	t.Run("flag still refuses a project extra path", func(t *testing.T) {
+		repo := initRepo(t)
+		wt := worktreeOn(t, repo, "agent/gov")
+		commitIn(t, wt.Path, "infra/prod.tf", "hcl\n", "chore: touch governance")
+
+		res, err := Merge(ctx, Opts{
+			RepoRoot: repo, Branch: "agent/gov", DefaultBranch: "main",
+			Gate: []string{"true"}, Extra: []string{"infra/"}, AllowProtected: true,
+		})
+		if err != nil {
+			t.Fatalf("Merge: %v", err)
+		}
+		if res.Status != StatusProtected {
+			t.Fatalf("Status=%q, want protected (extra paths are never liftable)", res.Status)
+		}
+		if len(res.Protected) == 0 || res.Protected[0] != "infra/prod.tf" {
+			t.Errorf("Protected=%v, want [infra/prod.tf]", res.Protected)
+		}
+	})
+
+	t.Run("flag still refuses governance defaults", func(t *testing.T) {
+		repo := initRepo(t)
+		wt := worktreeOn(t, repo, "agent/claude")
+		commitIn(t, wt.Path, ".claude/settings.json", "{}\n", "chore: touch agent config")
+
+		res, err := Merge(ctx, Opts{
+			RepoRoot: repo, Branch: "agent/claude", DefaultBranch: "main",
+			Gate: []string{"true"}, AllowProtected: true,
+		})
+		if err != nil {
+			t.Fatalf("Merge: %v", err)
+		}
+		if res.Status != StatusProtected {
+			t.Fatalf("Status=%q, want protected (.claude/ is not liftable)", res.Status)
+		}
+	})
+}
+
 func TestMergeConflictAbortsCleanly(t *testing.T) {
 	isolateGit(t)
 	repo := initRepo(t)

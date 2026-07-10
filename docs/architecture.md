@@ -484,6 +484,16 @@ Merge **policy** (`merge:auto` / `merge:manual` / `merge:pr` label on the epic,
 else project config) decides whether a green branch merges automatically, waits
 for a human, or opens a PR.
 
+The routine CI/build subset (`LiftableProtected`: `.github/`, `Makefile`) is
+**operator-liftable**: `koryph merge --allow-protected` / `koryph land
+--allow-protected` land a legitimate CI or build bead through the normal
+lock-safe, ledger-reconciling merge path instead of forcing a bare `git
+merge` behind the loop's back. The lift is deliberately narrow: governance
+defaults (`.claude/`, `.beads/`, `koryph.project.json`, hooks, agents, …) and
+the project's `Extra` paths refuse even under the flag, and the engine's
+auto-merge path can never set it — dispatched agents do not get to lift their
+own sandbox.
+
 ## Versioning
 
 The engine pins itself to each project. `project.Config.EngineVersion`

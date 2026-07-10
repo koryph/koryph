@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/koryph/koryph/internal/execx"
@@ -26,8 +27,27 @@ type SlotLocker interface {
 // Protected returns the diff paths that match a DefaultProtected or extra
 // prefix; a non-empty result rejects the merge outright.
 func Protected(diffPaths, extra []string) []string {
-	prefixes := make([]string, 0, len(DefaultProtected)+len(extra))
-	prefixes = append(prefixes, DefaultProtected...)
+	return protectedAgainst(diffPaths, DefaultProtected, extra)
+}
+
+// ProtectedUnliftable is Protected minus the LiftableProtected subset
+// (koryph-dcn): the check `--allow-protected` runs — routine CI/build paths
+// are lifted, but agent-governance defaults and the project's extra paths
+// still refuse.
+func ProtectedUnliftable(diffPaths, extra []string) []string {
+	base := make([]string, 0, len(DefaultProtected))
+	for _, pre := range DefaultProtected {
+		if !slices.Contains(LiftableProtected, pre) {
+			base = append(base, pre)
+		}
+	}
+	return protectedAgainst(diffPaths, base, extra)
+}
+
+// protectedAgainst returns the diff paths matching any prefix in base+extra.
+func protectedAgainst(diffPaths, base, extra []string) []string {
+	prefixes := make([]string, 0, len(base)+len(extra))
+	prefixes = append(prefixes, base...)
 	prefixes = append(prefixes, extra...)
 	var hits []string
 	for _, p := range diffPaths {
@@ -224,12 +244,18 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 // return res: a rejection Result (StatusProtected/Unsigned/CommitStyle) with a
 // nil error, or Result{StatusError} with the underlying error.
 func preflight(ctx context.Context, o Opts, wt *worktree.Info, def string) (res Result, ok bool, err error) {
-	// Protected-path check.
+	// Protected-path check. AllowProtected (operator CLI only, koryph-dcn)
+	// lifts just the LiftableProtected subset; governance defaults and the
+	// project's extra paths always refuse.
 	diffPaths, err := diffNames(ctx, o.RepoRoot, def+"..."+o.Branch)
 	if err != nil {
 		return Result{Status: StatusError}, false, err
 	}
-	if hits := Protected(diffPaths, o.Extra); len(hits) > 0 {
+	check := Protected
+	if o.AllowProtected {
+		check = ProtectedUnliftable
+	}
+	if hits := check(diffPaths, o.Extra); len(hits) > 0 {
 		return Result{Status: StatusProtected, Protected: hits}, false, nil
 	}
 

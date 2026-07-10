@@ -327,6 +327,7 @@ land a finished agent branch
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--allow-protected` | bool |  | lift the routine CI/build protected paths (.github/, Makefile) for this merge; governance defaults and project protected_paths still refuse |
 | `--close-bead` | string |  | bead to close on a successful merge |
 | `--keep-worktree` | bool |  | keep the worktree + branch after merge |
 | `--project` | string |  | project id (default: the project containing the current directory) |
@@ -345,6 +346,7 @@ land an engine-opened PR fast-forward-only
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--allow-protected` | bool |  | lift the routine CI/build protected paths (.github/, Makefile) for this landing; governance defaults and project protected_paths still refuse |
 | `--method` | string |  | landing method override: ff\|squash (default: project merge_method, else ff) |
 | `--project` | string |  | project id (default: the project containing the current directory) |
 | `--reason` | string |  | bead close reason |

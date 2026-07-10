@@ -505,8 +505,10 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	keepWorktree := fs.Bool("keep-worktree", false, "keep the worktree + branch after merge")
 	closeBead := fs.String("close-bead", "", "bead to close on a successful merge")
 	reason := fs.String("reason", "", "close reason for --close-bead")
+	allowProtected := fs.Bool("allow-protected", false,
+		"lift the routine CI/build protected paths (.github/, Makefile) for this merge; governance defaults and project protected_paths still refuse")
 	setUsage(fs, stdout, "land a finished agent branch on the default branch",
-		"[--project ID] <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]")
+		"[--project ID] <branch> [--push] [--squash] [--keep-worktree] [--allow-protected] [--close-bead BEAD --reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -550,6 +552,9 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 		Slot:                nil,
 		RequireSigned:       cfg.Signing != nil && cfg.Signing.Required,
 		RequireConventional: cfg.EnforceConventional(),
+		// Operator-only lift (koryph-dcn): this flag exists ONLY on the two
+		// explicit CLI commands; the engine's auto-merge path never sets it.
+		AllowProtected: *allowProtected,
 	})
 	if perr := printJSON(stdout, res); perr != nil {
 		return fail(stderr, perr)
@@ -585,8 +590,10 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	method := fs.String("method", "", "landing method override: ff|squash (default: project merge_method, else ff)")
 	reason := fs.String("reason", "", "bead close reason")
+	allowProtected := fs.Bool("allow-protected", false,
+		"lift the routine CI/build protected paths (.github/, Makefile) for this landing; governance defaults and project protected_paths still refuse")
 	setUsage(fs, stdout, "land an engine-opened PR (a pr-opened bead) fast-forward-only; closes the bead on success",
-		"[--project ID] <bead> [--method ff|squash] [--reason R]")
+		"[--project ID] <bead> [--method ff|squash] [--allow-protected] [--reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -612,6 +619,7 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 
 	res, lerr := engine.Land(ctx, rec, cfg, engine.LandOpts{
 		Bead: bead, Method: *method, Reason: *reason, Out: stdout,
+		AllowProtected: *allowProtected,
 	})
 	if lerr != nil {
 		return fail(stderr, lerr)
