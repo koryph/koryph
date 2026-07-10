@@ -18,11 +18,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/procx"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
 )
@@ -797,14 +797,6 @@ func checkVaultProviders(opts Options) []Finding {
 	return findings
 }
 
-// defaultAlive is the production process-liveness probe (signal-0).
-func defaultAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscall.EPERM)
-}
+// defaultAlive is the production process-liveness probe (signal-0), the default
+// behind the injectable Alive seam (Options.Alive) that tests replace.
+func defaultAlive(pid int) bool { return procx.Alive(pid) }

@@ -23,7 +23,6 @@ package plan
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/project"
@@ -231,24 +230,15 @@ func projectID(cfg *project.Config) string {
 	return "-"
 }
 
-// nonDispatchReason returns the static skip reason for an issue that the loop
-// would never dispatch as-is, mirroring sched.Eligible + sched.silentSkip.
-// Returns "" when the issue has no structural dispatch problem.
+// nonDispatchReason returns the static skip reason for an issue the loop would
+// never dispatch as-is, or "" when it has no structural dispatch problem. It
+// defers to sched.Eligible — the engine's own single source of dispatch
+// eligibility — so the audit can never report a stale verdict when those rules
+// change. activeIDs is nil here: "already active" is a live-run condition, not a
+// static corpus property, so it never fires in the audit.
 func nonDispatchReason(iss beads.Issue) string {
-	switch iss.IssueType {
-	case "epic", "feature", "decision", "merge-request":
-		return "non-dispatch issue_type " + iss.IssueType
-	}
-	for _, l := range iss.Labels {
-		if strings.HasPrefix(l, "gt:") {
-			return "gate label " + l
-		}
-	}
-	if iss.HasLabel("no-dispatch") {
-		return "no-dispatch label"
-	}
-	if iss.HasLabel("refactor-core") {
-		return "refactor-core label"
+	if ok, reason := sched.Eligible(iss, nil); !ok {
+		return reason
 	}
 	return ""
 }

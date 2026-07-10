@@ -465,6 +465,18 @@ prompt-cache hits are maximised across re-dispatches.
 - **`Compile(in)`** — assemble final prompt string
 - **`Preamble(engineVersion)`** — static koryph-protocol preamble
 
+## procx
+
+Small OS-process primitives shared across the recovery, governor, and health
+paths — factored out so the signal-0 liveness probe has exactly one
+implementation instead of the four byte-identical copies that had accreted in
+ledger, govern, doctor, and dispatch.
+
+- **`Alive(pid)`** — is pid a live process? (POSIX kill(pid, 0): nil → alive,
+  EPERM → alive but not ours, ESRCH/other → dead)
+
+Reads/writes no files.
+
 ## quota
 
 Per-account usage governor. Estimates wave cost, tracks rolling-window spend,

@@ -5,7 +5,6 @@ package dispatch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/procx"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
 )
@@ -406,18 +406,9 @@ func ParseBudgetKilled(streamPath string) bool {
 	return claude.ParseBudgetKilled(f)
 }
 
-// Alive reports whether pid is a live process (signal 0 probe).
-// ESRCH → false; EPERM → true (it exists, we just can't signal it).
-func Alive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscall.EPERM)
-}
+// Alive reports whether pid is a live process (signal-0 probe). Retained as a
+// package-local name for existing callers; delegates to procx.Alive.
+func Alive(pid int) bool { return procx.Alive(pid) }
 
 // StopGraceful sends SIGTERM to the process group of pid (agents are
 // launched with Setsid, so -pid targets the whole session), falling back

@@ -16,6 +16,7 @@ import (
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/procx"
 	"github.com/koryph/koryph/internal/schemaver"
 )
 
@@ -380,24 +381,8 @@ func readLockPID(path string) (int, bool) {
 	return pid, true
 }
 
-// processAlive reports whether pid is a live process. It probes with signal 0
-// (unix kill(pid, 0) semantics): nil error → alive; EPERM → alive but not
-// ours; ESRCH (or any other error) → dead. os.FindProcess never fails on unix,
-// so the signal probe is the real test.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscall.EPERM)
-}
+// processAlive reports whether pid is a live process (signal-0 probe).
+func processAlive(pid int) bool { return procx.Alive(pid) }
 
 // hostname returns the machine hostname, or "unknown" if it cannot be read.
 func hostname() string {

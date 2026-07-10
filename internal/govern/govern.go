@@ -16,6 +16,7 @@ import (
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/procx"
 )
 
 // Store coordinates global concurrency through files under paths.SlotsDir,
@@ -1099,18 +1100,8 @@ func readJSON(path string, v any) bool {
 	return json.Unmarshal(data, v) == nil
 }
 
-// processAlive reports whether pid is a live process (signal-0 probe): ESRCH →
-// false, EPERM → true (exists, not signalable).
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscall.EPERM)
-}
+// processAlive reports whether pid is a live process (signal-0 probe).
+func processAlive(pid int) bool { return procx.Alive(pid) }
 
 // sanitize keeps a filename to a safe charset; anything else becomes '-'.
 func sanitize(s string) string {
