@@ -117,7 +117,7 @@ func (m *threadsModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 			m.filter = (m.filter + 1) % threadFilterCount
 			m.rebuild()
 			if c := m.table.Cursor(); c >= len(m.visible) {
-				m.table.SetCursor(maxInt(0, len(m.visible)-1))
+				m.table.SetCursor(max(0, len(m.visible)-1))
 			}
 			return m, nil
 		case "enter":
@@ -371,12 +371,4 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen-1]) + "…"
-}
-
-// maxInt returns the larger of a and b.
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
