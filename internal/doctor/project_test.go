@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
@@ -65,6 +67,11 @@ func projectOpts(root string) ProjectOptions {
 		Alive:          func(pid int) bool { return false },
 		StallThreshold: 30 * time.Minute,
 		ListWorktrees:  func(_ string) ([]worktreeEntry, error) { return nil, nil },
+		// Hermetic: stub the bd version probe so RunProject never shells out to
+		// a real bd. The dedicated beads-upgrade tests override this.
+		BeadsVersion: func() beads.VersionInfo {
+			return beads.VersionInfo{Found: true, OK: true, Version: beads.MinVersion, Path: "/usr/bin/bd"}
+		},
 	}
 }
 
@@ -554,5 +561,71 @@ func TestOrphanWorktreeOutsideRootIgnored(t *testing.T) {
 	f := findCheck(r, checkNameOrphanWorktrees)
 	if f.Level != LevelOK {
 		t.Errorf("orphan-worktrees level=%s, want ok for path outside wtRoot", f.Level)
+	}
+}
+
+// --- beads-upgrade offer (nix flake) ---
+
+// stampedeFlake writes a flake.nix pinning a beads input to root.
+func stampedeFlake(t *testing.T, root string) {
+	t.Helper()
+	flake := "{\n  inputs = {\n    beads.url = \"github:gastownhall/beads/v1.1.0\";\n  };\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "flake.nix"), []byte(flake), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckBeadsUpgradeCurrentOK(t *testing.T) {
+	root := t.TempDir()
+	opts := projectOpts(root)
+	opts.BeadsVersion = func() beads.VersionInfo {
+		return beads.VersionInfo{Found: true, OK: true, Version: "1.1.0", Path: "/opt/homebrew/bin/bd"}
+	}
+	if f := checkBeadsUpgrade(opts, root); f.Level != LevelOK {
+		t.Fatalf("current bd: level = %q, want ok (%q)", f.Level, f.Message)
+	}
+}
+
+func TestCheckBeadsUpgradeOffersNixFlakeCommand(t *testing.T) {
+	root := t.TempDir()
+	stampedeFlake(t, root)
+	opts := projectOpts(root)
+	opts.BeadsVersion = func() beads.VersionInfo {
+		return beads.VersionInfo{Found: true, OK: false, Version: "1.0.3",
+			Path: "/nix/store/x-beads-1.0.3/bin/bd", FromNix: true}
+	}
+	f := checkBeadsUpgrade(opts, root)
+	if f.Level != LevelWarn {
+		t.Fatalf("stale nix bd: level = %q, want warn", f.Level)
+	}
+	if !strings.Contains(f.Message, "nix flake lock --update-input beads") {
+		t.Errorf("offer missing the targeted flake command: %q", f.Message)
+	}
+	if !strings.Contains(f.Message, "v1.1.0") {
+		t.Errorf("offer should name the pinned version: %q", f.Message)
+	}
+}
+
+func TestCheckBeadsUpgradeFixRunsUpdate(t *testing.T) {
+	root := t.TempDir()
+	stampedeFlake(t, root)
+	var gotDir, gotInput string
+	opts := projectOpts(root)
+	opts.Fix = true
+	opts.BeadsVersion = func() beads.VersionInfo {
+		return beads.VersionInfo{Found: true, OK: false, Version: "1.0.3",
+			Path: "/nix/store/x-beads-1.0.3/bin/bd", FromNix: true}
+	}
+	opts.NixFlakeUpdate = func(dir, input string) error { gotDir, gotInput = dir, input; return nil }
+
+	f := checkBeadsUpgrade(opts, root)
+	if gotInput != "beads" || gotDir != root {
+		t.Fatalf("NixFlakeUpdate called with (%q, %q), want (%q, beads)", gotDir, gotInput, root)
+	}
+	if !f.Fixed {
+		t.Errorf("finding not marked Fixed after a successful update: %q", f.Message)
+	}
+	if !strings.Contains(strings.ToLower(f.Message), "reload") {
+		t.Errorf("post-fix message should tell the operator to reload the devshell: %q", f.Message)
 	}
 }

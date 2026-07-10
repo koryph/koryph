@@ -18,6 +18,7 @@ import (
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/bot"
 	"github.com/koryph/koryph/internal/commands"
+	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
@@ -131,6 +132,45 @@ type ProjectOptions struct {
 	// secrets) keep using GitHubRepo; this field is used only by
 	// checkCIGatePipeline.
 	GitForgeRemote func(repoRoot string) (string, error)
+
+	// BeadsVersion reports the resolved bd binary's version/capability
+	// (injectable for tests). nil means: beads.ProbeVersion.
+	BeadsVersion func() beads.VersionInfo
+	// NixFlakeUpdate re-locks a single flake input in dir (injectable for
+	// tests). nil means: run `nix flake lock --update-input <input>` in dir,
+	// bounded. Used by the beads-upgrade offer's --fix path.
+	NixFlakeUpdate func(dir, input string) error
+}
+
+func (o *ProjectOptions) beadsVersion() beads.VersionInfo {
+	if o.BeadsVersion != nil {
+		return o.BeadsVersion()
+	}
+	return beads.ProbeVersion(context.Background())
+}
+
+func (o *ProjectOptions) nixFlakeUpdate(dir, input string) error {
+	if o.NixFlakeUpdate != nil {
+		return o.NixFlakeUpdate(dir, input)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	// The exact command koryph.project flakes document for a beads bump
+	// (`nix flake lock --update-input <input>`) — targeted and stable across
+	// nix versions, unlike bare `nix flake update` which re-locks everything.
+	res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: "nix",
+		Args: []string{"flake", "lock", "--update-input", input}})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		detail := strings.TrimSpace(res.Stderr)
+		if len(detail) > 300 {
+			detail = detail[len(detail)-300:]
+		}
+		return fmt.Errorf("exit %d: %s", res.ExitCode, detail)
+	}
+	return nil
 }
 
 func (o *ProjectOptions) home() string {
@@ -272,6 +312,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.add(checkOrgPostureDrift(opts, repoRoot, cfg))
 	r.addAll(checkFragmentDrift(opts, repoRoot, cfg))
 	r.add(checkForge(cfg))
+	r.add(checkBeadsUpgrade(opts, repoRoot))
 	r.addAll(checkEpicValidations(opts, repoRoot))
 	r.add(checkCIGatePipeline(opts, repoRoot, cfg))
 
@@ -284,6 +325,52 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 }
 
 // --- check functions --------------------------------------------------------
+
+// checkBeadsUpgrade is the project-scoped bd-capability check, and — when the
+// stale bd is nix-provided via this project's flake — the "offer to upgrade"
+// the operator asked for: it names the exact `nix flake lock --update-input`
+// command and, under --fix, runs it. A too-old bd silently flattens the TUI
+// queue (bd <= 1.0.3 omits the `parent` field), so surfacing the concrete
+// per-project fix is the difference between a dead-end warning and a one-command
+// remedy.
+func checkBeadsUpgrade(opts ProjectOptions, repoRoot string) Finding {
+	info := opts.beadsVersion()
+	switch {
+	case !info.Found:
+		return Finding{Check: checkNameBeadsVersion, Level: LevelWarn, Message: info.Remediation()}
+	case info.OK:
+		return Finding{Check: checkNameBeadsVersion, Level: LevelOK,
+			Message: fmt.Sprintf("bd %s (parent-capable, >= %s)", info.Version, beads.MinVersion)}
+	}
+
+	// bd is present but too old. Prefer a project-specific nix-flake offer when
+	// this project's flake pins beads; otherwise fall back to generic advice.
+	name, url, found := beads.FlakeBeadsInput(repoRoot)
+	if !info.FromNix || !found {
+		return Finding{Check: checkNameBeadsVersion, Level: LevelWarn, Message: info.Remediation()}
+	}
+
+	cmd := "nix flake lock --update-input " + name
+	f := Finding{
+		Check: checkNameBeadsVersion,
+		Level: LevelWarn,
+		Message: fmt.Sprintf(
+			"bd %s is too old (< %s) but this project's flake pins %s = %q — its flake.lock is behind. "+
+				"Run `%s` in %s, then reload the devshell (`direnv reload` or re-enter `nix develop`). "+
+				"Re-run with --fix to do the update now.",
+			info.Version, beads.MinVersion, name, url, cmd, repoRoot),
+	}
+	if opts.Fix {
+		if err := opts.nixFlakeUpdate(repoRoot, name); err != nil {
+			f.Message = fmt.Sprintf("tried `%s` in %s but it failed (%v) — run it by hand, then reload the devshell", cmd, repoRoot, err)
+		} else {
+			f.Fixed = true
+			f.Level = LevelWarn // still warn: the running shell keeps the old bd until reloaded
+			f.Message = fmt.Sprintf("ran `%s` — flake.lock now points at %s; RELOAD the devshell (`direnv reload` or re-enter `nix develop`) so the new bd takes effect", cmd, url)
+		}
+	}
+	return f
+}
 
 // checkProjectConfig loads and validates koryph.project.json.
 func checkProjectConfig(repoRoot string) (*project.Config, Finding) {

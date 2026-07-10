@@ -53,6 +53,15 @@ package-manager upgrade. The same preflight prints a one-line warning at the
 top of `koryph run` and in the `koryph tui` header, so the degradation is never
 silent.
 
+In **project mode** (`koryph doctor --project <id>`), when the stale `bd` is
+nix-provided *and* the project's `flake.nix` pins a `beads` input, doctor makes
+a concrete **upgrade offer**: it names the exact
+`nix flake lock --update-input <input>` command and the project directory.
+Adding `--fix` runs that command (re-locking `flake.lock` to the pinned
+version); you then reload the devshell (`direnv reload` or re-enter
+`nix develop`) so the running `bd` picks up the new version. This turns a
+stale-lock warning into a one-command remedy.
+
 ### registry
 Parses every `*.json` file in `registry.d/`. A file that is not valid JSON
 is an **error**.

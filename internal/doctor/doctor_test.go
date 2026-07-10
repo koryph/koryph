@@ -63,6 +63,12 @@ func opts(home string) Options {
 		Now:      func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
 		Alive:    func(pid int) bool { return false }, // no real PIDs in tests
 		LookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		// Hermetic: stub the bd version probe so Run() never shells out to a
+		// real bd (fast, deterministic, and immune to concurrent-load flakes).
+		// The dedicated bd-version tests override this.
+		BeadsVersion: func() beads.VersionInfo {
+			return beads.VersionInfo{Found: true, OK: true, Version: beads.MinVersion, Path: "/usr/bin/bd"}
+		},
 	}
 }
 

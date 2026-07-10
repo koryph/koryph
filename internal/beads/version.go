@@ -7,8 +7,10 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/version"
@@ -66,6 +68,11 @@ func ProbeVersion(ctx context.Context) VersionInfo {
 	info.Path = path
 	info.FromNix = strings.Contains(path, "/nix/store/")
 
+	// Bound the probe: `bd version` is instant, but a preflight/doctor check
+	// must never hang on a wedged bd (or block the engine startup). 3s is
+	// generous.
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	res, rerr := execx.Run(ctx, execx.Cmd{Name: bin, Args: []string{"version"}})
 	if rerr != nil {
 		return info // resolved but unrunnable; OK stays false
@@ -82,6 +89,28 @@ func ProbeVersion(ctx context.Context) VersionInfo {
 		}
 	}
 	return info
+}
+
+// flakeBeadsInputRE matches a flake input whose URL points at the beads repo,
+// e.g. `beads.url = "github:gastownhall/beads/v1.1.0";`. Capture 1 is the input
+// name, capture 2 its URL.
+var flakeBeadsInputRE = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_-]*)\.url\s*=\s*"([^"]*beads[^"]*)"`)
+
+// FlakeBeadsInput scans <flakeDir>/flake.nix for the flake input that provides
+// beads (a URL referencing the beads repo) and returns the input's name and
+// URL. found is false when there is no flake.nix or no beads input — koryph then
+// cannot offer a targeted `nix flake lock --update-input`. This is how doctor
+// turns "bd is nix-provided and stale" into a concrete, project-specific
+// upgrade offer rather than generic advice.
+func FlakeBeadsInput(flakeDir string) (name, url string, found bool) {
+	data, err := os.ReadFile(filepath.Join(flakeDir, "flake.nix"))
+	if err != nil {
+		return "", "", false
+	}
+	if m := flakeBeadsInputRE.FindStringSubmatch(string(data)); m != nil {
+		return m[1], m[2], true
+	}
+	return "", "", false
 }
 
 // Remediation returns the operator-facing fix advice for a bd that is missing or
