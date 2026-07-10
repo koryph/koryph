@@ -107,6 +107,7 @@ func TestConflictRequeuePreservesAllBudgetCounters(t *testing.T) {
 	sl.Model, sl.Agent, sl.ModelWhy = "sonnet", "koryph-implementer", "test frozen"
 	sl.GateRequeues, sl.MergeRequeues = 1, 2
 	sl.RateLimitRequeues, sl.BudgetKillRequeues = 3, 1
+	sl.BeadLabels, sl.SizeClass, sl.IssueType = []string{"area:sched"}, "M", "task"
 	if err := r.store.SaveRun(r.run); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
@@ -139,6 +140,11 @@ func TestConflictRequeuePreservesAllBudgetCounters(t *testing.T) {
 	}
 	if got.Attempts != 2 {
 		t.Errorf("Attempts = %d, want 2 (a conflict requeue burns an attempt)", got.Attempts)
+	}
+	if len(got.BeadLabels) != 1 || got.BeadLabels[0] != "area:sched" ||
+		got.SizeClass != "M" || got.IssueType != "task" {
+		t.Errorf("features = %v/%q/%q, want [area:sched]/M/task frozen across the replacement (koryph-qf6.3)",
+			got.BeadLabels, got.SizeClass, got.IssueType)
 	}
 }
 

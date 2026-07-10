@@ -795,6 +795,43 @@ func resourcesFromSlot(sl *ledger.Slot) *dispatchResources {
 	return &dispatchResources{kinds: sl.Resources, memReserveMB: sl.MemReserveMB}
 }
 
+// beadFeatures is the similarity feature vector persisted on the ledger slot
+// (koryph-qf6.3): the bead's labels, size bucket, and issue type as they were
+// at FIRST dispatch. Frozen exactly like footprint/resources — a relabel
+// mid-run must not rewrite what a live slot is understood to look like, and
+// the outcome learner (koryph-qf6.6) must join outcomes to the features the
+// bead was ROUTED with.
+type beadFeatures struct {
+	labels    []string
+	sizeClass string
+	issueType string
+}
+
+// featuresFromSlot rebuilds the frozen feature vector from a persisted slot
+// for a requeue's dispatchReq, the features sibling of resourcesFromSlot.
+// Returns nil when the slot carries none (a ledger that predates the fields),
+// which dispatchBead treats as "derive from the live issue".
+func featuresFromSlot(sl *ledger.Slot) *beadFeatures {
+	if len(sl.BeadLabels) == 0 && sl.SizeClass == "" && sl.IssueType == "" {
+		return nil
+	}
+	return &beadFeatures{labels: sl.BeadLabels, sizeClass: sl.SizeClass, issueType: sl.IssueType}
+}
+
+// featuresFor resolves the feature vector for a dispatch: the frozen value a
+// requeue threaded through (q.features), or — on a fresh dispatch — a snapshot
+// of the live issue.
+func featuresFor(q dispatchReq) *beadFeatures {
+	if q.features != nil {
+		return q.features
+	}
+	return &beadFeatures{
+		labels:    q.issue.Labels,
+		sizeClass: quota.SizeOf(len(q.issue.Description)),
+		issueType: q.issue.IssueType,
+	}
+}
+
 // dispatchReq describes one dispatch (fresh, requeue, or review bounce).
 type dispatchReq struct {
 	issue           beads.Issue
@@ -853,6 +890,13 @@ type dispatchReq struct {
 	// loops set it explicitly so the value acquireGlobalSlot admitted is the same
 	// value the slot persists.
 	resources *dispatchResources
+	// features is the frozen similarity feature vector to persist on the
+	// ledger slot (koryph-qf6.3): nil on a fresh dispatch (dispatchBead
+	// snapshots the live issue via featuresFor), or the prior slot's persisted
+	// vector carried forward on a requeue (featuresFromSlot) — never
+	// recomputed, so a relabel mid-run cannot rewrite what a live slot is
+	// understood to look like. Same freeze rationale as footprint/resources.
+	features *beadFeatures
 	// accumulatedCostUSD carries forward the total cost already spent on
 	// previous attempts of this bead, so that CostUSD on the new slot
 	// starts at the right baseline and completeSlot can ADD the new
@@ -1072,6 +1116,10 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	// completeSlot to compute estimator error and update ErrorStats.
 	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName, proxyID)
 
+	// Similarity features (koryph-qf6.3): frozen from the requeue's persisted
+	// slot when threaded, snapshotted from the live issue on a fresh dispatch.
+	feat := featuresFor(q)
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	sl := &ledger.Slot{
 		PhaseID:            beadID,
@@ -1111,6 +1159,9 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Footprint:          q.footprint,
 		Resources:          resKinds,
 		MemReserveMB:       memReserveMB,
+		BeadLabels:         feat.labels,
+		SizeClass:          feat.sizeClass,
+		IssueType:          feat.issueType,
 		EstimateUSD:        estimateUSD,
 		// CostUSD starts from accumulatedCostUSD so prior-attempt spend is
 		// not lost when completeSlot ADDs the new attempt's cost (koryph-6bl).

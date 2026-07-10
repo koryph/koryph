@@ -268,6 +268,21 @@ type Slot struct {
 	// is resource-free — exactly today's behavior (I9).
 	Resources []string `json:"resources,omitempty"`
 
+	// BeadLabels, SizeClass, and IssueType are the bead's similarity features
+	// frozen at FIRST dispatch (koryph-qf6.3), exactly like Footprint above: a
+	// relabel mid-run must not retroactively change what a live slot is
+	// understood to look like, and the learner that joins outcomes to features
+	// (koryph-qf6.6) needs the features the bead was ROUTED with, not whatever
+	// it carries later. BeadLabels is the raw label set (area:*, model:*, …),
+	// SizeClass is quota.SizeOf's S/M/L description bucket, IssueType is the
+	// bd issue type. Threaded through every requeue via
+	// engine.dispatchReq.features (see featuresFromSlot). Additive: a Slot
+	// decoded from a ledger that predates these fields unmarshals them to
+	// zero values, which readers must treat as "features unknown".
+	BeadLabels []string `json:"bead_labels,omitempty"`
+	SizeClass  string   `json:"size_class,omitempty"`
+	IssueType  string   `json:"issue_type,omitempty"`
+
 	// MemReserveMB is this slot's resolved memory reservation in MB (koryph-4ql.3,
 	// L5): Σ mem_mb over its declared kinds (machine ledger override → project
 	// vocabulary), frozen at dispatch alongside Resources per I8. Reserved from

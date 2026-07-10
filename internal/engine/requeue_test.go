@@ -14,6 +14,7 @@ import (
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/worktree"
 )
@@ -111,6 +112,55 @@ func TestRequeueFreezesModel(t *testing.T) {
 	}
 	if effort != "high" {
 		t.Errorf("requeue effort = %q, want high (frozen)", effort)
+	}
+}
+
+// TestRequeueFreezesBeadFeatures proves koryph-qf6.3: the similarity feature
+// vector (labels, size bucket, issue type) is snapshotted from the live issue
+// on a FIRST dispatch and carried verbatim from the persisted slot on every
+// requeue — so a relabel mid-run cannot rewrite what a live slot is understood
+// to look like, and the outcome learner joins outcomes to the features the
+// bead was ROUTED with. featuresFor/featuresFromSlot are the single seams
+// dispatchBead and all three poll.go requeue paths funnel through.
+func TestRequeueFreezesBeadFeatures(t *testing.T) {
+	live := beads.Issue{
+		ID:          "fb1",
+		Labels:      []string{"area:sched", "model:opus"},
+		IssueType:   "bug",
+		Description: strings.Repeat("x", 10),
+	}
+
+	// Fresh dispatch: snapshot the live issue.
+	fresh := featuresFor(dispatchReq{issue: live})
+	if len(fresh.labels) != 2 || fresh.labels[0] != "area:sched" {
+		t.Errorf("fresh labels = %v, want the live issue's labels", fresh.labels)
+	}
+	if fresh.issueType != "bug" {
+		t.Errorf("fresh issueType = %q, want bug", fresh.issueType)
+	}
+	if fresh.sizeClass != quota.SizeOf(10) {
+		t.Errorf("fresh sizeClass = %q, want %q", fresh.sizeClass, quota.SizeOf(10))
+	}
+
+	// Requeue: the persisted slot's frozen vector wins over the (relabeled)
+	// live issue.
+	slotted := &ledger.Slot{
+		BeadLabels: []string{"area:engine"},
+		SizeClass:  "L",
+		IssueType:  "task",
+	}
+	frozen := featuresFor(dispatchReq{issue: live, features: featuresFromSlot(slotted)})
+	if len(frozen.labels) != 1 || frozen.labels[0] != "area:engine" {
+		t.Errorf("frozen labels = %v, want the slot's [area:engine], not the live relabel", frozen.labels)
+	}
+	if frozen.sizeClass != "L" || frozen.issueType != "task" {
+		t.Errorf("frozen size/type = %q/%q, want L/task (carried verbatim)", frozen.sizeClass, frozen.issueType)
+	}
+
+	// A slot that predates the fields yields nil — dispatchBead then derives
+	// from the live issue, exactly like the resource fallback.
+	if featuresFromSlot(&ledger.Slot{}) != nil {
+		t.Error("featuresFromSlot on a legacy slot = non-nil, want nil (derive from live issue)")
 	}
 }
 

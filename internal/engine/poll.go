@@ -633,6 +633,9 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		// re-attaches the SAME kinds + reservation the slot was admitted with, so
 		// a relabel or vocabulary edit mid-run cannot re-price a live slot (I8).
 		resources: resourcesFromSlot(sl),
+		// Carry the frozen similarity features forward too (koryph-qf6.3) —
+		// same freeze rationale as footprint/resources.
+		features: featuresFromSlot(sl),
 		// Carry accumulated cost forward (koryph-6bl) — same reasoning as
 		// requeueSlot: rate-limited agents may have spent tokens before being
 		// throttled; that cost must not be lost across the requeue.
@@ -802,6 +805,9 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		// Carry the frozen resource claim forward (koryph-4ql.3) — see
 		// requeueRateLimited's identical comment.
 		resources: resourcesFromSlot(sl),
+		// Carry the frozen similarity features forward (koryph-qf6.3) — see
+		// requeueRateLimited's identical comment.
+		features: featuresFromSlot(sl),
 		// Carry accumulated cost forward (koryph-6bl): the budget-killed
 		// attempt's own cost was already added to sl.CostUSD at the top of
 		// completeSlot, so this is the correct running total.
@@ -1348,6 +1354,9 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		// Carry the frozen resource claim forward too (koryph-4ql.3) — see
 		// requeueRateLimited's identical comment.
 		resources: resourcesFromSlot(sl),
+		// Carry the frozen similarity features forward too (koryph-qf6.3) —
+		// see requeueRateLimited's identical comment.
+		features: featuresFromSlot(sl),
 		// Carry accumulated cost forward so the new slot starts from the total
 		// spend so far (koryph-6bl): completeSlot ADDs the next attempt's cost
 		// rather than overwriting, so the sum across all attempts is correct.
