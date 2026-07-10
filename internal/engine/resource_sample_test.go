@@ -18,6 +18,7 @@ import (
 func TestSampleSlotResources_WritesDerivedFields(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
+	t.Setenv(envResmon, "on") // re-enable sampling that newFixture disables
 
 	if err := r.store.SetSlot(r.run, &ledger.Slot{
 		PhaseID: "tb1", BeadID: "tb1", Status: ledger.SlotRunning, PID: os.Getpid(),
@@ -58,6 +59,7 @@ func TestSampleSlotResources_WritesDerivedFields(t *testing.T) {
 func TestSampleSlotResources_RequeueResetsPerAttempt(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
+	t.Setenv(envResmon, "on") // re-enable sampling that newFixture disables
 	if err := r.store.SetSlot(r.run, &ledger.Slot{
 		PhaseID: "tb1", Status: ledger.SlotRunning, PID: os.Getpid(),
 	}); err != nil {
@@ -91,6 +93,7 @@ func TestSampleSlotResources_RequeueResetsPerAttempt(t *testing.T) {
 func TestSampleSlotResources_DeadPIDNoSample(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
+	t.Setenv(envResmon, "on") // re-enable sampling that newFixture disables
 	if err := r.store.SetSlot(r.run, &ledger.Slot{
 		PhaseID: "tb1", Status: ledger.SlotRunning, PID: 1 << 30, // implausible pid
 	}); err != nil {

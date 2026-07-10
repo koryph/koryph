@@ -201,17 +201,29 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 // liveness, completeSlot, and merge work — the probe is on the critical path.
 const resSampleTimeout = 5 * time.Second
 
+// resMinSampleInterval floors the resource-sampling cadence independently of the
+// poll interval. Metrics only need coarse resolution, so even when PollSec is
+// configured very low (or a burst of SIGCHLD wakes drives pollPass rapidly) the
+// engine never forks `ps` / scans /proc more often than this — bounding the
+// sampler's subprocess and syscall overhead.
+const resMinSampleInterval = 5 * time.Second
+
 // sampleProcTable takes one process-table snapshot for this poll pass, or nil
-// (sampling skipped this pass) when throttled, unsupported, timed out, or
-// failed — so resource sampling can never break or stall the poll loop.
+// (sampling skipped this pass) when disabled, throttled, unsupported, timed out,
+// or failed — so resource sampling can never break or stall the poll loop.
 //
-// Throttle: pollPass also runs on every SIGCHLD wake (frequent under active
-// subprocess churn), but a host-wide process sweep per signal would be
-// wasteful, so sampling is limited to at most once per poll interval. Timeout:
-// the probe is bounded by resSampleTimeout regardless of the long-lived run ctx.
+// Disable: envResmon="off" turns sampling off entirely (tests set it so the
+// timing-sensitive wave/pacing loops don't fork `ps`). Throttle: pollPass also
+// runs on every SIGCHLD wake, so sampling is limited to at most once per
+// max(pollInterval, resMinSampleInterval). Timeout: the probe is bounded by
+// resSampleTimeout regardless of the long-lived run ctx.
 func (r *runner) sampleProcTable(ctx context.Context) *resmon.ProcTable {
+	if os.Getenv(envResmon) == "off" {
+		return nil
+	}
+	interval := max(r.pollInterval(), resMinSampleInterval)
 	now := time.Now()
-	if !r.lastResSampleAt.IsZero() && now.Sub(r.lastResSampleAt) < r.pollInterval() {
+	if !r.lastResSampleAt.IsZero() && now.Sub(r.lastResSampleAt) < interval {
 		return nil
 	}
 	probe := r.resProbe

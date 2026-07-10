@@ -99,11 +99,15 @@ a nonsense utilization. The ledger therefore reflects the current attempt, not a
 blend across attempts.
 
 **Sampling is off the critical path's failure modes.** The per-pass snapshot is
-(a) throttled to at most once per poll interval — `pollPass` also fires on every
-SIGCHLD wake, and a host-wide sweep per subprocess exit would be wasteful — and
-(b) bounded by a `resSampleTimeout` so a hung `ps` or a pathologically slow
-`/proc` scan can never stall the poll loop's liveness, `completeSlot`, and merge
-work. Any probe error or timeout simply skips sampling for that pass.
+(a) throttled to at most once per `max(pollInterval, resMinSampleInterval)` — a
+floor that keeps a low configured `PollSec` (or a burst of SIGCHLD wakes, which
+also drive `pollPass`) from forking `ps` every second — and (b) bounded by a
+`resSampleTimeout` so a hung `ps` or a pathologically slow `/proc` scan can never
+stall the poll loop's liveness, `completeSlot`, and merge work. Any probe error
+or timeout simply skips sampling for that pass. The `KORYPH_RESMON=off` kill
+switch disables sampling entirely; the engine test harness sets it so the
+sampler's subprocess overhead cannot perturb the timing-sensitive wave/pacing
+integration tests (the sampler has its own targeted unit tests).
 
 ### 3.3 Surfacing
 

@@ -49,6 +49,10 @@ const (
 	envPollSec    = "KORYPH_POLL_SEC"    // poll tick override (seconds)
 	envStaggerSec = "KORYPH_STAGGER_SEC" // dispatch stagger override (seconds)
 	envBackoffSec = "KORYPH_BACKOFF_SEC" // requeue backoff base override (seconds)
+	// envResmon="off" disables per-slot resource sampling. Tests set it so the
+	// poll loop never forks `ps` / scans /proc — sampling side effects must not
+	// perturb the timing-sensitive wave/pacing integration tests.
+	envResmon = "KORYPH_RESMON"
 )
 
 // Engine defaults.
