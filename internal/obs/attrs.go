@@ -14,9 +14,14 @@ const (
 	KeyAttempt  = "attempt"
 	KeyProvider = "provider"
 	KeyModel    = "model"
-	KeyPersona  = "persona"
-	KeyPhase    = "phase"
-	KeyError    = "error"
+	// KeyModelActual is the model that ACTUALLY served an attempt
+	// (koryph-qf6.2, reduced from the result line's modelUsage), as opposed
+	// to KeyModel — the tier dispatch requested. The two diverge when the
+	// CLI's hardcoded --fallback-model downgrades a session mid-flight.
+	KeyModelActual = "model_actual"
+	KeyPersona     = "persona"
+	KeyPhase       = "phase"
+	KeyError       = "error"
 
 	// §O4 client-span keys — forge.api and vault.resolve spans.
 

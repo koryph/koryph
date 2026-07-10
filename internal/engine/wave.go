@@ -1230,7 +1230,9 @@ func (r *runner) blockSlot(beadID string, q dispatchReq, why string) {
 	})
 	r.releaseGlobalSlot(beadID) // terminal: free the reserved/held slot
 	r.progress("bead %s: blocked (%s)", beadID, why)
-	logSlotBlocked(beadID, why)
+	// frozenModel may be empty when the block precedes model resolution — the
+	// outcome event then honestly reports "model unknown" (koryph-qf6.2).
+	logSlotBlocked(beadID, why, q.frozenModel, "", q.attempt)
 }
 
 // mergePolicy resolves the effective merge policy: an epic merge:* label wins

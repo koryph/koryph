@@ -56,6 +56,61 @@ func TestCompleteSlotPersistsTokenUsageFromResultLine(t *testing.T) {
 	}
 }
 
+// modelFallbackClaudeScript emits a result line whose modelUsage says the
+// session was dominantly served by a haiku model id even though dispatch
+// requested sonnet — the --fallback-model downgrade shape (koryph-qf6.2).
+const modelFallbackClaudeScript = `#!/bin/sh
+cat > /dev/null
+echo "work" > agent-work.txt
+git add agent-work.txt
+git commit -q --no-verify -m "feat(tb1): work"
+printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+printf '{"type":"result","total_cost_usd":0.10,"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":900},"claude-sonnet-4-5":{"outputTokens":100}}}\n'
+exit 0
+`
+
+// TestCompleteSlotRecordsActualModel proves the koryph-qf6.2 wiring
+// end-to-end: the result line's modelUsage keys are reduced to the dominant
+// model, normalized to a tier, and persisted as Slot.ModelActual (mirrored
+// onto the manifest) — so a --fallback-model downgrade is visible instead of
+// the outcome being silently attributed to the requested tier.
+func TestCompleteSlotRecordsActualModel(t *testing.T) {
+	f := newFixture(t, fixOpts{claudeScript: modelFallbackClaudeScript})
+
+	var out bytes.Buffer
+	got, err := Run(context.Background(), baseOptions(&out))
+	t.Logf("engine output:\n%s", out.String())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Merged != 1 {
+		t.Fatalf("Outcome = %+v, want 1 merged", got)
+	}
+
+	store := ledger.NewStore(f.repo)
+	run, err := store.LoadLatest()
+	if err != nil {
+		t.Fatalf("LoadLatest: %v", err)
+	}
+	sl := run.Slots["tb1"]
+	if sl == nil {
+		t.Fatalf("no slot tb1 in run: %+v", run.Slots)
+	}
+	if sl.Model != "sonnet" {
+		t.Fatalf("requested model = %q, want sonnet (implement stage default)", sl.Model)
+	}
+	if sl.ModelActual != "haiku" {
+		t.Errorf("ModelActual = %q, want haiku (dominant modelUsage id, normalized to its tier)", sl.ModelActual)
+	}
+	if m, err := store.LoadManifest(run.RunID, "tb1"); err == nil {
+		if m.ModelActual != "haiku" {
+			t.Errorf("manifest ModelActual = %q, want haiku (checkpoint mirror)", m.ModelActual)
+		}
+	} else {
+		t.Errorf("LoadManifest: %v", err)
+	}
+}
+
 // TestCacheRatioWarnPureLogic exercises the I7 cache-ratio tripwire's
 // threshold arithmetic (koryph-77r.1, design
 // docs/designs/2026-07-token-economy.md §2 I7) in isolation from logging.

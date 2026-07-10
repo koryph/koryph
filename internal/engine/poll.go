@@ -369,6 +369,26 @@ func slotAlive(pid int) bool {
 // completeSlot handles a dead agent: record cost, then either finish the
 // candidate (review + merge policy), block, or requeue.
 func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
+	// Actual-model ground truth (koryph-qf6.2): every dispatch runs with a
+	// hardcoded --fallback-model, so the tier dispatch requested can silently
+	// degrade mid-session. The result line's modelUsage keys record what
+	// actually ran; stamp the dominant model (normalized to a tier when the
+	// id names one) so outcome data never attributes a downgraded session to
+	// the requested tier. Snapshotted per attempt, exactly like DeathReason.
+	if id, ok := dispatch.ParseActualModel(sl.Stream); ok && id != "" {
+		actual := id
+		if tier := modelroute.TierForModelID(id); tier != "" {
+			actual = tier
+		}
+		sl.ModelActual = actual
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ModelActual = actual })
+		if actual != sl.Model {
+			r.progress("bead %s: model fallback — requested %s, actually ran %s (%s)",
+				sl.PhaseID, sl.Model, actual, id)
+			logModelFallback(sl.PhaseID, sl.Model, actual, id)
+		}
+	}
+
 	if cost, ok := dispatch.ParseResultCost(sl.Stream); ok {
 		// ADD the new attempt's cost to whatever was accumulated from prior
 		// attempts (koryph-6bl: CostUSD accumulates across requeues so total
@@ -485,6 +505,8 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		r.checkpointSlot(sl, "blocked")
 		r.releaseGlobalSlot(sl.PhaseID) // terminal
 		r.progress("bead %s: blocked (%s, %d attempts)", sl.PhaseID, deathDesc, sl.Attempts)
+		logSlotBlocked(sl.PhaseID, fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts),
+			sl.Model, sl.ModelActual, sl.Attempts)
 		return
 	}
 	r.requeueSlot(ctx, sl, "", deathDesc)
@@ -580,6 +602,8 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		r.checkpointSlot(sl, "rate-limit-exhausted")
 		r.releaseGlobalSlot(sl.PhaseID) // terminal
 		r.progress("bead %s: blocked (rate-limited %d times; requeue budget exhausted)", sl.PhaseID, sl.RateLimitRequeues)
+		logSlotBlocked(sl.PhaseID, fmt.Sprintf("rate-limited requeues exhausted (%d)", rateLimitedRequeueBudget),
+			sl.Model, sl.ModelActual, sl.Attempts)
 		return
 	}
 
@@ -722,7 +746,7 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	}
 
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.DeathReason = deathReasonBudgetKilled })
-	logBudgetKilled(sl.PhaseID, sl.Attempts, sl.CostUSD)
+	logBudgetKilled(sl.PhaseID, sl.Attempts, sl.CostUSD, sl.Model, sl.ModelActual)
 
 	// Run --budget exhausted: park instead of a warm-resume requeue (koryph-u7q).
 	// The per-agent budget kill already fired; spending another attempt would
@@ -751,7 +775,7 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		r.checkpointSlot(sl, "budget-killed-parked")
 		r.releaseGlobalSlot(sl.PhaseID) // terminal
 		r.progress("bead %s: blocked, needs-attention (%s)", sl.PhaseID, why)
-		logSlotBlocked(sl.PhaseID, why)
+		logSlotBlocked(sl.PhaseID, why, sl.Model, sl.ModelActual, sl.Attempts)
 		return
 	}
 
@@ -1034,7 +1058,8 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		})
 		r.progress("bead %s: merged (%s)", sl.PhaseID, shortSHA(res.MergedSHA))
 		if sl2 := r.run.Slots[sl.PhaseID]; sl2 != nil {
-			logSlotMerged(r.run.RunID, r.opts.ProjectID, sl.PhaseID, shortSHA(res.MergedSHA), sl2.CostUSD)
+			logSlotMerged(r.run.RunID, r.opts.ProjectID, sl.PhaseID, shortSHA(res.MergedSHA), sl2.CostUSD,
+				sl2.Model, sl2.ModelActual, sl2.Attempts)
 		}
 		r.releaseGlobalSlot(sl.PhaseID)
 		return
@@ -1276,7 +1301,7 @@ func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
 	})
 	r.releaseGlobalSlot(sl.PhaseID) // terminal: free the reserved/held slot
 	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
-	logSlotBlocked(sl.PhaseID, note)
+	logSlotBlocked(sl.PhaseID, note, sl.Model, sl.ModelActual, sl.Attempts)
 	return true
 }
 
@@ -1526,6 +1551,7 @@ func (r *runner) checkpointSlot(sl *ledger.Slot, execState string) {
 	m.ExecutionState = execState
 	m.HeadCommit = cur.LastCommit
 	m.Attempt = cur.Attempts
+	m.ModelActual = cur.ModelActual
 	_ = r.store.SaveManifest(r.run.RunID, sl.PhaseID, m)
 }
 

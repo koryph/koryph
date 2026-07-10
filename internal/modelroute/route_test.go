@@ -244,6 +244,26 @@ func TestRecoveryUpgrade(t *testing.T) {
 	}
 }
 
+// TestTierForModelID exercises the koryph-qf6.2 normalization of concrete
+// model ids (modelUsage keys, version-suffixed and case-varied) to tiers.
+func TestTierForModelID(t *testing.T) {
+	cases := map[string]string{
+		"claude-sonnet-4-5":          TierSonnet,
+		"claude-sonnet-4-5-20250929": TierSonnet,
+		"claude-haiku-4-5-20251001":  TierHaiku,
+		"claude-opus-4-8":            TierOpus,
+		"claude-fable-5":             TierFable,
+		"Claude-Opus-4-8":            TierOpus, // case-insensitive
+		"gpt-4o":                     "",       // unknown family stays raw
+		"":                           "",
+	}
+	for id, want := range cases {
+		if got := TierForModelID(id); got != want {
+			t.Errorf("TierForModelID(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
 // TestResolvePersonaTierPrecedence exercises the koryph-v8u.10 persona-tier
 // step: bead label still wins unchanged; a persona `tier` resolves through
 // runtime.ClaudeModelMap (or a project override) when no label/run-default

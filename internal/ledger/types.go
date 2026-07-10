@@ -93,6 +93,17 @@ type Slot struct {
 	ModelWhy    string `json:"model_rationale,omitempty"`
 	Effort      string `json:"effort,omitempty"`
 
+	// ModelActual is the model that ACTUALLY served the most recent attempt
+	// (koryph-qf6.2), reduced from the result line's modelUsage object and
+	// normalized to a tier when the id names one (raw id otherwise). Model
+	// above is what dispatch REQUESTED; the two diverge when the CLI's
+	// hardcoded --fallback-model downgrades a session mid-flight, and any
+	// outcome dataset keyed on Model alone mis-attributes those sessions.
+	// Snapshotted per attempt like DeathReason (NOT accumulated); empty when
+	// the stream carried no modelUsage (crash before a result line, or a
+	// ledger predating this field).
+	ModelActual string `json:"model_actual,omitempty"`
+
 	// Runtime is the runtime (internal/runtime.Runtime.Name()) this slot
 	// dispatched under (koryph-v8u.3): "claude" today, always — the engine
 	// blocks any other resolved runtime rather than dispatching it. Additive:
@@ -318,41 +329,45 @@ type PlanState struct {
 // Manifest is the per-slot checkpoint (schema v2). It carries everything a
 // resumed koryph or a next-window recovery needs.
 type Manifest struct {
-	SchemaVersion   int       `json:"schema_version"`
-	ProjectID       string    `json:"project_id"`
-	BeadID          string    `json:"bead_id"`
-	EpicID          string    `json:"epic_id,omitempty"`
-	AccountProfile  string    `json:"account_profile"`
-	ClaudeConfigDir string    `json:"claude_config_dir,omitempty"`
-	SessionID       string    `json:"session_id"`
-	SessionName     string    `json:"session_name,omitempty"`
-	Model           string    `json:"model"`
-	ModelWhy        string    `json:"model_rationale,omitempty"`
-	WorktreePath    string    `json:"worktree_path"`
-	Branch          string    `json:"branch"`
-	BaseCommit      string    `json:"base_commit"`
-	HeadCommit      string    `json:"head_commit,omitempty"`
-	Attempt         int       `json:"attempt"`
-	ExecutionState  string    `json:"execution_state"`
-	LeaseOwner      string    `json:"lease_owner,omitempty"`
-	LeaseExpiresAt  string    `json:"lease_expires_at,omitempty"`
-	Plan            PlanState `json:"structured_plan"`
-	ChangedFiles    []string  `json:"changed_files,omitempty"`
-	PatchFiles      []string  `json:"patch_files,omitempty"`
-	WIPCommit       string    `json:"optional_wip_commit,omitempty"`
-	CommandsRun     []string  `json:"commands_run,omitempty"`
-	TestsRun        []string  `json:"tests_run,omitempty"`
-	LatestTest      string    `json:"latest_test_result,omitempty"`
-	ReviewStatus    string    `json:"review_status,omitempty"`
-	OpenQuestions   []string  `json:"open_questions,omitempty"`
-	NextAction      string    `json:"next_action,omitempty"`
-	QuotaSnapshot   any       `json:"quota_snapshot,omitempty"`
-	BatchAllowed    bool      `json:"batch_mode_allowed"`
-	RecoveryConf    string    `json:"recovery_confidence,omitempty"`
-	RecoveryTier    int       `json:"recovery_policy_tier"`
-	MergePolicy     string    `json:"merge_policy,omitempty"`
-	AutoMerge       bool      `json:"auto_merge_allowed"`
-	BillingMode     string    `json:"billing_mode"`
+	SchemaVersion   int    `json:"schema_version"`
+	ProjectID       string `json:"project_id"`
+	BeadID          string `json:"bead_id"`
+	EpicID          string `json:"epic_id,omitempty"`
+	AccountProfile  string `json:"account_profile"`
+	ClaudeConfigDir string `json:"claude_config_dir,omitempty"`
+	SessionID       string `json:"session_id"`
+	SessionName     string `json:"session_name,omitempty"`
+	Model           string `json:"model"`
+	ModelWhy        string `json:"model_rationale,omitempty"`
+	// ModelActual mirrors Slot.ModelActual (koryph-qf6.2) — see its doc.
+	// Refreshed by checkpointSlot at terminal transitions; empty on a
+	// manifest that predates the field or an attempt with no result line.
+	ModelActual    string    `json:"model_actual,omitempty"`
+	WorktreePath   string    `json:"worktree_path"`
+	Branch         string    `json:"branch"`
+	BaseCommit     string    `json:"base_commit"`
+	HeadCommit     string    `json:"head_commit,omitempty"`
+	Attempt        int       `json:"attempt"`
+	ExecutionState string    `json:"execution_state"`
+	LeaseOwner     string    `json:"lease_owner,omitempty"`
+	LeaseExpiresAt string    `json:"lease_expires_at,omitempty"`
+	Plan           PlanState `json:"structured_plan"`
+	ChangedFiles   []string  `json:"changed_files,omitempty"`
+	PatchFiles     []string  `json:"patch_files,omitempty"`
+	WIPCommit      string    `json:"optional_wip_commit,omitempty"`
+	CommandsRun    []string  `json:"commands_run,omitempty"`
+	TestsRun       []string  `json:"tests_run,omitempty"`
+	LatestTest     string    `json:"latest_test_result,omitempty"`
+	ReviewStatus   string    `json:"review_status,omitempty"`
+	OpenQuestions  []string  `json:"open_questions,omitempty"`
+	NextAction     string    `json:"next_action,omitempty"`
+	QuotaSnapshot  any       `json:"quota_snapshot,omitempty"`
+	BatchAllowed   bool      `json:"batch_mode_allowed"`
+	RecoveryConf   string    `json:"recovery_confidence,omitempty"`
+	RecoveryTier   int       `json:"recovery_policy_tier"`
+	MergePolicy    string    `json:"merge_policy,omitempty"`
+	AutoMerge      bool      `json:"auto_merge_allowed"`
+	BillingMode    string    `json:"billing_mode"`
 	// ProxyID mirrors Slot.ProxyID (koryph-3l1.1) — see its doc.
 	ProxyID       string   `json:"proxy_id,omitempty"`
 	BootstrapCmds []string `json:"bootstrap_commands,omitempty"`

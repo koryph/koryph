@@ -77,6 +77,17 @@ type Event struct {
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	HasUsage            bool  `json:"has_usage,omitempty"`
 
+	// ModelUsage maps a model id to the output tokens it produced in this
+	// result, parsed off a Claude result line's "modelUsage" object
+	// (koryph-qf6.2). Valid only when Kind==EventResult; nil when the line
+	// carries none. This is the ground truth for which model ACTUALLY served
+	// the session: every dispatch runs with a hardcoded --fallback-model, so
+	// the requested tier can silently degrade mid-session and the slot's
+	// recorded Model alone would mis-attribute the outcome. Multiple keys are
+	// normal (subagent calls bill under their own model); consumers wanting a
+	// single attribution reduce to the dominant (max-output) entry.
+	ModelUsage map[string]int64 `json:"model_usage,omitempty"`
+
 	// RateLimited is valid only when Kind==EventError; see EventError.
 	RateLimited bool `json:"rate_limited,omitempty"`
 

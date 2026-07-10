@@ -75,6 +75,21 @@ type rawLine struct {
 	// docs/designs/2026-07-token-economy.md §3 L1) — see resultUsage's doc
 	// for the confirmed real-CLI shape.
 	Usage *resultUsage `json:"usage,omitempty"`
+	// ModelUsage is the result line's per-model usage object (koryph-qf6.2):
+	// camelCase (unlike the snake_case top-level "usage") and keyed by the
+	// FULL model id that served the tokens (e.g. "claude-sonnet-4-5"). Its
+	// token totals are redundant with Usage; the KEYS are not — they are the
+	// only record of which model actually ran under --fallback-model.
+	ModelUsage map[string]modelUsageEntry `json:"modelUsage,omitempty"`
+}
+
+// modelUsageEntry is one entry in a result line's "modelUsage" object. Only
+// outputTokens is consumed today (dominance reduction — see
+// runtime.Event.ModelUsage); the other camelCase fields are deliberately
+// ignored, since the top-level "usage" object already carries the attempt's
+// token composition.
+type modelUsageEntry struct {
+	OutputTokens int64 `json:"outputTokens"`
 }
 
 // resultUsage is the token composition on a stream-json "result" line's
@@ -83,8 +98,9 @@ type rawLine struct {
 // snake_case field vocabulary internal/quota/usage.go's usageTokens already
 // parses off session transcript lines, so this reuses it rather than
 // inventing a second one. A real result line also carries a "modelUsage"
-// object (camelCase, keyed by model id, redundant with this one) that is
-// deliberately not parsed here.
+// object (camelCase, keyed by model id) whose token totals are redundant
+// with this one — but whose keys are the actual-model ground truth, parsed
+// separately as rawLine.ModelUsage (koryph-qf6.2).
 type resultUsage struct {
 	InputTokens              int64 `json:"input_tokens"`
 	OutputTokens             int64 `json:"output_tokens"`
@@ -196,6 +212,12 @@ func classify(line []byte) (runtime.Event, bool) {
 			ev.CacheReadTokens = rl.Usage.CacheReadInputTokens
 			ev.CacheCreationTokens = rl.Usage.CacheCreationInputTokens
 			ev.HasUsage = true
+		}
+		if len(rl.ModelUsage) > 0 {
+			ev.ModelUsage = make(map[string]int64, len(rl.ModelUsage))
+			for id, mu := range rl.ModelUsage {
+				ev.ModelUsage[id] = mu.OutputTokens
+			}
 		}
 	case errorish:
 		ev.Kind = runtime.EventError
@@ -315,6 +337,46 @@ func ParseResultUsage(r io.Reader) (TokenUsage, bool) {
 		}
 	}
 	return usage, found
+}
+
+// ParseResultModelUsage scans r for the LAST EventResult, returning its
+// per-model output-token map (koryph-qf6.2) — the modelUsage counterpart to
+// ParseResultCost/ParseResultUsage, sharing their exact last-wins semantics:
+// a later result line with no modelUsage object resets found to false.
+func ParseResultModelUsage(r io.Reader) (map[string]int64, bool) {
+	es, err := (Claude{}).ParseEvents(r)
+	if err != nil {
+		return nil, false
+	}
+	defer es.Close()
+	var usage map[string]int64
+	var found bool
+	for {
+		ev, ok, err := es.Next()
+		if err != nil || !ok {
+			break
+		}
+		if ev.Kind == runtime.EventResult {
+			usage, found = ev.ModelUsage, len(ev.ModelUsage) > 0
+		}
+	}
+	return usage, found
+}
+
+// DominantModel reduces a ParseResultModelUsage map to the single model id
+// that produced the most output tokens — the session's actual-model
+// attribution (koryph-qf6.2). Subagent/auxiliary models bill under their own
+// ids alongside the main model's, so "which model ran this bead" means the
+// dominant entry, not an arbitrary key. Ties break to the lexicographically
+// smaller id for determinism; an empty map returns "".
+func DominantModel(usage map[string]int64) string {
+	best, bestTokens := "", int64(-1)
+	for id, out := range usage {
+		if out > bestTokens || (out == bestTokens && id < best) {
+			best, bestTokens = id, out
+		}
+	}
+	return best
 }
 
 // ParseCleanExit reports whether the LAST "result" line in r has is_error

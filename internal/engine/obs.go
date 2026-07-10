@@ -95,14 +95,21 @@ func logRequeueEvent(beadID, reason string, attempt int, accumulatedCostUSD floa
 	)
 }
 
-// logSlotMerged emits an INFO record when a slot is merged.
-func logSlotMerged(runID, project, beadID, sha string, costUSD float64) {
+// logSlotMerged emits an INFO record when a slot is merged. model/modelActual/
+// attempt (koryph-qf6.2) make the outcome event self-contained for per-attempt
+// reconstruction from telemetry: without them, the durable JSONL recorded which
+// model DISPATCHED (engine.slot.dispatched) but not which model the outcome
+// belongs to.
+func logSlotMerged(runID, project, beadID, sha string, costUSD float64, model, modelActual string, attempt int) {
 	log.Info("engine.slot.merged",
 		slog.String(obs.KeyRunID, runID),
 		slog.String(obs.KeyProject, project),
 		slog.String(obs.KeyBeadID, beadID),
 		slog.String("sha", sha),
 		slog.Float64(obs.KeyCostUSD, costUSD),
+		slog.String(obs.KeyModel, model),
+		slog.String(obs.KeyModelActual, modelActual),
+		slog.Int(obs.KeyAttempt, attempt),
 	)
 }
 
@@ -120,11 +127,29 @@ func logEpicValidation(runID, project, epicID string, round int, outcome string)
 	)
 }
 
-// logSlotBlocked emits a WARN record when a slot is blocked.
-func logSlotBlocked(beadID, reason string) {
+// logSlotBlocked emits a WARN record when a slot is blocked — see
+// logSlotMerged for why the outcome events carry model/modelActual/attempt
+// (koryph-qf6.2). model/modelActual may be empty on a block that precedes any
+// dispatch (e.g. worktree failure before a model was resolved).
+func logSlotBlocked(beadID, reason, model, modelActual string, attempt int) {
 	log.Warn("engine.slot.blocked",
 		slog.String(obs.KeyBeadID, beadID),
 		slog.String("reason", reason),
+		slog.String(obs.KeyModel, model),
+		slog.String(obs.KeyModelActual, modelActual),
+		slog.Int(obs.KeyAttempt, attempt),
+	)
+}
+
+// logModelFallback emits a WARN record when an attempt's actual model
+// (result-line modelUsage) diverges from the requested tier (koryph-qf6.2) —
+// the CLI's hardcoded --fallback-model silently downgraded the session.
+func logModelFallback(beadID, requested, actual, rawID string) {
+	log.Warn("engine.slot.model_fallback",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.String(obs.KeyModel, requested),
+		slog.String(obs.KeyModelActual, actual),
+		slog.String("model_id", rawID),
 	)
 }
 
@@ -201,11 +226,13 @@ func logBeadTokensUnavailable(beadID string) {
 // ACCUMULATED cost across all attempts so far (including this one) — the
 // AC2 requirement — so a dashboard can total real dollars burned by
 // budget-kills per bead without re-deriving it from per-attempt deltas.
-func logBudgetKilled(beadID string, attempt int, costUSD float64) {
+func logBudgetKilled(beadID string, attempt int, costUSD float64, model, modelActual string) {
 	log.Warn("engine.slot.budget_killed",
 		slog.String(obs.KeyBeadID, beadID),
 		slog.Int(obs.KeyAttempt, attempt),
 		slog.Float64(obs.KeyCostUSD, costUSD),
+		slog.String(obs.KeyModel, model),
+		slog.String(obs.KeyModelActual, modelActual),
 	)
 }
 

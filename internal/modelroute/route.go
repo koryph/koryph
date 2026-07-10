@@ -335,6 +335,23 @@ func PersonaFor(stage string, stages map[string]string) string {
 	}
 }
 
+// TierForModelID normalizes a concrete model id (e.g. "claude-sonnet-4-5",
+// as reported by a result line's modelUsage keys — see dispatch.
+// ParseActualModel, koryph-qf6.2) to its tier, or "" when the id names no
+// known tier. Substring matching is deliberate: model ids carry version
+// suffixes that change across CLI releases, while the tier family name
+// embedded in the id is the stable part. Checked longest-family-first so a
+// hypothetical compound id cannot mis-bucket.
+func TierForModelID(id string) string {
+	lower := strings.ToLower(id)
+	for _, tier := range []string{TierSonnet, TierHaiku, TierOpus, TierFable} {
+		if strings.Contains(lower, tier) {
+			return tier
+		}
+	}
+	return ""
+}
+
 // RecoveryUpgrade returns the tier to retry a low-confidence task with. Every
 // tier upgrades to opus. Fable is structurally excluded from recovery: a
 // fable input is deliberately downgraded to opus, because recovery must never

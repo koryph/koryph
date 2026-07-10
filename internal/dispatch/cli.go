@@ -329,6 +329,28 @@ func ParseResultUsage(streamPath string) (TokenUsage, bool) {
 	return claude.ParseResultUsage(f)
 }
 
+// ParseActualModel scans a stream.jsonl for the LAST "result" line's
+// modelUsage object and returns the dominant (max-output-tokens) model id —
+// the ground truth for which model ACTUALLY served the attempt
+// (koryph-qf6.2). Every dispatch runs with a hardcoded --fallback-model, so
+// the requested tier can silently degrade mid-session; without this reading,
+// outcome data keyed on the requested model mis-attributes those sessions.
+// Returns ("", false) when no result line carries a modelUsage object or the
+// file is unreadable. Thin path-opening wrapper, matching ParseResultCost's
+// pattern (the scan lives in internal/runtime/claude).
+func ParseActualModel(streamPath string) (string, bool) {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	usage, ok := claude.ParseResultModelUsage(f)
+	if !ok {
+		return "", false
+	}
+	return claude.DominantModel(usage), true
+}
+
 // ParseCleanExit scans a stream.jsonl for the LAST "result" line and reports
 // whether the agent exited successfully (is_error absent or false). Returns
 // false when no result line is found or the file is unreadable.

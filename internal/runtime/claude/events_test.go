@@ -178,6 +178,53 @@ func TestResultLineWithRateLimitMarkerReportsBoth(t *testing.T) {
 	}
 }
 
+// TestParseResultModelUsage proves the koryph-qf6.2 actual-model reading: the
+// result line's camelCase "modelUsage" object (same real-CLI capture as
+// TestParseResultUsage's fixture) reduces to a per-model output-token map with
+// ParseResultCost/ParseResultUsage's last-wins semantics, and DominantModel
+// picks the max-output id deterministically.
+func TestParseResultModelUsage(t *testing.T) {
+	t.Run("modelUsage present, dominant id wins", func(t *testing.T) {
+		line := `{"type":"result","total_cost_usd":0.10,` +
+			`"modelUsage":{"claude-sonnet-4-5":{"inputTokens":9000,"outputTokens":900},` +
+			`"claude-haiku-4-5-20251001":{"inputTokens":100,"outputTokens":40}}}`
+		usage, ok := ParseResultModelUsage(strings.NewReader(line + "\n"))
+		if !ok {
+			t.Fatal("ParseResultModelUsage: ok = false, want true")
+		}
+		if usage["claude-sonnet-4-5"] != 900 || usage["claude-haiku-4-5-20251001"] != 40 {
+			t.Errorf("ParseResultModelUsage = %v, want sonnet:900 haiku:40", usage)
+		}
+		if got := DominantModel(usage); got != "claude-sonnet-4-5" {
+			t.Errorf("DominantModel = %q, want claude-sonnet-4-5 (max output tokens)", got)
+		}
+	})
+
+	t.Run("modelUsage absent", func(t *testing.T) {
+		usage, ok := ParseResultModelUsage(strings.NewReader(`{"type":"result","total_cost_usd":0.1}` + "\n"))
+		if ok || usage != nil {
+			t.Errorf("ParseResultModelUsage = %v, %v; want nil, false", usage, ok)
+		}
+	})
+
+	t.Run("last result line wins, later line without modelUsage resets found", func(t *testing.T) {
+		body := `{"type":"result","modelUsage":{"claude-fable-5":{"outputTokens":10}}}` + "\n" +
+			`{"type":"result","total_cost_usd":0.6}` + "\n"
+		if usage, ok := ParseResultModelUsage(strings.NewReader(body)); ok {
+			t.Errorf("ParseResultModelUsage = %v, ok = true, want false (last-wins reset)", usage)
+		}
+	})
+
+	t.Run("dominant tie breaks lexicographically", func(t *testing.T) {
+		if got := DominantModel(map[string]int64{"b-model": 5, "a-model": 5}); got != "a-model" {
+			t.Errorf("DominantModel tie = %q, want a-model", got)
+		}
+		if got := DominantModel(nil); got != "" {
+			t.Errorf("DominantModel(nil) = %q, want empty", got)
+		}
+	})
+}
+
 // TestParseResultUsage fixtures (koryph-77r.1): the "usage present" line is
 // copied verbatim (fields reordered for readability only) from a real
 // `claude -p ... --output-format stream-json` result line captured 2026-07 —
