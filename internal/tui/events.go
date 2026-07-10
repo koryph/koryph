@@ -447,7 +447,7 @@ func (m *eventsModel) rebuildContent() {
 
 // renderEvent formats one TUIEvent as a display line.
 func (m *eventsModel) renderEvent(ev cockpit.TUIEvent) string {
-	ts := ev.Time.Format("15:04:05")
+	ts := formatTimestampShort(ev.Time)
 	tsStyle := lipgloss.NewStyle().Foreground(m.theme.Gray)
 
 	var kindStyle lipgloss.Style

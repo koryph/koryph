@@ -449,7 +449,7 @@ func (a App) renderStatusBar() string {
 	left := fmt.Sprintf("threads %d  running %d%s%s", slots, running, govSummary, errPart)
 	right := lipgloss.NewStyle().
 		Foreground(a.theme.Gray).
-		Render(fmt.Sprintf("%s  %s", helpHint, a.snap.CapturedAt.Format("15:04:05")))
+		Render(fmt.Sprintf("%s  %s", helpHint, formatTimestamp(a.snap.CapturedAt)))
 
 	gap := a.width - lipglossLen(left) - lipglossLen(right)
 	if gap < 0 {
