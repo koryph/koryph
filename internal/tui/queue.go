@@ -25,9 +25,11 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -42,8 +44,38 @@ func init() {
 	})
 }
 
-// IsCapturingInput implements TabModel. The queue tab has no text inputs.
-func (m *queueModel) IsCapturingInput() bool { return false }
+// IsCapturingInput implements TabModel: true while the / search input is
+// focused so App.Update routes every key here instead of firing global
+// bindings (koryph-166, mirroring the Events tab's filter input).
+func (m *queueModel) IsCapturingInput() bool { return m.queryActive }
+
+// queueMode selects how the queue arranges rows (koryph-vy8).
+type queueMode int
+
+const (
+	// queueModeEpics is the hierarchy: epics with their children nested,
+	// siblings ordered by priority (the pre-existing default).
+	queueModeEpics queueMode = iota
+	// queueModePriority flattens every node into one list sorted by
+	// priority then id — "what dispatches next", no grouping.
+	queueModePriority
+	// queueModeIssues is the flat priority list minus container rows
+	// (epics/features and container-tasks) — only directly workable issues.
+	queueModeIssues
+	queueModeCount // sentinel
+)
+
+// modeLabel returns the display label for a grouping mode.
+func modeLabel(m queueMode) string {
+	switch m {
+	case queueModePriority:
+		return "priority"
+	case queueModeIssues:
+		return "issues"
+	default:
+		return "epics"
+	}
+}
 
 // queueStaleAfter is how old the queue snapshot may be before the title bar
 // calls out its age (koryph-b01). The provider recomputes every ~5 s
@@ -118,6 +150,15 @@ type queueModel struct {
 	// filter is the active state filter.
 	filter queueFilter
 
+	// mode is the active grouping/sorting mode (koryph-vy8).
+	mode queueMode
+
+	// query is the applied metadata search (koryph-166); queryActive is true
+	// while the operator edits queryInput.
+	query       string
+	queryActive bool
+	queryInput  textinput.Model
+
 	// detail, when non-nil, is the node whose detail panel is shown.
 	detail *cockpit.QueueNode
 
@@ -127,11 +168,15 @@ type queueModel struct {
 
 // newQueueModel creates an empty queue model.
 func newQueueModel(theme Theme) *queueModel {
+	qi := textinput.New()
+	qi.Placeholder = "label:area:engine type:task state:ready p:1 free-text"
+	qi.CharLimit = 120
 	return &queueModel{
-		theme:    theme,
-		width:    80,
-		height:   24,
-		expanded: make(map[string]bool),
+		theme:      theme,
+		width:      80,
+		height:     24,
+		expanded:   make(map[string]bool),
+		queryInput: qi,
 	}
 }
 
@@ -142,12 +187,47 @@ func (m *queueModel) Init() tea.Cmd { return nil }
 func (m *queueModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.queryActive {
+			return m.updateQuery(msg)
+		}
 		if m.detail != nil {
 			return m.updateDetail(msg)
 		}
 		return m.updateList(msg)
 	}
 	return m, nil
+}
+
+// updateQuery handles key events while the / search input is focused
+// (koryph-166): enter applies the query (empty clears it), esc cancels and
+// keeps the previously applied query, everything else edits the input.
+func (m *queueModel) updateQuery(msg tea.KeyMsg) (TabModel, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		m.query = strings.TrimSpace(m.queryInput.Value())
+		m.queryActive = false
+		m.queryInput.Blur()
+		m.rebuildRows()
+		m.clampCursor()
+		return m, nil
+	case "esc":
+		m.queryActive = false
+		m.queryInput.Blur()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.queryInput, cmd = m.queryInput.Update(msg)
+	return m, cmd
+}
+
+// clampCursor keeps the cursor inside the current row list.
+func (m *queueModel) clampCursor() {
+	if m.cursor >= len(m.rows) {
+		m.cursor = len(m.rows) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
 }
 
 // updateList handles key events when the list is the primary focus.
@@ -168,7 +248,8 @@ func (m *queueModel) updateList(msg tea.KeyMsg) (TabModel, tea.Cmd) {
 			m.cursor = len(m.rows) - 1
 		}
 	case " ":
-		// Toggle expand/collapse on the selected row.
+		// Toggle expand/collapse on the selected row (epic tree only —
+		// flat modes build rows with hasChildren false, so this is inert).
 		if m.cursor < len(m.rows) {
 			row := m.rows[m.cursor]
 			if row.hasChildren {
@@ -181,17 +262,26 @@ func (m *queueModel) updateList(msg tea.KeyMsg) (TabModel, tea.Cmd) {
 		// Cycle filter.
 		m.filter = (m.filter + 1) % queueFilterCount
 		m.rebuildRows()
-		// Clamp cursor.
-		if m.cursor >= len(m.rows) {
-			m.cursor = len(m.rows) - 1
-		}
-		if m.cursor < 0 {
-			m.cursor = 0
-		}
-	case "F":
-		// Expand all.
-		m.expandAll(m.snap.Queue.Roots, true)
+		m.clampCursor()
+	case "m":
+		// Cycle grouping mode (koryph-vy8).
+		m.mode = (m.mode + 1) % queueModeCount
 		m.rebuildRows()
+		m.clampCursor()
+	case "/":
+		// Open the metadata search input (koryph-166).
+		m.queryActive = true
+		m.queryInput.SetValue(m.query)
+		m.queryInput.Focus()
+		return m, textinput.Blink
+	case "F":
+		// Toggle expand-all/collapse-all (koryph-vy8): expand when anything
+		// is collapsed, otherwise collapse everything to the epic level.
+		if m.mode == queueModeEpics {
+			m.expandAll(m.snap.Queue.Roots, m.anyCollapsed(m.snap.Queue.Roots))
+			m.rebuildRows()
+			m.clampCursor()
+		}
 	case "enter":
 		if m.cursor < len(m.rows) {
 			node := m.rows[m.cursor].node
@@ -262,24 +352,35 @@ func (m *queueModel) emptyView() string {
 func (m *queueModel) listView() string {
 	var b strings.Builder
 
-	// Title bar with filter and counts. Stale queue data — the background
-	// refresh hasn't landed for several TTLs (bd slow, contended, or a pass
-	// timed out; koryph-b01) — is called out with its age so the operator
-	// never mistakes a frozen tree for live state.
+	// Title bar with mode, filter, query, and counts. Stale queue data — the
+	// background refresh hasn't landed for several TTLs (bd slow, contended,
+	// or a pass timed out; koryph-b01) — is called out with its age so the
+	// operator never mistakes a frozen tree for live state.
 	total := m.snap.Queue.NodeCount
 	showing := len(m.rows)
-	filterStr := filterLabel(m.filter)
 	stale := ""
 	if age := m.snap.CapturedAt.Sub(m.snap.Queue.ComputedAt); !m.snap.Queue.ComputedAt.IsZero() && age > queueStaleAfter {
 		stale = fmt.Sprintf("  (data %ds old)", int(age.Seconds()))
 	}
-	title := fmt.Sprintf("Queue  filter:%s  %d/%d%s  [f=filter  space=expand  enter=detail]",
-		filterStr, showing, total, stale)
+	queryStr := ""
+	if m.query != "" {
+		queryStr = fmt.Sprintf("  /%s", m.query)
+	}
+	title := fmt.Sprintf("Queue  mode:%s  filter:%s%s  %d/%d%s  [m=mode  f=filter  /=search  space=fold  F=fold-all  enter=detail]",
+		modeLabel(m.mode), filterLabel(m.filter), queryStr, showing, total, stale)
 	b.WriteString(m.sectionTitle(title))
 	b.WriteRune('\n')
 
+	// Search input line, while editing (koryph-166).
+	inputLines := 0
+	if m.queryActive {
+		b.WriteString("  search> " + m.queryInput.View())
+		b.WriteRune('\n')
+		inputLines = 1
+	}
+
 	// Compute visible rows (scrolled to keep cursor visible).
-	avail := m.height - 3 // title + header + status
+	avail := m.height - 3 - inputLines // title + header + status (+ input)
 	if avail < 1 {
 		avail = 1
 	}
@@ -606,28 +707,141 @@ func (m *queueModel) buildDetailLines(node *cockpit.QueueNode) []string {
 // --- Tree flattening ---------------------------------------------------------
 
 // rebuildRows recomputes the flat visible row list from the current queue
-// snapshot, respecting the expanded set and active filter.
+// snapshot, respecting the grouping mode (koryph-vy8), the expanded set, the
+// state filter, and the metadata query (koryph-166).
 func (m *queueModel) rebuildRows() {
 	m.rows = m.rows[:0]
-	roots := m.visibleNodes(m.snap.Queue.Roots)
-	for i, root := range roots {
-		m.flattenNode(root, 0, nil, i == len(roots)-1)
+	switch m.mode {
+	case queueModeEpics:
+		roots := m.visibleNodes(m.snap.Queue.Roots)
+		for i, root := range roots {
+			m.flattenNode(root, 0, nil, i == len(roots)-1)
+		}
+	default:
+		// Flat modes: every node in one list, sorted by priority then id;
+		// issues mode additionally drops container rows (epics/features and
+		// container-tasks — nothing directly workable there).
+		var flat []cockpit.QueueNode
+		var collect func(nodes []cockpit.QueueNode)
+		collect = func(nodes []cockpit.QueueNode) {
+			for _, n := range nodes {
+				if m.nodeVisible(n) &&
+					!(m.mode == queueModeIssues && n.State == cockpit.QueueStateContainer) {
+					flat = append(flat, n)
+				}
+				collect(n.Children)
+			}
+		}
+		collect(m.snap.Queue.Roots)
+		sort.SliceStable(flat, func(i, j int) bool {
+			if flat[i].Issue.Priority != flat[j].Issue.Priority {
+				return flat[i].Issue.Priority < flat[j].Issue.Priority
+			}
+			return flat[i].Issue.ID < flat[j].Issue.ID
+		})
+		for i, n := range flat {
+			m.rows = append(m.rows, flatRow{
+				node:   n,
+				isLast: i == len(flat)-1,
+				// hasChildren stays false: flat modes never nest or fold.
+			})
+		}
 	}
 }
 
-// visibleNodes filters a sibling slice to those that will render: a node shows
-// if it passes the active state filter OR is a container (containers always
-// show so their matching descendants stay grouped). Computing the rendered set
-// up front lets flattenNode assign correct last-sibling flags for the tree
-// connectors even when some siblings are filtered out.
+// nodeVisible reports whether one node itself passes the state filter AND the
+// metadata query (koryph-166).
+func (m *queueModel) nodeVisible(n cockpit.QueueNode) bool {
+	return m.stateVisible(n.State) && matchQueueQuery(n, m.query)
+}
+
+// subtreeVisible reports whether n or any descendant is visible — an ancestor
+// chain must stay on screen so a matching descendant keeps its grouping.
+func (m *queueModel) subtreeVisible(n cockpit.QueueNode) bool {
+	if m.nodeVisible(n) {
+		return true
+	}
+	for _, c := range n.Children {
+		if m.subtreeVisible(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// visibleNodes filters a sibling slice to those that will render: a node
+// shows when it (or any descendant) passes the state filter and metadata
+// query — a container earns its row from its matching descendants, and one
+// whose whole subtree is filtered out hides with it. Computing the rendered
+// set up front lets flattenNode assign correct last-sibling flags for the
+// tree connectors even when some siblings are filtered out.
 func (m *queueModel) visibleNodes(nodes []cockpit.QueueNode) []cockpit.QueueNode {
 	out := make([]cockpit.QueueNode, 0, len(nodes))
 	for _, n := range nodes {
-		if len(n.Children) > 0 || m.stateVisible(n.State) {
+		if m.subtreeVisible(n) {
 			out = append(out, n)
 		}
 	}
 	return out
+}
+
+// anyCollapsed reports whether any container in the tree is currently
+// collapsed — the F expand/collapse-all toggle's pivot (koryph-vy8). An
+// unset entry counts as expanded (flattenNode's default).
+func (m *queueModel) anyCollapsed(nodes []cockpit.QueueNode) bool {
+	for _, n := range nodes {
+		if len(n.Children) > 0 {
+			if set := m.expandedSet(n.Issue.ID); set && !m.expanded[n.Issue.ID] {
+				return true
+			}
+			if m.anyCollapsed(n.Children) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matchQueueQuery reports whether a node satisfies every whitespace-separated
+// term of the metadata query (koryph-166). Terms:
+//
+//	label:<substr>  any label contains substr
+//	type:<t>        issue type equals t
+//	state:<s>       queue state contains s
+//	p:<n>           priority equals n (P<n> also accepted)
+//	<text>          id or title contains text
+//
+// All matching is case-insensitive; an empty query matches everything.
+func matchQueueQuery(n cockpit.QueueNode, query string) bool {
+	for _, term := range strings.Fields(strings.ToLower(query)) {
+		if !matchQueueTerm(n, term) {
+			return false
+		}
+	}
+	return true
+}
+
+func matchQueueTerm(n cockpit.QueueNode, term string) bool {
+	switch {
+	case strings.HasPrefix(term, "label:"):
+		want := strings.TrimPrefix(term, "label:")
+		for _, l := range n.Issue.Labels {
+			if strings.Contains(strings.ToLower(l), want) {
+				return true
+			}
+		}
+		return false
+	case strings.HasPrefix(term, "type:"):
+		return strings.EqualFold(n.Issue.IssueType, strings.TrimPrefix(term, "type:"))
+	case strings.HasPrefix(term, "state:"):
+		return strings.Contains(strings.ToLower(string(n.State)), strings.TrimPrefix(term, "state:"))
+	case strings.HasPrefix(term, "p:"):
+		want := strings.TrimPrefix(strings.TrimPrefix(term, "p:"), "p")
+		return fmt.Sprintf("%d", n.Issue.Priority) == want
+	default:
+		return strings.Contains(strings.ToLower(n.Issue.ID), term) ||
+			strings.Contains(strings.ToLower(n.Issue.Title), term)
+	}
 }
 
 // flattenNode appends visible rows for node and (if expanded) its subtree.

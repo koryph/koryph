@@ -339,6 +339,38 @@ shows *"queue refreshing…"* briefly on startup. If the data stops refreshing �
 `(data Ns old)` so a frozen tree is never mistaken for live state; the next
 refresh clears it automatically.
 
+#### Grouping modes
+
+`m` cycles three arrangements, shown in the title bar as `mode:<name>`:
+
+| Mode | Arrangement |
+|------|-------------|
+| `epics` (default) | Hierarchy — epics with their children nested beneath, siblings ordered by priority |
+| `priority` | Every bead in one flat list sorted by priority then id — "what dispatches next" |
+| `issues` | The flat priority list minus container rows (epics/features) — only directly workable issues |
+
+In `epics` mode, `Space` folds/unfolds the selected epic and `F` toggles
+between collapse-all (epic level only) and expand-all. Folding keys are
+inert in the flat modes.
+
+#### Metadata search
+
+`/` opens a search prompt. Terms are whitespace-separated and **all** must
+match (AND); matching is case-insensitive:
+
+| Term | Matches |
+|------|---------|
+| `label:<substr>` | any label containing the substring (e.g. `label:area:engine`) |
+| `type:<t>` | issue type equals (`task`, `bug`, `epic`, …) |
+| `state:<s>` | queue state contains (`ready`, `dep-blocked`, `running`, …) |
+| `p:<n>` | priority equals (`p:1` = P1) |
+| anything else | bead id or title contains the text |
+
+`Enter` applies (an empty query clears), `Esc` cancels and keeps the previous
+query. The active query renders in the title. In the epic tree, an epic stays
+visible while any of its descendants match; the search composes with the `f`
+state filter.
+
 #### Queue tab keys
 
 | Key | Action |
@@ -346,8 +378,10 @@ refresh clears it automatically.
 | `↑`/`k`, `↓`/`j` | Move selection up/down |
 | `g` | Jump to top |
 | `G` | Jump to bottom |
-| `Space` | Toggle expand/collapse for the selected epic |
-| `F` | Expand all epics |
+| `m` | Cycle grouping mode (`epics` → `priority` → `issues`) |
+| `/` | Open the metadata search prompt |
+| `Space` | Fold/unfold the selected epic (`epics` mode) |
+| `F` | Toggle collapse-all / expand-all (`epics` mode) |
 | `f` | Cycle state filter (`all` → `running` → `ready` → `blocked` → `deferred`) |
 | `Enter` | Open inline bead detail panel |
 | `Esc` / `Backspace` / `q` | Close bead detail panel |
