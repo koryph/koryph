@@ -10,7 +10,10 @@
   "go.formatTool": "gofmt",
   "go.useLanguageServer": true,
   "gopls": {
-    "build.directoryFilters": ["-.claude", "-node_modules"]
+    "build.directoryFilters": [
+      "-.claude",
+      "-node_modules"
+    ]
   },
   "files.trimTrailingWhitespace": true,
   "files.insertFinalNewline": true,
@@ -23,5 +26,6 @@
   "search.exclude": {
     "**/.claude/worktrees/**": true,
     "**/*-worktrees/**": true
-  }
+  },
+  "makefile.configureOnOpen": false
 }
