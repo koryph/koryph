@@ -167,9 +167,11 @@ func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
 	}
 
 	// The CLI emits a result envelope; its "result" field holds the model text,
-	// which should itself be strict JSON (extracted tolerantly).
+	// which should itself be strict JSON. Extract the verdict schema-aware
+	// (requiring the "met" key) so a stray brace token quoted from the design or
+	// diff is never mistaken for the verdict.
 	out := strings.TrimSpace(res.Stdout)
-	raw, err := agentjson.ParseEnvelope(out)
+	raw, err := agentjson.ParseEnvelopeVerdict(out, "met")
 	if err != nil {
 		return degradedReason("validator " + err.Error())
 	}

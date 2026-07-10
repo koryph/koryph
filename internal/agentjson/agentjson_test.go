@@ -4,6 +4,7 @@
 package agentjson_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -174,5 +175,158 @@ func TestParseEnvelopeNestedVerdict(t *testing.T) {
 	}
 	if got != inner {
 		t.Errorf("got %q, want %q", got, inner)
+	}
+}
+
+// --- JSONBlocks ---
+
+func TestJSONBlocks(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"no brace", "hello", nil},
+		{"one block", `x {"a":1} y`, []string{`{"a":1}`}},
+		{"two blocks", `{"a":1} mid {"b":2}`, []string{`{"a":1}`, `{"b":2}`}},
+		{"nested is one block", `{"a":{"b":2}}`, []string{`{"a":{"b":2}}`}},
+		{"brace token then verdict", `use {@html} here {"blocking":true}`, []string{`{@html}`, `{"blocking":true}`}},
+		{"brace in string not split", `{"k":"{not real}"}`, []string{`{"k":"{not real}"}`}},
+		{"unclosed tail ignored", `{"a":1} and {oops`, []string{`{"a":1}`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentjson.JSONBlocks(tc.s)
+			if len(got) != len(tc.want) {
+				t.Fatalf("JSONBlocks(%q) = %v, want %v", tc.s, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("block %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// --- FencedJSONBlocks ---
+
+func TestFencedJSONBlocks(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		want []string
+	}{
+		{"no fence", "just prose", nil},
+		{"json fence", "pre\n```json\n{\"blocking\":false}\n```\npost", []string{`{"blocking":false}`}},
+		{"bare fence", "```\n{\"a\":1}\n```", []string{`{"a":1}`}},
+		{"non-json lang ignored", "```svelte\n{@html x}\n```", nil},
+		{"two fences", "```json\n{\"a\":1}\n```\nmid\n```json\n{\"b\":2}\n```", []string{`{"a":1}`, `{"b":2}`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentjson.FencedJSONBlocks(tc.s)
+			if len(got) != len(tc.want) {
+				t.Fatalf("FencedJSONBlocks(%q) = %v, want %v", tc.s, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("fence %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// --- SelectJSON: immune to diff-content brace tokens ---
+
+func TestSelectJSON(t *testing.T) {
+	cases := []struct {
+		name         string
+		s            string
+		requiredKeys []string
+		want         string
+	}{
+		{
+			// The exact live-bug shape: a Svelte {@html} quoted before the verdict.
+			// FirstJSONBlock would return "{@html}"; SelectJSON must skip it.
+			name:         "html token before verdict",
+			s:            "The template uses {@html} which is risky.\n{\"blocking\":true,\"findings\":[]}",
+			requiredKeys: []string{"blocking"},
+			want:         `{"blocking":true,"findings":[]}`,
+		},
+		{
+			// A glob/template token that is a balanced but invalid-JSON brace block.
+			name:         "glob token before verdict",
+			s:            "matches {other_namespace%-*} in the diff\n{\"blocking\":false,\"findings\":[]}",
+			requiredKeys: []string{"blocking"},
+			want:         `{"blocking":false,"findings":[]}`,
+		},
+		{
+			// A valid-but-unrelated JSON object quoted in prose must NOT be taken
+			// as the verdict — the required key disambiguates.
+			name:         "unrelated valid json before verdict",
+			s:            "config was {\"a\":1} before.\n{\"blocking\":true,\"findings\":[]}",
+			requiredKeys: []string{"blocking"},
+			want:         `{"blocking":true,"findings":[]}`,
+		},
+		{
+			// Fenced verdict is preferred even with a stray brace token outside.
+			name:         "fenced verdict wins over stray token",
+			s:            "note {@html}\n```json\n{\"blocking\":false,\"findings\":[]}\n```",
+			requiredKeys: []string{"blocking"},
+			want:         `{"blocking":false,"findings":[]}`,
+		},
+		{
+			// No required key: still skips the non-JSON token, returns the object.
+			name: "no required key skips non-json token",
+			s:    "{@html}\n{\"met\":true}",
+			want: `{"met":true}`,
+		},
+		{
+			// Only a non-JSON brace token: nothing qualifies.
+			name:         "only garbage token",
+			s:            "the diff has {@html} and nothing else",
+			requiredKeys: []string{"blocking"},
+			want:         "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentjson.SelectJSON(tc.s, tc.requiredKeys...); got != tc.want {
+				t.Errorf("SelectJSON(%q, %v) = %q, want %q", tc.s, tc.requiredKeys, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseEnvelopeVerdictImmuneToDiffTokens is the regression for the live bug:
+// a reviewer result whose prose quotes {@html} / {other_namespace%-*} before the
+// real verdict must still yield the verdict, not "verdict JSON invalid: {@html}".
+func TestParseEnvelopeVerdictImmuneToDiffTokens(t *testing.T) {
+	result := "The Svelte component uses {@html} and a {other_namespace%-*} glob; " +
+		"here is a raw {looks:like,json} snippet too.\n" +
+		"```json\n{\"blocking\": true, \"findings\": [{\"severity\":\"major\",\"summary\":\"unescaped {@html}\"}]}\n```"
+	out := envelope(result)
+	raw, err := agentjson.ParseEnvelopeVerdict(out, "blocking")
+	if err != nil {
+		t.Fatalf("ParseEnvelopeVerdict: %v", err)
+	}
+	if !strings.Contains(raw, `"blocking"`) || strings.HasPrefix(raw, "{@html") {
+		t.Fatalf("extracted the wrong block: %q", raw)
+	}
+	if !json.Valid([]byte(raw)) {
+		t.Fatalf("extracted block is not valid JSON: %q", raw)
+	}
+}
+
+// TestParseEnvelopeVerdictUnparseableFailsClosed verifies a genuinely
+// unparseable result still surfaces an error (fail-closed), not a phantom pass.
+func TestParseEnvelopeVerdictUnparseableFailsClosed(t *testing.T) {
+	// Only brace tokens, no real verdict object.
+	out := envelope("I could not review: {@html} {other_namespace%-*} — sorry.")
+	if _, err := agentjson.ParseEnvelopeVerdict(out, "blocking"); err == nil {
+		t.Fatal("expected an error for an unparseable verdict, got nil")
 	}
 }

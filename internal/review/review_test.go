@@ -137,6 +137,37 @@ func TestReviewNonBlockingWithProse(t *testing.T) {
 	}
 }
 
+// TestReviewImmuneToFrontendDiffTokens is the regression for the live bug: a
+// Svelte-heavy diff makes the reviewer quote frontend template tokens ({@html},
+// a {other_namespace%-*} glob, a raw {looks:like,json} snippet) in its prose
+// before the real verdict. The old first-brace extraction latched onto {@html}
+// and failed "verdict JSON invalid: {@html}"; the fenced, schema-anchored
+// extraction must recover the true verdict cleanly.
+func TestReviewImmuneToFrontendDiffTokens(t *testing.T) {
+	repo := reviewRepo(t)
+	// Model result: prose full of frontend brace tokens, then the fenced verdict.
+	result := `The component renders {@html body} and matches {other_namespace%-*}; ` +
+		`a raw {looks:like,json} appears too. Verdict follows:\n` +
+		"```json\\n" +
+		`{\"blocking\": true, \"findings\": [{\"severity\":\"blocking\",\"file\":\"App.svelte\",\"summary\":\"unescaped {@html} sink\"}]}` +
+		"\\n```"
+	envelope := `{"type":"result","is_error":false,"result":"` + result + `"}`
+
+	o := baseOpts(t, repo, fakeClaude(t, envelope))
+	o.Attempts = 1
+	v := Review(context.Background(), o)
+
+	if v.Degraded {
+		t.Fatalf("verdict degraded on a frontend diff (the live bug): %+v", v)
+	}
+	if !v.Blocking {
+		t.Errorf("Blocking = false, want true")
+	}
+	if len(v.Findings) != 1 || v.Findings[0].Severity != "blocking" || v.Findings[0].File != "App.svelte" {
+		t.Errorf("Findings = %+v", v.Findings)
+	}
+}
+
 func TestReviewGarbageOutputDegraded(t *testing.T) {
 	repo := reviewRepo(t)
 	o := baseOpts(t, repo, fakeClaude(t, "I am not JSON at all, sorry."))

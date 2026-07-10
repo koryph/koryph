@@ -165,9 +165,11 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	}
 
 	// The CLI emits a result envelope; its "result" field holds the model
-	// text, which should itself be strict JSON (extracted tolerantly).
+	// text, which should itself be strict JSON. Extract the verdict schema-aware
+	// (requiring the "blocking" key) so a stray brace token the model quoted from
+	// the diff — a Svelte {@html}, a {glob%-*} — is never mistaken for the verdict.
 	out := strings.TrimSpace(res.Stdout)
-	raw, err := agentjson.ParseEnvelope(out)
+	raw, err := agentjson.ParseEnvelopeVerdict(out, "blocking")
 	if err != nil {
 		return degradedReason("reviewer " + err.Error())
 	}
@@ -214,17 +216,19 @@ func buildPrompt(branch, base, stat, names string) string {
 		}
 	}
 
+	b.WriteString("\nRead the changed files in this worktree as needed. Respond with your" +
+		" verdict as STRICT JSON inside a single ```json fenced block, and nothing" +
+		" after the closing fence, in exactly this shape:\n\n")
+	b.WriteString("```json\n")
+	b.WriteString(`{"blocking": <bool>, "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}`)
+	b.WriteString("\n```\n")
 	b.WriteString(`
-Read the changed files in this worktree as needed. Respond with STRICT JSON
-only — no prose, no markdown fences — in exactly this shape:
-
-{"blocking": <bool>, "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}
-
 Include "line" (a 1-based line number in "file") when a finding is about a
 specific line, so it can be posted as an inline PR comment; omit it for
 whole-file or general findings. Set "blocking" to true only when at least one
 finding must be fixed before this branch may merge. An empty findings list with
-"blocking": false means the diff is clean.
+"blocking": false means the diff is clean. If you must quote diff tokens like
+{@html} in a summary, keep them inside JSON string values only.
 `)
 	return b.String()
 }
