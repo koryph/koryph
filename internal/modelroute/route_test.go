@@ -244,6 +244,31 @@ func TestRecoveryUpgrade(t *testing.T) {
 	}
 }
 
+// TestEscalationTier exercises the koryph-qf6.4 policy gate: only haiku and
+// sonnet escalate, only when the target is allowlisted, and opus/fable/empty
+// inputs never change (escalation must never downgrade fable).
+func TestEscalationTier(t *testing.T) {
+	cases := []struct {
+		current string
+		allowed []string
+		want    string
+	}{
+		{TierHaiku, nil, TierOpus},
+		{TierSonnet, nil, TierOpus},
+		{TierSonnet, []string{TierHaiku, TierSonnet, TierOpus}, TierOpus},
+		{TierSonnet, []string{TierHaiku, TierSonnet}, ""}, // opus not allowed
+		{TierOpus, nil, ""},                               // already at ceiling
+		{TierFable, nil, ""},                              // never downgrade fable
+		{"", nil, ""},                                     // adopted/legacy slot: unknown model
+		{"surprise", nil, ""},
+	}
+	for _, tc := range cases {
+		if got := EscalationTier(tc.current, tc.allowed); got != tc.want {
+			t.Errorf("EscalationTier(%q, %v) = %q, want %q", tc.current, tc.allowed, got, tc.want)
+		}
+	}
+}
+
 // TestTierForModelID exercises the koryph-qf6.2 normalization of concrete
 // model ids (modelUsage keys, version-suffixed and case-varied) to tiers.
 func TestTierForModelID(t *testing.T) {

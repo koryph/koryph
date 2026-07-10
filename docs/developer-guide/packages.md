@@ -182,7 +182,12 @@ precedence" section.
 - **`Resolve(r)`** — main entry; consults label rules, then persona tier/
   model, then defaults
 - **`PersonaFor(stage, stages)`** — picks persona name from stage map
-- **`RecoveryUpgrade(current)`** — escalates model for a recovery re-dispatch
+- **`RecoveryUpgrade(current)`** — the escalation target (always opus)
+- **`EscalationTier(current, allowed)`** — allowlist-checked gate the engine
+  consults before escalating a final bead-fault attempt (koryph-qf6.4);
+  refuses opus/fable/unknown inputs
+- **`TierForModelID(id)`** — normalizes a concrete model id (a result line's
+  `modelUsage` key) to its tier for actual-model attribution (koryph-qf6.2)
 - **`PersonaMeta(repoRoot, persona)`** — reads persona file →
   `(model, effort, tier)`
 

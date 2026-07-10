@@ -164,6 +164,145 @@ func TestRequeueFreezesBeadFeatures(t *testing.T) {
 	}
 }
 
+// escalationRunner assembles a runner whose dispatches succeed (capturing
+// backend), so requeue paths run all the way through dispatchBead's slot
+// replacement — the seam the koryph-qf6.4 escalation tests must observe.
+func escalationRunner(t *testing.T, f *fix) (*runner, *capturingBackend) {
+	t.Helper()
+	r := runnerFromFixture(t, f)
+	r.adapter = &fakeSource{}
+	r.quotaCfg = &quota.Config{}
+	backend := &capturingBackend{}
+	r.backend = backend
+	return r, backend
+}
+
+func escalationSlot(t *testing.T, r *runner, id string, attempts int) *ledger.Slot {
+	t.Helper()
+	sl := &ledger.Slot{
+		PhaseID:  id,
+		Status:   ledger.SlotRunning,
+		Attempts: attempts,
+		Model:    "sonnet",
+		Agent:    "koryph-implementer",
+		ModelWhy: "stage default (implement)",
+	}
+	r.run.Slots[id] = sl
+	if err := r.store.SaveRun(r.run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	return sl
+}
+
+// TestFinalAttemptEscalatesModel proves koryph-qf6.4: a bead-fault requeue
+// about to burn the FINAL MaxAttempts attempt on sonnet runs it on opus
+// instead, with a rationale that records the escalation (the TUI's ↑ marker
+// and the learner's training signal both key on it). Persona and effort stay
+// frozen — only the tier changes.
+func TestFinalAttemptEscalatesModel(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "esc1", ledger.MaxAttempts-1)
+
+	r.requeueSlot(t.Context(), sl, "", "agent died with no commits")
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	got := r.run.Slots["esc1"]
+	if got.Model != "opus" {
+		t.Errorf("final-attempt model = %q, want opus (escalated)", got.Model)
+	}
+	if !strings.Contains(got.ModelWhy, "escalated from sonnet") {
+		t.Errorf("ModelWhy = %q, want an 'escalated from sonnet' rationale", got.ModelWhy)
+	}
+	if got.Agent != "koryph-implementer" {
+		t.Errorf("persona = %q, want koryph-implementer (frozen — only the tier escalates)", got.Agent)
+	}
+	if got.Attempts != ledger.MaxAttempts {
+		t.Errorf("Attempts = %d, want %d", got.Attempts, ledger.MaxAttempts)
+	}
+	if backend.specs[0].Model != "opus" {
+		t.Errorf("dispatched spec model = %q, want opus", backend.specs[0].Model)
+	}
+}
+
+// TestNonFinalAttemptStaysFrozen proves the koryph-ehx freeze still governs
+// every retry BELOW the final attempt: no escalation on attempt 2 of 3.
+func TestNonFinalAttemptStaysFrozen(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "esc2", 1)
+
+	r.requeueSlot(t.Context(), sl, "", "agent died with no commits")
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	got := r.run.Slots["esc2"]
+	if got.Model != "sonnet" || strings.Contains(got.ModelWhy, "escalat") {
+		t.Errorf("attempt-2 model/why = %q/%q, want frozen sonnet with no escalation", got.Model, got.ModelWhy)
+	}
+}
+
+// TestEscalationSkipsMergeErrors proves a transient merge-error requeue never
+// escalates even on the final attempt: the base moved or a push raced — not a
+// model-capability failure worth an opus attempt.
+func TestEscalationSkipsMergeErrors(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "esc3", ledger.MaxAttempts-1)
+
+	r.requeueSlot(t.Context(), sl, "", mergeErrorRequeueNote)
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	if got := r.run.Slots["esc3"]; got.Model != "sonnet" {
+		t.Errorf("merge-error final attempt model = %q, want sonnet (no escalation)", got.Model)
+	}
+}
+
+// TestEscalationRespectsAllowlist proves the allowlist gate the frozen-model
+// path otherwise bypasses: a project that never allowed opus keeps its final
+// attempt on the frozen tier.
+func TestEscalationRespectsAllowlist(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	r.rec.AllowedModels = []string{"haiku", "sonnet"}
+	sl := escalationSlot(t, r, "esc4", ledger.MaxAttempts-1)
+
+	r.requeueSlot(t.Context(), sl, "", "agent died with no commits")
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	if got := r.run.Slots["esc4"]; got.Model != "sonnet" {
+		t.Errorf("allowlist-denied model = %q, want sonnet", got.Model)
+	}
+}
+
+// TestRateLimitRequeueNeverEscalates proves the environmental path is exempt:
+// a rate-limited death re-runs the same model regardless of attempt count.
+func TestRateLimitRequeueNeverEscalates(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "esc5", ledger.MaxAttempts-1)
+
+	r.requeueRateLimited(t.Context(), sl)
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	got := r.run.Slots["esc5"]
+	if got.Model != "sonnet" || strings.Contains(got.ModelWhy, "escalat") {
+		t.Errorf("rate-limited requeue model/why = %q/%q, want frozen sonnet", got.Model, got.ModelWhy)
+	}
+	if got.Attempts != ledger.MaxAttempts-1 {
+		t.Errorf("Attempts = %d, want %d (environmental failure burns no attempt)", got.Attempts, ledger.MaxAttempts-1)
+	}
+}
+
 // TestRequeueRefreshRebasesWorktreeWithCommits proves the koryph-137 resume
 // path: a worktree carrying landed commits is rebased onto an advanced main
 // before re-dispatch, so the agent resumes on top of the main-side fix while

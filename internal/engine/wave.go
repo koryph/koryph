@@ -920,7 +920,11 @@ type dispatchReq struct {
 	// which model a retry runs — otherwise a bead dispatched on opus can
 	// silently finish on haiku (or vice-versa). dispatchBead skips
 	// modelroute.Resolve entirely when frozenModel != "". Empty frozenModel on
-	// a fresh first-attempt dispatch means "resolve normally".
+	// a fresh first-attempt dispatch means "resolve normally". The ONE
+	// sanctioned mutation is requeueSlot's final-attempt escalation
+	// (koryph-qf6.4): a recorded, allowlist-checked policy decision that
+	// replaces the frozen tier with modelroute.EscalationTier's target and
+	// says so in frozenModelWhy — never a re-resolution from labels.
 	frozenModel    string
 	frozenPersona  string
 	frozenModelWhy string

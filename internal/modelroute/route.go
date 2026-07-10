@@ -363,6 +363,31 @@ func RecoveryUpgrade(current string) string {
 	return TierOpus
 }
 
+// EscalationTier returns the tier the FINAL attempt of a bead-fault requeue
+// should escalate to (koryph-qf6.4): RecoveryUpgrade's target when current is
+// a strictly lower tier AND the target is in the project allowlist (nil/empty
+// allowed means the default allowlist, which includes opus). Returns "" when
+// no escalation applies: current is already at or above the target (opus, and
+// fable — escalation must never DOWNGRADE a fable bead to opus), current is
+// empty/unknown (an adopted or legacy slot whose model we cannot vouch for),
+// or the target is not allowlisted. This is the policy gate the engine
+// consults instead of calling RecoveryUpgrade raw — the requeue path bypasses
+// Resolve (koryph-ehx freeze), so the allowlist check Resolve would normally
+// perform has to happen here.
+func EscalationTier(current string, allowed []string) string {
+	if current != TierHaiku && current != TierSonnet {
+		return ""
+	}
+	up := RecoveryUpgrade(current)
+	if len(allowed) == 0 {
+		allowed = defaultAllowed
+	}
+	if !contains(allowed, up) {
+		return ""
+	}
+	return up
+}
+
 // contains reports whether v is in s.
 func contains(s []string, v string) bool {
 	for _, x := range s {

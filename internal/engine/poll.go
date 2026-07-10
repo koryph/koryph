@@ -1326,6 +1326,28 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
 	logSlotRequeue(sl.PhaseID, why, attempt)
 	logRequeueEvent(sl.PhaseID, why, attempt, sl.CostUSD)
+
+	// In-run escalation (koryph-qf6.4): the FINAL attempt of a bead-fault
+	// requeue runs on the recovery tier instead of burning the last attempt
+	// on a model that has already failed twice — the one deliberate exception
+	// to the koryph-ehx freeze (a policy decision recorded in the rationale,
+	// not a drifting re-resolution; see resolveModel). Merge errors are
+	// excluded (usually transient — the base moved, a push raced — not a
+	// model-capability failure), as are the rate-limit and budget-kill paths,
+	// which never reach this function. EscalationTier itself refuses to
+	// change opus/fable/unknown models and enforces the project allowlist
+	// that the frozen-model path otherwise bypasses.
+	frozenModel, frozenWhy := sl.Model, sl.ModelWhy
+	if attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote {
+		if up := modelroute.EscalationTier(sl.Model, r.rec.AllowedModels); up != "" {
+			frozenModel = up
+			frozenWhy = fmt.Sprintf("escalated from %s after %d bead-fault attempts (%s)", sl.Model, sl.Attempts, why)
+			r.progress("bead %s: escalating final attempt %d to %s (was %s — %s)",
+				sl.PhaseID, attempt, up, sl.Model, why)
+			logModelEscalated(sl.PhaseID, sl.Model, up, attempt, why)
+		}
+	}
+
 	r.backoffSleep(ctx, sl.Attempts)
 
 	// Never re-run an agent against a checkout that predates a main-side fix
@@ -1368,10 +1390,13 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		// requeue re-runs the SAME model/persona/effort the bead was dispatched
 		// with, so a `model:*` relabel mid-run (or non-deterministic
 		// persona-tier resolution) cannot silently switch a retry to the wrong
-		// model. Same freeze rationale as the footprint just below.
-		frozenModel:    sl.Model,
+		// model. Same freeze rationale as the footprint just below. The one
+		// exception is the deliberate final-attempt escalation above
+		// (koryph-qf6.4), which replaces the frozen tier with a recorded,
+		// allowlist-checked policy decision — never a re-resolution.
+		frozenModel:    frozenModel,
 		frozenPersona:  sl.Agent,
-		frozenModelWhy: sl.ModelWhy,
+		frozenModelWhy: frozenWhy,
 		frozenEffort:   sl.Effort,
 		// Carry the persisted footprint forward too (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
