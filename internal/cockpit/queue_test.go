@@ -99,6 +99,90 @@ func TestComputeQueue_EpicWithChildren(t *testing.T) {
 	}
 }
 
+// TestComputeQueue_ClosedParentReconstructed verifies that open children of a
+// parent epic that is ABSENT from the open-issue set (closed → dropped by
+// `bd list`) are regrouped under a synthesized container rather than orphaned
+// to the top level as a flat list. This is the "no longer groups the hierarchy"
+// regression: over a multi-day run epics close while stragglers remain open.
+func TestComputeQueue_ClosedParentReconstructed(t *testing.T) {
+	now := time.Now()
+	// e1 is NOT in allIssues (closed). Its two children remain open.
+	c1 := makeChild("e1.1", "Straggler 1", "e1")
+	c2 := makeChild("e1.2", "Straggler 2", "e1")
+	standalone := makeIssue("t9", "Standalone", "task")
+
+	snap := computeQueue(queueInput{
+		allIssues: []beads.Issue{c1, c2, standalone},
+		readyIDs:  map[string]bool{"e1.1": true, "t9": true},
+		closedParents: map[string]beads.Issue{
+			"e1": {ID: "e1", Title: "Closed Epic", IssueType: "epic", Status: "closed"},
+		},
+		now: now,
+	})
+
+	// Roots: the synthesized e1 container + the standalone task (2), NOT the two
+	// children floating at top level (which would be 3 flat roots).
+	if len(snap.Roots) != 2 {
+		t.Fatalf("expected 2 roots (container + standalone), got %d: %+v", len(snap.Roots), rootIDs(snap.Roots))
+	}
+	// Node count includes the synthesized container: e1 + e1.1 + e1.2 + t9 = 4.
+	if snap.NodeCount != 4 {
+		t.Errorf("expected 4 nodes (incl. synthesized parent), got %d", snap.NodeCount)
+	}
+	// Locate the synthesized container.
+	var container *QueueNode
+	for i := range snap.Roots {
+		if snap.Roots[i].Issue.ID == "e1" {
+			container = &snap.Roots[i]
+		}
+	}
+	if container == nil {
+		t.Fatalf("synthesized container e1 not found among roots %v", rootIDs(snap.Roots))
+	}
+	if container.State != QueueStateContainer {
+		t.Errorf("container e1: expected container state, got %s", container.State)
+	}
+	if container.Issue.Title != "Closed Epic" {
+		t.Errorf("container e1: expected title from closedParents, got %q", container.Issue.Title)
+	}
+	if len(container.Children) != 2 {
+		t.Fatalf("container e1: expected 2 children nested, got %d", len(container.Children))
+	}
+}
+
+// TestComputeQueue_ClosedParentNoMetadata verifies the ID-only fallback when a
+// closed parent's metadata could not be fetched (bd.Show failed): the children
+// still nest under a bare-ID container rather than going flat.
+func TestComputeQueue_ClosedParentNoMetadata(t *testing.T) {
+	now := time.Now()
+	c1 := makeChild("e2.1", "Child", "e2")
+	snap := computeQueue(queueInput{
+		allIssues: []beads.Issue{c1},
+		readyIDs:  map[string]bool{"e2.1": true},
+		// closedParents intentionally nil — no metadata available.
+		now: now,
+	})
+	if len(snap.Roots) != 1 {
+		t.Fatalf("expected 1 synthesized root, got %d", len(snap.Roots))
+	}
+	root := snap.Roots[0]
+	if root.Issue.ID != "e2" || root.State != QueueStateContainer {
+		t.Errorf("expected bare-ID container e2, got id=%q state=%s", root.Issue.ID, root.State)
+	}
+	if len(root.Children) != 1 || root.Children[0].Issue.ID != "e2.1" {
+		t.Errorf("expected child e2.1 nested under e2, got %+v", root.Children)
+	}
+}
+
+// rootIDs is a test helper listing root node IDs for failure messages.
+func rootIDs(roots []QueueNode) []string {
+	ids := make([]string, len(roots))
+	for i, r := range roots {
+		ids[i] = r.Issue.ID
+	}
+	return ids
+}
+
 func TestComputeQueue_DepBlocked(t *testing.T) {
 	now := time.Now()
 	// t2 depends on t1 (t1 is not closed yet, so t2 is dep-blocked).

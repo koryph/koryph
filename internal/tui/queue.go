@@ -80,6 +80,13 @@ type flatRow struct {
 	node        cockpit.QueueNode
 	hasChildren bool
 	expanded    bool
+	// ancestorsLast holds, for each ancestor from the top level down to this
+	// row's immediate parent, whether that ancestor was the last among its
+	// visible siblings. Together with isLast it drives the ├─ / └─ / │ tree
+	// connectors so the epic→child grouping is visually unambiguous.
+	ancestorsLast []bool
+	// isLast reports whether this row is the last among its visible siblings.
+	isLast bool
 }
 
 // queueModel is the Bubble Tea model for the Queue tab.
@@ -266,16 +273,18 @@ func (m *queueModel) listView() string {
 	}
 
 	// Column widths.
-	stateW := 10
-	idW := 14
+	stateW := 12 // widest badge is "res-deferred" (12)
+	idW := 16
 	reasonW := 24
-	titleW := m.width - stateW - idW - reasonW - 8 // 8 = indent(max 4) + separators
+	titleW := m.width - stateW - idW - reasonW - 6 // 6 = three 2-space separators
 	if titleW < 10 {
 		titleW = 10
 	}
 
-	// Header row.
-	header := fmt.Sprintf("  %-*s  %-*s  %-*s  %s",
+	// Header row. No leading indent: the data rows start at column 0 with the
+	// State badge (the tree indentation lives inside the Title column), so the
+	// header must start there too to stay aligned.
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %s",
 		stateW, "State",
 		idW, "ID",
 		titleW, "Title",
@@ -305,40 +314,44 @@ func (m *queueModel) listView() string {
 }
 
 // renderRow renders one queue row, highlighted when selected.
+//
+// Layout: the State and ID columns are fixed-width and stay aligned at every
+// depth; the hierarchy is drawn in the Title column via ├─ / └─ / │ tree
+// connectors plus the ▼ / ▶ expander. Column text is padded by VISUAL width
+// (padRight, rune-aware) rather than fmt's byte-based %-*s so styled/box-drawing
+// runes never skew alignment — the padding-vs-ANSI bug that made the old queue
+// read as an unaligned flat jumble.
 func (m *queueModel) renderRow(row flatRow, selected bool, stateW, idW, titleW, reasonW int) string {
 	node := row.node
 	iss := node.Issue
 
-	// Indent: 2 spaces per depth level.
-	indent := strings.Repeat("  ", row.depth)
+	badge := padRight(stateBadgeText(node.State), stateW)
+	id := padRight(truncate(iss.ID, idW), idW)
 
-	// Expand/collapse indicator.
-	expInd := "  "
+	// Tree connectors + expander live inside the Title column so State/ID stay
+	// column-aligned with the header across all depths.
+	prefix := treeConnector(row.ancestorsLast, row.isLast)
+	expander := "  "
 	if row.hasChildren {
 		if row.expanded {
-			expInd = "▼ "
+			expander = "▼ "
 		} else {
-			expInd = "▶ "
+			expander = "▶ "
 		}
 	}
+	titleText := iss.Title
+	if node.State == cockpit.QueueStateContainer && row.hasChildren {
+		titleText = fmt.Sprintf("%s (%d)", iss.Title, len(node.Children))
+	}
+	titleAvail := titleW - lipglossLen(prefix) - lipglossLen(expander)
+	if titleAvail < 4 {
+		titleAvail = 4
+	}
+	title := padRight(prefix+expander+truncate(titleText, titleAvail), titleW)
 
-	stateBadge := m.stateBadge(node.State)
-	id := truncate(iss.ID, idW)
-	title := truncate(iss.Title, titleW)
 	reason := truncate(node.Reason, reasonW)
 
-	// Children count annotation for containers.
-	if node.State == cockpit.QueueStateContainer && row.hasChildren {
-		kids := fmt.Sprintf(" (%d)", len(node.Children))
-		title = truncate(iss.Title, titleW-len(kids)) + kids
-	}
-
-	line := fmt.Sprintf("%s%s%-*s  %-*s  %-*s  %s",
-		indent, expInd,
-		stateW, stateBadge,
-		idW, id,
-		titleW, title,
-		reason)
+	line := badge + "  " + id + "  " + title + "  " + reason
 
 	if selected {
 		return lipgloss.NewStyle().
@@ -349,29 +362,64 @@ func (m *queueModel) renderRow(row flatRow, selected bool, stateW, idW, titleW, 
 	return m.stateStyle(node.State).Render(line)
 }
 
-// stateBadge returns the display badge for a queue state.
-func (m *queueModel) stateBadge(state cockpit.QueueNodeState) string {
+// treeConnector builds the ├─ / └─ / │ prefix for a queue row from its ancestor
+// last-sibling flags. Top-level rows (no ancestors) still get a connector so
+// every row visibly belongs to the tree. Ancestor levels contribute a vertical
+// bar ("│  ") when that ancestor had following siblings, or blank ("   ") when
+// it was the last — the standard `tree(1)` rendering.
+func treeConnector(ancestorsLast []bool, isLast bool) string {
+	var b strings.Builder
+	for _, last := range ancestorsLast {
+		if last {
+			b.WriteString("   ")
+		} else {
+			b.WriteString("│  ")
+		}
+	}
+	if isLast {
+		b.WriteString("└─ ")
+	} else {
+		b.WriteString("├─ ")
+	}
+	return b.String()
+}
+
+// padRight pads s with spaces to w visual columns, measured by lipglossLen
+// (runes, ignoring ANSI) so multi-byte box-drawing characters and any styling
+// do not throw off alignment. Returns s unchanged when already at least w wide.
+func padRight(s string, w int) string {
+	n := lipglossLen(s)
+	if n >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-n)
+}
+
+// stateBadgeText returns the plain (unstyled) state badge label. Coloring is
+// applied to the whole row by stateStyle, so keeping this plain lets padRight
+// align the column correctly.
+func stateBadgeText(state cockpit.QueueNodeState) string {
 	switch state {
 	case cockpit.QueueStateRunning:
-		return lipgloss.NewStyle().Foreground(m.theme.Running).Bold(true).Render("running")
+		return "running"
 	case cockpit.QueueStateReady:
-		return lipgloss.NewStyle().Foreground(m.theme.Done).Render("ready")
+		return "ready"
 	case cockpit.QueueStateDepBlocked:
-		return lipgloss.NewStyle().Foreground(m.theme.Error).Render("dep-blocked")
+		return "dep-blocked"
 	case cockpit.QueueStateFootprintDeferred:
-		return lipgloss.NewStyle().Foreground(m.theme.Warning).Render("fp-deferred")
+		return "fp-deferred"
 	case cockpit.QueueStateResourceDeferred:
-		return lipgloss.NewStyle().Foreground(m.theme.Warning).Render("res-deferred")
+		return "res-deferred"
 	case cockpit.QueueStateHuman:
-		return lipgloss.NewStyle().Foreground(m.theme.Purple).Render("human")
+		return "human"
 	case cockpit.QueueStateDeferredUntil:
-		return lipgloss.NewStyle().Foreground(m.theme.Yellow).Render("deferred")
+		return "deferred"
 	case cockpit.QueueStateParked:
-		return lipgloss.NewStyle().Foreground(m.theme.Gray).Render("parked")
+		return "parked"
 	case cockpit.QueueStateContainer:
-		return lipgloss.NewStyle().Foreground(m.theme.Accent).Render("epic")
+		return "epic"
 	default:
-		return lipgloss.NewStyle().Foreground(m.theme.Gray).Render(string(state))
+		return string(state)
 	}
 }
 
@@ -535,13 +583,30 @@ func (m *queueModel) buildDetailLines(node *cockpit.QueueNode) []string {
 // snapshot, respecting the expanded set and active filter.
 func (m *queueModel) rebuildRows() {
 	m.rows = m.rows[:0]
-	for _, root := range m.snap.Queue.Roots {
-		m.flattenNode(root, 0)
+	roots := m.visibleNodes(m.snap.Queue.Roots)
+	for i, root := range roots {
+		m.flattenNode(root, 0, nil, i == len(roots)-1)
 	}
 }
 
+// visibleNodes filters a sibling slice to those that will render: a node shows
+// if it passes the active state filter OR is a container (containers always
+// show so their matching descendants stay grouped). Computing the rendered set
+// up front lets flattenNode assign correct last-sibling flags for the tree
+// connectors even when some siblings are filtered out.
+func (m *queueModel) visibleNodes(nodes []cockpit.QueueNode) []cockpit.QueueNode {
+	out := make([]cockpit.QueueNode, 0, len(nodes))
+	for _, n := range nodes {
+		if len(n.Children) > 0 || m.stateVisible(n.State) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // flattenNode appends visible rows for node and (if expanded) its subtree.
-func (m *queueModel) flattenNode(node cockpit.QueueNode, depth int) {
+// ancestorsLast/isLast carry the tree-connector context (see flatRow).
+func (m *queueModel) flattenNode(node cockpit.QueueNode, depth int, ancestorsLast []bool, isLast bool) {
 	hasKids := len(node.Children) > 0
 	isExpanded := m.expanded[node.Issue.ID]
 
@@ -551,24 +616,21 @@ func (m *queueModel) flattenNode(node cockpit.QueueNode, depth int) {
 		m.expanded[node.Issue.ID] = true
 	}
 
-	// Apply filter: always show containers (epics); for leaf nodes, apply the
-	// active filter. A container is kept if any descendant matches (computed
-	// below via visibility of children).
-	if !m.stateVisible(node.State) && !hasKids {
-		return
-	}
-
 	row := flatRow{
-		depth:       depth,
-		node:        node,
-		hasChildren: hasKids,
-		expanded:    isExpanded,
+		depth:         depth,
+		node:          node,
+		hasChildren:   hasKids,
+		expanded:      isExpanded,
+		ancestorsLast: append([]bool(nil), ancestorsLast...),
+		isLast:        isLast,
 	}
 	m.rows = append(m.rows, row)
 
 	if isExpanded {
-		for _, child := range node.Children {
-			m.flattenNode(child, depth+1)
+		kids := m.visibleNodes(node.Children)
+		childAncestors := append(append([]bool(nil), ancestorsLast...), isLast)
+		for j, child := range kids {
+			m.flattenNode(child, depth+1, childAncestors, j == len(kids)-1)
 		}
 	}
 }

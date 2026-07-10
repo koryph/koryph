@@ -95,6 +95,16 @@ type queueInput struct {
 	// Empty/nil means unavailable — fails open (no resource-deferred
 	// classifications), matching I6.
 	resources []ResourceSnapshot
+	// closedParents supplies metadata (title/type/status) for parent epics
+	// referenced by an open child but ABSENT from allIssues — i.e. the epic has
+	// been closed while some of its children remain open. `bd list` omits closed
+	// issues, so without this the open children would orphan up to the top level
+	// and the queue would render flat, losing the epic grouping (the "no longer
+	// groups the hierarchy" regression). computeQueue synthesizes a container
+	// node per such parent so its open children stay nested. Keyed by parent ID;
+	// a missing entry falls back to a bare ID-only container. refreshQueue
+	// populates it with a bounded set of `bd show` lookups.
+	closedParents map[string]beads.Issue
 	// projectID is this queue's project, used to format a cross-project
 	// resource holder as "project/bead" (matching the engine's
 	// classifyAdmit) vs a same-project holder as just its bead id.
@@ -125,19 +135,38 @@ func computeQueue(in queueInput) QueueSnapshot {
 		}
 	}
 
-	// Collect root issues: no parent, or parent not in the open-issue set.
+	// Partition top-level issues into genuine roots (no parent) and orphans
+	// (parent set but absent from the open-issue set — a closed/filtered epic).
+	// Orphans are regrouped under a synthesized container so the hierarchy
+	// survives a parent epic closing mid-run. An issue whose parent IS present
+	// is neither — it is reached recursively via childrenOf.
 	var roots []beads.Issue
+	orphansByParent := make(map[string][]beads.Issue)
+	var orphanParents []string
 	for _, iss := range in.allIssues {
-		if iss.ParentID == "" || byID[iss.ParentID] == nil {
+		switch {
+		case iss.ParentID == "":
 			roots = append(roots, iss)
+		case byID[iss.ParentID] == nil:
+			if _, seen := orphansByParent[iss.ParentID]; !seen {
+				orphanParents = append(orphanParents, iss.ParentID)
+			}
+			orphansByParent[iss.ParentID] = append(orphansByParent[iss.ParentID], iss)
 		}
 	}
 	sortIssues(roots)
+	sort.Strings(orphanParents) // deterministic order for synthesized containers
 
 	totalCount := 0
-	rootNodes := make([]QueueNode, 0, len(roots))
+	rootNodes := make([]QueueNode, 0, len(roots)+len(orphanParents))
 	for _, root := range roots {
 		node := buildQueueNode(root, childrenOf, in)
+		totalCount += nodeCount(node)
+		rootNodes = append(rootNodes, node)
+	}
+	// Synthesized closed-parent containers, appended after the real roots.
+	for _, parentID := range orphanParents {
+		node := buildOrphanContainer(parentID, orphansByParent[parentID], childrenOf, in)
 		totalCount += nodeCount(node)
 		rootNodes = append(rootNodes, node)
 	}
@@ -146,6 +175,41 @@ func computeQueue(in queueInput) QueueSnapshot {
 		Roots:      rootNodes,
 		NodeCount:  totalCount,
 		ComputedAt: in.now,
+	}
+}
+
+// buildOrphanContainer synthesizes a container QueueNode for a parent epic that
+// is referenced by open children but absent from the open-issue set (closed or
+// filtered). Its children are the orphaned issues (each expanded into its own
+// subtree via buildQueueNode). Parent metadata (title/type/status) comes from
+// in.closedParents when available; otherwise the container shows the bare
+// parent ID. The node is always a container so it renders as a collapsible epic
+// group — preserving the hierarchy the flat `bd list` output would otherwise
+// drop.
+func buildOrphanContainer(parentID string, orphans []beads.Issue, childrenOf map[string][]beads.Issue, in queueInput) QueueNode {
+	sortIssues(orphans)
+	childNodes := make([]QueueNode, 0, len(orphans))
+	for _, o := range orphans {
+		childNodes = append(childNodes, buildQueueNode(o, childrenOf, in))
+	}
+
+	parent, ok := in.closedParents[parentID]
+	if !ok {
+		// No metadata available — synthesize a minimal container from the ID.
+		parent = beads.Issue{ID: parentID, Title: parentID, IssueType: "epic"}
+	}
+	reason := ""
+	if parent.Status != "" && parent.Status != "open" && parent.Status != "in_progress" {
+		// Surface why the parent isn't itself a live queue row.
+		reason = "parent " + parent.Status
+	} else {
+		reason = "parent not in ready set"
+	}
+	return QueueNode{
+		Issue:    parent,
+		State:    QueueStateContainer,
+		Reason:   reason,
+		Children: childNodes,
 	}
 }
 

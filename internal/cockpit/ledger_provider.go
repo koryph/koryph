@@ -446,6 +446,13 @@ func (p *LedgerProvider) refreshQueue(ctx context.Context, snap Snapshot) QueueS
 		byID[iss.ID] = iss
 	}
 
+	// Resolve parents referenced by an open child but absent from the open set
+	// (a closed/filtered epic). Fetching their metadata lets computeQueue keep
+	// the open children grouped under the epic instead of orphaning them to the
+	// top level (the flat-queue regression). Bounded so a pathological graph
+	// can't fan out into an unbounded burst of `bd show` calls.
+	closedParents := p.resolveClosedParents(ctx, allIssues, byID)
+
 	// Running IDs and footprints from current slots.
 	runningIDs := make(map[string]bool, len(snap.Slots))
 	runningFPs := make(map[string]sched.Footprint, len(snap.Slots))
@@ -464,15 +471,60 @@ func (p *LedgerProvider) refreshQueue(ctx context.Context, snap Snapshot) QueueS
 	}
 
 	return computeQueue(queueInput{
-		allIssues:  allIssues,
-		readyIDs:   readyIDs,
-		runningIDs: runningIDs,
-		runningFPs: runningFPs,
-		graph:      snap.Graph,
-		resources:  snap.Governor.Resources,
-		projectID:  p.projectID,
-		now:        snap.CapturedAt,
+		allIssues:     allIssues,
+		readyIDs:      readyIDs,
+		runningIDs:    runningIDs,
+		runningFPs:    runningFPs,
+		graph:         snap.Graph,
+		resources:     snap.Governor.Resources,
+		projectID:     p.projectID,
+		closedParents: closedParents,
+		now:           snap.CapturedAt,
 	})
+}
+
+// closedParentFetchMax bounds how many `bd show` lookups refreshQueue issues
+// for closed/absent parent epics in a single refresh, so a graph with many
+// distinct closed parents cannot fan out into an unbounded subprocess burst.
+const closedParentFetchMax = 48
+
+// resolveClosedParents returns metadata for parent epics referenced by an open
+// child but absent from allIssues (byID) — i.e. the epic has been closed while
+// children remain open, so `bd list` omits it. Each is fetched via bd.Show
+// (which returns closed issues), capped at closedParentFetchMax. A parent whose
+// lookup fails is simply omitted; computeQueue then falls back to an ID-only
+// container. Returns nil when there are no such parents (the common case), so
+// the extra work is skipped entirely on a fully-open graph.
+func (p *LedgerProvider) resolveClosedParents(ctx context.Context, allIssues []beads.Issue, byID map[string]beads.Issue) map[string]beads.Issue {
+	// Collect distinct absent parent IDs in first-seen order.
+	seen := make(map[string]struct{})
+	var missing []string
+	for _, iss := range allIssues {
+		if iss.ParentID == "" {
+			continue
+		}
+		if _, present := byID[iss.ParentID]; present {
+			continue
+		}
+		if _, dup := seen[iss.ParentID]; dup {
+			continue
+		}
+		seen[iss.ParentID] = struct{}{}
+		missing = append(missing, iss.ParentID)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if len(missing) > closedParentFetchMax {
+		missing = missing[:closedParentFetchMax]
+	}
+	out := make(map[string]beads.Issue, len(missing))
+	for _, id := range missing {
+		if iss, err := p.bd.Show(ctx, id); err == nil {
+			out[id] = iss
+		}
+	}
+	return out
 }
 
 // readAgentStatus reads the agent's status.json file.
