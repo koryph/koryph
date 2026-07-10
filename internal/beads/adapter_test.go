@@ -267,16 +267,23 @@ func TestCreate(t *testing.T) {
 	args := lastArgs(t, log)[0]
 	// Description is piped on stdin (not argv), so argv carries only flags.
 	for _, want := range []string{
-		"create Crash on login",
 		"--silent",
 		"--body-file -",
 		"--priority 1",
 		"--labels gh-34,intake,no-dispatch",
 		"--type bug",
+		// The (attacker-influenceable) title follows a `--` end-of-options
+		// terminator so a title starting with `-` cannot inject a bd flag.
+		"-- Crash on login",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("create argv %q missing %q", args, want)
 		}
+	}
+	// The title must NOT appear as the immediate positional after `create`
+	// (the option-injection-vulnerable form).
+	if strings.Contains(args, "create Crash on login") {
+		t.Fatalf("title must follow `--`, not sit adjacent to `create`: %q", args)
 	}
 	if strings.Contains(args, "body text") || strings.Contains(args, "second line") {
 		t.Fatalf("description must be piped on stdin, not argv: %q", args)

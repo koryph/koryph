@@ -37,6 +37,23 @@ func (f *fakePR) Open(_ context.Context, _, branch, base, title, body string) (s
 // ready PR host, the OpenPR path rebases + gates like a merge, then pushes the
 // branch and opens a PR instead of fast-forwarding the default branch. The
 // default branch is untouched and the worktree/branch are kept.
+// TestIsDefaultBranchNameGuardsForcePush asserts the branch-name guard that
+// keeps pushBranch's force-with-lease fallback off any integration branch:
+// engine branches are always agent/<bead-id>, so a force-push of main/master/
+// etc. is never a legitimate engine action.
+func TestIsDefaultBranchNameGuardsForcePush(t *testing.T) {
+	for _, b := range []string{"", "main", "master", "trunk", "develop", "development", "release", "  main  "} {
+		if !isDefaultBranchName(b) {
+			t.Errorf("isDefaultBranchName(%q) = false, want true (must never force-push)", b)
+		}
+	}
+	for _, b := range []string{"agent/koryph-42", "koryph/cn-9", "feature/x", "mainline"} {
+		if isDefaultBranchName(b) {
+			t.Errorf("isDefaultBranchName(%q) = true, want false (a real agent branch)", b)
+		}
+	}
+}
+
 func TestMergeOpenPRPushesBranchAndOpensPR(t *testing.T) {
 	isolateGit(t)
 	repo, _ := initRepoWithRemote(t)

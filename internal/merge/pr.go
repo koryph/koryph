@@ -55,10 +55,14 @@ func openPR(ctx context.Context, o Opts, def string, hasRemote bool) (Result, er
 	}, nil
 }
 
-// pushBranch publishes an engine-owned agent branch to origin. A rebased
-// re-run makes the branch a non-fast-forward of its earlier push; because
-// agent/<bead-id> branches are written only by the engine, the force fallback
-// clobbers nothing but our own prior push.
+// pushBranch publishes an engine-owned agent branch to origin. A rebased re-run
+// makes the branch a non-fast-forward of its earlier push; because
+// agent/<bead-id> branches are written only by the engine, a force fallback
+// clobbers nothing but our own prior push. Two guards keep that assumption
+// honest: (1) refuse to force a default/integration branch name outright — a
+// force there is never a legitimate engine action; (2) use --force-with-lease,
+// which only overwrites when the remote ref still matches what we last fetched,
+// so a concurrent push by anyone else aborts rather than being clobbered.
 func pushBranch(ctx context.Context, dir, branch string) error {
 	res, err := gitRun(ctx, dir, "push", "origin", branch)
 	if err != nil {
@@ -67,7 +71,10 @@ func pushBranch(ctx context.Context, dir, branch string) error {
 	if res.ExitCode == 0 {
 		return nil
 	}
-	forced, err := gitRun(ctx, dir, "push", "--force", "origin", branch)
+	if isDefaultBranchName(branch) {
+		return fmt.Errorf("refusing to force-push %q: engine branches are agent/<bead-id>, never an integration branch", branch)
+	}
+	forced, err := gitRun(ctx, dir, "push", "--force-with-lease", "origin", branch)
 	if err != nil {
 		return err
 	}
@@ -75,6 +82,16 @@ func pushBranch(ctx context.Context, dir, branch string) error {
 		return fmt.Errorf("push %s to origin: %s", branch, strings.TrimSpace(tail(forced.Stderr, 400)))
 	}
 	return nil
+}
+
+// isDefaultBranchName reports whether name is a common default/integration
+// branch that the engine must never force-push.
+func isDefaultBranchName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "", "main", "master", "trunk", "develop", "development", "release":
+		return true
+	}
+	return false
 }
 
 // GhCLI opens pull requests through the `gh` command-line tool. It is the

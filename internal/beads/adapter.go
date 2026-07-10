@@ -127,7 +127,7 @@ type CreateInput struct {
 // returns the new id. The description is piped on stdin so arbitrarily long,
 // multi-line bodies are safe; --silent makes bd emit only the id.
 func (a *Adapter) Create(ctx context.Context, in CreateInput) (string, error) {
-	args := []string{"create", in.Title, "--silent", "--body-file", "-", "--priority", strconv.Itoa(in.Priority)}
+	args := []string{"create", "--silent", "--body-file", "-", "--priority", strconv.Itoa(in.Priority)}
 	if len(in.Labels) > 0 {
 		args = append(args, "--labels", strings.Join(in.Labels, ","))
 	}
@@ -143,6 +143,11 @@ func (a *Adapter) Create(ctx context.Context, in CreateInput) (string, error) {
 	for _, dep := range in.DependsOn {
 		args = append(args, "--depends-on", dep)
 	}
+	// The title is a positional and can be attacker-influenced (intake files
+	// beads from GitHub/JIRA issue titles). Pass it AFTER a `--` end-of-options
+	// terminator so a title beginning with `-` (e.g. "--help", "-x …") is
+	// treated as the title, never parsed as a bd flag (option injection).
+	args = append(args, "--", in.Title)
 	res, err := a.runStdin(ctx, in.Description, args...)
 	if err != nil {
 		return "", err
