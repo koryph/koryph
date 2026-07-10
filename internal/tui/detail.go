@@ -12,10 +12,13 @@
 //   - Backspace/Esc pops the navigation stack; when the stack is empty an
 //     Esc emits detailBackMsg so the App returns to the previous tab.
 //   - 't' toggles the log-tail viewport (viewport follows on each tick).
+//   - 'T' toggles the thinking-tail viewport (koryph-xvk): the agent's live
+//     extended-thinking stream from stream.jsonl, subagent segments labeled.
 //   - Mouse clicks on dep rows via bubblezone set keyboard focus.
 package tui
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -28,6 +31,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/koryph/koryph/internal/cockpit"
+	"github.com/koryph/koryph/internal/runtime/claude"
 )
 
 func init() {
@@ -79,6 +83,18 @@ type detailModel struct {
 	// logFollow enables auto-scroll to bottom on each tick.
 	logFollow bool
 
+	// thinkingMode is true when the thinking-tail viewport is shown
+	// (koryph-xvk): the agent's live extended-thinking stream parsed from
+	// stream.jsonl, mirroring the log-tail mode above.
+	thinkingMode bool
+
+	// thinkVP is the viewport for the thinking tail — separate from logVP so
+	// each mode keeps its own scroll position.
+	thinkVP viewport.Model
+
+	// thinkingFollow enables auto-scroll to bottom on each tick.
+	thinkingFollow bool
+
 	// zonePrefix is unique to this model instance to avoid zone ID collisions.
 	zonePrefix string
 }
@@ -88,12 +104,12 @@ func newDetailModel(theme Theme) *detailModel {
 	// bubblezone's package-level functions require NewGlobal() to have been
 	// called first; calling it multiple times is a no-op.
 	zone.NewGlobal()
-	vp := viewport.New(80, 20)
 	return &detailModel{
 		theme:      theme,
 		width:      80,
 		zonePrefix: zone.NewPrefix(),
-		logVP:      vp,
+		logVP:      viewport.New(80, 20),
+		thinkVP:    viewport.New(80, 20),
 	}
 }
 
@@ -111,6 +127,7 @@ func (m *detailModel) SetBead(beadID string) {
 	m.rows = nil
 	m.cursor = 0
 	m.logMode = false
+	m.thinkingMode = false
 }
 
 // SetDetail stores a freshly-assembled detail snapshot.
@@ -132,6 +149,10 @@ func (m *detailModel) SetSnapshot(snap cockpit.Snapshot) {
 	if m.logMode && m.detail.LogPath != "" {
 		m.refreshLog()
 	}
+	// Same live-follow contract for the thinking tail (koryph-xvk).
+	if m.thinkingMode && m.detail.StreamPath != "" {
+		m.refreshThinking()
+	}
 }
 
 // Resize implements TabModel.
@@ -140,6 +161,8 @@ func (m *detailModel) Resize(w, h int) {
 	m.height = h
 	m.logVP.Width = w
 	m.logVP.Height = h - 4 // leave room for header/footer
+	m.thinkVP.Width = w
+	m.thinkVP.Height = h - 4
 }
 
 // rebuildRows rebuilds the navigable rows from the current detail snapshot.
@@ -219,6 +242,82 @@ func (m *detailModel) refreshLog() {
 	}
 }
 
+// thinkingTailBytes is the maximum number of bytes read from the tail of
+// stream.jsonl on each refresh tick (koryph-xvk). Larger than logTailBytes
+// because thinking deltas share the stream with much chattier tool-use
+// events (input_json_delta dominates by volume) — a 32 KB window would often
+// hold only seconds of reasoning.
+const thinkingTailBytes = 512 * 1024
+
+// refreshThinking re-reads the tail of stream.jsonl, extracts the thinking
+// stream (claude.ExtractThinking), and updates the viewport — the thinking
+// sibling of refreshLog.
+func (m *detailModel) refreshThinking() {
+	if m.detail.StreamPath == "" {
+		return
+	}
+	f, err := os.Open(m.detail.StreamPath)
+	if err != nil {
+		m.thinkVP.SetContent(fmt.Sprintf("(stream unavailable: %v)", err))
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		m.thinkVP.SetContent(fmt.Sprintf("(stream stat error: %v)", err))
+		return
+	}
+	offset := fi.Size() - thinkingTailBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > 0 {
+		if _, err = f.Seek(offset, io.SeekStart); err != nil {
+			m.thinkVP.SetContent(fmt.Sprintf("(stream seek error: %v)", err))
+			return
+		}
+		// Skip the partial line the seek landed inside — ExtractThinking
+		// scans whole JSON lines.
+		br := bufio.NewReaderSize(f, 64*1024)
+		if _, err := br.ReadString('\n'); err != nil {
+			m.thinkVP.SetContent("(no thinking in the stream tail yet)")
+			return
+		}
+		m.setThinkingContent(claude.ExtractThinking(br))
+		return
+	}
+	m.setThinkingContent(claude.ExtractThinking(f))
+}
+
+// setThinkingContent wraps the extracted thinking to the viewport width and
+// applies the follow scroll.
+func (m *detailModel) setThinkingContent(text string) {
+	if strings.TrimSpace(text) == "" {
+		m.thinkVP.SetContent("(no thinking in the stream tail yet — the agent may be mid-tool-call)")
+		return
+	}
+	w := m.thinkVP.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	var b strings.Builder
+	for _, para := range strings.Split(text, "\n") {
+		if para == "" {
+			b.WriteByte('\n')
+			continue
+		}
+		for _, line := range wrapText(para, w) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	m.thinkVP.SetContent(b.String())
+	if m.thinkingFollow {
+		m.thinkVP.GotoBottom()
+	}
+}
+
 // Update implements TabModel.
 func (m *detailModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -241,6 +340,24 @@ func (m *detailModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Thinking-tail mode mirrors log-tail (koryph-xvk).
+		if m.thinkingMode {
+			switch msg.String() {
+			case "T", "esc":
+				m.thinkingMode = false
+				return m, nil
+			case "f":
+				m.thinkingFollow = !m.thinkingFollow
+				if m.thinkingFollow {
+					m.thinkVP.GotoBottom()
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.thinkVP, cmd = m.thinkVP.Update(msg)
+			return m, cmd
+		}
+
 		// Normal detail mode key handling.
 		switch msg.String() {
 		case "t":
@@ -248,6 +365,13 @@ func (m *detailModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 			m.logMode = true
 			m.logFollow = true
 			m.refreshLog()
+			return m, nil
+
+		case "T":
+			// Toggle thinking-tail mode (koryph-xvk).
+			m.thinkingMode = true
+			m.thinkingFollow = true
+			m.refreshThinking()
 			return m, nil
 
 		case "j", "down":
@@ -315,6 +439,18 @@ func (m *detailModel) View() string {
 			Render(fmt.Sprintf("Log tail: %s%s", truncate(m.detail.LogPath, 60), followIndicator))
 		ftr := dimStyle.Render("t/esc back  f toggle-follow  ↑/↓ scroll")
 		return zone.Scan(hdr + "\n" + m.logVP.View() + "\n" + ftr)
+	}
+
+	// Thinking-tail mode (koryph-xvk): the agent's live reasoning stream.
+	if m.thinkingMode {
+		followIndicator := ""
+		if m.thinkingFollow {
+			followIndicator = "  [follow]"
+		}
+		hdr := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).
+			Render(fmt.Sprintf("Thinking tail: %s%s", truncate(m.detail.StreamPath, 60), followIndicator))
+		ftr := dimStyle.Render("T/esc back  f toggle-follow  ↑/↓ scroll")
+		return zone.Scan(hdr + "\n" + m.thinkVP.View() + "\n" + ftr)
 	}
 
 	if m.beadID == "" {
@@ -487,7 +623,7 @@ func (m *detailModel) View() string {
 	}
 
 	// --- Footer hint -------------------------------------------------------------
-	hint := "↑/↓ navigate  enter jump  ⌫ back  t tail log  esc return"
+	hint := "↑/↓ navigate  enter jump  ⌫ back  t tail log  T tail thinking  esc return"
 	if len(m.navStack) > 0 {
 		hint = "↑/↓ navigate  enter jump  ⌫ pop stack  esc return to tab"
 	}

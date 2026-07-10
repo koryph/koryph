@@ -70,6 +70,10 @@ type BeadDetailSnapshot struct {
 	CostUSD     float64
 	EstimateUSD float64
 	LogPath     string // path to agent session log for 't' tail
+	// StreamPath is the agent's stream.jsonl (Slot.Stream) — the source for
+	// the 'T' thinking tail (koryph-xvk): extended-thinking deltas, with
+	// subagent segments marked by parent_tool_use_id transitions.
+	StreamPath string
 
 	// Timing + resource usage (koryph process-metrics). StartedAt/FinishedAt are
 	// the dispatch and terminal wall-clock instants; the resource aggregates are
