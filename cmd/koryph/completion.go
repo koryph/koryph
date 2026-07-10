@@ -137,11 +137,14 @@ func resolveNode(line []string) (*command, bool) {
 	return c, atParent
 }
 
-// topLevelNames returns every top-level command name.
+// topLevelNames returns every visible top-level command name (hidden aliases
+// and internal verbs like __docgen/__complete are excluded from completion).
 func topLevelNames() []string {
 	names := make([]string, 0, len(commandRegistry))
-	for _, c := range commandRegistry {
-		names = append(names, c.name)
+	for i := range commandRegistry {
+		if visibleTopLevel(&commandRegistry[i]) {
+			names = append(names, commandRegistry[i].name)
+		}
 	}
 	return names
 }

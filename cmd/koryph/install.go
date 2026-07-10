@@ -25,6 +25,8 @@ func init() {
 		name:    "commands",
 		summary: "install koryph-* Claude slash commands",
 		run:     cmdCommands,
+		// Superseded by `project install-assets commands`; hidden alias.
+		hidden: true,
 		DocLinks: []string{
 			"user-guide/projects-and-accounts.md",
 		},
@@ -41,6 +43,8 @@ func init() {
 		name:    "rules",
 		summary: "install hook scripts + merge wiring",
 		run:     cmdRules,
+		// Superseded by `project install-assets rules`; hidden alias.
+		hidden: true,
 		DocLinks: []string{
 			"user-guide/projects-and-accounts.md",
 			"concepts/worktrees.md",

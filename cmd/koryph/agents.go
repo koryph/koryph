@@ -19,6 +19,9 @@ func init() {
 		name:    "agents",
 		summary: "install fallback personas",
 		run:     cmdAgents,
+		// Superseded by `project install-assets agents`; kept as a working
+		// alias but hidden from the listing/completion to cut top-level clutter.
+		hidden: true,
 		DocLinks: []string{
 			"user-guide/projects-and-accounts.md",
 		},

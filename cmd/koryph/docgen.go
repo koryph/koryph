@@ -102,7 +102,10 @@ func renderCLIDoc(w io.Writer, warnOut io.Writer) {
 	cmdByName := make(map[string]*command, len(commandRegistry))
 	for i := range commandRegistry {
 		c := &commandRegistry[i]
-		if c.name == "__docgen" {
+		if !visibleTopLevel(c) {
+			// Hidden aliases (agents/commands/rules → project install-assets)
+			// and internal verbs (__docgen/__complete) are omitted from the
+			// generated reference, matching the interactive listing.
 			continue
 		}
 		cmdByName[c.name] = c

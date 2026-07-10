@@ -50,6 +50,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			usage(stdout)
 			return 0
 		}
+		if rest[0] == "getting-started" {
+			fmt.Fprint(stdout, gettingStartedText)
+			return 0
+		}
 		return run(append(rest, "-h"), stdout, stderr)
 	case completeVerb:
 		// Hidden: the shell-completion resolver. Never mutates state.
@@ -61,201 +65,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "koryph: unknown command %q\n\n", cmd)
 	usage(stderr)
 	return engine.ExitUsage
-}
-
-// usage prints the global command listing.
-func usage(w io.Writer) {
-	fmt.Fprint(w, `koryph — central multi-project koryph
-
-USAGE
-  koryph <command> [flags]
-
-New here? Run the top four in order: init -> project add -> validate -> run.
-
-GETTING STARTED
-  init                  create ~/.koryph, verify tools on PATH, print next steps (idempotent)
-  project add <root> --account <personal|work> --identity <email> [--config-dir DIR] [--id slug] [--name N] [--branch B] [--force]
-                        register a project (inspect + register + scaffold adapter + install agents, commands & rules)
-  validate [<project-id>|--project ID]
-                        run the pre-dispatch gate; promotes registered->migrated on green
-  run [--project ID] [--once] [--max N] [--parent EPIC] [--only BEAD] [--budget USD]
-      [--default-model M] [--auto-merge] [--direct] [--dry-run] [--resume] [--review]
-      [--allow-api-spend] [--allow-unvalidated] [--manual]
-                        execute one engine run over a project (--only dispatches a
-                        single bead; --budget caps cumulative run cost; --direct
-                        skips PRs and merges straight to the default branch)
-
-OPERATE
-  intake [--project ID] [--label triage] [--limit 20] [--dry-run] [--comment]
-                        poll a project's labeled GitHub issues into no-dispatch planning beads
-  nudge [--project ID] <phase-id> "text"
-                        append an operator note to the phase INBOX (+ bd comment)
-  stop [--project ID] <phase-id> [--force] | stop --all [--force]
-                        stop an agent (or every agent, --all) — SIGTERM, or
-                        SIGKILL with --force (uncommitted work is lost)
-  drain [--project ID] | --all
-                        graceful loop wind-down: stop new dispatch, let active
-                        slots finish, exit drained (operator-drain); consumes
-                        its own one-shot request so the next run starts clean
-  resize ([--project ID] | --all) (--max N [--force] | --clear)
-                        live wave-width override, re-read by the loop at every
-                        boundary (no restart); clamped to max_concurrent_slots
-                        unless --force; --clear removes the override
-  merge [--project ID] <branch> [--push] [--squash] [--keep-worktree] [--close-bead BEAD --reason R]
-                        land a finished agent branch on the default branch
-  land [--project ID] <bead> [--method ff|squash] [--reason R]
-                        land an engine-opened PR (a pr-opened bead) fast-forward-only,
-                        preserving signed SHAs; closes the bead on success
-  review-pr [--project ID] <pr> [--approve|--comment|--comment-on path:line:msg|--resume|--close] [--body B]
-  review-pr [--project ID] --all
-                        analyze another author's PR (or every open PR with --all) using
-                        koryph's reviewer (prints findings, never approves). --comment posts
-                        findings as inline comments; --comment-on adds your own line
-                        comments; --resume replays a saved analysis after an IDE handoff;
-                        --approve/--close register your approval or close the PR
-  pr-sync [--project ID]  reconcile pr-opened beads against live PR state: a PR merged or
-                        closed by any means marks its slot merged/blocked (nothing stranded)
-  bot create [--name N] [--org ORG] [--public] [--headless]
-                        create a GitHub App via the Manifest flow (one browser click);
-                        persists {name, app_id, slug, owner, public, pem} to
-                        ~/.koryph/bots/<name>.json (0600); permissions: contents:write +
-                        pull_requests:write only (no org permissions → guest-org repo-admin
-                        installs work); no webhook; --public for guest-org scenario
-  bot install --name N  print/open https://github.com/apps/<slug>/installations/new;
-                        explains private/public/org install scenarios and approval-request
-                        behaviour when org policy restricts third-party app installs
-  bot attach --name N --repo OWNER/REPO [--org-secrets]
-                        wire a repo to a bot (idempotent): mint app JWT, resolve installation,
-                        add repo, set RELEASE_BOT_APP_ID/PRIVATE_KEY secrets (per-repo by
-                        default; --org-secrets sets org-level selected-repo secrets), enable
-                        Actions can_approve_pull_request_reviews toggle
-  bot list [--check]    list provisioned bots in ~/.koryph/bots/; --check adds offline PEM
-                        validity check per bot (full identity check: use 'koryph bot check')
-  bot check --name N [--repo OWNER/REPO]
-                        validator chain with precise remediation per failure: JWT valid +
-                        app_id match, installation exists/covers repo, secrets present
-                        (best-effort), toggle on, caller workflow present; exit 0/1/2
-
-  signing setup [--project ID] --provider P --key-ref REF --identity EMAIL [--mode ssh|gitsign]
-      [--public-key "ssh-ed25519 ..."] [--artifacts]
-                        write the vault-backed signing policy into the project adapter
-                        (protonpass + no --public-key: auto-discover via the agent)
-  signing enable [--project ID]
-                        load the key into the SSH agent + apply repo git config
-  signing verify [--project ID] --branch BR
-                        verify branch commit signatures against the default branch (exit 1 on any bad)
-  sign blob [--project ID] <path>
-                        cosign sign-blob an artifact via the vault key (writes <path>.sig)
-  ci setup [--project ID] [--force]
-                        render and install the koryph gate pipeline
-                        (.github/workflows/koryph-gate.yml) into the project from its gate
-                        commands; re-run to update after changing koryph.project.json
-  release setup [--project ID] [--mode goreleaser|commands] [--version V]
-                        render and install the caller release workflow, release-please-config.json,
-                        and .release-please-manifest.json into the project; --mode selects the
-                        build toolchain (goreleaser = mode A, commands = mode B) when the
-                        project has no release block; prints remaining HUMAN steps + current rung
-  release kick --repo OWNER/REPO [--pr N] [--wait [--wait-timeout D]]
-                        close+reopen the open Release PR so GitHub fires checks under your real
-                        gh auth token (bot-less rung-2 per-release step); auto-detects by the
-                        "autorelease: pending" label, or use --pr to name one explicitly;
-                        --wait polls until all checks conclude
-
-OBSERVE
-  board [--json]        one-line-per-project run overview
-  roster [--project ID] [--run ID] [--json]
-                        per-bead titled roster grouped by lifecycle: MERGED /
-                        RUNNING / QUEUED / DEFERRED (defaults to latest run)
-  status [--project ID] [--json]
-                        latest-run per-slot detail
-  tail [--project ID] <phase-id> [-n 40] [--follow]
-                        tail a phase's session.log + stderr.log; --follow streams
-                        new lines and surfaces INBOX nudges live (Ctrl-C to stop)
-  doctor [--project ID] [--json] [--fix] [--force]
-                        health check: layout, binaries, registry, governor, zombie leases,
-                        stale demand, quota calibration, vault providers, asset drift;
-                        --project scopes the check to one registered project (adds asset-drift
-                        and stalled-run checks); --fix installs missing assets (project mode)
-                        or removes zombies/stale-demand (global mode); --force (with --fix
-                        --project) also overwrites stale asset files; exits 0/1/2 (ok/warn/err)
-  plan audit [--project ID] [--json]
-                        read-only corpus conflict analysis: footprint gaps, non-dispatchable
-                        beads, dependency-unordered conflicting pairs, achievable parallel
-                        width; --json for machine-readable output (koryph-replan input)
-  signing status [--project ID]
-                        mode/provider/agent-ready/repo-config/allowed_signers summary
-  governor [show]       show the machine-wide concurrency cap, active leases, and demand
-  quota [--account A] [--json]
-                        per-account governor snapshot (ccusage probe may take up to 40 s)
-  metrics [--project ID] [--json]
-                        burn + reliability rollup across projects
-
-REPO IaC  (desired-state files: .github/rulesets/*.json, .github/repo-settings.json)
-  repo describe [--repo owner/name]
-                        explain every setting in .github IaC and why (with --repo: shows live value)
-  repo check [--repo owner/name]
-                        diff live GitHub settings/rulesets against .github IaC (exit 1 on drift)
-  repo apply [--repo owner/name]
-                        apply .github IaC (rulesets, repo settings) to the live repo
-
-POSTURE  (named desired-state profiles — built-in or ~/.koryph/postures/<name>)
-  posture list          list built-in and user-defined profiles
-  posture describe <profile> [--repo owner/name] [--param k=v]...
-                        explain every setting a profile enforces and why (with --repo: shows live value)
-  posture check <profile> [--repo owner/name] [--param k=v]...
-                        diff live GitHub state against profile (exit 1 on drift)
-  posture diff <profile> [--repo owner/name] [--param k=v]...
-                        show drift between live state and profile (always exits 0)
-  posture apply <profile> [--repo owner/name] [--param k=v]...
-                        print diff then apply profile to the live GitHub repo
-                        (repo-local .github/ IaC overrides profile per section — ejectability)
-
-ASSETS  (installed automatically by 'project add'; use these to refresh or repair)
-  project install-assets (<root> | --all-projects) [agents|commands|rules|all] [--force]
-                        (re)install koryph assets — agents, commands & rules (default all);
-                        the canonical grouped verb for the three installers below
-  agents install (<root> | --all-projects) [--force]
-                        install fallback personas into <root>/.claude/agents (idempotent; --force overwrites differing files;
-                        --all-projects refreshes every registered project)
-  commands install (<root> | --all-projects) [--force]
-                        install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; --force overwrites;
-                        --all-projects refreshes every registered project)
-  rules install <root> [--force]
-                        install the hook scripts + merge hook/permission wiring into <root>/.claude/settings.json (additive)
-
-ADVANCED
-  onboard <root> [--json]
-                        read-only inventory of a project (mode-5 report; inspect before 'project add')
-  project list          list managed projects (id, account, status, root)
-  project show [<id>|--project ID]
-                        print one project record as JSON
-  project set-account [<id>|--project ID] --profile P --identity EMAIL [--config-dir DIR] --reason "..."
-                        change a project's account (audited; resets validation)
-  governor set --max-global N
-                        set the machine-wide cap on concurrently running agents
-  quota calibrate --account A --window <5h|weekly> --observed-usd X --observed-pct Y [--plan-tier T]
-                        calibrate a governor ceiling from an observed /usage reading
-  batch run --key-env VAR --model TIER --input FILE.jsonl [--max-tokens N] [--cache-prefix] [--out FILE] [--yes]
-                        submit a Message Batch (explicit per-token spend)
-  version               print the engine version
-
-SHELL COMPLETION
-  completion bash|zsh   print a completion script for the shell (source it)
-  completion install [--shell bash|zsh]
-                        install the completion script to the standard user
-                        location (run 'koryph completion -h' for details)
-
-ENVIRONMENT
-  KORYPH_HOME           central registry + governor root (default ~/.koryph)
-  KORYPH_BD_BIN         path to the bd (beads) binary (default: bd on PATH)
-  KORYPH_GH_BIN         path to the gh (GitHub CLI) binary (default: gh on PATH)
-  KORYPH_NO_NPX         set to any value to disable npx-based tool fallbacks (e.g. ccusage)
-                        Run 'koryph doctor' to check these and the rest of your installation.
-
-HELP
-  koryph help <command>       show a command's flags (same as 'koryph <command> -h')
-  koryph <command> -h         show one command's usage and flags
-`)
 }
 
 func init() {
@@ -337,6 +146,76 @@ func setUsage(fs *flag.FlagSet, stdout io.Writer, purpose, synopsis string) {
 			fs.PrintDefaults()
 		}
 	}
+}
+
+// flagGroup is a labeled subset of a command's flags for setGroupedUsage: a
+// title and the flag names (without the -- prefix) shown under it, in order.
+type flagGroup struct {
+	title string
+	names []string
+}
+
+// setGroupedUsage is setUsage for flag-heavy commands (>8 flags): instead of
+// flag.PrintDefaults' single alphabetical list — the "help is a wall" failure
+// mode on the flagship `run` — it prints each group under its title in the
+// given order. Any flag not named in a group is collected under an OTHER
+// heading so nothing is ever hidden. Help goes to stdout.
+func setGroupedUsage(fs *flag.FlagSet, stdout io.Writer, purpose, synopsis string, groups []flagGroup) {
+	fs.Usage = func() {
+		fmt.Fprintf(stdout, "koryph %s — %s\n\nUSAGE\n  koryph %s", fs.Name(), purpose, fs.Name())
+		if synopsis != "" {
+			fmt.Fprintf(stdout, " %s", synopsis)
+		}
+		fmt.Fprintln(stdout)
+
+		byName := map[string]*flag.Flag{}
+		fs.VisitAll(func(f *flag.Flag) { byName[f.Name] = f })
+		printed := map[string]bool{}
+		writeGroup := func(title string, flags []*flag.Flag) {
+			if len(flags) == 0 {
+				return
+			}
+			fmt.Fprintf(stdout, "\n%s\n", title)
+			for _, f := range flags {
+				writeFlagDefault(stdout, f)
+			}
+		}
+		for _, g := range groups {
+			var rows []*flag.Flag
+			for _, n := range g.names {
+				if f, ok := byName[n]; ok {
+					rows = append(rows, f)
+					printed[n] = true
+				}
+			}
+			writeGroup(g.title, rows)
+		}
+		var rest []*flag.Flag
+		fs.VisitAll(func(f *flag.Flag) {
+			if !printed[f.Name] {
+				rest = append(rest, f)
+			}
+		})
+		writeGroup("OTHER", rest)
+	}
+}
+
+// writeFlagDefault renders one flag in flag.PrintDefaults' two-line style
+// (name + value placeholder, then indented usage with a trailing default),
+// used by setGroupedUsage so grouped output matches the stdlib look.
+func writeFlagDefault(w io.Writer, f *flag.Flag) {
+	valueName, usage := flag.UnquoteUsage(f)
+	head := "  --" + f.Name
+	if valueName != "" {
+		head += " " + valueName
+	}
+	fmt.Fprintf(w, "%s\n    \t%s", head, usage)
+	// Show a non-zero default, matching PrintDefaults' filtering of the zero
+	// values (false / 0 / "").
+	if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" {
+		fmt.Fprintf(w, " (default %q)", f.DefValue)
+	}
+	fmt.Fprintln(w)
 }
 
 // flagCapture, when non-nil, diverts parseFlags: the fully-populated FlagSet is

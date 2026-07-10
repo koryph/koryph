@@ -610,12 +610,12 @@ func TestSignBatchDashHNotUsageError(t *testing.T) {
 }
 
 // The global usage grows an ENVIRONMENT section naming the load-bearing env
-// vars and pointing at doctor; the doctor line advertises --project.
+// vars and pointing at doctor; the doctor command appears in the listing.
 func TestGlobalUsageEnvironmentAndDoctorProject(t *testing.T) {
 	_, out, _ := runCmd("help")
 	for _, want := range []string{
 		"ENVIRONMENT", "KORYPH_HOME", "KORYPH_BD_BIN", "KORYPH_GH_BIN", "KORYPH_NO_NPX",
-		"koryph doctor", "doctor [--project ID]",
+		"koryph doctor", "\n  doctor ",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("global usage missing %q:\n%s", want, out)

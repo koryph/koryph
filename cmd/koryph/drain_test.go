@@ -247,10 +247,12 @@ func TestResizeAllRejectsProjectFlag(t *testing.T) {
 }
 
 func TestDrainResizeUsageInHelp(t *testing.T) {
+	// The listing is registry-driven now: each command shows its name +
+	// one-line summary (full synopsis lives in `koryph <cmd> -h`).
 	_, out, _ := runCmd("help")
-	for _, want := range []string{"drain [--project ID]", "resize ([--project ID"} {
+	for _, want := range []string{"\n  drain ", "\n  resize "} {
 		if !strings.Contains(out, want) {
-			t.Errorf("help output missing %q:\n%s", want, out)
+			t.Errorf("help output missing command %q:\n%s", strings.TrimSpace(want), out)
 		}
 	}
 }

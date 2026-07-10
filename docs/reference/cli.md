@@ -80,12 +80,6 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph posture check`](#koryph-posture-check) | diff live GitHub state against a profile (exit 1 on drift) |
 | ↳ [`koryph posture diff`](#koryph-posture-diff) | show drift between live state and a profile (always exit 0) |
 | ↳ [`koryph posture apply`](#koryph-posture-apply) | show diff then apply a profile to the live GitHub repo |
-| [`koryph agents`](#koryph-agents) | install fallback personas |
-| ↳ [`koryph agents install`](#koryph-agents-install) | install personas into <root>/.claude/agents |
-| [`koryph commands`](#koryph-commands) | install koryph-* Claude slash commands |
-| ↳ [`koryph commands install`](#koryph-commands-install) | install commands into <root>/.claude/commands |
-| [`koryph rules`](#koryph-rules) | install hook scripts + merge wiring |
-| ↳ [`koryph rules install`](#koryph-rules-install) | install hooks into <root>/.claude/settings.json |
 | [`koryph onboard`](#koryph-onboard) | read-only inventory of a project |
 | [`koryph batch`](#koryph-batch) | submit a Message Batch (explicit per-token spend) |
 | ↳ [`koryph batch run`](#koryph-batch-run) | submit a batch from a JSONL file |
@@ -236,7 +230,7 @@ execute one engine run over a project
 | `--only` | string |  | dispatch only this specific ready bead id |
 | `--parent` | string |  | epic scope for the bd frontier |
 | `--project` | string |  | project id (default: the project containing the current directory) |
-| `--require-calibration` | bool |  | refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run `koryph quota calibrate` first |
+| `--require-calibration` | bool |  | refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run 'koryph quota calibrate' first |
 | `--resume` | bool |  | classify and re-dispatch the latest run first |
 | `--review` | bool |  | post-implementation review pass before merge |
 
@@ -943,72 +937,6 @@ show diff then apply a profile to the live GitHub repo
 | `--org` | string |  | GitHub organisation for org-level ruleset check/apply (requires org owner/admin) |
 | `--param` | multi |  | profile parameter as key=value (repeatable, e.g. --param required_checks="pre-commit,make gate") |
 | `--repo` | string |  | repository in owner/name form (default: detected from git remote via gh) |
-
-
----
-
-## `koryph agents` { #koryph-agents }
-
-install fallback personas
-
-**See also:** [Projects and accounts](../user-guide/projects-and-accounts)
-
-Run `koryph agents <subcommand> -h` for subcommand flags.
-
-## `koryph agents install` { #koryph-agents-install }
-
-install personas into <root>/.claude/agents
-
-**See also:** [Projects and accounts](../user-guide/projects-and-accounts)
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--all-projects` | bool |  | install into every registered project (registry-wide refresh) |
-| `--force` | bool |  | overwrite existing personas whose content differs |
-| `--runtime` | string |  | target runtime name (default: <root>'s default_runtime, else "claude") |
-
-
----
-
-## `koryph commands` { #koryph-commands }
-
-install koryph-* Claude slash commands
-
-**See also:** [Projects and accounts](../user-guide/projects-and-accounts)
-
-Run `koryph commands <subcommand> -h` for subcommand flags.
-
-## `koryph commands install` { #koryph-commands-install }
-
-install commands into <root>/.claude/commands
-
-**See also:** [Projects and accounts](../user-guide/projects-and-accounts)
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--all-projects` | bool |  | install into every registered project (registry-wide refresh) |
-| `--force` | bool |  | overwrite existing commands whose content differs |
-
-
----
-
-## `koryph rules` { #koryph-rules }
-
-install hook scripts + merge wiring
-
-**See also:** [Projects and accounts](../user-guide/projects-and-accounts) · [Worktrees](../concepts/worktrees)
-
-Run `koryph rules <subcommand> -h` for subcommand flags.
-
-## `koryph rules install` { #koryph-rules-install }
-
-install hooks into <root>/.claude/settings.json
-
-**See also:** [Projects and accounts](../user-guide/projects-and-accounts)
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--force` | bool |  | overwrite differing hook scripts; rebuild an unparseable settings.json |
 
 
 ---

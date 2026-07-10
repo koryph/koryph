@@ -160,24 +160,69 @@ func TestProjectInstallAssetsRootAllProjectsConflict(t *testing.T) {
 	}
 }
 
-// TestGlobalUsageIsSectioned asserts the top-level listing groups verbs into
-// discoverability sections and leads with the getting-started flow, so the
-// asset installers no longer sit at top level with equal billing to run.
+// TestGlobalUsageIsSectioned asserts the top-level listing (rendered from the
+// command registry) groups verbs into discoverability sections and leads with
+// the getting-started flow, so the asset installers no longer sit at top level
+// with equal billing to run.
 func TestGlobalUsageIsSectioned(t *testing.T) {
 	_, out, _ := runCmd("help")
-	for _, section := range []string{"GETTING STARTED", "OPERATE", "OBSERVE", "ASSETS", "ADVANCED"} {
+	for _, section := range []string{"GETTING STARTED", "OPERATE", "LAND & REVIEW", "SUPPLY CHAIN", "OBSERVE", "ADVANCED"} {
 		if !strings.Contains(out, section) {
 			t.Errorf("usage missing section %q:\n%s", section, out)
 		}
 	}
-	// The grouped installer is advertised in the ASSETS section.
+	// The grouped installer is a subcommand of project (GETTING STARTED).
 	if !strings.Contains(out, "project install-assets") {
 		t.Errorf("usage missing 'project install-assets':\n%s", out)
 	}
-	// Getting-started verbs must precede the ASSETS section (installers are
-	// subordinated, not top-billed).
-	if strings.Index(out, "GETTING STARTED") > strings.Index(out, "ASSETS") {
-		t.Errorf("GETTING STARTED should precede ASSETS:\n%s", out)
+	// Getting-started leads the listing.
+	if strings.Index(out, "GETTING STARTED") > strings.Index(out, "OPERATE") {
+		t.Errorf("GETTING STARTED should precede OPERATE:\n%s", out)
+	}
+	// The standalone installer aliases are hidden from the listing (superseded
+	// by project install-assets) — the top-level "agents"/"commands"/"rules"
+	// verbs must not appear as their own section rows.
+	for _, hidden := range []string{"\n  agents ", "\n  commands ", "\n  rules "} {
+		if strings.Contains(out, hidden) {
+			t.Errorf("hidden installer alias %q leaked into usage:\n%s", strings.TrimSpace(hidden), out)
+		}
+	}
+}
+
+// TestUsageCoversRegistry is the drift guard the old hand-maintained usage()
+// lacked: every visible top-level command (and its subcommands) must appear in
+// `koryph -h`. This is what kept six working commands invisible before the
+// listing was made registry-driven.
+func TestUsageCoversRegistry(t *testing.T) {
+	_, out, _ := runCmd("help")
+	for i := range commandRegistry {
+		c := &commandRegistry[i]
+		if !visibleTopLevel(c) {
+			continue
+		}
+		if !strings.Contains(out, "  "+c.name) {
+			t.Errorf("top-level command %q missing from `koryph -h`", c.name)
+		}
+		for j := range c.subs {
+			pair := c.name + " " + c.subs[j].name
+			if !strings.Contains(out, pair) {
+				t.Errorf("subcommand %q missing from `koryph -h`", pair)
+			}
+		}
+	}
+}
+
+// TestGettingStartedHelp asserts the two-track onboarding walkthrough is
+// reachable and names the full-autonomy steps the four-verb banner omits.
+func TestGettingStartedHelp(t *testing.T) {
+	code, out, _ := runCmd("help", "getting-started")
+	if code != 0 {
+		t.Fatalf("help getting-started code = %d", code)
+	}
+	for _, want := range []string{"TRACK 1", "TRACK 2", "signing setup", "ci setup", "release setup"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("getting-started help missing %q:\n%s", want, out)
+		}
 	}
 }
 

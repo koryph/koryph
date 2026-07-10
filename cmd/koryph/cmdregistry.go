@@ -23,6 +23,13 @@ type command struct {
 	run      func([]string, io.Writer, io.Writer) int
 	subs     []command
 	DocLinks []string // relative paths under docs/ to cross-link pages
+
+	// hidden keeps a still-dispatchable command out of the global usage()
+	// listing, shell completion, and the generated CLI reference. Used for
+	// back-compat aliases whose canonical form lives elsewhere (e.g. the
+	// standalone agents/commands/rules installers, superseded by
+	// `project install-assets`). lookupCommand still resolves it.
+	hidden bool
 }
 
 // commandRegistry is the dynamic list of top-level koryph commands. Each

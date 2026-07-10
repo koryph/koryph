@@ -63,9 +63,16 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	allowUnvalidated := fs.Bool("allow-unvalidated", false, "permit runs on non-validated projects")
 	manual := fs.Bool("manual", false, "single manual dispatch semantics (quota-exempt)")
 	noBillingGuard := fs.Bool("no-billing-guard", false, "disable quota throttling for this run (usage still measured; billing stays subscription)")
-	requireCalibration := fs.Bool("require-calibration", false, "refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run `koryph quota calibrate` first")
+	// No backticks in this usage string: flag.UnquoteUsage treats any backtick
+	// span as the flag's value-name, which would make this bool render with a
+	// bogus multi-word argument placeholder.
+	requireCalibration := fs.Bool("require-calibration", false, "refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run 'koryph quota calibrate' first")
 	dispatchMode := fs.String("dispatch-mode", "", "dispatch mode: wave|rolling (default: project config, else wave)")
-	setUsage(fs, stdout, "execute one engine run over a project", "[--project ID] [flags]")
+	setGroupedUsage(fs, stdout, "execute one engine run over a project", "[--project ID] [flags]", []flagGroup{
+		{title: "CORE", names: []string{"project", "once", "max", "parent", "only", "dispatch-mode"}},
+		{title: "LAND & REVIEW", names: []string{"auto-merge", "review", "direct", "resume", "dry-run", "default-model"}},
+		{title: "BUDGET & SAFETY OVERRIDES", names: []string{"budget", "manual", "no-billing-guard", "require-calibration", "allow-api-spend", "allow-unvalidated"}},
+	})
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
