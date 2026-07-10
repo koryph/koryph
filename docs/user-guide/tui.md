@@ -50,36 +50,54 @@ drain a running wave.
 
 ## Tabs
 
-The TUI has six tabs. Use `Tab` / `Shift+Tab` to move between them, or the
-number keys shown in the tab bar. Each tab receives snapshot data from the
-same `internal/cockpit` provider so all tabs show consistent data from the
-same refresh.
+The TUI has five tabs in the bar — Threads, Burndown, Events, Efficiency, Queue
+— plus the Detail overlay, which is reached by selecting a row rather than by
+cycling. Use `Tab` / `Shift+Tab` to move between the visible tabs. Each tab
+receives snapshot data from the same `internal/cockpit` provider so all tabs
+show consistent data from the same refresh.
 
 ---
 
 ### Threads (tab 0)
 
-Live table of every dispatched slot. One row per active or recently-finished
-slot, showing:
+Live table of dispatched slots. The Bead column is a narrow id column so the
+Status column — the live agent step — gets the bulk of the width:
 
 | Column | Description |
 |--------|-------------|
-| Bead | The bead ID currently occupying this slot |
-| Stage | `dispatching`, `running`, `reviewing`, `merging`, `done`, `failed` |
-| Model | The Claude model tier in use |
-| Attempt | Attempt number (retries increment this) |
-| Elapsed | Wall time since the slot was claimed |
-| Cost | Actual spend vs the estimator's pre-dispatch estimate |
+| Bead | The bead ID occupying this slot |
+| Stage | `dispatching`, `running`, `review`, `merge-pending`, `merged`, `failed`, … |
+| Model | The Claude model tier in use; a trailing `↑` marks a slot whose model rationale records an escalation |
+| Retries | Re-dispatch count with cause codes — `×N g/m/c/rl/bk` (gate, merge, conflict, rate-limit, budget-kill); `—` on a clean first attempt |
+| Elapsed | Wall time since dispatch (final wall time once terminal) |
+| Cost/Est | Actual spend vs the estimator's pre-dispatch estimate |
 | Status | Last line from the agent's `status.json` |
 
-Press `Enter` on any slot row to open the **Detail** panel for that bead.
-Press `Esc` or `Backspace` to return to Threads.
+The title line above the table shows the active filter and counts:
+`filter:active  showing 3/7  (3 active)`.
+
+Press `Enter` on any slot row to open the **Detail** panel for that bead
+(including its per-bead resource usage). Press `Esc` or `Backspace` to return.
+
+#### Filtering, and why a merged thread is not "active"
+
+A slot stays in the run ledger after it finishes — merged/failed/done slots are
+retained for history and crash recovery, not deleted. They are **finished work,
+not live workers**, so the Threads tab hides them by default rather than listing
+them as active threads. Cycle the filter with `f`:
+
+| Filter | Shows |
+|--------|-------|
+| `active` (default) | Non-terminal slots — the live workers (running, dispatching, review, stuck) |
+| `all` | Every slot, terminal ones included |
+| `terminal` | Only finished slots (merged, done, failed, conflict, blocked, …) |
 
 #### Threads tab keys
 
 | Key | Action |
 |-----|--------|
 | `↑`/`k`, `↓`/`j` | Move selection up/down |
+| `f` | Cycle the state filter (`active` → `all` → `terminal`) |
 | `Enter` | Open Detail panel for selected bead |
 
 ---
@@ -287,8 +305,16 @@ The Efficiency tab has no interactive keys beyond global navigation in v1.
 ### Queue (tab 4)
 
 Hierarchical view of the project's work queue. Epics appear at the top level;
-their child beads are nested below. Each row shows the bead's true dispatch
-state as computed by the scheduler.
+their child beads are nested below, drawn with `├─ / └─ / │` tree connectors so
+the grouping is unambiguous. The State and ID columns stay aligned at every
+depth; the hierarchy lives in the Title column. Each row shows the bead's true
+dispatch state as computed by the scheduler.
+
+**Closed parents stay grouped.** Over a multi-day run an epic often closes while
+a few of its children are still open. `bd list` omits closed issues, so those
+children would otherwise orphan to the top level and the queue would read as a
+flat list. The Queue tab reconstructs a container for such a parent (fetching
+its title via `bd show`) so its open children remain nested under it.
 
 #### Dispatch states
 
@@ -335,18 +361,41 @@ description, notes, and children summary. Press `j`/`k` to scroll; press
 
 ---
 
-### Detail (tab 99 — opened from Threads)
+### Detail (overlay — opened from a row, not a tab)
 
-The Detail tab is not reachable from the tab bar — it opens automatically when
-you press `Enter` on a row in the Threads tab. It shows a full bead detail
-snapshot fetched asynchronously from the active provider, including:
+Detail is an **overlay, not a tab**: it is deliberately absent from the tab bar
+and skipped by `Tab`/`Shift+Tab` cycling, because it can only show something
+once you have selected a bead. It opens when you press `Enter` on a row in the
+**Threads** or **Queue** tab, and `Esc`/`Backspace` returns you to the tab you
+came from. It shows a full bead detail snapshot fetched asynchronously from the
+active provider, including:
 
 - Bead metadata (ID, type, status, priority, labels, parent, deps).
 - Description and notes.
-- Live slot information (stage, model, attempt, elapsed, cost).
-- Recent events for this bead.
+- Live slot information (branch, worktree, model, cost vs estimate, log path).
+- **Resources** — per-bead clock times and process-cohort usage (see below).
+- Attempt history with per-attempt requeue cause.
 
-Press `Esc` or `Backspace` to return to the Threads tab.
+Within Detail, `↑`/`↓` navigate dependency rows, `Enter` jumps into a dep,
+`Backspace` pops the navigation stack, and `t` tails the agent log.
+
+#### Resources section (per-bead process metrics)
+
+For any slot that has been sampled, Detail renders measured resource usage so
+you can calibrate orchestration against what a bead actually consumed:
+
+| Field | Meaning |
+|-------|---------|
+| Started / Finished | Dispatch and terminal wall-clock instants, with **date and time** (a wave can span days) |
+| Wall | Wall-clock duration (finish − start, or now − start while live) |
+| Memory | Average and peak resident memory (MB) across the agent process cohort |
+| CPU | Cumulative CPU seconds and utilization (`100%` = one core saturated for the whole window; a multi-core-bound bead reads above 100%) |
+| Disk I/O | Bytes read/written — Linux only; shown as `n/a on this platform` on macOS |
+
+Metrics cover the whole agent process cohort (the `Setsid` session: the shell,
+the model CLI, and tool subprocesses), sampled on the engine poll tick. See
+[the design doc](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-process-metrics.md)
+for the sampler architecture and the eBPF/kernel-hook accuracy roadmap.
 
 ---
 
@@ -360,7 +409,9 @@ The bottom line of the TUI shows:
 - **⚠ message** — last error (e.g. failed refresh, rejected nudge).
 - **✓ message** — last successful action (e.g. `nudged koryph-9af.6`).
 - **?** / **q** key hints — always visible.
-- **HH:MM:SS** — timestamp of the last snapshot.
+- **Mon DD HH:MM:SS** — timestamp of the last snapshot, carrying the date as
+  well as the time so a cockpit left running across several days is never
+  ambiguous. The Events feed likewise date-stamps each entry.
 
 ## Minimum terminal size
 
