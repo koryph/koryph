@@ -13,6 +13,7 @@ import (
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/schemaver"
 )
 
 // configPath returns the on-disk location for an account's governor state.
@@ -77,6 +78,9 @@ func LoadConfig(account string) (*Config, error) {
 	}
 	var cfg Config
 	if err := fsx.ReadJSON(path, &cfg); err != nil {
+		return nil, err
+	}
+	if err := schemaver.CheckRead(schemaver.Quota, cfg.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if cfg.Account == "" {

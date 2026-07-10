@@ -6,6 +6,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,7 +16,34 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/schemaver"
 )
+
+// TestGetRefusesNewerSchema is the forward-compatibility guard: a registry
+// record written by a NEWER koryph (schema_version above what this build
+// understands) must refuse to load rather than silently misreading it as
+// zero-valued unknown fields (audit P0 #42). errors.As surfaces the actionable
+// *schemaver.TooNewError so the operator is told to upgrade.
+func TestGetRefusesNewerSchema(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+	rec := sampleRecord("future-proj", root)
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	// Simulate a newer koryph having written this record.
+	rec.SchemaVersion = schemaver.Current(schemaver.Registry) + 1
+	if err := s.put(rec); err != nil {
+		t.Fatalf("put bumped record: %v", err)
+	}
+
+	_, err := s.Get("future-proj")
+	var tooNew *schemaver.TooNewError
+	if !errors.As(err, &tooNew) {
+		t.Fatalf("Get of newer-schema record = %v, want *schemaver.TooNewError (must refuse, not misread)", err)
+	}
+}
 
 // gitProject creates a fresh directory that is a valid git repository, usable
 // as a Record.Root.

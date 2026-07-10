@@ -7,7 +7,20 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/schemaver"
 )
+
+// TestConfigSchemaVersionMatchesSchemaver keeps quota's own stamp constant in
+// lockstep with the schemaver registry that LoadConfig's CheckRead guards
+// against. If they drift, LoadConfig would refuse a config this build just
+// wrote (or fail to guard a truly-newer one).
+func TestConfigSchemaVersionMatchesSchemaver(t *testing.T) {
+	if ConfigSchemaVersion != schemaver.Current(schemaver.Quota) {
+		t.Fatalf("quota.ConfigSchemaVersion=%d but schemaver.Current(Quota)=%d — bump both together",
+			ConfigSchemaVersion, schemaver.Current(schemaver.Quota))
+	}
+}
 
 // win builds a measured Window.
 func win(hours int, spent, ceiling float64, source string) Window {

@@ -16,6 +16,7 @@ import (
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/schemaver"
 )
 
 // VaultFileName is the vault adapter file under KoryphHome.
@@ -112,7 +113,7 @@ func VaultPath() string { return filepath.Join(paths.KoryphHome(), VaultFileName
 //     Override fetch in vault.json to use a different field name.
 func DefaultVault() *VaultConfig {
 	return &VaultConfig{
-		SchemaVersion: 1,
+		SchemaVersion: schemaver.Current(schemaver.SigningVault),
 		Providers: map[string]ProviderTemplates{
 			ProviderProtonPass: {
 				Fetch:       []string{"pass-cli", "item", "view", RefPlaceholder},
@@ -231,6 +232,9 @@ func LoadVault() (*VaultConfig, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("signing: %w", err)
+	}
+	if verr := schemaver.CheckRead(schemaver.SigningVault, onDisk.SchemaVersion); verr != nil {
+		return nil, verr
 	}
 	for name, pt := range onDisk.Providers {
 		v.Providers[name] = pt

@@ -16,6 +16,7 @@ import (
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/schemaver"
 )
 
 // File / layout constants.
@@ -23,9 +24,6 @@ const (
 	// runIDLayout is the UTC timestamp format used as a run's directory name.
 	// Fixed-width and zero-padded so lexical order == chronological order.
 	runIDLayout = "20060102-150405"
-
-	// schemaVersion is the current ledger + manifest schema (v2).
-	schemaVersion = 2
 
 	latestLink   = "latest"
 	ledgerFile   = "ledger.json"
@@ -67,7 +65,7 @@ func (s *Store) NewRun(projectID, source, engineVersion string) (*Run, error) {
 	}
 	started := now.Format(time.RFC3339)
 	run := &Run{
-		SchemaVersion: schemaVersion,
+		SchemaVersion: schemaver.Current(schemaver.LedgerRun),
 		RunID:         runID,
 		ProjectID:     projectID,
 		EngineVersion: engineVersion,
@@ -119,6 +117,9 @@ func (s *Store) LoadRun(runID string) (*Run, error) {
 	var run Run
 	path := filepath.Join(s.KoryphRoot, runID, ledgerFile)
 	if err := fsx.ReadJSON(path, &run); err != nil {
+		return nil, err
+	}
+	if err := schemaver.CheckRead(schemaver.LedgerRun, run.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if run.Slots == nil {
@@ -224,10 +225,10 @@ func (s *Store) FinalizeRun(run *Run) error {
 	return s.SaveRun(run)
 }
 
-// SaveManifest stamps SchemaVersion=2 and UpdatedAt, then writes the per-slot
-// checkpoint at <run>/<phase>/manifest.json atomically.
+// SaveManifest stamps the current manifest schema version and UpdatedAt, then
+// writes the per-slot checkpoint at <run>/<phase>/manifest.json atomically.
 func (s *Store) SaveManifest(runID, phaseID string, m *Manifest) error {
-	m.SchemaVersion = schemaVersion
+	m.SchemaVersion = schemaver.Current(schemaver.LedgerManifest)
 	m.UpdatedAt = nowRFC3339()
 	path := filepath.Join(s.PhaseDir(runID, phaseID), manifestFile)
 	return fsx.WriteJSONAtomic(path, m)
@@ -238,6 +239,9 @@ func (s *Store) LoadManifest(runID, phaseID string) (*Manifest, error) {
 	var m Manifest
 	path := filepath.Join(s.KoryphRoot, runID, phaseID, manifestFile)
 	if err := fsx.ReadJSON(path, &m); err != nil {
+		return nil, err
+	}
+	if err := schemaver.CheckRead(schemaver.LedgerManifest, m.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return &m, nil

@@ -14,6 +14,7 @@ import (
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/schemaver"
 )
 
 func TestNewRunCreatesDirLedgerAndSymlink(t *testing.T) {
@@ -54,8 +55,8 @@ func TestNewRunCreatesDirLedgerAndSymlink(t *testing.T) {
 	if got.Status != RunRunning {
 		t.Fatalf("status = %q, want %q", got.Status, RunRunning)
 	}
-	if got.SchemaVersion != schemaVersion {
-		t.Fatalf("schema_version = %d, want %d", got.SchemaVersion, schemaVersion)
+	if want := schemaver.Current(schemaver.LedgerRun); got.SchemaVersion != want {
+		t.Fatalf("schema_version = %d, want %d", got.SchemaVersion, want)
 	}
 }
 
@@ -363,7 +364,7 @@ func TestManifestRoundtrip(t *testing.T) {
 	if err := st.SaveManifest("20260101-010101", "cn-9", m); err != nil {
 		t.Fatalf("SaveManifest: %v", err)
 	}
-	if m.SchemaVersion != schemaVersion {
+	if m.SchemaVersion != schemaver.Current(schemaver.LedgerManifest) {
 		t.Fatalf("SchemaVersion not stamped: %d", m.SchemaVersion)
 	}
 	if m.UpdatedAt == "" {

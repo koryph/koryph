@@ -14,6 +14,7 @@ import (
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/schemaver"
 	"github.com/koryph/koryph/internal/signing"
 )
 
@@ -644,7 +645,7 @@ type Config struct {
 // Default returns a conservative baseline config.
 func Default(projectID string) *Config {
 	return &Config{
-		SchemaVersion:          1,
+		SchemaVersion:          schemaver.Current(schemaver.Project),
 		ProjectID:              projectID,
 		WorkSource:             "bd",
 		Gate:                   []string{"make lint", "make test"},
@@ -664,6 +665,9 @@ func Load(repoRoot string) (*Config, error) {
 			return nil, fmt.Errorf("project not onboarded: %s missing (run `koryph onboard`)", p)
 		}
 		return nil, err
+	}
+	if err := schemaver.CheckRead(schemaver.Project, c.SchemaVersion); err != nil {
+		return nil, fmt.Errorf("%s: %w", p, err)
 	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", p, err)

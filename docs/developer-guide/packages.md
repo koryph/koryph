@@ -598,6 +598,26 @@ content is `skipped` (warned) unless `force`, then `overwritten`.
 - **`CopyEmbed(fsys, destDir, force, perm)`** — copy every embedded file with perm
 - **`Conflicts(results)`** / **`Count(results, action)`** — reporting helpers
 
+## schemaver
+
+Single source of truth for the on-disk schema version of every persisted state
+surface, and the forward-compatibility guard that stops an older binary from
+silently corrupting state a newer koryph wrote. When the on-disk version is
+newer than this build understands, load/save is refused with an "upgrade
+koryph" error rather than misreading it (or field-stripping it on the next
+read-modify-write save). Write paths stamp `Current(surface)`; read paths guard
+with `CheckRead` — so the number lives in exactly one place. Design:
+`docs/designs/2026-07-state-versioning.md`.
+
+- **`Surface`** — a versioned state surface (`Registry`, `Quota`,
+  `SigningVault`, `Project`, `LedgerRun`, `LedgerManifest`)
+- **`Current(s)`** — the schema version this binary writes/understands for `s`
+- **`CheckRead(s, onDisk)`** / **`CheckWrite(s, onDisk)`** — refuse newer-than-supported
+- **`TooNewError`** — the version-skew refusal (errors.As to distinguish from IO errors)
+
+State files: reads/writes no files of its own — it gates the load/save paths in
+registry, quota, signing, project, and ledger.
+
 ## signing
 
 SSH commit signing and koryph's secret-vault layer. Configures a repo for

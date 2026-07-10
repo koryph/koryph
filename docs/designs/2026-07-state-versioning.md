@@ -3,11 +3,17 @@
 
 # State versioning: schema gates, a write ceiling, and explicit migrations (2026-07-07)
 
-**Status:** proposed — not yet implemented. As of 2026-07-10 no
-`internal/schemaver` package exists in the tree; implementation is filed and
-tracked under epic **koryph-r0l** (children cover the schemaver package, the
-per-surface gates, doctor integration, and docs). Everything below describes
-the *intended* design, not current behavior.
+**Status:** partially implemented (2026-07-10). `internal/schemaver` exists and
+provides the surface registry plus the forward-compatibility read/write guards
+(`Current`/`CheckRead`/`CheckWrite`): an older binary now REFUSES to load or
+overwrite state written by a newer koryph rather than silently misreading or
+field-stripping it. The guards are wired into the registry, quota, signing
+vault, per-project config, and ledger (run + manifest) load paths, and each
+surface's write path stamps its version from schemaver (single source of truth).
+Still open under epic **koryph-r0l**: governor.json versioning (koryph-r0l.4),
+the explicit forward-migration runner, the `koryph doctor` state-schema check
+(koryph-r0l.8), and the `koryph version --state` / `state migrate` CLI
+(koryph-r0l.9). Sections below marked "intended" describe those unbuilt parts.
 
 Multiple koryph binaries of different versions run against the same shared
 state: KORYPH_HOME is one per machine, several flake environments each pin

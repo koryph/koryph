@@ -20,6 +20,7 @@ import (
 	"github.com/koryph/koryph/internal/netx"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/schemaver"
 )
 
 // Store is the git-backed central registry rooted at Home (usually
@@ -124,7 +125,7 @@ func (s *Store) Add(ctx context.Context, rec *Record) error {
 	}
 
 	now := nowRFC3339()
-	rec.SchemaVersion = 1
+	rec.SchemaVersion = schemaver.Current(schemaver.Registry)
 	rec.CreatedAt = now
 	rec.UpdatedAt = now
 	if rec.MigrationStatus == "" {
@@ -157,6 +158,9 @@ func (s *Store) Get(id string) (*Record, error) {
 		}
 		return nil, err
 	}
+	if err := schemaver.CheckRead(schemaver.Registry, rec.SchemaVersion); err != nil {
+		return nil, err
+	}
 	if err := validateAgentProxy(&rec); err != nil {
 		return nil, err
 	}
@@ -180,6 +184,9 @@ func (s *Store) List() ([]*Record, error) {
 		}
 		var rec Record
 		if err := fsx.ReadJSON(filepath.Join(s.registryDir(), e.Name()), &rec); err != nil {
+			return nil, err
+		}
+		if err := schemaver.CheckRead(schemaver.Registry, rec.SchemaVersion); err != nil {
 			return nil, err
 		}
 		if err := validateAgentProxy(&rec); err != nil {
@@ -265,6 +272,11 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 		rec.ExpectedIdentity != old.ExpectedIdentity {
 		return fmt.Errorf("registry: account fields are immutable via Save; use SetAccount")
 	}
+
+	// Get above already refused a newer-than-supported on-disk record
+	// (schemaver.CheckRead), so this read-modify-write cannot silently strip a
+	// newer binary's fields. Stamp the write at this build's version.
+	rec.SchemaVersion = schemaver.Current(schemaver.Registry)
 
 	// Detect proxy flip before stamping UpdatedAt so the diff is clear in the audit.
 	oldProxyID := old.AgentProxy.ID()
