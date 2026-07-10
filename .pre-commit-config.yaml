@@ -66,6 +66,7 @@ repos:
         entry: scripts/hooks/spdx-header.sh
         language: script
         types_or: [go, shell, yaml, makefile]
+        exclude: ^(\.beads/|\.agents/|go\.(mod|sum))
       - id: golangci-lint-prepush
         name: golangci-lint (pre-push — the gate's lint stage)
         # `make lint` skips with a notice when golangci-lint is not installed
@@ -76,4 +77,3 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
-        exclude: ^(\.beads/|\.agents/|go\.(mod|sum))
