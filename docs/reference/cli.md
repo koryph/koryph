@@ -807,7 +807,7 @@ per-(model,size) estimator accuracy stats
 
 per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend
 
-**See also:** [Billing and quota](../user-guide/billing-and-quota) · [2026 07 token economy](../docs/designs/2026-07-token-economy)
+**See also:** [Billing and quota](../user-guide/billing-and-quota)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -1222,7 +1222,7 @@ remove telemetry files older than the retention window
 
 interactive terminal cockpit (threads, queue, events)
 
-<!-- TODO: add DocLinks to the `tui` command registration in cmd/koryph/ -->
+**See also:** [Tui](../user-guide/tui)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|

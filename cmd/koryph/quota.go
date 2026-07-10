@@ -64,10 +64,10 @@ func init() {
 				name:    "tokens",
 				summary: "per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend",
 				run:     cmdMetricsTokens,
-				DocLinks: []string{
-					"user-guide/billing-and-quota.md",
-					"docs/designs/2026-07-token-economy.md",
-				},
+				// Only published pages belong in DocLinks — the generator emits
+				// them as 'See also' links and design docs are excluded from the
+				// book (a design-doc DocLink renders a dead link).
+				DocLinks: []string{"user-guide/billing-and-quota.md"},
 			},
 		},
 	})

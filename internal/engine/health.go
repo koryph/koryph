@@ -78,6 +78,7 @@ import (
 	"github.com/koryph/koryph/internal/quota"
 
 	gcpkg "github.com/koryph/koryph/internal/gc"
+	"github.com/koryph/koryph/internal/worktree"
 )
 
 // defaultHealthIntervalSec is the health patrol cadence when no override is set.
@@ -212,6 +213,7 @@ func (r *runner) collectPatrolFindings(ctx context.Context, now time.Time) []pat
 	out = append(out, r.patrolCheckBD()...)
 	out = append(out, r.patrolCheckLedgerWritable()...)
 	out = append(out, r.patrolCheckGCFootprint()...)
+	out = append(out, r.patrolCheckStaleWorktrees(ctx)...)
 	out = append(out, r.patrolCheckUnvalidatedEpics(ctx, now)...)
 	out = append(out, r.patrolCheckEpicValidations(ctx, now)...)
 	return out
@@ -747,6 +749,67 @@ func (r *runner) patrolCheckGCFootprint() []patrolFinding {
 	}
 
 	return []patrolFinding{f}
+}
+
+// --- check: stale/orphaned agent worktrees ---------------------------------
+
+const patrolCheckStaleWt = "stale-worktrees"
+
+// patrolCheckStaleWorktrees flags a linked agent worktree that is DIRTY yet
+// whose HEAD is already merged into the default branch. That combination is the
+// orphan signature (2026-07-10 audit): an active dispatch worktree has an
+// UNmerged tip (its work has not landed), so a merged-tip + dirty worktree is
+// landed work with a stray uncommitted tail that worktree.Remove's dirty-refusal
+// left behind — exactly the state that silently persisted for six days. Report
+// only: cleanup is a `git worktree remove --force` an operator must run, never
+// auto-destroyed (uncommitted work may be salvageable). Cheap: `git worktree
+// list` plus one merge-base check per dirty worktree.
+func (r *runner) patrolCheckStaleWorktrees(ctx context.Context) []patrolFinding {
+	repoRoot := ""
+	if r.rec != nil {
+		repoRoot = r.rec.Root
+	}
+	if repoRoot == "" {
+		return []patrolFinding{{check: patrolCheckStaleWt, level: "ok", message: "stale-worktrees: no repo root"}}
+	}
+	def := ""
+	if r.rec != nil {
+		def = r.rec.DefaultBranch
+	}
+	if def == "" {
+		def = "main"
+	}
+
+	infos, err := worktree.List(ctx, repoRoot)
+	if err != nil {
+		return []patrolFinding{{check: patrolCheckStaleWt, level: "warn",
+			message: fmt.Sprintf("stale-worktrees: cannot list worktrees: %v", err)}}
+	}
+
+	var orphans []string
+	for _, wt := range infos {
+		// Skip the main checkout and any clean worktree; only dirty linked
+		// worktrees are candidates.
+		if wt.Path == repoRoot || !wt.Dirty || wt.Head == "" {
+			continue
+		}
+		// Merged tip? `git merge-base --is-ancestor <head> <def>` exits 0.
+		res, merr := exec.CommandContext(ctx, "git", "-C", repoRoot,
+			"merge-base", "--is-ancestor", wt.Head, def).CombinedOutput()
+		_ = res
+		if merr == nil {
+			orphans = append(orphans, filepath.Base(wt.Path))
+		}
+	}
+
+	if len(orphans) == 0 {
+		return []patrolFinding{{check: patrolCheckStaleWt, level: "ok",
+			message: "stale-worktrees: none"}}
+	}
+	sort.Strings(orphans)
+	return []patrolFinding{{check: patrolCheckStaleWt, level: "warn",
+		message: fmt.Sprintf("stale-worktrees: %d dirty worktree(s) with an already-merged HEAD (orphaned by a dirty-tree cleanup skip) — inspect and `git worktree remove --force`: %s",
+			len(orphans), strings.Join(orphans, ", "))}}
 }
 
 // --- check: completed-but-unvalidated epics --------------------------------
