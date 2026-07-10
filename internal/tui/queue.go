@@ -383,13 +383,19 @@ func (m *queueModel) renderRow(row flatRow, selected bool, stateW, idW, titleW, 
 }
 
 // treeConnector builds the ├─ / └─ / │ prefix for a queue row from its ancestor
-// last-sibling flags. Top-level rows (no ancestors) still get a connector so
-// every row visibly belongs to the tree. Ancestor levels contribute a vertical
-// bar ("│  ") when that ancestor had following siblings, or blank ("   ") when
-// it was the last — the standard `tree(1)` rendering.
+// last-sibling flags. Top-level rows (no ancestors) get NO connector: they have
+// no parent, and drawing one made every root read as a child of some invisible
+// node — the block of standalone tasks after the last epic looked like that
+// epic's children, which is exactly the "epics on top, children below" misread
+// (koryph-b01 follow-up). Ancestor levels contribute a vertical bar ("│  ")
+// when that ancestor had following siblings, or blank ("   ") when it was the
+// last — the standard `tree(1)` rendering.
 func treeConnector(ancestorsLast []bool, isLast bool) string {
+	if len(ancestorsLast) == 0 {
+		return ""
+	}
 	var b strings.Builder
-	for _, last := range ancestorsLast {
+	for _, last := range ancestorsLast[1:] {
 		if last {
 			b.WriteString("   ")
 		} else {

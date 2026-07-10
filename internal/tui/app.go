@@ -331,8 +331,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // resizeTabs propagates the current terminal dimensions to all tab models.
+// The content area excludes ALL chrome — header, tab bar, AND status bar
+// (koryph-b01 follow-up): budgeting only the top chrome let a tab that fills
+// its full allotment (the Queue tab always does) overflow the terminal, and
+// the OLDEST lines — the header and tab bar — scrolled off screen.
 func (a *App) resizeTabs() {
-	contentH := a.height - headerHeight()
+	contentH := a.height - headerHeight() - statusBarHeight
+	if contentH < 1 {
+		contentH = 1
+	}
 	for i := range a.tabs {
 		a.tabs[i].Resize(a.width, contentH)
 	}
@@ -369,21 +376,35 @@ func (a App) View() string {
 	b.WriteString(renderTabBar(a.activeTab, a.theme, a.width))
 	b.WriteRune('\n')
 
-	// Content area.
-	contentH := a.height - headerHeight()
-	_ = contentH
-
-	if a.showHelp {
-		b.WriteString(a.renderHelp())
-	} else {
-		b.WriteString(a.renderActiveTab())
+	// Content area, hard-clipped to its budget (koryph-b01 follow-up):
+	// a tab whose View miscounts and returns more lines than it was given
+	// must lose its own bottom rows, never push the header/tab bar off the
+	// top of the terminal.
+	contentH := a.height - headerHeight() - statusBarHeight
+	if contentH < 1 {
+		contentH = 1
 	}
+	content := a.renderActiveTab()
+	if a.showHelp {
+		content = a.renderHelp()
+	}
+	b.WriteString(clipLines(content, contentH))
 
 	// Status bar (pinned to last row via newlines is impractical in BT;
 	// instead just append and let the terminal scroll).
 	b.WriteString(a.renderStatusBar())
 
 	return b.String()
+}
+
+// clipLines truncates s to at most n lines (trailing newline dropped), so a
+// tab's output can never exceed the vertical budget it was handed.
+func clipLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n")
 }
 
 // renderHeader renders the top header line.
@@ -451,11 +472,17 @@ func (a App) renderStatusBar() string {
 		Foreground(a.theme.Gray).
 		Render(fmt.Sprintf("%s  %s", helpHint, formatTimestamp(a.snap.CapturedAt)))
 
-	gap := a.width - lipglossLen(left) - lipglossLen(right)
+	// Size the content to the style's INNER width — StatusBar carries
+	// horizontal padding, so filling the full terminal width made the bar
+	// wrap onto a second row, overflow the vertical budget, and scroll the
+	// header off (koryph-b01 follow-up). MaxWidth is the ANSI-aware backstop.
+	inner := a.width - a.theme.StatusBar.GetHorizontalFrameSize()
+	gap := inner - lipglossLen(left) - lipglossLen(right)
 	if gap < 0 {
 		gap = 0
 	}
-	line := a.theme.StatusBar.Width(a.width).Render(left + strings.Repeat(" ", gap) + right)
+	line := a.theme.StatusBar.Width(a.width).MaxWidth(a.width).
+		Render(truncate(left, inner) + strings.Repeat(" ", gap) + right)
 	return "\n" + line
 }
 
@@ -684,3 +711,7 @@ func governorDynamic(g cockpit.GovernorSnapshot) int {
 // headerHeight is the number of fixed rows above the content area:
 // header (1) + tab bar (1).
 func headerHeight() int { return 2 }
+
+// statusBarHeight is the number of fixed rows below the content area:
+// renderStatusBar's leading blank line (1) + the bar itself (1).
+const statusBarHeight = 2
