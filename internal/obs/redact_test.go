@@ -5,7 +5,9 @@ package obs
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestRedactSecretKeyNames asserts that attributes with secret-shaped key names
@@ -141,6 +143,27 @@ func TestRedactRecord(t *testing.T) {
 		}
 		return true
 	})
+}
+
+// TestRedactRecordScansMessage guards the fix for the audit finding that
+// RedactRecord copied the message verbatim while the engine formats raw
+// subprocess errors (wrapping git/gh/gate stderr) straight into it.
+func TestRedactRecordScansMessage(t *testing.T) {
+	secret := "Bearer supersecret12345678901234567"
+	rec := slog.NewRecord(time.Time{}, slog.LevelWarn,
+		"engine.slot.blocked: gate failed: "+secret, 0)
+	out := RedactRecord(rec)
+	if strings.Contains(out.Message, secret) {
+		t.Errorf("secret survived in redacted message: %q", out.Message)
+	}
+	if !strings.Contains(out.Message, Redacted) {
+		t.Errorf("redacted message missing the redaction marker: %q", out.Message)
+	}
+	// A clean message must pass through unchanged.
+	clean := RedactRecord(slog.NewRecord(time.Time{}, slog.LevelInfo, "engine.run.start", 0))
+	if clean.Message != "engine.run.start" {
+		t.Errorf("clean message altered: %q", clean.Message)
+	}
 }
 
 // TestIsSecretKey covers key detection without touching handlers.

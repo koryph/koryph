@@ -1098,6 +1098,41 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 // unknown status). It returns true when it requeued the slot instead of
 // blocking it (the gate-failed single retry): the caller must then return
 // WITHOUT releasing the global slot, because a requeue keeps it.
+// auditBlocked records a TERMINAL merge refusal durably: the canonical
+// engine.slot.blocked telemetry event (which other consumers filter on) plus a
+// registry audit.jsonl entry — mirroring the pr-open success path (openPRSlot).
+// Before this, the safety-relevant refusals (protected paths touched, unsigned
+// commit rejected, gate failed) left only a per-run ledger Note and a free-text
+// progress line: no filterable event, no durable cross-run audit. reason is a
+// stable token (gate-failed, unsigned, protected, commit-style, pr-error,
+// merge-error) consumers key on.
+func (r *runner) auditBlocked(sl *ledger.Slot, reason, detail string) {
+	logSlotBlocked(sl.PhaseID, reason, sl.Model, sl.ModelActual, sl.Attempts)
+	audit := map[string]string{
+		"bead":   sl.PhaseID,
+		"reason": reason,
+		"branch": sl.Branch,
+		"detail": tailOf(detail, 400),
+	}
+	// Persist the full failure detail to a discoverable file so a gate/signing
+	// failure is diagnosable post-hoc: the ledger Note and the audit entry keep
+	// only a 400-char tail, and merge itself does no logging. The phase dir is
+	// the same place session.log/stderr.log live, so `koryph tail` and the TUI
+	// find it. Best-effort — a write failure must not mask the block.
+	if detail != "" {
+		outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "gate-output.log")
+		if err := os.WriteFile(outPath, []byte(detail+"\n"), 0o644); err == nil {
+			audit["output_file"] = outPath
+		}
+	}
+	_ = r.reg.Audit(registry.Event{
+		Kind:      "blocked",
+		ProjectID: r.opts.ProjectID,
+		Actor:     r.owner,
+		Detail:    audit,
+	})
+}
+
 func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res merge.Result) (requeued bool) {
 	switch res.Status {
 	case merge.StatusGateFailed:
@@ -1114,6 +1149,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "gate-failed")
 		r.progress("bead %s: blocked (gate failed after requeue)", sl.PhaseID)
+		r.auditBlocked(sl, "gate-failed", res.GateOutput)
 
 	case merge.StatusCommitStyle:
 		if commitStyleRetryable(sl) {
@@ -1128,6 +1164,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "commit-style")
 		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
+		r.auditBlocked(sl, "commit-style", res.GateOutput)
 
 	case merge.StatusConflict:
 		// A rebase conflict is the most agent-resolvable merge failure: requeue
@@ -1163,6 +1200,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "protected")
 		r.progress("bead %s: blocked (protected paths: %s)", sl.PhaseID, strings.Join(res.Protected, ", "))
+		r.auditBlocked(sl, "protected", strings.Join(res.Protected, ", "))
 
 	case merge.StatusUnsigned:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -1172,6 +1210,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "unsigned")
 		r.progress("bead %s: blocked (unsigned commits on %s — signing is required; nothing merged)",
 			sl.PhaseID, sl.Branch)
+		r.auditBlocked(sl, "unsigned", res.GateOutput)
 
 	default:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -1180,6 +1219,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "merge-"+string(res.Status))
 		r.progress("bead %s: merge failed (%s)", sl.PhaseID, string(res.Status))
+		r.auditBlocked(sl, "merge-"+string(res.Status), res.GateOutput)
 	}
 	return false
 }
@@ -1217,6 +1257,7 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 		r.checkpointSlot(sl, "pr-error")
 		r.releaseGlobalSlot(sl.PhaseID)
 		r.progress("bead %s: blocked (pr error: %v)", sl.PhaseID, err)
+		r.auditBlocked(sl, "pr-error", err.Error())
 		return
 	}
 

@@ -48,6 +48,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		if ctx.Err() != nil {
 			return r.interrupted()
 		}
+		syncObsConfig() // pick up `koryph obs level` changes without a restart
 		r.patrolIfDue(ctx)
 		r.drainEpicResults(ctx)
 

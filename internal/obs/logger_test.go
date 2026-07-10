@@ -6,6 +6,8 @@ package obs
 import (
 	"bytes"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -92,6 +94,43 @@ func TestRegistrySync(t *testing.T) {
 	eng.Debug("after sync")
 	if buf.Len() == 0 {
 		t.Error("debug after sync suppressed")
+	}
+}
+
+// TestReloadConfigPicksUpDiskChange locks the contract the engine's per-tick
+// syncObsConfig relies on: the package-level ReloadConfig re-reads
+// observability.json from disk and applies a new component level to a live
+// logger, so a mid-run `koryph obs level <component> debug` takes effect on the
+// next scheduler tick without a restart (the "no restart needed" promise).
+func TestReloadConfigPicksUpDiskChange(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KORYPH_HOME", home)
+	// Scrub env-level overrides so the on-disk file is the sole level source.
+	t.Setenv("KORYPH_LOG_LEVEL", "")
+
+	var buf bytes.Buffer
+	ReInit(defaultConfig(), NewTextHandler(&buf, LevelTrace))
+	eng := For("engine")
+
+	buf.Reset()
+	eng.Debug("before reload") // default info → suppressed
+	if buf.Len() != 0 {
+		t.Fatalf("debug before reload leaked: %q", buf.String())
+	}
+
+	// Operator raises engine to debug on disk (what `koryph obs level` writes).
+	obsPath := filepath.Join(home, "observability.json")
+	if err := os.WriteFile(obsPath, []byte(`{"components":{"engine":"debug"}}`), 0o644); err != nil {
+		t.Fatalf("write observability.json: %v", err)
+	}
+	if _, err := ReloadConfig(); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+
+	buf.Reset()
+	eng.Debug("after reload")
+	if buf.Len() == 0 {
+		t.Error("debug suppressed after ReloadConfig — a mid-run obs level change would not take effect in the engine loop")
 	}
 }
 

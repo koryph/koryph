@@ -79,10 +79,15 @@ func RedactAttr(a slog.Attr) slog.Attr {
 	return a
 }
 
-// RedactRecord returns a shallow copy of r with all attributes redacted.
-// The message is not modified — callers must never put secrets in messages.
+// RedactRecord returns a shallow copy of r with the message AND all attributes
+// redacted. The message is scanned too (not just attrs): the "never put secrets
+// in messages" convention was unenforced, and the engine's dominant
+// progress-logging idiom formats raw Go errors with %v straight into the
+// message — errors that routinely wrap subprocess (git/gh/gate) stdout+stderr,
+// exactly the token/PEM-shaped content the redaction layer exists to catch.
+// RedactValue is a no-op on clean strings, so the common case is unaffected.
 func RedactRecord(r slog.Record) slog.Record {
-	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	out := slog.NewRecord(r.Time, r.Level, RedactValue(r.Message), r.PC)
 	r.Attrs(func(a slog.Attr) bool {
 		out.AddAttrs(RedactAttr(a))
 		return true

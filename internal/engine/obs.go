@@ -22,6 +22,17 @@ import (
 // package-init time because obs.For performs lazy bootstrap.
 var log = obs.For("engine")
 
+// syncObsConfig re-reads ~/.koryph/observability.json so a mid-run
+// `koryph obs level|enable|disable` takes effect on the NEXT scheduler tick
+// without restarting the loop — the "no restart needed" contract the obs design
+// (docs/designs/2026-07-observability.md §4) promised but nothing honored
+// (obs.ReloadConfig had no caller). Called at the top of every wave/rolling
+// iteration. Best-effort: a transient read/parse error leaves the previously
+// loaded config in place (obs.ReloadConfig retains it on error).
+func syncObsConfig() {
+	_, _ = obs.ReloadConfig()
+}
+
 // logRunStart emits an INFO record when an engine run starts.
 func logRunStart(runID, project, mode string) {
 	log.Info("engine.run.start",

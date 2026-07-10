@@ -170,7 +170,10 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		if !ok {
 			// pre-commit auto-fixers may leave the tree dirty; discard.
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
-			return Result{Status: StatusGateFailed, GateOutput: tail(out, 2000)}, nil
+			// Keep a generous tail: the engine persists this to
+			// <phase-dir>/gate-output.log, so a 2 KB clip was often too small to
+			// see which gate command actually failed on a large build/test run.
+			return Result{Status: StatusGateFailed, GateOutput: tail(out, gateOutputCap)}, nil
 		}
 	}
 
@@ -328,6 +331,12 @@ func conflictMarkdown(branch, base, output string) string {
 		branch, base, strings.TrimSpace(tail(output, 4000)),
 	)
 }
+
+// gateOutputCap bounds the gate output carried in Result.GateOutput. It is
+// generous (16 KB) because the engine persists this to <phase-dir>/gate-output.log
+// for post-hoc diagnosis; a small clip lost the actual failing command on large
+// build/test runs.
+const gateOutputCap = 16000
 
 func tail(s string, n int) string {
 	if len(s) > n {
