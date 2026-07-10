@@ -11,6 +11,43 @@ import (
 	"github.com/koryph/koryph/internal/quota"
 )
 
+// TestQuotaCalibrateClearsStaleFlag is the regression test for the audit
+// finding that `koryph quota calibrate` never cleared the calibration-stale
+// flag it is documented to clear: once the registry marked an account stale
+// (proxy/account change), doctor warned permanently and the operator's
+// remediation ("run koryph quota calibrate") was a no-op against the flag.
+func TestQuotaCalibrateClearsStaleFlag(t *testing.T) {
+	isolate(t)
+	// Precondition: the account is marked calibration-stale (what the registry
+	// does on an account/proxy change).
+	if err := quota.SetCalibrationStale("personal", "proxy config changed"); err != nil {
+		t.Fatalf("SetCalibrationStale: %v", err)
+	}
+	if cfg, err := quota.LoadConfig("personal"); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	} else if !cfg.CalibrationStale {
+		t.Fatal("precondition failed: account should be calibration-stale")
+	}
+
+	code, _, errb := runCmd("quota", "calibrate",
+		"--account", "personal", "--window", "5h",
+		"--observed-usd", "10", "--observed-pct", "20")
+	if code != 0 {
+		t.Fatalf("quota calibrate code = %d; stderr=%s", code, errb)
+	}
+
+	cfg, err := quota.LoadConfig("personal")
+	if err != nil {
+		t.Fatalf("LoadConfig after calibrate: %v", err)
+	}
+	if cfg.CalibrationStale {
+		t.Error("quota calibrate did not clear CalibrationStale")
+	}
+	if cfg.CalibrationStaleReason != "" {
+		t.Errorf("CalibrationStaleReason = %q, want cleared", cfg.CalibrationStaleReason)
+	}
+}
+
 // TestMetricsEstimatorDisplaysProxySegmentedKeys is the koryph-3l1.3 carried-
 // contract regression test for cmdMetricsEstimator: a Calibration/ErrorStats
 // key segmented by a proxyID built from a base_url with its own colons (e.g.

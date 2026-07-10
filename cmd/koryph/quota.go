@@ -205,12 +205,21 @@ func cmdQuotaCalibrate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Lock-guarded read-modify-write: re-reads fresh under the flock so a
-	// concurrent run's EWMA Record calls are not clobbered (koryph-8iu.1).
+	// concurrent run's EWMA Record calls are not clobbered (koryph-8iu.1). Clear
+	// the calibration-stale flag in the SAME closure: a fresh calibration is
+	// exactly the remediation SetCalibrationStale's doctor warning tells the
+	// operator to perform, so it must clear here (folded in so the clear is
+	// atomic with the calibrate under one flock, not a second lock round-trip).
 	cfg, err := quota.UpdateConfig(*acct, func(c *quota.Config) error {
 		if *planTier != "" {
 			c.PlanTier = *planTier
 		}
-		return quota.Calibrate(c, *observedUSD, *observedPct, *window)
+		if cerr := quota.Calibrate(c, *observedUSD, *observedPct, *window); cerr != nil {
+			return cerr
+		}
+		c.CalibrationStale = false
+		c.CalibrationStaleReason = ""
+		return nil
 	})
 	if err != nil {
 		return fail(stderr, err)

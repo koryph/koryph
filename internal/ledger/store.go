@@ -259,6 +259,7 @@ func (s *Store) RunLock(runID string) (*Lock, error) {
 	}
 	path := filepath.Join(s.KoryphRoot, lockFile)
 
+	// Fast path: uncontended exclusive create.
 	l, err := acquireLock(path, runID)
 	if err == nil {
 		return l, nil
@@ -267,15 +268,68 @@ func (s *Store) RunLock(runID string) (*Lock, error) {
 		return nil, err
 	}
 
-	// Lock exists. Decide whether it is stale.
+	// Contended. The stale-reclaim below (read PID → decide stale → remove →
+	// re-acquire) is a check-then-act that races: two starts could both read the
+	// SAME dead PID, and the second os.Remove would delete the FIRST's freshly
+	// re-acquired lock, leaving both believing they hold the singleton. Serialize
+	// the whole critical section with an exclusive flock on a sidecar guard file
+	// so the check→remove→acquire is atomic across processes.
+	guard, err := acquireReclaimGuard(s.KoryphRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer guard.release()
+
+	// Re-attempt the exclusive create under the guard: a racing process may have
+	// acquired-and-released between our fast-path failure and taking the guard.
+	l, err = acquireLock(path, runID)
+	if err == nil {
+		return l, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+
+	// Lock exists and we hold the reclaim guard: decide whether it is stale.
 	if pid, ok := readLockPID(path); ok && processAlive(pid) {
 		return nil, fmt.Errorf("koryph already running for run %s (pid %d, lock %s)", runID, pid, path)
 	}
-	// Stale or unreadable holder: clear it and retry exactly once.
+	// Stale or unreadable holder: clear it and re-acquire. No other process can
+	// be in this section concurrently (guard held), so the removal cannot race a
+	// fresh acquire.
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	return acquireLock(path, runID)
+}
+
+// reclaimGuard is an exclusive flock over the sidecar guard file that serializes
+// RunLock's stale-lock reclaim critical section across processes.
+type reclaimGuard struct{ f *os.File }
+
+// acquireReclaimGuard takes an exclusive (blocking) flock on
+// <root>/koryph.lock.guard. The guard file is never removed — it is only a
+// flock anchor, and the kernel releases the flock on process exit even after a
+// crash, so a dead holder never wedges the guard.
+func acquireReclaimGuard(root string) (*reclaimGuard, error) {
+	f, err := os.OpenFile(filepath.Join(root, lockFile+".guard"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return &reclaimGuard{f: f}, nil
+}
+
+// release drops the flock and closes the guard file.
+func (g *reclaimGuard) release() {
+	if g == nil || g.f == nil {
+		return
+	}
+	_ = syscall.Flock(int(g.f.Fd()), syscall.LOCK_UN)
+	_ = g.f.Close()
 }
 
 // acquireLock creates the lock file exclusively and records "<pid> <host>".

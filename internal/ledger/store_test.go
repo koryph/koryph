@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -431,4 +432,50 @@ func TestRunLockStaleRecovered(t *testing.T) {
 	if !ok || pid != os.Getpid() {
 		t.Fatalf("lock not re-taken by this process: pid=%d ok=%v", pid, ok)
 	}
+}
+
+// TestRunLockStaleReclaimIsSingleWinner exercises the TOCTOU the reclaim guard
+// closes: many goroutines racing to reclaim the SAME stale lock must produce
+// exactly one holder, never two. Before the flock guard, concurrent reclaimers
+// could each os.Remove the stale file and the second could delete the first's
+// freshly re-acquired lock, leaving two "singleton" holders.
+func TestRunLockStaleReclaimIsSingleWinner(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+	if err := os.MkdirAll(st.KoryphRoot, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	lockPath := filepath.Join(st.KoryphRoot, "koryph.lock")
+	deadPID := 2000000000
+	if processAlive(deadPID) {
+		t.Skipf("chosen dead pid %d is unexpectedly alive; skipping", deadPID)
+	}
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d ghost-host\n", deadPID)), 0o644); err != nil {
+		t.Fatalf("seed stale lock: %v", err)
+	}
+
+	const racers = 24
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var winners []*Lock
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if l, err := st.RunLock("run-x"); err == nil {
+				mu.Lock()
+				winners = append(winners, l)
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(winners) != 1 {
+		t.Fatalf("got %d lock winners, want exactly 1 (TOCTOU: two holders of a process-singleton lock)", len(winners))
+	}
+	winners[0].Unlock()
 }
