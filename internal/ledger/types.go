@@ -189,6 +189,29 @@ type Slot struct {
 	UpdatedAt    string `json:"updated_at,omitempty"`
 	Note         string `json:"note,omitempty"`
 
+	// FinishedAt is the wall-clock instant this slot's agent process stopped —
+	// stamped when the slot goes terminal (completeSlot), independent of
+	// MergedAt (which is set only on a successful merge). With DispatchedAt it
+	// bounds the slot's wall-clock duration for the efficiency dashboard. RFC3339
+	// UTC; empty while the slot is still live. Additive: absent in old ledgers.
+	FinishedAt string `json:"finished_at,omitempty"`
+
+	// Resource-usage aggregates for this slot's agent process cohort (the Setsid
+	// session rooted at PID, sampled by internal/resmon on the engine poll tick —
+	// koryph process-metrics). They let the cockpit report per-bead memory, CPU,
+	// and I/O so orchestration can be calibrated against real consumption. All
+	// are best-effort: zero when no sample has landed yet, when the run predates
+	// this field, or when the platform can't supply a metric (macOS has no
+	// cgo-free per-process disk I/O, so IORead/WriteMB stay 0 there). They
+	// reflect the whole process tree/group, not just PID, and are overwritten
+	// (not accumulated) each tick from the sampler's in-memory running Usage.
+	PeakRSSMB       int     `json:"peak_rss_mb,omitempty"`      // max resident memory observed
+	AvgRSSMB        int     `json:"avg_rss_mb,omitempty"`       // mean resident memory across samples
+	CPUSeconds      float64 `json:"cpu_seconds,omitempty"`      // cumulative CPU time (user+system)
+	IOReadMB        float64 `json:"io_read_mb,omitempty"`       // cumulative disk bytes read (Linux only)
+	IOWriteMB       float64 `json:"io_write_mb,omitempty"`      // cumulative disk bytes written (Linux only)
+	ResourceSamples int     `json:"resource_samples,omitempty"` // number of resmon readings folded in
+
 	// RateLimitRequeues counts requeues spent on a classified rate-limit/
 	// overload death (koryph-2im.4, docs/designs/2026-07-scheduler-throughput.md
 	// L5) — bounded independently of Attempts, since the failure is

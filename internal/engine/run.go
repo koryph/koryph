@@ -24,6 +24,7 @@ import (
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
 	"github.com/koryph/koryph/internal/signing"
@@ -97,6 +98,13 @@ type runner struct {
 	// default floor to physical memory.
 	memProbe func() (sysmem.Stat, bool)
 
+	// resProbe takes the per-poll-pass process-table snapshot for per-slot
+	// resource sampling (koryph process-metrics). nil means "use the real
+	// platform probe" (resmon.Snapshot); tests inject a stub — returning
+	// (nil, nil) to disable sampling, or a fixed table to assert the derived
+	// ledger fields. Mirrors memProbe's seam.
+	resProbe func(context.Context) (*resmon.ProcTable, error)
+
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time
 	patrolSeen     map[string]time.Time // finding key → last logged; throttles repeat findings
@@ -135,6 +143,29 @@ type runner struct {
 	// (koryph-2im.2); nil (the production default) means "register a real
 	// signal.Notify(SIGCHLD) channel for the poll loop's duration".
 	wakeCh chan os.Signal
+
+	// resUsage holds the in-memory running resource Usage for each live slot
+	// (keyed by phase id), folded from internal/resmon samples and mirrored to
+	// the ledger slot's Peak/AvgRSSMB, CPUSeconds, and IO*MB fields (koryph
+	// process-metrics). It is the accumulation source of truth; the ledger is a
+	// derived snapshot. Each entry records the PID it is accumulating for so a
+	// requeue (new PID, reset DispatchedAt) starts a FRESH Usage — keeping the
+	// metrics per-attempt and consistent with the per-attempt wall window the
+	// cockpit divides CPU seconds by. Lazily initialised by sampleSlotResources.
+	resUsage map[string]*slotResUsage
+
+	// lastResSampleAt throttles resource sampling to at most once per poll
+	// interval, decoupling it from pollPass frequency (which also fires on every
+	// SIGCHLD wake) so a burst of short-lived subprocess exits cannot trigger a
+	// host-wide process sweep per signal.
+	lastResSampleAt time.Time
+}
+
+// slotResUsage is one slot's in-memory resource accumulation plus the PID it is
+// accumulating for, so a requeue to a new PID resets it (per-attempt metrics).
+type slotResUsage struct {
+	pid   int
+	usage resmon.Usage
 }
 
 // Run executes one engine run over one project per the package contract in

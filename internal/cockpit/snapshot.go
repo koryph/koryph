@@ -71,6 +71,19 @@ type BeadDetailSnapshot struct {
 	EstimateUSD float64
 	LogPath     string // path to agent session log for 't' tail
 
+	// Timing + resource usage (koryph process-metrics). StartedAt/FinishedAt are
+	// the dispatch and terminal wall-clock instants; the resource aggregates are
+	// the slot's agent process-cohort usage. Zero when unavailable.
+	StartedAt       time.Time
+	FinishedAt      time.Time
+	PeakRSSMB       int
+	AvgRSSMB        int
+	CPUSeconds      float64
+	CPUUtilPct      float64
+	IOReadMB        float64
+	IOWriteMB       float64
+	ResourceSamples int
+
 	// AttemptHistory is chronological, most-recent last.
 	AttemptHistory []AttemptRecord
 
@@ -114,8 +127,21 @@ type SlotSnapshot struct {
 	EstimateUSD float64
 
 	// Timing.
-	DispatchedAt time.Time // zero if unknown
-	Elapsed      time.Duration
+	DispatchedAt time.Time     // start clock; zero if unknown
+	FinishedAt   time.Time     // stop clock; zero while live/unknown
+	Elapsed      time.Duration // wall time (finished-dispatched, or now-dispatched)
+
+	// Resource-usage aggregates for this slot's agent process cohort, mirrored
+	// from the ledger (koryph process-metrics). Zero when no sample has landed
+	// or the metric is unavailable on the platform (macOS supplies no per-process
+	// disk I/O). CPUUtilPct is derived from CPUSeconds over the wall window.
+	PeakRSSMB       int
+	AvgRSSMB        int
+	CPUSeconds      float64
+	CPUUtilPct      float64
+	IOReadMB        float64
+	IOWriteMB       float64
+	ResourceSamples int
 
 	// StatusLine is the last human-readable state from the agent's status.json
 	// (the "step" field). Empty when the file is absent or unreadable.

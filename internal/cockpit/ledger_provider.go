@@ -401,6 +401,12 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 		RateLimitRequeues:  sl.RateLimitRequeues,
 		BudgetKillRequeues: sl.BudgetKillRequeues,
 		Terminal:           ledger.Terminal(sl.Status),
+		PeakRSSMB:          sl.PeakRSSMB,
+		AvgRSSMB:           sl.AvgRSSMB,
+		CPUSeconds:         sl.CPUSeconds,
+		IOReadMB:           sl.IOReadMB,
+		IOWriteMB:          sl.IOWriteMB,
+		ResourceSamples:    sl.ResourceSamples,
 	}
 	if sl.DispatchedAt != "" {
 		if t, err := time.Parse(time.RFC3339, sl.DispatchedAt); err == nil {
@@ -408,6 +414,15 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 			ss.Elapsed = now.Sub(t)
 		}
 	}
+	if sl.FinishedAt != "" {
+		if t, err := time.Parse(time.RFC3339, sl.FinishedAt); err == nil {
+			ss.FinishedAt = t
+			if !ss.DispatchedAt.IsZero() {
+				ss.Elapsed = t.Sub(ss.DispatchedAt) // final wall time once terminal
+			}
+		}
+	}
+	ss.CPUUtilPct = cpuUtilPct(sl.CPUSeconds, ss.DispatchedAt, ss.FinishedAt, now)
 	// Read live agent status file if available.
 	if sl.StatusPath != "" {
 		if as, err := readAgentStatus(sl.StatusPath); err == nil {
@@ -416,6 +431,25 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 		}
 	}
 	return ss
+}
+
+// cpuUtilPct derives average CPU utilization (percent; 100 = one core saturated
+// for the whole window) from cumulative CPU seconds over the slot's wall-clock
+// window: dispatch → finish (terminal) or dispatch → now (live). Returns 0 when
+// the window is unknown or non-positive.
+func cpuUtilPct(cpuSeconds float64, started, finished, now time.Time) float64 {
+	if started.IsZero() || cpuSeconds <= 0 {
+		return 0
+	}
+	end := now
+	if !finished.IsZero() {
+		end = finished
+	}
+	wall := end.Sub(started).Seconds()
+	if wall <= 0 {
+		return 0
+	}
+	return cpuSeconds / wall * 100
 }
 
 // titleFor returns the best available display title for a slot.
@@ -601,6 +635,25 @@ func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time
 		d.CostUSD = sl.CostUSD
 		d.EstimateUSD = sl.EstimateUSD
 		d.LogPath = sl.LogPath
+
+		// Timing + resource usage (koryph process-metrics).
+		d.PeakRSSMB = sl.PeakRSSMB
+		d.AvgRSSMB = sl.AvgRSSMB
+		d.CPUSeconds = sl.CPUSeconds
+		d.IOReadMB = sl.IOReadMB
+		d.IOWriteMB = sl.IOWriteMB
+		d.ResourceSamples = sl.ResourceSamples
+		if sl.DispatchedAt != "" {
+			if t, err := time.Parse(time.RFC3339, sl.DispatchedAt); err == nil {
+				d.StartedAt = t
+			}
+		}
+		if sl.FinishedAt != "" {
+			if t, err := time.Parse(time.RFC3339, sl.FinishedAt); err == nil {
+				d.FinishedAt = t
+			}
+		}
+		d.CPUUtilPct = cpuUtilPct(sl.CPUSeconds, d.StartedAt, d.FinishedAt, now)
 
 		// Build one AttemptRecord per attempt (we have summary counts only,
 		// so synthesise a single record from the current slot state).

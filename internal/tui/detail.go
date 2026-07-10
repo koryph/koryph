@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -379,6 +380,36 @@ func (m *detailModel) View() string {
 		b.WriteString(labelStyle.Render("Log:") + " " + dimStyle.Render(truncate(d.LogPath, w-20)) + "\n")
 	}
 
+	// --- Resources (koryph process-metrics) --------------------------------------
+	// Per-bead clock times and process-cohort resource usage, so an operator can
+	// calibrate orchestration against what each bead actually consumed.
+	if !d.StartedAt.IsZero() || d.ResourceSamples > 0 {
+		b.WriteString(sectionStyle.Render("Resources") + "\n")
+		if !d.StartedAt.IsZero() {
+			b.WriteString(labelStyle.Render("Started:") + " " + valueStyle.Render(formatTimestamp(d.StartedAt)) + "\n")
+		}
+		finished := "running"
+		if !d.FinishedAt.IsZero() {
+			finished = formatTimestamp(d.FinishedAt)
+		}
+		b.WriteString(labelStyle.Render("Finished:") + " " + valueStyle.Render(finished) + "\n")
+		if wall := detailWall(d); wall > 0 {
+			b.WriteString(labelStyle.Render("Wall:") + " " + valueStyle.Render(formatElapsed(wall)) + "\n")
+		}
+		if d.ResourceSamples > 0 {
+			mem := fmt.Sprintf("avg %d MB · peak %d MB", d.AvgRSSMB, d.PeakRSSMB)
+			b.WriteString(labelStyle.Render("Memory:") + " " + valueStyle.Render(mem) + "\n")
+			cpu := fmt.Sprintf("%.0fs · %.0f%% util", d.CPUSeconds, d.CPUUtilPct)
+			b.WriteString(labelStyle.Render("CPU:") + " " + valueStyle.Render(cpu) + "\n")
+			if d.IOReadMB > 0 || d.IOWriteMB > 0 {
+				io := fmt.Sprintf("%.1f MB read · %.1f MB written", d.IOReadMB, d.IOWriteMB)
+				b.WriteString(labelStyle.Render("Disk I/O:") + " " + valueStyle.Render(io) + "\n")
+			} else {
+				b.WriteString(labelStyle.Render("Disk I/O:") + " " + dimStyle.Render("n/a on this platform") + "\n")
+			}
+		}
+	}
+
 	// --- Description -------------------------------------------------------------
 	if d.Description != "" {
 		b.WriteString(sectionStyle.Render("Description") + "\n")
@@ -493,6 +524,23 @@ func wrapText(s string, maxWidth int) []string {
 		}
 	}
 	return lines
+}
+
+// detailWall returns the bead's wall-clock duration: dispatch → finish when
+// terminal, or dispatch → snapshot time while still live. Zero when the start
+// is unknown or the computed span is negative.
+func detailWall(d cockpit.BeadDetailSnapshot) time.Duration {
+	if d.StartedAt.IsZero() {
+		return 0
+	}
+	end := d.ComputedAt
+	if !d.FinishedAt.IsZero() {
+		end = d.FinishedAt
+	}
+	if w := end.Sub(d.StartedAt); w > 0 {
+		return w
+	}
+	return 0
 }
 
 // formatDetailCost formats cost vs estimate for the detail panel.

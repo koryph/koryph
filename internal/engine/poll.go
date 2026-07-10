@@ -24,6 +24,7 @@ import (
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/review"
 	"github.com/koryph/koryph/internal/worktree"
 )
@@ -178,14 +179,111 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 	// refresh in wave/rolling loops never fires, and the 10-minute TTL would
 	// falsely expire on a healthy, fully-loaded pipeline (koryph-p42).
 	r.refreshDemand()
+	// One resource-table snapshot per pass, aggregated per slot below (resmon's
+	// "one snapshot, many trees" — koryph process-metrics). nil on an
+	// unsupported platform or probe failure, in which case sampling is skipped.
+	procs := r.sampleProcTable(ctx)
 	for _, id := range r.activePhaseIDs() {
 		sl := r.run.Slots[id]
 		if sl == nil || ledger.Terminal(sl.Status) {
 			continue
 		}
+		if procs != nil {
+			r.sampleSlotResources(sl, procs)
+		}
 		r.pollSlot(ctx, sl, probeProgress)
 	}
 	_ = r.store.SaveRun(r.run)
+}
+
+// resSampleTimeout bounds one process-table probe so a hung `ps` (darwin) or a
+// pathologically slow `/proc` scan (linux) can never stall the poll loop's
+// liveness, completeSlot, and merge work — the probe is on the critical path.
+const resSampleTimeout = 5 * time.Second
+
+// sampleProcTable takes one process-table snapshot for this poll pass, or nil
+// (sampling skipped this pass) when throttled, unsupported, timed out, or
+// failed — so resource sampling can never break or stall the poll loop.
+//
+// Throttle: pollPass also runs on every SIGCHLD wake (frequent under active
+// subprocess churn), but a host-wide process sweep per signal would be
+// wasteful, so sampling is limited to at most once per poll interval. Timeout:
+// the probe is bounded by resSampleTimeout regardless of the long-lived run ctx.
+func (r *runner) sampleProcTable(ctx context.Context) *resmon.ProcTable {
+	now := time.Now()
+	if !r.lastResSampleAt.IsZero() && now.Sub(r.lastResSampleAt) < r.pollInterval() {
+		return nil
+	}
+	probe := r.resProbe
+	if probe == nil {
+		probe = resmon.Snapshot
+	}
+	pctx, cancel := context.WithTimeout(ctx, resSampleTimeout)
+	defer cancel()
+	tbl, err := probe(pctx)
+	if err != nil {
+		return nil
+	}
+	r.lastResSampleAt = now
+	return tbl
+}
+
+// sampleSlotResources folds this pass's resource reading for sl's agent process
+// cohort into the slot's running Usage and mirrors the derived aggregates onto
+// the ledger slot. A slot whose process has already exited (Aggregate not
+// found) contributes no sample. All units are converted to the ledger's MB /
+// seconds. Best-effort: never returns an error and never blocks completion.
+func (r *runner) sampleSlotResources(sl *ledger.Slot, procs *resmon.ProcTable) {
+	if sl.PID <= 0 {
+		return
+	}
+	sample, ok := procs.Aggregate(sl.PID)
+	if !ok {
+		return
+	}
+	if r.resUsage == nil {
+		r.resUsage = make(map[string]*slotResUsage)
+	}
+	u := r.resUsage[sl.PhaseID]
+	if u == nil || u.pid != sl.PID {
+		// First sample for this slot, or a requeue installed a new PID: start a
+		// fresh per-attempt accumulation aligned with the new DispatchedAt.
+		u = &slotResUsage{pid: sl.PID}
+		r.resUsage[sl.PhaseID] = u
+	}
+	u.usage.Add(sample)
+
+	peakMB := int(u.usage.PeakRSSKB / 1024)
+	avgMB := int(u.usage.AvgRSSKB() / 1024)
+	cpuSec := u.usage.CPUSeconds
+	ioReadMB := float64(u.usage.IOReadKB) / 1024
+	ioWriteMB := float64(u.usage.IOWriteKB) / 1024
+	samples := u.usage.Samples
+	r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.PeakRSSMB = peakMB
+		s.AvgRSSMB = avgMB
+		s.CPUSeconds = cpuSec
+		s.IOReadMB = ioReadMB
+		s.IOWriteMB = ioWriteMB
+		s.ResourceSamples = samples
+	})
+}
+
+// stampFinishedAt records the wall-clock stop time on a slot the moment it
+// becomes terminal, if not already stamped. Called after completeSlot so it
+// covers every terminal path (merged/blocked/conflict/failed/…) from one place
+// rather than threading the stamp through each. A requeued (still non-terminal)
+// slot is left untouched. Also drops the slot's in-memory Usage so a later
+// same-phase requeue starts a fresh accumulation.
+func (r *runner) stampFinishedAt(phaseID string) {
+	s := r.run.Slots[phaseID]
+	if s == nil || !ledger.Terminal(s.Status) || s.FinishedAt != "" {
+		return
+	}
+	_ = r.store.UpdateSlot(r.run, phaseID, func(sl *ledger.Slot) {
+		sl.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	})
+	delete(r.resUsage, phaseID)
 }
 
 // progressProbeDue reports whether a timer-driven poll pass should run the
@@ -228,6 +326,9 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 	}
 
 	r.completeSlot(ctx, sl)
+	// Stamp the wall-clock stop time if completeSlot drove the slot terminal
+	// (as opposed to requeuing it) — one place covering every terminal path.
+	r.stampFinishedAt(sl.PhaseID)
 }
 
 // slotAlive reports whether the agent process is still running. The engine is
