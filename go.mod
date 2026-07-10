@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260629091435-9c70f75e26a4
 	github.com/invopop/jsonschema v0.14.0
 	github.com/lrstanley/bubblezone v1.0.0
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.44.0
 )
 
