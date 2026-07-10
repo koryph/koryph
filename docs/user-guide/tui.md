@@ -331,6 +331,14 @@ its title via `bd show`) so its open children remain nested under it.
 | `parked` | gray | Parked label or status |
 | `epic` | bold | Container node (epic, feature, decision) — not directly dispatchable |
 
+#### Freshness
+
+Queue data is assembled by a background `bd` scan (~15 s cold), so the tab
+shows *"queue refreshing…"* briefly on startup. If the data stops refreshing —
+`bd` slow or contended, or a refresh pass timed out — the title bar appends
+`(data Ns old)` so a frozen tree is never mistaken for live state; the next
+refresh clears it automatically.
+
 #### Queue tab keys
 
 | Key | Action |
@@ -380,6 +388,15 @@ active provider, including:
 
 Within Detail, `↑`/`↓` navigate dependency rows, `Enter` jumps into a dep,
 `Backspace` pops the navigation stack, and `t` tails the agent log.
+
+`T` (capital) tails the agent's **thinking**: the live extended-thinking
+stream parsed from the slot's `stream.jsonl`, following as the agent reasons.
+Blank lines separate reasoning stretches, and when the agent hands work to a
+nested subagent the divider `── subagent …<id> ──` marks whose reasoning you
+are reading (`── main agent ──` on return). `f` toggles follow, `↑`/`↓`
+scroll, `T`/`Esc` returns to the detail panel. While the agent is blocked
+inside a long tool call there may be no new thinking to show — the pane says
+so rather than going blank.
 
 #### Resources section (per-bead process metrics)
 

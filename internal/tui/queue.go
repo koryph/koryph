@@ -26,6 +26,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -43,6 +44,13 @@ func init() {
 
 // IsCapturingInput implements TabModel. The queue tab has no text inputs.
 func (m *queueModel) IsCapturingInput() bool { return false }
+
+// queueStaleAfter is how old the queue snapshot may be before the title bar
+// calls out its age (koryph-b01). The provider recomputes every ~5 s
+// (derivedTTL); several missed cycles means bd is slow, contended, or a
+// refresh pass failed/timed out — the operator should know they are looking
+// at a frozen tree, not live state.
+const queueStaleAfter = 45 * time.Second
 
 // queueFilter is the active state filter for the queue tab.
 type queueFilter int
@@ -238,23 +246,35 @@ func (m *queueModel) View() string {
 
 // --- View renderers ----------------------------------------------------------
 
-// emptyView renders the placeholder when no queue data is available.
+// emptyView renders the placeholder when no queue data is available,
+// distinguishing "the first background refresh hasn't landed yet" (a cold bd
+// scan takes ~15 s; koryph-b01) from "bd genuinely returned nothing".
 func (m *queueModel) emptyView() string {
+	msg := "  no open issues (or bd not available)"
+	if m.snap.Queue.ComputedAt.IsZero() {
+		msg = "  queue refreshing — the first bd scan can take ~15 s…"
+	}
 	return m.sectionTitle("Queue") + "\n" +
-		lipgloss.NewStyle().Foreground(m.theme.Inactive).
-			Render("  no queue data (bd not available or no open issues)")
+		lipgloss.NewStyle().Foreground(m.theme.Inactive).Render(msg)
 }
 
 // listView renders the scrollable queue list.
 func (m *queueModel) listView() string {
 	var b strings.Builder
 
-	// Title bar with filter and counts.
+	// Title bar with filter and counts. Stale queue data — the background
+	// refresh hasn't landed for several TTLs (bd slow, contended, or a pass
+	// timed out; koryph-b01) — is called out with its age so the operator
+	// never mistakes a frozen tree for live state.
 	total := m.snap.Queue.NodeCount
 	showing := len(m.rows)
 	filterStr := filterLabel(m.filter)
-	title := fmt.Sprintf("Queue  filter:%s  %d/%d  [f=filter  space=expand  enter=detail]",
-		filterStr, showing, total)
+	stale := ""
+	if age := m.snap.CapturedAt.Sub(m.snap.Queue.ComputedAt); !m.snap.Queue.ComputedAt.IsZero() && age > queueStaleAfter {
+		stale = fmt.Sprintf("  (data %ds old)", int(age.Seconds()))
+	}
+	title := fmt.Sprintf("Queue  filter:%s  %d/%d%s  [f=filter  space=expand  enter=detail]",
+		filterStr, showing, total, stale)
 	b.WriteString(m.sectionTitle(title))
 	b.WriteRune('\n')
 

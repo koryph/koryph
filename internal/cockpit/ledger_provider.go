@@ -18,6 +18,15 @@ import (
 	"github.com/koryph/koryph/internal/sched"
 )
 
+// derivedRefreshTimeout bounds one background refreshDerived pass
+// (koryph-b01): its bd subprocess calls (list/ready/digraph, ~9-15 s cold)
+// previously ran on context.Background() and could block indefinitely under
+// dolt lock contention — exactly when a run loop is hammering the same DB —
+// wedging the pass forever and freezing every derived tab. Generous (bd can
+// legitimately be slow) but finite; a timed-out pass keeps the previous
+// caches and retries on the next TTL tick.
+const derivedRefreshTimeout = 60 * time.Second
+
 // derivedTTL is how long the beads-sourced derived sections (burndown,
 // efficiency, graph, queue) are cached before the background goroutine
 // recomputes them. All four share one cadence; the per-section values were
@@ -68,6 +77,13 @@ type LedgerProvider struct {
 	derivedAt         time.Time // when the four caches above were last recomputed
 	derivedRefreshing bool      // a background refreshDerived is in flight
 
+	// derivedTimeout bounds one refreshDerived pass (koryph-b01). Set once at
+	// construction (derivedRefreshTimeout); tests shrink it to exercise the
+	// timeout/latch-reset path without a 60 s wait. Read by the background
+	// goroutine without the lock, so it must never be mutated after Refresh
+	// has first been called.
+	derivedTimeout time.Duration
+
 	// graph — shared dependency graph provider (holds its own cache + TTL).
 	// Driven from refreshDerived and read synchronously by BeadDetail.
 	graph *GraphProvider
@@ -89,6 +105,7 @@ func NewLedgerProvider(projectID, repoRoot, accountProfile string) *LedgerProvid
 		bd:             beads.New(repoRoot),
 		graph:          NewGraphProvider(repoRoot, 0), // 0 → package default graphTTL
 		events:         newEventCollector(),
+		derivedTimeout: derivedRefreshTimeout,
 	}
 }
 
@@ -177,29 +194,56 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 // only at the end to publish the results atomically. slots/gov/runID/now are
 // passed by value so the goroutine reads no mutable provider state unlocked
 // (p.ls, p.bd, p.gs, p.graph are set once at construction and are safe to read).
+//
+// Failure containment (koryph-b01): the pass is bounded by
+// derivedRefreshTimeout and the derivedRefreshing latch resets via defer —
+// including on a panic, which is recovered rather than crashing the whole TUI
+// — so a wedged or failed pass can never freeze the derived tabs for the rest
+// of the session; the next TTL tick simply retries. A pass whose queue
+// assembly failed (bd error/timeout) keeps the previous queueCache instead of
+// clobbering a good tree with an empty snapshot.
 func (p *LedgerProvider) refreshDerived(slots []SlotSnapshot, gov GovernorSnapshot, runID string, now time.Time) {
-	ctx := context.Background()
+	defer func() {
+		r := recover()
+		p.mu.Lock()
+		p.derivedRefreshing = false
+		// Advance derivedAt even on failure so retries pace at the TTL rather
+		// than hot-looping on every tick against a struggling bd.
+		p.derivedAt = now
+		p.mu.Unlock()
+		if r != nil {
+			logDerivedPanic(p.projectID, r)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), p.derivedTimeout)
+	defer cancel()
 
 	// Graph first — the queue computation consumes it.
 	graphSnap := p.graph.Refresh(ctx, now)
-	burndown := p.refreshBurndown(now)
+	burndown := p.refreshBurndown(ctx, now)
 	efficiency := p.refreshEfficiency(Snapshot{RunID: runID, Governor: gov}, now)
-	queue := p.refreshQueue(ctx, Snapshot{Slots: slots, Graph: graphSnap, Governor: gov, CapturedAt: now})
+	queue, queueOK := p.refreshQueue(ctx, Snapshot{Slots: slots, Graph: graphSnap, Governor: gov, CapturedAt: now})
 
 	p.mu.Lock()
 	p.graphCache = graphSnap
 	p.burndownCache = burndown
 	p.efficiencyCache = efficiency
-	p.queueCache = queue
-	p.derivedAt = now
-	p.derivedRefreshing = false
+	// A failed queue assembly (bd error/timeout, queueOK=false) keeps a
+	// previous NON-EMPTY tree — clobbering it with an empty snapshot would
+	// silently blank the Queue tab (koryph-b01). When there is nothing to
+	// protect, the stamped-but-empty snapshot publishes as usual: its
+	// ComputedAt is what tells the TUI "refresh completed, genuinely no data"
+	// apart from "still waiting on the first pass".
+	if queueOK || p.queueCache.NodeCount == 0 {
+		p.queueCache = queue
+	}
 	p.mu.Unlock()
 }
 
 // refreshBurndown builds a fresh BurndownSnapshot, soft-failing on any
 // data source that is unavailable (beads absent, quota uncalibrated, etc.).
-func (p *LedgerProvider) refreshBurndown(now time.Time) BurndownSnapshot {
-	ctx := context.Background()
+func (p *LedgerProvider) refreshBurndown(ctx context.Context, now time.Time) BurndownSnapshot {
 
 	// --- ledger history -------------------------------------------------------
 	runIDs, _ := p.ls.ListRuns()
@@ -502,15 +546,20 @@ func collectQueueTitles(nodes []QueueNode, out map[string]string) {
 // refreshQueue builds a fresh QueueSnapshot. It calls bd list and bd ready
 // then cross-references with the current running slots and dep graph.
 // Soft-fails when bd is absent (returns a zero snapshot).
-func (p *LedgerProvider) refreshQueue(ctx context.Context, snap Snapshot) QueueSnapshot {
+//
+// ok reports whether the queue data was actually assembled (koryph-b01): a
+// bd that is absent, erroring, or timed out returns ok=false so the caller
+// keeps the previous cache instead of clobbering a good tree with an empty
+// snapshot — an empty-because-no-issues queue still returns ok=true.
+func (p *LedgerProvider) refreshQueue(ctx context.Context, snap Snapshot) (QueueSnapshot, bool) {
 	if !p.bd.Available() {
-		return QueueSnapshot{ComputedAt: snap.CapturedAt}
+		return QueueSnapshot{ComputedAt: snap.CapturedAt}, false
 	}
 
 	// All open issues.
 	allIssues, err := p.bd.List(ctx)
 	if err != nil {
-		return QueueSnapshot{ComputedAt: snap.CapturedAt}
+		return QueueSnapshot{ComputedAt: snap.CapturedAt}, false
 	}
 
 	// Ready frontier.
@@ -560,7 +609,7 @@ func (p *LedgerProvider) refreshQueue(ctx context.Context, snap Snapshot) QueueS
 		projectID:     p.projectID,
 		closedParents: closedParents,
 		now:           snap.CapturedAt,
-	})
+	}), true
 }
 
 // closedParentFetchMax bounds how many `bd show` lookups refreshQueue issues
@@ -674,6 +723,7 @@ func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time
 		d.CostUSD = sl.CostUSD
 		d.EstimateUSD = sl.EstimateUSD
 		d.LogPath = sl.LogPath
+		d.StreamPath = sl.Stream
 
 		// Timing + resource usage (koryph process-metrics).
 		d.PeakRSSMB = sl.PeakRSSMB

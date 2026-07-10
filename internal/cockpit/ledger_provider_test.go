@@ -4,9 +4,12 @@
 package cockpit
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
 )
 
@@ -91,4 +94,70 @@ func TestRefreshDecouplesSlotsFromDerived(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("background derived refresh never published within 20s")
+}
+
+// hangingBD writes a fake bd binary that sleeps far longer than the derived
+// timeout, simulating a dolt-locked bd that previously wedged refreshDerived
+// forever (koryph-b01).
+func hangingBD(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bd")
+	// exec replaces the shell so the ctx-cancel kill hits the sleeping process
+	// itself (real bd is a single binary; a lingering child holding the stdout
+	// pipe would stall cmd.Wait and test the wrong thing).
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+	return bin
+}
+
+// TestDerivedRefreshTimeoutResetsLatch is the koryph-b01 regression guard: a
+// wedged bd must not latch derivedRefreshing forever. The pass is bounded by
+// derivedTimeout, the latch resets, Refresh stays fast throughout, and a
+// non-empty queue cache survives the failed pass instead of being clobbered.
+func TestDerivedRefreshTimeoutResetsLatch(t *testing.T) {
+	repo := seedRunningRun(t)
+	p := NewLedgerProvider("proj", repo, "")
+	p.bd = beads.New(repo)
+	p.bd.Bin = hangingBD(t)
+	p.derivedTimeout = 500 * time.Millisecond
+
+	// Seed a good queue cache to prove the failed pass cannot blank it.
+	seeded := QueueSnapshot{
+		Roots:      []QueueNode{{Issue: beads.Issue{ID: "root"}, State: QueueStateReady}},
+		NodeCount:  1,
+		ComputedAt: time.Now().Add(-time.Minute),
+	}
+	p.queueCache = seeded
+
+	start := time.Now()
+	if _, err := p.Refresh(); err != nil { // kicks the background pass
+		t.Fatalf("Refresh: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Refresh blocked %v on a hanging bd; must return immediately", elapsed)
+	}
+
+	// The pass must abort at the timeout and reset the latch.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		p.mu.Lock()
+		refreshing := p.derivedRefreshing
+		p.mu.Unlock()
+		if !refreshing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("derivedRefreshing still latched 10s after a 500ms-bounded pass (the pre-koryph-b01 wedge)")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	p.mu.Lock()
+	got := p.queueCache
+	p.mu.Unlock()
+	if got.NodeCount != 1 || got.ComputedAt != seeded.ComputedAt {
+		t.Errorf("queue cache clobbered by the failed pass: %+v (want the seeded tree kept, stale ComputedAt intact)", got)
+	}
 }
