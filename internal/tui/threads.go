@@ -165,7 +165,8 @@ func (m *threadsModel) SetSnapshot(snap cockpit.Snapshot) {
 // rebuild recomputes the filtered visible slot slice and table rows.
 func (m *threadsModel) rebuild() {
 	cols := threadColumns(m.width)
-	statusW := cols[len(cols)-1].Width
+	descW := cols[1].Width             // Description column
+	statusW := cols[len(cols)-1].Width // Status column
 
 	m.visible = m.visible[:0]
 	rows := make([]table.Row, 0, len(m.snap.Slots))
@@ -174,7 +175,7 @@ func (m *threadsModel) rebuild() {
 			continue
 		}
 		m.visible = append(m.visible, sl)
-		rows = append(rows, slotToRow(sl, statusW))
+		rows = append(rows, slotToRow(sl, descW, statusW))
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -206,44 +207,72 @@ func (m *threadsModel) Resize(w, h int) {
 	m.rebuild() // status truncation and column widths depend on width
 }
 
-// threadColumns returns column definitions scaled to terminal width.
-// Minimum terminal width is 80 columns. The Bead column is deliberately narrow
-// (it shows the bead id, not the title) so the Status column — the live agent
-// step — gets the bulk of the width.
+// Fixed Threads column widths (Description and Status are computed from the
+// leftover). Shared by threadColumns and slotToRow so cell truncation always
+// matches the column width and ellipses land cleanly.
+const (
+	thBeadW    = 14
+	thStageW   = 12
+	thModelW   = 13
+	thRetryW   = 10
+	thElapsedW = 8
+	thCostW    = 12
+)
+
+// threadColumns returns column definitions scaled to terminal width (minimum
+// 80). The Bead column stays a narrow id column; a compact Description column
+// carries the bead's short title so a row is legible without opening Detail; and
+// the leftover is split so the live Status step still gets the bulk of the
+// width (Description is capped to keep that intent).
 func threadColumns(width int) []table.Column {
 	if width < 80 {
 		width = 80
 	}
-	// Fixed-width columns.
-	beadW, stageW, modelW, retryW, elapsedW, costW := 15, 13, 14, 11, 8, 13
-	fixed := beadW + stageW + modelW + retryW + elapsedW + costW
-	// Remaining width (minus inter-column padding) goes to the status line.
-	statusW := width - fixed - 8
+	fixed := thBeadW + thStageW + thModelW + thRetryW + thElapsedW + thCostW
+	// Leftover (minus ~2 chars of padding per the 8 columns) split between the
+	// Description title and the live Status line.
+	remaining := width - fixed - 16
+	if remaining < 24 {
+		remaining = 24
+	}
+	descW := remaining * 2 / 5
+	descW = min(max(descW, 10), 32)
+	statusW := remaining - descW
 	if statusW < 12 {
 		statusW = 12
 	}
 	return []table.Column{
-		{Title: "Bead", Width: beadW},
-		{Title: "Stage", Width: stageW},
-		{Title: "Model", Width: modelW},
-		{Title: "Retries", Width: retryW},
-		{Title: "Elapsed", Width: elapsedW},
-		{Title: "Cost/Est", Width: costW},
+		{Title: "Bead", Width: thBeadW},
+		{Title: "Description", Width: descW},
+		{Title: "Stage", Width: thStageW},
+		{Title: "Model", Width: thModelW},
+		{Title: "Retries", Width: thRetryW},
+		{Title: "Elapsed", Width: thElapsedW},
+		{Title: "Cost/Est", Width: thCostW},
 		{Title: "Status", Width: statusW},
 	}
 }
 
-// slotToRow converts a cockpit.SlotSnapshot to a table.Row. statusW bounds the
-// status cell so long agent step strings get an ellipsis rather than a hard cut.
-func slotToRow(sl cockpit.SlotSnapshot, statusW int) table.Row {
+// slotToRow converts a cockpit.SlotSnapshot to a table.Row. descW/statusW bound
+// the two variable-width cells so long titles and agent-step strings get an
+// ellipsis rather than a hard cut.
+func slotToRow(sl cockpit.SlotSnapshot, descW, statusW int) table.Row {
 	id := sl.BeadID
 	if id == "" {
 		id = sl.PhaseID
 	}
-	bead := truncate(id, 15)
-	stage := truncate(sl.Stage, 13)
-	model := truncate(modelWithEscalation(sl), 14)
-	retries := truncate(retrySummary(sl), 11)
+	bead := truncate(id, thBeadW)
+	// Description is the bead's short title; when the provider could not resolve
+	// a real title it falls back to the id, which we blank here rather than
+	// repeat the id already shown in the Bead column.
+	desc := sl.Title
+	if desc == id {
+		desc = ""
+	}
+	desc = truncate(desc, descW)
+	stage := truncate(sl.Stage, thStageW)
+	model := truncate(modelWithEscalation(sl), thModelW)
+	retries := truncate(retrySummary(sl), thRetryW)
 	elapsed := formatElapsed(sl.Elapsed)
 	cost := formatCost(sl.CostUSD, sl.EstimateUSD)
 	status := sl.StatusLine
@@ -251,7 +280,7 @@ func slotToRow(sl cockpit.SlotSnapshot, statusW int) table.Row {
 		status = sl.StatusJSON
 	}
 	status = truncate(status, statusW)
-	return table.Row{bead, stage, model, retries, elapsed, cost, status}
+	return table.Row{bead, desc, stage, model, retries, elapsed, cost, status}
 }
 
 // modelWithEscalation renders the short model name, marked with an up-arrow when

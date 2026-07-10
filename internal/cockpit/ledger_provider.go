@@ -146,6 +146,12 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 	snap.Efficiency = p.efficiencyCache
 	snap.Graph = p.graphCache
 	snap.Queue = p.queueCache
+	// Enrich slot display titles from the queue cache (which carries the real bd
+	// titles). The ledger slot itself only knows the bead id; the Threads tab
+	// shows a short description alongside the id. A bead absent from the queue —
+	// a closed/terminal bead, or before the first derived refresh populates the
+	// cache — keeps its id-based fallback title (titleFor).
+	enrichSlotTitles(snap.Slots, snap.Queue)
 	if !p.derivedRefreshing && snap.CapturedAt.Sub(p.derivedAt) >= derivedTTL {
 		p.derivedRefreshing = true
 		// Pass the inputs the background job needs by value; it must not read
@@ -452,12 +458,45 @@ func cpuUtilPct(cpuSeconds float64, started, finished, now time.Time) float64 {
 	return cpuSeconds / wall * 100
 }
 
-// titleFor returns the best available display title for a slot.
+// titleFor returns the id-based fallback display title for a slot. Refresh
+// upgrades this to the real bd title via enrichSlotTitles when the bead is
+// present in the queue cache.
 func titleFor(sl *ledger.Slot) string {
 	if sl.BeadID != "" {
-		return sl.BeadID // TUI may enrich later with bd title cache
+		return sl.BeadID
 	}
 	return sl.PhaseID
+}
+
+// enrichSlotTitles overwrites each slot's Title with the real bd title from the
+// queue snapshot, keyed by bead id (falling back to phase id). Slots whose bead
+// is absent from the queue keep their id-based fallback title (titleFor), which
+// is why callers can detect "no real title" by Title == id.
+func enrichSlotTitles(slots []SlotSnapshot, qs QueueSnapshot) {
+	if len(slots) == 0 || len(qs.Roots) == 0 {
+		return
+	}
+	titles := make(map[string]string)
+	collectQueueTitles(qs.Roots, titles)
+	for i := range slots {
+		id := slots[i].BeadID
+		if id == "" {
+			id = slots[i].PhaseID
+		}
+		if t := titles[id]; t != "" {
+			slots[i].Title = t
+		}
+	}
+}
+
+// collectQueueTitles walks the queue tree, recording each node's bead id → title.
+func collectQueueTitles(nodes []QueueNode, out map[string]string) {
+	for _, n := range nodes {
+		if n.Issue.Title != "" {
+			out[n.Issue.ID] = n.Issue.Title
+		}
+		collectQueueTitles(n.Children, out)
+	}
 }
 
 // refreshQueue builds a fresh QueueSnapshot. It calls bd list and bd ready

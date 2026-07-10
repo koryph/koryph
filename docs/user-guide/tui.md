@@ -60,12 +60,14 @@ show consistent data from the same refresh.
 
 ### Threads (tab 0)
 
-Live table of dispatched slots. The Bead column is a narrow id column so the
-Status column — the live agent step — gets the bulk of the width:
+Live table of dispatched slots. The Bead column is a narrow id column paired
+with a compact Description (the bead's short title); the leftover width is split
+so the Status column — the live agent step — still gets the bulk of it:
 
 | Column | Description |
 |--------|-------------|
 | Bead | The bead ID occupying this slot |
+| Description | The bead's short title, so a row is legible without opening Detail (blank when the title can't be resolved — e.g. a markdown phase, or before the first queue refresh) |
 | Stage | `dispatching`, `running`, `review`, `merge-pending`, `merged`, `failed`, … |
 | Model | The Claude model tier in use; a trailing `↑` marks a slot whose model rationale records an escalation |
 | Retries | Re-dispatch count with cause codes — `×N g/m/c/rl/bk` (gate, merge, conflict, rate-limit, budget-kill); `—` on a clean first attempt |

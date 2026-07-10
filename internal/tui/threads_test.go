@@ -110,15 +110,18 @@ func TestModelWithEscalation(t *testing.T) {
 	}
 }
 
-// TestThreadsBeadColumnNarrow verifies the Bead column is a narrow id column and
-// the Status column takes the bulk of the width (issue #5).
+// TestThreadsBeadColumnNarrow verifies the Bead column is a narrow id column, a
+// Description column is present, and the Status column still takes the bulk of
+// the width (issue #5 + the short-description request).
 func TestThreadsBeadColumnNarrow(t *testing.T) {
-	cols := threadColumns(120)
-	var beadW, statusW int
+	cols := threadColumns(140)
+	var beadW, descW, statusW int
 	for _, c := range cols {
 		switch c.Title {
 		case "Bead":
 			beadW = c.Width
+		case "Description":
+			descW = c.Width
 		case "Status":
 			statusW = c.Width
 		}
@@ -126,7 +129,29 @@ func TestThreadsBeadColumnNarrow(t *testing.T) {
 	if beadW > 18 {
 		t.Errorf("Bead column too wide: %d (want ≤18)", beadW)
 	}
-	if statusW <= beadW {
-		t.Errorf("Status column (%d) should be wider than Bead (%d)", statusW, beadW)
+	if descW <= 0 {
+		t.Error("Description column missing")
+	}
+	if statusW <= descW {
+		t.Errorf("Status column (%d) should be wider than Description (%d)", statusW, descW)
+	}
+}
+
+// TestSlotToRow_Description verifies the Description cell shows the bead's short
+// title, and blanks the id-fallback so the id is not repeated from the Bead
+// column.
+func TestSlotToRow_Description(t *testing.T) {
+	// Real title present.
+	row := slotToRow(cockpit.SlotSnapshot{BeadID: "koryph-2im.9", Title: "footprint persistence"}, 30, 30)
+	if row[0] != "koryph-2im.9" {
+		t.Errorf("Bead cell = %q, want the id", row[0])
+	}
+	if row[1] != "footprint persistence" {
+		t.Errorf("Description cell = %q, want the title", row[1])
+	}
+	// Id-fallback title (provider could not resolve a real title) → blank.
+	row = slotToRow(cockpit.SlotSnapshot{BeadID: "x-1", Title: "x-1"}, 30, 30)
+	if row[1] != "" {
+		t.Errorf("Description cell = %q, want blank when title == id", row[1])
 	}
 }
