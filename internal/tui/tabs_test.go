@@ -126,6 +126,62 @@ func TestRenderTabBar(t *testing.T) {
 	}
 }
 
+// TestHiddenTabExcludedFromBarAndCycle verifies that a Hidden tab (the Detail
+// overlay) is omitted from renderTabBar and is never landed on by
+// nextVisibleTab cycling, while remaining reachable by index for programmatic
+// switches.
+func TestHiddenTabExcludedFromBarAndCycle(t *testing.T) {
+	saved := tabRegistry
+	tabRegistry = nil
+	t.Cleanup(func() { tabRegistry = saved })
+
+	registerTab(TabDef{Name: "Alpha", Order: 0})
+	registerTab(TabDef{Name: "Beta", Order: 1})
+	registerTab(TabDef{Name: "Ghost", Order: 99, Hidden: true})
+
+	// Bar excludes the hidden tab.
+	bar := renderTabBar(0, DefaultTheme(), 80)
+	if containsRune(bar, "Ghost") {
+		t.Errorf("renderTabBar leaked hidden tab: %q", stripANSI(bar))
+	}
+	for _, name := range []string{"Alpha", "Beta"} {
+		if !containsRune(bar, name) {
+			t.Errorf("renderTabBar missing visible tab %q", name)
+		}
+	}
+
+	// Counts: 3 registered, 2 visible.
+	if RegisteredTabCount() != 3 || VisibleTabCount() != 2 {
+		t.Fatalf("counts: registered=%d visible=%d, want 3/2",
+			RegisteredTabCount(), VisibleTabCount())
+	}
+
+	// A full forward cycle from the first visible tab visits only visible tabs
+	// and returns to the start; the hidden index (2) is never produced.
+	n := len(tabRegistry)
+	cur := firstVisibleTab()
+	if cur != 0 {
+		t.Fatalf("firstVisibleTab = %d, want 0", cur)
+	}
+	visited := []int{}
+	for i := 0; i < VisibleTabCount(); i++ {
+		cur = nextVisibleTab(cur, +1, n)
+		if tabRegistry[cur].Hidden {
+			t.Fatalf("nextVisibleTab landed on hidden tab index %d", cur)
+		}
+		visited = append(visited, cur)
+	}
+	// After VisibleTabCount() forward steps we are back at the start (0).
+	if cur != 0 {
+		t.Errorf("after full cycle cur = %d, want 0 (visited %v)", cur, visited)
+	}
+
+	// Reverse cycling likewise skips the hidden tab.
+	if got := nextVisibleTab(0, -1, n); got != 1 {
+		t.Errorf("nextVisibleTab(0,-1) = %d, want 1 (Beta, skipping hidden Ghost)", got)
+	}
+}
+
 // containsRune returns true if sub (as a plain string) appears anywhere in s,
 // ignoring ANSI escape sequences.
 func containsRune(s, sub string) bool {

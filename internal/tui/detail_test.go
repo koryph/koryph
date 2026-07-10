@@ -97,42 +97,38 @@ func TestDetailShowsDepLinks(t *testing.T) {
 	})
 }
 
-// tabToDetail presses Tab from the Threads tab to the Detail tab. Detail
-// registers with Order 99 — deliberately LAST — so the press count is derived
-// from the registry size, not hardcoded against today's sibling set (this
-// navigation broke three times as sibling tabs merged; never count manually).
-func tabToDetail(tm *teatest.TestModel) {
-	for i := 0; i < tui.RegisteredTabCount()-1; i++ {
-		tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+// TestDetailNotTabReachable verifies the Detail panel is a hidden overlay: a
+// full cycle of Tab presses never lands on it (it carries no queue/thread
+// selection, so its "No bead selected" placeholder must never surface from
+// Tab navigation alone) and cycling returns to the Threads tab.
+func TestDetailNotTabReachable(t *testing.T) {
+	// Deterministic registry invariant: exactly the Detail overlay is hidden, so
+	// the visible cycle is one shorter than the full registry.
+	if got := tui.RegisteredTabCount() - tui.VisibleTabCount(); got != 1 {
+		t.Fatalf("expected exactly 1 hidden tab (Detail), got %d", got)
 	}
-}
 
-// TestDetailNoBeadSelected verifies the placeholder renders when no bead is selected.
-func TestDetailNoBeadSelected(t *testing.T) {
-	// Use a snap with no bead detail so the Detail tab shows placeholder.
+	// A snapshot with no Detail payload: were Detail Tab-reachable, it would
+	// render its "No bead selected" placeholder.
 	p := &staticProvider{id: "proj-1", snap: newTestSnap()}
 	app := tui.NewApp([]cockpit.Provider{p}, false)
 
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
 
-	// Wait for initial render.
+	// We start on the Threads tab (its rows load); the Detail overlay's
+	// placeholder must not surface, since Detail is never the initial or a
+	// Tab-cyclable destination. (Tab-cycle skipping of the hidden tab is proven
+	// deterministically in TestHiddenTabExcludedFromBarAndCycle.)
 	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Threads")
-	})
-
-	// Tab to the Detail tab — registered LAST (Order 99), so it is
-	// tabCount-1 presses from Threads regardless of sibling composition.
-	tabToDetail(tm)
-
-	// The placeholder text should appear.
-	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "No bead selected")
+		s := string(bts)
+		return strings.Contains(s, "Add widget support") &&
+			!strings.Contains(s, "No bead selected")
 	})
 }
 
 // TestDetailDepNavigation verifies that j/k keystrokes move cursor focus in
-// the dep list without panicking, and that Enter emits navigation intent.
+// the dep list without panicking after opening detail via Enter on a thread.
 func TestDetailDepNavigation(t *testing.T) {
 	snap := newDetailSnap()
 	p := &staticProvider{id: "proj-1", snap: snap}
@@ -141,36 +137,21 @@ func TestDetailDepNavigation(t *testing.T) {
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
 
-	// Open detail directly by tabbing to the Detail tab and verifying it renders.
-	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "Threads")
-	})
-
-	// Navigate to the Detail tab (registered last; see tabToDetail).
-	tabToDetail(tm)
-
-	waitFor(t, tm, func(bts []byte) bool {
-		return strings.Contains(string(bts), "No bead selected")
-	})
-
-	// Switch back to Threads and press Enter to open detail for abc-1.
-	// Detail is registered last (Order 99), so one Tab wraps to Threads.
-	// Full set: Threads(0) Burndown(1) Events(2) Efficiency(3) Queue(4)
-	// Detail(99).
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	// Wait for the Threads table row (abc-1) to appear.
 	waitFor(t, tm, func(bts []byte) bool {
 		return strings.Contains(string(bts), "Add widget support")
 	})
 
-	// Enter navigates to Detail. Then send j/k to exercise cursor movement.
+	// Enter on the first thread opens the Detail overlay for abc-1; j/k then
+	// exercise cursor movement through the dep rows.
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 
-	// Verify the detail tab is showing content (abc-1).
+	// Verify the detail overlay is showing content (abc-1).
 	waitFor(t, tm, func(bts []byte) bool {
 		s := string(bts)
-		return strings.Contains(s, "abc-1") || strings.Contains(s, "Detail")
+		return strings.Contains(s, "abc-1")
 	})
 }
 

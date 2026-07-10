@@ -33,7 +33,12 @@ func init() {
 	registerTab(TabDef{
 		Name:  "Detail",
 		Order: 99,
-		New:   func(theme Theme, _ bool) TabModel { return newDetailModel(theme) },
+		// Hidden: the Detail panel is an overlay reached only by pressing Enter
+		// on a Threads or Queue row, never a standalone tab. It is kept out of
+		// the tab bar and Tab-cycling; Esc/Backspace returns to the originating
+		// tab (see App.detailBackMsg handling).
+		Hidden: true,
+		New:    func(theme Theme, _ bool) TabModel { return newDetailModel(theme) },
 	})
 }
 

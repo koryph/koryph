@@ -159,7 +159,7 @@ func NewApp(providers []cockpit.Provider, readOnly bool) *App {
 
 	a := &App{
 		providers:    providers,
-		activeTab:    0,
+		activeTab:    firstVisibleTab(),
 		tabs:         tabs,
 		readOnly:     readOnly,
 		help:         h,
@@ -205,13 +205,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, a.keys.NextTab):
 			if len(a.tabs) > 0 {
-				a.activeTab = (a.activeTab + 1) % len(a.tabs)
+				a.activeTab = nextVisibleTab(a.activeTab, +1, len(a.tabs))
 			}
 			a.resizeTabs()
 
 		case key.Matches(msg, a.keys.PrevTab):
 			if len(a.tabs) > 0 {
-				a.activeTab = (a.activeTab + len(a.tabs) - 1) % len(a.tabs)
+				a.activeTab = nextVisibleTab(a.activeTab, -1, len(a.tabs))
 			}
 			a.resizeTabs()
 

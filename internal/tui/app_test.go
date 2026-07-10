@@ -227,8 +227,9 @@ func TestAppQueueTab(t *testing.T) {
 	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(120, 40))
 	defer func() { _ = tm.Quit() }()
 
-	// Navigate to the Queue tab (tab 4×: Threads→Burndown→Detail→Efficiency→Queue).
-	// Tab order: Threads(0) Burndown(1) Detail(2) Efficiency(3) Queue(4).
+	// Navigate to the Queue tab (tab 4×: Threads→Burndown→Events→Efficiency→Queue).
+	// Visible tab order: Threads(0) Burndown(1) Events(2) Efficiency(3) Queue(4);
+	// Detail is hidden (overlay-only) and skipped by Tab cycling.
 	waitFor(t, tm, func(bts []byte) bool {
 		return strings.Contains(string(bts), "Threads")
 	})

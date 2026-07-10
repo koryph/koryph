@@ -54,6 +54,13 @@ type TabDef struct {
 	// Order controls left-to-right tab position. Lower values appear first;
 	// ties preserve insertion order (sort.SliceStable).
 	Order int
+	// Hidden omits the tab from the tab bar and from Tab/Shift-Tab cycling.
+	// The tab model is still constructed and still receives snapshots, and the
+	// App can switch to it programmatically (the Detail panel does this when the
+	// operator presses Enter on a thread or queue row). It is a panel that is
+	// reachable only by selecting a row — never a standalone destination — so
+	// presenting it as a cyclable tab was dead UI (koryph TUI detail-tab issue).
+	Hidden bool
 	// New is the factory that constructs a fresh TabModel.
 	// theme is the active color theme; readOnly disables write actions
 	// (nudge, drain). Tabs that have no actions may ignore readOnly.
@@ -65,6 +72,20 @@ type TabDef struct {
 // tests that navigate by Tab presses so they derive counts from the registry
 // instead of hardcoding today's sibling composition.
 func RegisteredTabCount() int { return len(tabRegistry) }
+
+// VisibleTabCount reports how many tabs appear in the tab bar and participate
+// in Tab/Shift-Tab cycling (i.e. registered minus hidden overlays like Detail).
+// Exported so navigation tests derive the cycle length from the registry rather
+// than hardcoding it.
+func VisibleTabCount() int {
+	n := 0
+	for _, def := range tabRegistry {
+		if !def.Hidden {
+			n++
+		}
+	}
+	return n
+}
 
 // tabRegistry is the ordered list of registered tab definitions.
 // Populated via registerTab; never written after init() completes.
@@ -85,6 +106,12 @@ func registerTab(def TabDef) {
 func renderTabBar(activeIdx int, theme Theme, width int) string {
 	var parts []string
 	for i, def := range tabRegistry {
+		if def.Hidden {
+			// Hidden panels (Detail) never appear in the bar. When one is the
+			// active tab — reached by selecting a row — no bar entry is
+			// highlighted, which reads correctly as a modal overlay.
+			continue
+		}
 		label := fmt.Sprintf(" %s ", def.Name)
 		if i == activeIdx {
 			parts = append(parts, theme.TabActive.Render(label))
@@ -99,6 +126,33 @@ func renderTabBar(activeIdx int, theme Theme, width int) string {
 		bar += strings.Repeat(" ", padding)
 	}
 	return theme.TabBar.Render(bar)
+}
+
+// nextVisibleTab returns the index of the next non-hidden tab after cur,
+// wrapping around. When no non-hidden tab other than cur exists it returns cur.
+// dir must be +1 (Tab) or -1 (Shift-Tab).
+func nextVisibleTab(cur, dir, n int) int {
+	if n == 0 {
+		return cur
+	}
+	for step := 1; step <= n; step++ {
+		i := ((cur+dir*step)%n + n) % n
+		if i >= 0 && i < len(tabRegistry) && !tabRegistry[i].Hidden {
+			return i
+		}
+	}
+	return cur
+}
+
+// firstVisibleTab returns the index of the first non-hidden tab, or 0 if every
+// tab is hidden (which never happens — at least Threads is always visible).
+func firstVisibleTab() int {
+	for i, def := range tabRegistry {
+		if !def.Hidden {
+			return i
+		}
+	}
+	return 0
 }
 
 // lipglossLen returns the visual width of a lipgloss-rendered string,
