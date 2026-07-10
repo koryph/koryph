@@ -725,8 +725,8 @@ func (m *queueModel) rebuildRows() {
 		var collect func(nodes []cockpit.QueueNode)
 		collect = func(nodes []cockpit.QueueNode) {
 			for _, n := range nodes {
-				if m.nodeVisible(n) &&
-					!(m.mode == queueModeIssues && n.State == cockpit.QueueStateContainer) {
+				dropContainer := m.mode == queueModeIssues && n.State == cockpit.QueueStateContainer
+				if m.nodeVisible(n) && !dropContainer {
 					flat = append(flat, n)
 				}
 				collect(n.Children)
