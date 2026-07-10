@@ -223,22 +223,28 @@ check_segment() {
     deny_nudge "golangci-lint run without output filtering"
   fi
 
-  # git config persistence vectors. A linked worktree writes the SHARED repo
-  # config, so an agent could register a hook/filter/credential-helper that
-  # executes during koryph's OWN later git ops (rebase/checkout) or the
-  # operator's future git commands. Block WRITES to these keys — both the
-  # `git config <key> <val>` form and the inline `git -c <key>=<val> <cmd>`
-  # form. Reads (--get/--list/...) stay allowed. Matched case-insensitively.
+  # git config persistence + signing-trust vectors. A linked worktree writes the
+  # SHARED repo config, so an agent could:
+  #   - register a hook/filter/credential-helper that executes during koryph's
+  #     OWN later git ops (rebase/checkout) or the operator's future git commands
+  #     (persistence vectors), or
+  #   - repoint commit signing at a key it generated (user.signingkey,
+  #     commit.gpgsign, gpg.format, gpg.ssh.allowedSignersFile, gpg.ssh.program,
+  #     tag.gpgsign) so its own commits verify %G?==G and slip past the merge
+  #     signing gate (signing-trust vectors).
+  # Block WRITES to these keys — both the `git config <key> <val>` form and the
+  # inline `git -c <key>=<val> <cmd>` form. Reads (--get/--list/...) stay
+  # allowed. Matched case-insensitively.
   local low_seg
   low_seg="$(printf '%s' "${seg}" | tr '[:upper:]' '[:lower:]')"
-  local vectors='core\.hookspath|core\.fsmonitor|core\.sshcommand|credential\.helper|include\.path|filter\.'
+  local vectors='core\.hookspath|core\.fsmonitor|core\.sshcommand|credential\.helper|include\.path|filter\.|user\.signingkey|commit\.gpgsign|tag\.gpgsign|gpg\.format|gpg\.ssh\.allowedsignersfile|gpg\.ssh\.program'
   if [[ "${low_seg}" =~ ^git([[:space:]]+-[^[:space:]]+)*[[:space:]]+config([[:space:]]|$) ]] &&
     [[ "${low_seg}" =~ (${vectors}) ]] &&
     ! [[ "${low_seg}" =~ (--get|--list|--get-all|--get-regexp|--get-urlmatch) ]]; then
-    deny "git config write to a persistence vector (hooksPath/fsmonitor/sshCommand/credential.helper/include.path/filter)"
+    deny "git config write to a persistence/signing-trust vector (hooksPath/fsmonitor/sshCommand/credential.helper/include.path/filter/user.signingkey/commit.gpgsign/gpg.*)"
   fi
   if [[ "${low_seg}" =~ -c[[:space:]]+(${vectors})[a-z0-9._-]*= ]]; then
-    deny "git -c inline config of a persistence vector"
+    deny "git -c inline config of a persistence/signing-trust vector"
   fi
 }
 

@@ -97,6 +97,17 @@ func TestBoundaryDenialsUnaffected(t *testing.T) {
 		{"git commit allowed", `git commit -m "feat: x"`, false},
 		{"git rebase onto main allowed", "git rebase origin/main", false},
 		{"bd close denied", "bd close koryph-1", true},
+		// Persistence config vectors (pre-existing).
+		{"git config hooksPath denied", "git config core.hooksPath /tmp/evil", true},
+		{"git -c inline sshCommand denied", "git -c core.sshCommand=evil status", true},
+		// Signing-trust config vectors (koryph security audit: an agent must
+		// not repoint commit signing at a key it generated to pass the merge
+		// signing gate).
+		{"git config user.signingkey denied", "git config user.signingkey key::ssh-ed25519 AAAA", true},
+		{"git config commit.gpgsign denied", "git config commit.gpgsign true", true},
+		{"git config allowedSignersFile denied", "git config gpg.ssh.allowedSignersFile /tmp/mine", true},
+		{"git -c inline commit.gpgsign denied", "git -c commit.gpgsign=true -c user.signingkey=key::x commit -m x", true},
+		{"git config read allowed", "git config --get user.signingkey", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -46,6 +46,12 @@ var DefaultProtected = []string{
 	".pre-commit-config.yaml",
 	".gitignore",
 	".envrc",
+	// The signing trust anchor: an agent that could land a change to
+	// .allowed_signers (adding its own key) would defeat the merge signing
+	// gate. Never liftable — signing.Verify additionally pins to the
+	// default-branch committed copy, but keeping it out of every merge is the
+	// first line of defense.
+	".allowed_signers",
 }
 
 // LiftableProtected is the subset of DefaultProtected an operator may

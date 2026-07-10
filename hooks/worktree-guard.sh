@@ -115,4 +115,51 @@ if [[ "${command}" =~ \>\>?[[:space:]]*(\./)?(hooks|\.claude|agents)/ ]] ||
   deny "redirection writes to a koryph enforcement path (hooks/.claude/agents): ${command}"
 fi
 
+# --- Bash: block any reference to a credential / koryph-state path -------------
+# The .claude/settings.json Read-tool denies (.env, *.pem, *.key) are bypassable
+# via Bash(*): `cat`/`base64`/`cp`/`dd`/`python -c open(...)` all read the same
+# files the Read tool refuses, and there is no egress restriction. Rather than
+# enumerate every read/write verb, screen for the PATH: a dispatched agent
+# working inside its worktree has no legitimate reason to touch the operator's
+# credential stores or koryph's own machine state, whether reading (exfiltrate
+# vault keys, bot PEMs, ~/.claude.json OAuth token, ssh keys) or writing (poison
+# ~/.gitconfig hooksPath, governor caps, ~/.ssh/authorized_keys). Every such
+# command must *name* the path, so a token scan catches the overwhelming
+# majority of direct attempts.
+#
+# This is defense-in-depth, NOT a sandbox: a variable-indirected path
+# (`H=$HOME/.ssh; cat "$H/id_rsa"`) evades a static scan. True same-uid
+# isolation for dispatched agents requires an OS sandbox (seatbelt/bubblewrap/
+# container) — tracked separately. The screen raises the bar sharply against the
+# direct-command exfiltration the Read denies were meant to stop.
+secret_ref_patterns=(
+  '(^|[^a-z0-9._-])\.koryph(/|[[:space:]]|$)'
+  '(^|[^a-z0-9._-])\.ssh/'
+  'authorized_keys'
+  'id_rsa' 'id_ed25519' 'id_ecdsa' 'id_dsa'
+  '\.claude\.json'
+  '\.gitconfig'
+  '\.aws/' '\.config/gcloud' '\.config/gh/' '\.netrc' '\.npmrc' '\.pypirc' '\.docker/config'
+  'vault\.json'
+  '\.pem([[:space:]"/]|$)'
+  '\.key([[:space:]"/]|$)'
+  '\.env([[:space:]"/.]|$)'
+)
+for pat in "${secret_ref_patterns[@]}"; do
+  if [[ "${lower}" =~ ${pat} ]]; then
+    deny "command references a credential / koryph-state path (matched ${pat}); reading or writing secrets and machine state is orchestrator-only, not an agent operation"
+  fi
+done
+
+# --- Bash: block writes landing outside the project in $HOME ------------------
+# Redirect (> >>), tee/cp/mv/install/ln/rsync, or dd of= whose target is a
+# home-anchored dotfile escapes the worktree: shell rc files (~/.zshrc,
+# ~/.bashrc — RCE persistence on the operator's next shell), ~/.config, and any
+# other $HOME dotfile the credential screen above doesn't enumerate. Reads are
+# not blocked here (the credential screen covers the sensitive ones); this is
+# the general home-WRITE ceiling.
+if [[ "${command}" =~ (\>\>?[[:space:]]*|of=|(^|[[:space:]])(tee|cp|mv|install|ln|rsync|dd)[[:space:]])[^|\;\&]*(~|\$HOME|\$\{HOME\})/\. ]]; then
+  deny "command writes to a \$HOME dotfile outside the project tree (persistence / tamper vector): ${command}"
+fi
+
 exit 0

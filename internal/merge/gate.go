@@ -15,17 +15,24 @@ import (
 // allowed), accumulating combined output. It stops at the first non-zero
 // exit; ok is true only when every command exits 0.
 func RunGate(ctx context.Context, dir string, cmds []string) (ok bool, output string) {
+	// The gate compiles and runs agent-authored code (test files, Makefile
+	// targets are not protected paths). Give it an allowlisted environment so a
+	// planted test cannot read the orchestrator's ambient secrets (GH_TOKEN,
+	// COSIGN_PASSWORD, KORYPH_PASSPHRASE, ANTHROPIC_API_KEY, cloud creds).
+	// Project-legitimate env is re-supplied by `direnv exec` from the worktree's
+	// own .envrc, layered on top of this baseline.
+	env := execx.GateEnv()
 	var b strings.Builder
 	for _, c := range cmds {
 		name, args := shellCmd(dir, c)
 		b.WriteString("$ " + c + "\n")
-		res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: name, Args: args})
+		res, err := execx.Run(ctx, execx.Cmd{Dir: dir, Name: name, Args: args, Env: env})
 		if err == nil && res.ExitCode != 0 && name == "direnv" && strings.Contains(res.Stderr, "is blocked") {
 			// Fresh agent worktrees carry a never-approved .envrc; direnv
 			// refuses to exec there. Fall back to a plain shell — the gate
 			// must not fail on environment ceremony.
 			b.WriteString("(direnv blocked; running without direnv)\n")
-			res, err = execx.Run(ctx, execx.Cmd{Dir: dir, Name: "sh", Args: []string{"-c", c}})
+			res, err = execx.Run(ctx, execx.Cmd{Dir: dir, Name: "sh", Args: []string{"-c", c}, Env: env})
 		}
 		b.WriteString(res.Stdout)
 		b.WriteString(res.Stderr)

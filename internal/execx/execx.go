@@ -143,6 +143,45 @@ func AllowEnv(allow []string, prefixes []string) []string {
 	return env
 }
 
+// GateEnvAllow is the allowlist of environment variable names forwarded to a
+// green-gate subprocess (see GateEnv). It is a build/test toolchain baseline —
+// PATH/HOME plus the Go/Node/Python/Rust/JVM/C toolchain knobs a project gate
+// legitimately needs — and deliberately excludes every orchestrator credential
+// (GH_TOKEN, COSIGN_*, KORYPH_PASSPHRASE, ANTHROPIC_API_KEY, cloud creds). It is
+// exported so it can be asserted in tests and, later, extended per project.
+var GateEnvAllow = []string{
+	"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TZ",
+	"TMPDIR", "TMP", "TEMP", "PWD", "OLDPWD", "HOSTNAME", "COLUMNS", "LINES", "CI",
+	// Go toolchain (named explicitly — a broad "GO" prefix would also match
+	// GOOGLE_APPLICATION_CREDENTIALS and similar secrets).
+	"GOPATH", "GOROOT", "GOBIN", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOPROXY",
+	"GOPRIVATE", "GONOSUMDB", "GONOSUMCHECK", "GOSUMDB", "GOINSECURE", "GOTOOLCHAIN",
+	"GOEXPERIMENT", "GOOS", "GOARCH", "GOARM", "GOAMD64", "GO111MODULE", "GODEBUG",
+	"CGO_ENABLED", "CGO_CFLAGS", "CGO_LDFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS",
+	// C/C++ toolchain.
+	"CC", "CXX", "LD", "AR", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS",
+	"PKG_CONFIG", "PKG_CONFIG_PATH", "MAKEFLAGS", "MAKELEVEL", "MFLAGS",
+	// Node / Python / Rust / JVM toolchains.
+	"NODE_ENV", "NODE_OPTIONS", "NODE_PATH", "NPM_CONFIG_CACHE", "NVM_DIR", "NVM_BIN",
+	"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PIP_CACHE_DIR", "PYENV_ROOT",
+	"CARGO_HOME", "RUSTUP_HOME", "JAVA_HOME", "GRADLE_USER_HOME", "MAVEN_OPTS",
+}
+
+// GateEnvPrefixes are safe environment-variable name prefixes forwarded to a
+// gate subprocess (locale, XDG base dirs, direnv bookkeeping). None of these
+// name a credential.
+var GateEnvPrefixes = []string{"LC_", "XDG_", "DIRENV_", "npm_config_"}
+
+// GateEnv builds the environment for a green-gate subprocess: the parent
+// environment filtered to the GateEnvAllow allowlist plus GateEnvPrefixes. The
+// gate compiles and runs agent-authored code (test files, Makefile targets),
+// so it must not inherit the orchestrator's ambient secrets. Legitimate
+// project-specific env is re-supplied by `direnv exec <dir>` from the project's
+// own .envrc, layered on top of this baseline.
+func GateEnv() []string {
+	return AllowEnv(GateEnvAllow, GateEnvPrefixes)
+}
+
 // hasAnyPrefix reports whether s starts with any of prefixes.
 func hasAnyPrefix(s string, prefixes []string) bool {
 	for _, p := range prefixes {
