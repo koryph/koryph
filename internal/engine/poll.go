@@ -601,15 +601,21 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
-		issue:             r.issueFor(ctx, sl),
-		epicID:            sl.EpicID,
-		attempt:           sl.Attempts, // unchanged: environmental failure, not a bead attempt
-		resumeSHA:         r.branchHead(ctx, sl.Branch),
-		resumeSessionID:   resumeSession,
-		reviewIters:       sl.ReviewIters,
-		note:              "rate-limited requeue",
-		rateLimitRequeues: requeues,
-		wipSnapshotPath:   wipSnapshot,
+		issue:           r.issueFor(ctx, sl),
+		epicID:          sl.EpicID,
+		attempt:         sl.Attempts, // unchanged: environmental failure, not a bead attempt
+		resumeSHA:       r.branchHead(ctx, sl.Branch),
+		resumeSessionID: resumeSession,
+		reviewIters:     sl.ReviewIters,
+		note:            "rate-limited requeue",
+		// Its own budget increments; every other spent budget carries forward
+		// unchanged (koryph-qf6.1 — see requeueSlot's counter comment).
+		rateLimitRequeues:  requeues,
+		gateRequeues:       sl.GateRequeues,
+		mergeRequeues:      sl.MergeRequeues,
+		conflictRequeues:   sl.ConflictRequeues,
+		budgetKillRequeues: sl.BudgetKillRequeues,
+		wipSnapshotPath:    wipSnapshot,
 		// Freeze the model resolution from the first attempt (koryph-ehx) —
 		// see requeueSlot's identical comment. A rate-limit requeue is the
 		// same attempt continuing, so it must re-run the same model.
@@ -767,14 +773,19 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
-		issue:              r.issueFor(ctx, sl),
-		epicID:             sl.EpicID,
-		attempt:            attempt,
-		resumeSHA:          r.branchHead(ctx, sl.Branch),
-		resumeSessionID:    resumeSession,
-		reviewIters:        sl.ReviewIters,
-		gateRequeues:       sl.GateRequeues,
-		mergeRequeues:      sl.MergeRequeues,
+		issue:           r.issueFor(ctx, sl),
+		epicID:          sl.EpicID,
+		attempt:         attempt,
+		resumeSHA:       r.branchHead(ctx, sl.Branch),
+		resumeSessionID: resumeSession,
+		reviewIters:     sl.ReviewIters,
+		gateRequeues:    sl.GateRequeues,
+		mergeRequeues:   sl.MergeRequeues,
+		// Every other spent budget carries forward unchanged (koryph-qf6.1 —
+		// see requeueSlot's counter comment); only budgetKillRequeues below
+		// increments.
+		conflictRequeues:   sl.ConflictRequeues,
+		rateLimitRequeues:  sl.RateLimitRequeues,
 		note:               "budget-killed requeue",
 		budgetKillRequeues: requeues,
 		wipSnapshotPath:    wipSnapshot,
@@ -1310,12 +1321,18 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		reviewPath:      reviewPath,
 		reviewIters:     sl.ReviewIters,
 		wipSnapshotPath: wipSnapshot,
-		// Carry the requeue counters forward: dispatchBead builds a brand-new
-		// ledger.Slot rather than mutating this one, so without this the
-		// budget below would reset to zero every requeue (koryph-2im.6).
-		gateRequeues:  sl.GateRequeues,
-		mergeRequeues: sl.MergeRequeues,
-		note:          why,
+		// Carry ALL the requeue counters forward: dispatchBead builds a
+		// brand-new ledger.Slot rather than mutating this one, so any counter
+		// omitted here resets to zero on the new slot and its budget silently
+		// refills (koryph-2im.6; conflict/rate-limit/budget-kill threading
+		// added by koryph-qf6.1 — causes interleave, so each path preserves
+		// the others' spent budgets, not just its own).
+		gateRequeues:       sl.GateRequeues,
+		mergeRequeues:      sl.MergeRequeues,
+		conflictRequeues:   sl.ConflictRequeues,
+		rateLimitRequeues:  sl.RateLimitRequeues,
+		budgetKillRequeues: sl.BudgetKillRequeues,
+		note:               why,
 		// Freeze the model resolution from the first attempt (koryph-ehx): a
 		// requeue re-runs the SAME model/persona/effort the bead was dispatched
 		// with, so a `model:*` relabel mid-run (or non-deterministic

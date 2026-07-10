@@ -804,14 +804,20 @@ type dispatchReq struct {
 	resumeSessionID string
 	reviewPath      string
 	reviewIters     int
-	// gateRequeues, mergeRequeues, and rateLimitRequeues carry the
-	// requeue-budget counters forward across a requeue dispatch
-	// (koryph-2im.6, koryph-2im.4): dispatchBead below builds a fresh
-	// ledger.Slot rather than mutating the old one, so — the same way
+	// gateRequeues, mergeRequeues, conflictRequeues, and rateLimitRequeues
+	// carry the requeue-budget counters forward across a requeue dispatch
+	// (koryph-2im.6, koryph-2im.4, koryph-qf6.1): dispatchBead below builds a
+	// fresh ledger.Slot rather than mutating the old one, so — the same way
 	// reviewIters is threaded through — these must be passed explicitly or
-	// each budget would reset to zero every requeue.
+	// each budget would reset to zero every requeue. Every requeue path must
+	// thread ALL of them, not just the one it increments: requeue causes
+	// interleave (a conflict requeue can be followed by a gate requeue), and
+	// a path that drops the counters it doesn't own silently refills those
+	// budgets (koryph-qf6.1: ConflictRequeues was never threaded at all, so
+	// its budget could never bind across the slot replacement).
 	gateRequeues      int
 	mergeRequeues     int
+	conflictRequeues  int
 	rateLimitRequeues int
 	// budgetKillRequeues carries the warm-resume budget-kill counter forward
 	// (koryph-77r.10), the same way rateLimitRequeues does for rate-limit
@@ -1097,6 +1103,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		ReviewIters:        q.reviewIters,
 		GateRequeues:       q.gateRequeues,
 		MergeRequeues:      q.mergeRequeues,
+		ConflictRequeues:   q.conflictRequeues,
 		DispatchedAt:       now,
 		Note:               q.note,
 		RateLimitRequeues:  q.rateLimitRequeues,

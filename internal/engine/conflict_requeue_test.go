@@ -75,6 +75,73 @@ func TestMergeConflictRequeuesWithinBudget(t *testing.T) {
 	}
 }
 
+// capturingBackend satisfies dispatch.Backend and SUCCEEDS, so a requeue's
+// dispatchBead reaches SetSlot and REPLACES the ledger slot — the seam where
+// koryph-qf6.1's counter loss lived. A refusingBackend never gets that far
+// (blockSlot mutates the OLD slot in place), which is why the tests above
+// could pass while every successful requeue was zeroing untracked counters.
+type capturingBackend struct{ specs []dispatch.Spec }
+
+func (b *capturingBackend) Dispatch(_ context.Context, spec dispatch.Spec) (dispatch.Handle, error) {
+	b.specs = append(b.specs, spec)
+	return dispatch.Handle{PID: 1, SessionID: spec.SessionID}, nil
+}
+
+// koryph-qf6.1 regression: dispatchBead builds a brand-new Slot on requeue,
+// so every requeue path must thread ALL five budget counters into it. Before
+// the fix ConflictRequeues was never threaded at all — its budget could never
+// bind, because each successful requeue reset it to zero — and a conflict
+// requeue dropped the spent rate-limit/budget-kill budgets, silently
+// refilling them for causes it didn't own.
+func TestConflictRequeuePreservesAllBudgetCounters(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	fake := &fakeSource{}
+	r.adapter = fake
+	r.quotaCfg = &quota.Config{}
+	r.rt = runtimetest.Stub{}
+	backend := &capturingBackend{}
+	r.backend = backend
+
+	sl := conflictSlot(t, r, "cb3", 0)
+	sl.Model, sl.Agent, sl.ModelWhy = "sonnet", "koryph-implementer", "test frozen"
+	sl.GateRequeues, sl.MergeRequeues = 1, 2
+	sl.RateLimitRequeues, sl.BudgetKillRequeues = 3, 1
+	if err := r.store.SaveRun(r.run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	requeued := r.handleMergeFailure(t.Context(), sl, merge.Result{
+		Status: merge.StatusConflict, ConflictMD: "CONFLICT.md",
+	})
+	if !requeued {
+		t.Fatal("conflict within budget must requeue")
+	}
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1 (the requeue must reach the backend so SetSlot replaces the slot)", len(backend.specs))
+	}
+
+	got := r.run.Slots["cb3"]
+	if got == sl {
+		t.Fatal("slot was not replaced — this regression only manifests on the fresh-Slot path")
+	}
+	if got.ConflictRequeues != 1 {
+		t.Errorf("ConflictRequeues = %d, want 1 (incremented AND threaded through the slot replacement)", got.ConflictRequeues)
+	}
+	if got.GateRequeues != 1 || got.MergeRequeues != 2 {
+		t.Errorf("Gate/MergeRequeues = %d/%d, want 1/2 (preserved across a conflict requeue)", got.GateRequeues, got.MergeRequeues)
+	}
+	if got.RateLimitRequeues != 3 {
+		t.Errorf("RateLimitRequeues = %d, want 3 (preserved across a conflict requeue)", got.RateLimitRequeues)
+	}
+	if got.BudgetKillRequeues != 1 {
+		t.Errorf("BudgetKillRequeues = %d, want 1 (preserved across a conflict requeue)", got.BudgetKillRequeues)
+	}
+	if got.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2 (a conflict requeue burns an attempt)", got.Attempts)
+	}
+}
+
 func TestMergeConflictBudgetExhaustedResetsBeadOpen(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
