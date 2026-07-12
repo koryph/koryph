@@ -33,7 +33,7 @@ import (
 // `x-release-please-version` annotation comment below. Do not remove that
 // annotation or move the version off this line — see
 // docs/developer-guide/releasing.md.
-const Engine = "0.8.0" // x-release-please-version
+const Engine = "0.9.0" // x-release-please-version
 
 // Linker-injected build provenance. These are stamped via `-ldflags -X` by the
 // Makefile (`make build`/`make install`) and .goreleaser.yaml so a binary can
