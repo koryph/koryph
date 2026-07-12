@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.9.0](https://github.com/koryph/koryph/compare/v0.8.0...v0.9.0) (2026-07-12)
+
+
+### Features
+
+* **build:** stamp git provenance into the binary version ([0aafbfe](https://github.com/koryph/koryph/commit/0aafbfe28f0dedf3cdab94609a02319006773c5a))
+* **cli:** default --project to the cwd's project on project-scoped commands ([c998c04](https://github.com/koryph/koryph/commit/c998c042332a156364eb629028545a2022075b53))
+* **cli:** governor set-resource subverb + show resources section (koryph-4ql.5) ([168e833](https://github.com/koryph/koryph/commit/168e833a9fba428b404d38bc90acfa18f40966c4))
+* **cli:** render `koryph -h` from the command registry, grouped and complete ([95ab0bd](https://github.com/koryph/koryph/commit/95ab0bd7eb3f98520f345a01cb211af13dc056ad))
+* **cockpit:** filterable Threads tab with retries and model escalation ([9fab3b4](https://github.com/koryph/koryph/commit/9fab3b4e03624ed96b7de5f2ff39052c51afd5b5))
+* **cockpit:** resources on governor view + resource-deferred queue state (koryph-4ql.10) ([606662d](https://github.com/koryph/koryph/commit/606662d35ccea7348dd5000b8abe866970eaeea3))
+* **cockpit:** show the bead's short description on the Threads tab ([c338476](https://github.com/koryph/koryph/commit/c3384763f6968965e16d797252b895f2047448c7))
+* **doctor:** detect a too-old bd that silently flattens the queue ([1764ad3](https://github.com/koryph/koryph/commit/1764ad3dfc7cc1b6220df4b4e887ed710f69e2af))
+* **doctor:** leaked-resource findings + per-kind probe diffing (koryph-4ql.8) ([e5d6b77](https://github.com/koryph/koryph/commit/e5d6b77cade9e7ca74868680ec01b6fd100d0d3b))
+* **doctor:** offer a project-specific nix flake bump for a stale bd ([9ff1400](https://github.com/koryph/koryph/commit/9ff14004ffbe7281790a7f777b5d8939a3c0d93e))
+* **engine:** escalate the final bead-fault attempt to the recovery tier (koryph-qf6.4) ([7a24ade](https://github.com/koryph/koryph/commit/7a24ade99d81a93f6b891a388953045f1380430d))
+* **engine:** record the actual model per attempt from the result line's modelUsage (koryph-qf6.2) ([434fa8e](https://github.com/koryph/koryph/commit/434fa8e8bc4cba4f892ed3fdcd38de0dbe5e6f50))
+* **engine:** similarity learner — auto-apply learned model labels from escalation history (koryph-qf6.6) ([8cf901c](https://github.com/koryph/koryph/commit/8cf901c2e36abac1dd7df54849538c7fc63a6ccf))
+* **engine:** typed admission verdicts, resource skip-vs-break, frozen claims (koryph-4ql.3) ([02518b6](https://github.com/koryph/koryph/commit/02518b60bd2bc1f965e868fc8d95bda2c0578818))
+* **engine:** write attempt/escalation history back to the bead at terminal states (koryph-qf6.5) ([ba19ddb](https://github.com/koryph/koryph/commit/ba19ddb4479b635599b16436378cf21b1a3c297f))
+* **govern:** resource capacity ledger + reservation-aware admission (koryph-4ql.1) ([52b77e8](https://github.com/koryph/koryph/commit/52b77e835b25a252b821657282cefd3fe43ac5d1))
+* **ide:** adopt internal/cockpit as sole data layer (koryph-5ew) ([97fd46e](https://github.com/koryph/koryph/commit/97fd46e500c75d102e7e7a6be24a4b00901f5ff2))
+* **ledger:** persist bead similarity features on the slot at dispatch (koryph-qf6.3) ([cdf2ea6](https://github.com/koryph/koryph/commit/cdf2ea64d76f7c2742bd860b645d344db185c82a))
+* **merge:** koryph merge/land --allow-protected lifts routine CI/build paths, operator-only (koryph-dcn) ([c3f95e1](https://github.com/koryph/koryph/commit/c3f95e1dd4c6e2a98cb1c82d9fc2faaa496b3de6))
+* **metrics:** per-bead memory/CPU/IO sampling with clock times ([67d33ab](https://github.com/koryph/koryph/commit/67d33ab254fa5001f7f7dd98aa483fca4ec30c0f))
+* **obs:** wire live config reload; make merge refusals durably observable ([b2552f9](https://github.com/koryph/koryph/commit/b2552f9eeab9ca1a73882b3e817c8efb4015ad6d))
+* **promptc:** RESOURCES block — declared kinds, instance naming, teardown contract (koryph-4ql.4) ([c8264c6](https://github.com/koryph/koryph/commit/c8264c6222fc9bfa754445b778dbb942db32e89e))
+* **sched:** res:&lt;kind&gt; grammar + resource-aware wave packing (koryph-4ql.2) ([8c34890](https://github.com/koryph/koryph/commit/8c34890da924d2c753511a69081cfe61bf821188))
+* **schemaver:** forward-compat schema guards across shared state surfaces ([3c19430](https://github.com/koryph/koryph/commit/3c19430c72c5e1c1e1432e67665b0ff5e1e0a188))
+* **security:** close agent containment bypasses in the dispatch loop ([bb41b19](https://github.com/koryph/koryph/commit/bb41b1907a0073a22f7cc2e1c9ce746508bde557))
+* **tui:** queue grouping modes, fold-all toggle, and arbitrary metadata search (koryph-vy8, koryph-166) ([b88bbc3](https://github.com/koryph/koryph/commit/b88bbc3d26828ea42ed88cb215ef573686ef1b25))
+* **tui:** tail the agent's live thinking from the thread detail (koryph-xvk) ([d8cf684](https://github.com/koryph/koryph/commit/d8cf68475960f35fa0db08b5217a73d711992b9d))
+
+
+### Bug Fixes
+
+* **agents:** ship koryph-epic-validator in the embedded persona corpus ([cc22129](https://github.com/koryph/koryph/commit/cc22129797487c57696d72742c6c4f69a55b9c29))
+* **build:** require Go 1.26.5 to clear GO-2026-5856 (crypto/tls) ([07010ee](https://github.com/koryph/koryph/commit/07010eecc244ac5c78252f598a86a0044fdb1aab))
+* **ci:** pin setup-go to 1.26.5 to satisfy the go.mod floor ([c1c016a](https://github.com/koryph/koryph/commit/c1c016ab6ef1df2479a803005dc739483b8e2a70))
+* **ci:** restore the spdx-header exclude that koryph-ani detached ([53a30f7](https://github.com/koryph/koryph/commit/53a30f7a22bff2db4849cc64e15748c29a9f549e))
+* **cli:** let stop --all scope to one project with --project ([3aff8dc](https://github.com/koryph/koryph/commit/3aff8dcd9eadf6aaecb0621bebfbb00338b62d4f))
+* **cockpit:** bound and latch-proof the derived refresh so the Queue tab can't freeze (koryph-b01) ([32a61d5](https://github.com/koryph/koryph/commit/32a61d5ab6ad03c8ce279000c28fa09e116d4367))
+* **cockpit:** decouple TUI slot data from expensive bd-derived sections ([173402a](https://github.com/koryph/koryph/commit/173402aab94c6af15e3ead5caa8fe0521750483e))
+* **cockpit:** keep queue hierarchy grouped under closed parent epics ([86871dc](https://github.com/koryph/koryph/commit/86871dc0c44ada6611268e01ba60a68e56a25e74))
+* **cockpit:** make Detail a selection overlay, not a Tab-cyclable tab ([3a3470c](https://github.com/koryph/koryph/commit/3a3470c086f1fd2b816bd0951359d030df105e13))
+* **cockpit:** stamp cockpit timestamps with date and time ([77f63c9](https://github.com/koryph/koryph/commit/77f63c933c53e06eb08574fd408bbf851c7316ce))
+* **correctness:** serialize RunLock stale-reclaim; clear stale flag on quota calibrate ([dc73944](https://github.com/koryph/koryph/commit/dc73944f4be854931d92cb2ef2da1440f6c6879f))
+* **engine:** stuck detection is activity- and resource-aware, and says the process is alive (koryph-2rf) ([59d7e2f](https://github.com/koryph/koryph/commit/59d7e2f12bbcea78513d73f1a02ec7df09140f73))
+* **engine:** thread all requeue budget counters through dispatchReq (koryph-qf6.1) ([12bf740](https://github.com/koryph/koryph/commit/12bf740169c3e9ec7017b4f60250ff61cad18b1f))
+* **metrics:** floor the resource-sample interval and add a test kill-switch ([e2adddf](https://github.com/koryph/koryph/commit/e2adddf3bbc85670831c02fcd2fd8636ddbb8f09))
+* **quota:** clamp estimator bias factor to stop phantom wave estimates ([e79c7fc](https://github.com/koryph/koryph/commit/e79c7fc7d66db449b42bc89d29d5eb300b213bea))
+* **review:** make verdict extraction immune to diff-content brace tokens ([9014d7d](https://github.com/koryph/koryph/commit/9014d7d50111b3da4f1b879fb46b090a61a86cf5))
+* **security:** terminate bd option injection; guard the engine force-push ([5eb5e0c](https://github.com/koryph/koryph/commit/5eb5e0c1dbf61c38abff8ba3f34d8bf2a94a8f17))
+* **tui:** keep header/tab bar on screen and stop root rows posing as children (koryph-b01 follow-up) ([f053232](https://github.com/koryph/koryph/commit/f053232e6ccc21e4346be95cf2461011476d75c2))
+
 ## [0.8.0](https://github.com/koryph/koryph/compare/v0.7.0...v0.8.0) (2026-07-08)
 
 
