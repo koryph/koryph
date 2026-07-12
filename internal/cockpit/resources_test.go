@@ -5,6 +5,7 @@ package cockpit
 
 import (
 	"testing"
+	"time"
 
 	"github.com/koryph/koryph/internal/govern"
 )
@@ -23,6 +24,38 @@ func newTestGovernorStore(t *testing.T) *govern.Store {
 	return govern.NewStore()
 }
 
+// awaitDerived joins the background refreshDerived pass that Refresh kicks when
+// the derived caches are stale (always, on a fresh provider). That goroutine
+// runs bd/git subprocesses against the provider's repoRoot (and reads the
+// govern store under KORYPH_HOME) with no lock held; if the test returns while
+// it is still in flight, t.TempDir()'s RemoveAll races those writes and fails
+// teardown with "directory not empty" (koryph-1hz). Registered via t.Cleanup,
+// which runs LIFO — before the earlier t.TempDir() removals — so the join
+// always precedes removal. Mirrors the derivedRefreshing poll in
+// TestDerivedRefreshTimeoutResetsLatch.
+func awaitDerived(t *testing.T, p *LedgerProvider) {
+	t.Helper()
+	t.Cleanup(func() {
+		// Ceiling above derivedRefreshTimeout (60s) so a bd bounded by its own
+		// timeout still resolves here; the poll returns the instant the latch
+		// clears, which is sub-second once bd/git error out on the temp repo.
+		deadline := time.Now().Add(90 * time.Second)
+		for {
+			p.mu.Lock()
+			refreshing := p.derivedRefreshing
+			p.mu.Unlock()
+			if !refreshing {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Error("refreshDerived still in flight at cleanup; TempDir removal will race it")
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+}
+
 // TestRefreshGovernor_ResourcesAbsent is the old-snapshot-tolerance half of
 // the round-trip: a governor with no resources configured and no lease ever
 // declaring a res:<kind> must refresh cleanly with a nil/empty Resources
@@ -31,6 +64,7 @@ func TestRefreshGovernor_ResourcesAbsent(t *testing.T) {
 	newTestGovernorStore(t) // sets KORYPH_HOME; the provider builds its own Store on it
 
 	p := NewLedgerProvider("proj", t.TempDir(), "")
+	awaitDerived(t, p) // join the background refreshDerived before TempDir cleanup (koryph-1hz)
 	snap, err := p.Refresh()
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
@@ -58,6 +92,7 @@ func TestRefreshGovernor_ResourcesPresent(t *testing.T) {
 	}
 
 	p := NewLedgerProvider("proj", t.TempDir(), "")
+	awaitDerived(t, p) // join the background refreshDerived before TempDir cleanup (koryph-1hz)
 	// The lease's PID (10) is not a real live process; override liveness so
 	// govern's prune pass (which ResourcesStatus runs first) does not reap it
 	// before we can observe it — the newTestStore precedent from
