@@ -53,7 +53,13 @@ jobs:
       goreleaser_version: "~> v2.16"
       sbom: true
       provenance: true
-      go_version: "1.26"
+      # Pin the EXACT patch, matching go.mod's `go` directive and ci.yml's
+      # setup-go. A loose "1.26" resolves to whatever 1.26.x the runner has
+      # cached (was 1.26.4), which fails go.mod's `go 1.26.5` requirement: the
+      # gate's `go run` errors with empty stdout, so `make version-check` sees
+      # an empty engine version and the release aborts. Bump in lockstep with
+      # go.mod. (regressed v0.9.0; see docs/developer-guide/releasing.md)
+      go_version: "1.26.5"
       gate_command: "make version-check TAG=$RELEASE_TAG && make gate"
       homebrew_tap: "homebrew-tap"
     secrets: inherit
