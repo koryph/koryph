@@ -406,6 +406,17 @@ On resume the engine classifies the latest run's slots:
 Nothing is lost: committed checkpoints survive the interruption and are replayed
 into the new dispatch context.
 
+You can resume at a **different width** than the interrupted run. A stalled run
+that was dispatching at `--max 6` can be resumed with `--max 2`: the re-dispatch
+of dead slots is capped at the resuming run's effective width and gated through
+the global concurrency governor exactly like fresh frontier work, so recovered
+beads land at most `--max` at a time and refill as slots free. (Agents that are
+still alive are always reattached regardless of width — koryph never kills a
+running agent to fit a lower cap; the freed capacity applies to the re-dispatched
+dead slots.) Beads that do not fit the width immediately are parked `queued` and
+promoted at later scheduling boundaries, so you never have to resume at the
+original thread count just to recover work.
+
 Every requeue also refreshes the worktree onto the current default branch first, so a
 retried agent never runs against a checkout that predates a main-side fix: a bead with
 no commits is rebuilt from a fresh checkout, and one carrying commits is rebased onto the

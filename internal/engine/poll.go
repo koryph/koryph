@@ -124,7 +124,13 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 
 	tick := 0
 	for {
-		if r.activeCount() == 0 {
+		// liveActiveCount, not activeCount: a resume backlog (SlotQueued) reserves
+		// width but has no agent to poll, so waiting on it here would deadlock —
+		// only the wave-loop boundary's drainResumeBacklog can promote it. When
+		// every LIVE slot has settled, return so that boundary regains control and
+		// drains the next backlog beads (koryph-bzf). Identical to activeCount when
+		// no backlog is present.
+		if r.liveActiveCount() == 0 {
 			return nil
 		}
 		timerFired, err := r.waitTick(ctx, wake, interval)
@@ -186,6 +192,14 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 	for _, id := range r.activePhaseIDs() {
 		sl := r.run.Slots[id]
 		if sl == nil || ledger.Terminal(sl.Status) {
+			continue
+		}
+		// A resume-backlog slot (SlotQueued) has no live agent — its last agent
+		// is dead and drainResumeBacklog re-dispatches it at a scheduling
+		// boundary, not here. Polling it would drive completeSlot, which would
+		// immediately re-dispatch it uncapped: exactly the width bypass koryph-bzf
+		// removes. Skip it until the boundary drain promotes it to a live slot.
+		if sl.Status == ledger.SlotQueued {
 			continue
 		}
 		if procs != nil {

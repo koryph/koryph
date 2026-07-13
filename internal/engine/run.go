@@ -475,6 +475,39 @@ func (r *runner) activeIDs() map[string]bool {
 // activeCount is the number of non-terminal slots.
 func (r *runner) activeCount() int { return len(r.activeIDs()) }
 
+// liveActiveCount is the number of slots with a running (or about-to-run) agent:
+// non-terminal AND not parked in the resume backlog (koryph-bzf). A SlotQueued
+// slot still reserves its place in the width budget — so activeIDs counts it for
+// frontier capacity and footprint gating — but has no agent to poll or wait on,
+// so it must not keep pollUntilIdle spinning, and it must not be mistaken for a
+// busy slot when drainResumeBacklog decides how many backlog beads a boundary
+// may promote. With no backlog present (the common case) this equals
+// activeCount, so every existing flow is unchanged.
+func (r *runner) liveActiveCount() int {
+	n := 0
+	for _, sl := range r.run.Slots {
+		if sl != nil && !ledger.Terminal(sl.Status) && sl.Status != ledger.SlotQueued {
+			n++
+		}
+	}
+	return n
+}
+
+// queuedResumeIDs returns, in deterministic order, the phase ids of slots parked
+// in the resume backlog (SlotQueued) — stalled beads that resume() adopted but
+// the effective width could not admit at once (koryph-bzf). drainResumeBacklog
+// promotes them into live dispatches as width frees.
+func (r *runner) queuedResumeIDs() []string {
+	var ids []string
+	for id, sl := range r.run.Slots {
+		if sl != nil && sl.Status == ledger.SlotQueued {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // activePhaseIDs returns the non-terminal slot ids in deterministic order.
 func (r *runner) activePhaseIDs() []string {
 	var ids []string

@@ -61,6 +61,15 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		level, calibrated, usage, budgetHit := gate.level, gate.calibrated, gate.usage, gate.budgetHit
 		width := gate.width
 
+		// Promote resume-backlog beads (SlotQueued, parked by resume() when the
+		// effective width could not admit them all) into live dispatches before
+		// scanning the frontier, so recovered work takes priority and is capped
+		// at the CURRENT width rather than the stalled run's (koryph-bzf). A
+		// no-op on every non-resume tick. Rolling already ticks via waitTick, so
+		// a backlog held back by a machine-wide denial retries next tick with no
+		// extra pacing needed here.
+		r.drainResumeBacklog(ctx, width, allowDispatch)
+
 		active := r.activeIDs()
 		capacity := width - len(active)
 
@@ -129,7 +138,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		// per-run budget cap and the quota governor both land here. (Operator
 		// drain with nothing active already returned via gate.paused above; this
 		// is defensive so the reason is never mislabeled quota-* if it weren't.)
-		if !allowDispatch && len(active) == 0 && r.epicInFlight == "" {
+		if !allowDispatch && r.liveActiveCount() == 0 && r.epicInFlight == "" {
 			reason := "quota-" + string(level)
 			if budgetHit {
 				reason = "budget-cap"

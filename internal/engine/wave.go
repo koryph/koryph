@@ -181,7 +181,13 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	// drain: no new dispatch, active slots finish untouched.
 	if r.store.DrainRequested() {
 		g.operatorDrain = true
-		if r.activeCount() == 0 {
+		// liveActiveCount, not activeCount: an operator drain during a resume with
+		// a parked backlog (SlotQueued) must finish cleanly rather than force-run
+		// un-started recovery work — the queued beads carry no live agent, stay
+		// SlotQueued in the drained run, and a later --resume re-adopts them
+		// (koryph-bzf). With no backlog the two counts are equal, so the operator
+		// drain contract and its tests are unchanged.
+		if r.liveActiveCount() == 0 {
 			r.run.Status = ledger.RunDrained
 			_ = r.store.FinalizeRun(r.run)
 			r.store.ConsumeDrain()
@@ -251,6 +257,15 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		level, calibrated, usage, budgetHit := gate.level, gate.calibrated, gate.usage, gate.budgetHit
 		width := gate.width
 
+		// Promote resume-backlog beads (SlotQueued, parked by resume() when the
+		// effective width could not admit them all) into live dispatches before
+		// scanning the frontier, so recovered work takes priority and is capped
+		// at the CURRENT width, not the stalled run's (koryph-bzf). A no-op on
+		// every non-resume wave. A backlog it could not place this boundary is
+		// detected below (liveActiveCount==0 with a backlog still present) for
+		// the hot-spin guard.
+		r.drainResumeBacklog(ctx, width, allowDispatch)
+
 		// Boundary admission tally (koryph-4ql.3): dispatchedThisBoundary counts
 		// beads actually admitted this wave; deniedThisBoundary records whether any
 		// admission denial (skip OR break) occurred. Together they drive the
@@ -274,17 +289,33 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		// very wave routes on them.
 		issues = r.applyLearnedModels(ctx, issues)
 		active := r.activeIDs()
-		w, err := sched.BuildWave(ctx, issues, r.cfg, sched.Opts{
-			Max:              width,
-			DefaultModel:     r.opts.DefaultModel,
-			Parent:           r.opts.Parent,
-			ActiveIDs:        active,
-			Active:           r.activeFootprints(ctx, active),
-			ActiveResources:  r.activeResources(ctx, active),
-			ResourceCapacity: r.resourceCapacities(),
-		}, r.childLister(ctx))
-		if err != nil {
-			return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
+		// Cap the frontier at the FREE capacity, not the raw width (koryph-bzf).
+		// Historically wave mode entered each iteration fully idle (pollUntilIdle
+		// drained to zero active), so width and capacity were equal — but a resume
+		// carries live reattached slots and a SlotQueued backlog into the first
+		// iterations, and pollUntilIdle now returns while backlog remains, so
+		// active can be > 0 here. Without this the frontier would dispatch `width`
+		// MORE beads on top of the already-occupied slots, overshooting the cap
+		// exactly as the old resume did. Build only when a slot is actually free —
+		// BuildWave reads Max<=0 as UNLIMITED, so a zero-capacity boundary must
+		// skip the build (empty wave) rather than pass 0, mirroring rollingLoop.
+		// eligible is still computed below (independent of Max) for the drained
+		// decision. Inert whenever active is empty (every steady-state wave).
+		capacity := width - len(active)
+		var w sched.Wave
+		if capacity > 0 {
+			w, err = sched.BuildWave(ctx, issues, r.cfg, sched.Opts{
+				Max:              capacity,
+				DefaultModel:     r.opts.DefaultModel,
+				Parent:           r.opts.Parent,
+				ActiveIDs:        active,
+				Active:           r.activeFootprints(ctx, active),
+				ActiveResources:  r.activeResources(ctx, active),
+				ResourceCapacity: r.resourceCapacities(),
+			}, r.childLister(ctx))
+			if err != nil {
+				return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
+			}
 		}
 
 		eligible := 0
@@ -307,7 +338,13 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		// per-run budget cap and the quota governor both land here. (Operator
 		// drain with nothing active already returned via gate.paused above; this
 		// is defensive so the reason is never mislabeled quota-* if it weren't.)
-		if !allowDispatch && len(active) == 0 {
+		//
+		// liveActiveCount (not len(active)) so a resume backlog that dispatch is
+		// currently forbidden from placing (SlotQueued reserves a width slot but
+		// runs no agent) parks the run rather than spinning: the queued beads
+		// stay SlotQueued and a later --resume re-adopts them (koryph-bzf). With
+		// no backlog the two counts are identical, so this is inert otherwise.
+		if !allowDispatch && r.liveActiveCount() == 0 {
 			reason := "quota-" + string(level)
 			if budgetHit {
 				reason = "budget-cap"
@@ -422,6 +459,23 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		// (waitTick), so this is wave-mode only. ctx cancellation is honored, like
 		// the stagger select above.
 		if dispatchedThisBoundary == 0 && len(active) == 0 && deniedThisBoundary {
+			select {
+			case <-ctx.Done():
+				return r.interrupted()
+			case <-time.After(r.pollInterval()):
+			}
+		}
+
+		// Resume-backlog pacing (koryph-bzf): the same hot-spin guard for a
+		// backlog the drain could not place this boundary (a pool-cap break OR a
+		// per-bead resource skip) with no live slot to wait on — pollUntilIdle
+		// returns immediately when nothing is live, so without this the outer loop
+		// would re-scan tightly. Distinct from the tally above because SlotQueued
+		// backlog keeps len(active) > 0 while liveActiveCount is 0. Reached only
+		// with dispatch allowed (an unplaceable backlog under a dispatch ban
+		// already paused via liveActiveCount above), so it always denotes a real
+		// retry-later condition. Retries the drain at a defined cadence.
+		if r.liveActiveCount() == 0 && len(r.queuedResumeIDs()) > 0 {
 			select {
 			case <-ctx.Done():
 				return r.interrupted()

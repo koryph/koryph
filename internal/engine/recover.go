@@ -55,8 +55,28 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 			adopted = true
 
 		case ledger.ActionRequeueResume, ledger.ActionRequeueFresh:
-			r.progress("resume: %s for %s (%s)", d.Action, d.PhaseID, d.Reason)
-			r.requeueSlot(ctx, sl, "", "resume: "+d.Reason)
+			// Park the stalled bead in the resume backlog instead of
+			// re-dispatching it here (koryph-bzf). The old path fired
+			// requeueSlot for EVERY classified bead at once, respecting neither
+			// this run's effective width (capacity is only enforced later, in
+			// the loop) nor the global governor's acquire admission — so
+			// resuming a run that stalled at a higher thread count blew straight
+			// past a lowered --max. drainResumeBacklog promotes these into live
+			// dispatches at each scheduling boundary, capped at the effective
+			// width and gated exactly like frontier work, while still routing
+			// through requeueSlot so per-attempt continuity (resume session,
+			// WIP snapshot, accumulated cost/attempts) is preserved.
+			_ = r.store.UpdateSlot(latest, d.PhaseID, func(s *ledger.Slot) {
+				s.Status = ledger.SlotQueued
+				// The agent this slot last ran under is dead (that is what
+				// classified it requeue, not reattach). Clear the stale PID so a
+				// quota hard-stop's interruptActiveSlots cannot SIGTERM a
+				// recycled PID, and a second --resume cannot mistake a recycled
+				// PID for a live agent and falsely reattach.
+				s.PID = 0
+				s.Note = "resume: " + d.Reason + " (queued; awaiting a free slot under the current width)"
+			})
+			r.progress("resume: queued %s for width-gated re-dispatch (%s)", d.PhaseID, d.Reason)
 			adopted = true
 
 		case ledger.ActionBlocked:
@@ -80,6 +100,57 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 	latest.Status = ledger.RunRunning
 	_ = r.store.SaveRun(latest)
 	return true, nil
+}
+
+// drainResumeBacklog promotes stalled beads parked in the resume backlog
+// (SlotQueued, by resume()) into live dispatches, in deterministic order, until
+// the effective width is full or the backlog empties (koryph-bzf). It is the
+// width-honoring counterpart to the pre-koryph-bzf resume(), which re-dispatched
+// every stalled bead at once and so ignored a lowered --max. Each promotion is
+// gated through the global concurrency governor exactly like a frontier
+// dispatch (acquireGlobalSlot), and re-dispatched via requeueSlot so per-attempt
+// continuity (resume session, WIP snapshot, accumulated cost/attempts) is
+// preserved. A no-op whenever the backlog is empty (every non-resume boundary)
+// or dispatch is not allowed this boundary. Callers detect "backlog held back"
+// via liveActiveCount()==0 && len(queuedResumeIDs())>0 after the call (wave-mode
+// pacing) rather than a return code, so a resource-skipped backlog paces the
+// same as a cap-broken one.
+func (r *runner) drainResumeBacklog(ctx context.Context, width int, allowDispatch bool) {
+	if !allowDispatch {
+		return
+	}
+	for _, id := range r.queuedResumeIDs() {
+		if r.liveActiveCount() >= width {
+			return
+		}
+		sl := r.run.Slots[id]
+		if sl == nil {
+			continue
+		}
+		// A bead the operator retired while the run was down must LEAVE the
+		// backlog rather than spin here forever — requeueSlot would keep bailing
+		// on the same closed bead and it would stay SlotQueued, re-tried every
+		// boundary. beadClosedMidFlight marks it SlotBlocked (dropping it out of
+		// queuedResumeIDs) and releases any slot, so a plain continue suffices.
+		if r.beadClosedMidFlight(ctx, id) {
+			continue
+		}
+		switch r.acquireGlobalSlot(id, sl.Resources, sl.MemReserveMB) {
+		case admitSkip:
+			continue // a per-bead resource is at capacity — a lighter backlog bead may still fit
+		case admitBreak:
+			return // machine-wide (pool cap / memory floor) — stop draining this boundary
+		}
+		r.requeueSlot(ctx, sl, "", "resume: width-gated re-dispatch")
+		// requeueSlot replaces the slot with a freshly dispatched one; if it
+		// bailed without dispatching (bead closed mid-flight, run budget park)
+		// the slot is still SlotQueued and we hold an unpaired global slot —
+		// release it and stop rather than loop on a bead we cannot place.
+		if cur := r.run.Slots[id]; cur != nil && cur.Status == ledger.SlotQueued {
+			r.releaseGlobalSlot(id)
+			return
+		}
+	}
 }
 
 // reconcileOrphans is the fresh-start safety net (koryph-47n). A plain
