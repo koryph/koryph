@@ -566,6 +566,15 @@ and revert to the project's configured width with:
 koryph resize --project myproject --clear
 ```
 
+The override **persists across runs** — it stays in effect until you `--clear` it, like a
+project-config change. To keep a leftover override from silently pinning a *new* run's
+width, an explicit `koryph run --max N` outranks a resize override that was already in place
+when that run started (the run logs a one-line notice naming the ignored override so
+`--clear` is discoverable). A `koryph resize` issued **while a loop is running** still takes
+effect immediately, even if that loop was started with an explicit `--max` — that is the
+whole point of live resize. A run with no explicit `--max` continues to inherit the
+persisted override as its width.
+
 `--all` applies the same `--max`/`--clear` to every registered project. Both `drain` and
 `resize` are recorded in the central audit log (`~/.koryph/audit.jsonl`), same as other
 operator actions.

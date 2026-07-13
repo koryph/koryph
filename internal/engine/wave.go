@@ -209,8 +209,22 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	// `koryph resize` takes effect on the very next boundary without a
 	// restart. Clamping to the project cap (unless --force) happens once, at
 	// write time (cmd/koryph), not here.
+	//
+	// But a resize override PERSISTS across runs (ledger.Store.LoadResize), so a
+	// leftover `koryph resize` from a prior loop would otherwise silently pin a
+	// brand-new run to that width even when the operator passed an explicit
+	// --max — the trap koryph-bzf closes. resizeApplies honors a live resize of
+	// THIS run (set after it started) unconditionally, but lets an explicit
+	// --max outrank a STALE one; a one-time warning names the ignored override
+	// so `koryph resize --clear` is discoverable.
 	if ov, ok := r.store.LoadResize(); ok {
-		width = ov.Max
+		if r.resizeApplies(ov) {
+			width = ov.Max
+		} else if !r.staleResizeWarned {
+			r.staleResizeWarned = true
+			r.progress("ignoring a persisted resize override (--max %d, set %s) in favor of this run's explicit --max %d — run `koryph resize --clear` to remove the stale override",
+				ov.Max, ov.SetAt, r.width)
+		}
 	}
 	if !r.opts.Manual && calibrated && !advisory {
 		if scaled := quota.ScaleSlots(usage, r.quotaCfg, width); scaled < width {
@@ -232,6 +246,29 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 		}
 	}
 	return g
+}
+
+// resizeApplies decides whether a persisted resize override governs this
+// boundary's width (koryph-bzf). A resize written (or changed) DURING this run is
+// a live `koryph resize` of the running loop and always applies — the
+// without-restart feature (koryph-57v.1). One that is unchanged since this run
+// started was inherited from a PRIOR run (the override persists across runs), and
+// is honored only when the run did not state its own width: an explicit `--max`
+// outranks a stale override so a new loop is never silently pinned to a prior
+// run's `koryph resize` value.
+//
+// "Live vs inherited" is decided by comparing the override's SetAt to the
+// snapshot captured at run start (startupResizeSetAt), NOT by ordering it against
+// the run's StartedAt: the stored timestamps are second-resolution, so a live
+// resize done within the same second as run start would be indistinguishable
+// from an inherited one by ordering. A snapshot comparison has no such ambiguity
+// — a live resize writes a fresh SetAt that cannot equal a value captured before
+// it existed.
+func (r *runner) resizeApplies(ov ledger.ResizeOverride) bool {
+	if ov.SetAt != r.startupResizeSetAt {
+		return true // set or changed during this run — a live koryph resize wins even over --max
+	}
+	return r.opts.Max <= 0 // inherited from a prior run: an explicit --max outranks it
 }
 
 // waveLoop runs waves until drained, quota pause, ctx cancellation, or (Once)

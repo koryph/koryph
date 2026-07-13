@@ -93,6 +93,11 @@ type runner struct {
 	dispatched         int
 	govWarned          bool
 	uncalibratedWarned bool // koryph-grz: loud uncalibrated-governor warning fired once this run
+	staleResizeWarned  bool // koryph-bzf: fired once when an explicit --max overrode a stale persisted resize
+	// startupResizeSetAt is the SetAt of the resize override present when this run
+	// started ("" if none), snapshotted so governorGate can tell a live `koryph
+	// resize` of THIS run (SetAt changed) from one inherited across runs (koryph-bzf).
+	startupResizeSetAt string
 	issues             map[string]beads.Issue
 
 	// memProbe reads current system memory (total + available) for the memory
@@ -318,6 +323,15 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	// intentional invocation before it dispatches anything.
 	if r.store.ConsumeDrain() {
 		r.progress("cleared a stale operator-drain request from a previous run")
+	}
+
+	// Snapshot the resize override present at run start (koryph-bzf): a resize
+	// override persists across runs, so governorGate compares each boundary's
+	// override against this snapshot to tell a live `koryph resize` of THIS run
+	// (SetAt changed) from one merely inherited from a prior run — the latter
+	// must yield to an explicit --max rather than silently pin the new run's width.
+	if ov, ok := r.store.LoadResize(); ok {
+		r.startupResizeSetAt = ov.SetAt
 	}
 
 	resumed := false
