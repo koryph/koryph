@@ -764,6 +764,11 @@ const patrolCheckStaleWt = "stale-worktrees"
 // only: cleanup is a `git worktree remove --force` an operator must run, never
 // auto-destroyed (uncommitted work may be salvageable). Cheap: `git worktree
 // list` plus one merge-base check per dirty worktree.
+//
+// Worktrees owned by a non-terminal slot of the current run are excluded first
+// (koryph-050): a live agent that has not yet made its first commit shares the
+// orphan signature exactly (dirty tree + HEAD still at the merged main tip), so
+// flagging it would recommend destroying in-progress work.
 func (r *runner) patrolCheckStaleWorktrees(ctx context.Context) []patrolFinding {
 	repoRoot := ""
 	if r.rec != nil {
@@ -786,11 +791,37 @@ func (r *runner) patrolCheckStaleWorktrees(ctx context.Context) []patrolFinding 
 			message: fmt.Sprintf("stale-worktrees: cannot list worktrees: %v", err)}}
 	}
 
+	// A worktree owned by a non-terminal slot of THIS run is a live agent, not
+	// an orphan (koryph-050). A long-running agent that has not yet made its
+	// first commit still has HEAD at the merged main tip AND a dirty tree —
+	// exactly the orphan signature below — so without this guard the patrol
+	// recommends `git worktree remove --force` against in-progress work, and
+	// the more (and longer) work the agent has done pre-first-commit, the wider
+	// that window. Match on both the cleaned path and the basename (the message
+	// reports the basename) so a /tmp↔/private/tmp symlink or a trailing slash
+	// cannot defeat the skip.
+	livePaths := make(map[string]bool)
+	liveBases := make(map[string]bool)
+	for _, sl := range r.run.Slots {
+		if sl == nil || ledger.Terminal(sl.Status) || sl.Worktree == "" {
+			continue
+		}
+		livePaths[filepath.Clean(sl.Worktree)] = true
+		liveBases[filepath.Base(sl.Worktree)] = true
+	}
+
 	var orphans []string
 	for _, wt := range infos {
 		// Skip the main checkout and any clean worktree; only dirty linked
 		// worktrees are candidates.
 		if wt.Path == repoRoot || !wt.Dirty || wt.Head == "" {
+			continue
+		}
+		// Skip a live agent's worktree (koryph-050): a running slot's tree is
+		// dirty by definition and, pre-first-commit, its HEAD is the merged
+		// main tip — the orphan signature is indistinguishable from healthy
+		// in-progress work, so ownership by a non-terminal slot is authoritative.
+		if livePaths[filepath.Clean(wt.Path)] || liveBases[filepath.Base(wt.Path)] {
 			continue
 		}
 		// Merged tip? `git merge-base --is-ancestor <head> <def>` exits 0.
