@@ -57,8 +57,9 @@ type Opts struct {
 
 // Result reports what a stage run did.
 type Result struct {
-	Ran     bool    // the agent process was started
-	OK      bool    // clean exit (identity ok, no timeout, exit 0)
-	CostUSD float64 // parsed from the result envelope (0 when absent)
-	Note    string  // failure reason when !OK
+	Ran      bool    // the agent process was started
+	OK       bool    // clean exit (identity ok, no timeout, exit 0)
+	TimedOut bool    // !OK because the stage exceeded its timeout, not because it failed (koryph-a59)
+	CostUSD  float64 // parsed from the result envelope (0 when absent)
+	Note     string  // failure reason when !OK
 }

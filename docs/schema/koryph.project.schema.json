@@ -196,6 +196,10 @@
           "type": "string",
           "description": "Prompt is extra, stage-specific instruction text appended to the built\nstage prompt."
         },
+        "timeout_sec": {
+          "type": "integer",
+          "description": "TimeoutSec bounds the stage agent's run; \u003c=0 uses the engine default\n(stage.defaultTimeoutSec, 600s). Raise it for stages that legitimately\nneed longer — e.g. a docs sweep over a large rename (koryph-a59)."
+        },
         "optional": {
           "type": "boolean",
           "description": "Optional stages log-and-continue on failure; a non-optional stage (the\ndefault) that fails blocks the slot and stops the pipeline (fail closed)."

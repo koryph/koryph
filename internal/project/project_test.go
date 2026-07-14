@@ -35,7 +35,7 @@ func fullConfig() *Config {
 		Tiers:     map[string]string{"fast": "haiku"},
 		ModelMap:  map[string]string{"frontier": "fable"},
 		Pipeline: []PipelineStage{
-			{Name: "docs", Persona: "feature-docs-author", Model: "sonnet", Effort: "high", Prompt: "update docs", Optional: true},
+			{Name: "docs", Persona: "feature-docs-author", Model: "sonnet", Effort: "high", Prompt: "update docs", TimeoutSec: 1800, Optional: true},
 		},
 		Bootstrap: []string{"go mod download"},
 		Intake: []IntakeSource{{

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/koryph/koryph/internal/account"
 )
@@ -201,6 +202,43 @@ func TestRunStageNonZeroExitNotOK(t *testing.T) {
 	}
 	if !strings.Contains(r.Note, "exited 3") {
 		t.Errorf("Note = %q, want it to mention exit 3", r.Note)
+	}
+}
+
+// fakeStageClaudeSleep hangs for `seconds` so a small TimeoutSec kills it. It
+// `exec`s sleep so the shell is replaced (no grandchild left holding the stdout
+// pipe, which would make Wait block past the kill).
+func fakeStageClaudeSleep(t *testing.T, seconds int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-claude-sleep")
+	writeFile(t, path, "#!/bin/sh\nexec sleep "+strconv.Itoa(seconds)+"\n")
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestRunStageTimeoutReportsTimedOut is the regression test for koryph-a59: a
+// stage that exceeds its TimeoutSec is reported as TimedOut (not a plain
+// failure), and its Note names the timeout — so the pipeline can tell "ran out
+// of time" apart from "failed".
+func TestRunStageTimeoutReportsTimedOut(t *testing.T) {
+	repo := stageRepo(t)
+	o := baseStageOpts(t, repo, fakeStageClaudeSleep(t, 60))
+	o.TimeoutSec = 1
+	start := time.Now()
+	r := Run(context.Background(), o)
+	if elapsed := time.Since(start); elapsed >= 30*time.Second {
+		t.Fatalf("stage ran %v; expected the 1s timeout to kill it early", elapsed)
+	}
+	if r.OK {
+		t.Errorf("OK = true, want false on timeout")
+	}
+	if !r.TimedOut {
+		t.Errorf("TimedOut = false, want true — the stage exceeded its TimeoutSec")
+	}
+	if !strings.Contains(r.Note, "timed out") {
+		t.Errorf("Note = %q, want it to mention the timeout", r.Note)
 	}
 }
 

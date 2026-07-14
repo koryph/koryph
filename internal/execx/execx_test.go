@@ -62,6 +62,32 @@ func TestRun_TimeoutKillsProcess(t *testing.T) {
 	if res.ExitCode == 0 {
 		t.Error("exit code = 0 for SIGKILL'd process, want non-zero")
 	}
+	// koryph-a59: the kill must be reported as a timeout, distinct from an
+	// ordinary non-zero exit, so callers (the stage pipeline) can tell "ran out
+	// of time" apart from "failed".
+	if !res.TimedOut {
+		t.Error("TimedOut = false for a command killed by its Timeout, want true")
+	}
+}
+
+// TestRun_NonZeroExitIsNotTimedOut guards the other side of koryph-a59: an
+// ordinary non-zero exit that had a Timeout budget but did not exhaust it must
+// NOT be flagged as a timeout.
+func TestRun_NonZeroExitIsNotTimedOut(t *testing.T) {
+	res, err := execx.Run(context.Background(), execx.Cmd{
+		Name:    "sh",
+		Args:    []string{"-c", "exit 3"},
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ExitCode != 3 {
+		t.Errorf("ExitCode = %d, want 3", res.ExitCode)
+	}
+	if res.TimedOut {
+		t.Error("TimedOut = true for a fast non-zero exit, want false")
+	}
 }
 
 func TestRun_MissingBinary(t *testing.T) {

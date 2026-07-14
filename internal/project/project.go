@@ -91,6 +91,11 @@ type PipelineStage struct {
 	// stage prompt.
 	Prompt string `json:"prompt,omitempty"`
 
+	// TimeoutSec bounds the stage agent's run; <=0 uses the engine default
+	// (stage.defaultTimeoutSec, 600s). Raise it for stages that legitimately
+	// need longer — e.g. a docs sweep over a large rename (koryph-a59).
+	TimeoutSec int `json:"timeout_sec,omitempty"`
+
 	// Optional stages log-and-continue on failure; a non-optional stage (the
 	// default) that fails blocks the slot and stops the pipeline (fail closed).
 	Optional bool `json:"optional,omitempty"`

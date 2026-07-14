@@ -9,6 +9,7 @@ package execx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,12 +17,22 @@ import (
 	"time"
 )
 
+// ErrTimeout wraps every error Run returns when a command is killed for
+// exceeding its Timeout, so callers can tell a timeout apart from a genuine
+// spawn failure or a non-zero exit with errors.Is (koryph-a59).
+var ErrTimeout = errors.New("timeout")
+
 // Result captures a completed command.
 type Result struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
 	Duration time.Duration
+	// TimedOut is true when the command was killed for exceeding c.Timeout. A
+	// timeout kill surfaces as *exec.ExitError (nil error, non-zero ExitCode),
+	// so callers that must tell a timeout apart from an ordinary non-zero exit
+	// consult this flag, not the returned error (koryph-a59).
+	TimedOut bool
 }
 
 // Cmd describes a command to run. Env == nil inherits the parent environment;
@@ -58,15 +69,20 @@ func Run(ctx context.Context, c Cmd) (Result, error) {
 	err := cmd.Run()
 	res := Result{Stdout: out.String(), Stderr: errb.String(), Duration: time.Since(start)}
 	if err != nil {
+		// A context-deadline kill arrives as *exec.ExitError (signal: killed), so
+		// record the timeout from ctx BEFORE the ExitError branch — otherwise a
+		// timed-out command is indistinguishable from an ordinary failure
+		// (koryph-a59). The error contract is unchanged: a killed process is still
+		// a non-zero exit with a nil error, callers inspect ExitCode/TimedOut.
+		res.TimedOut = ctx.Err() == context.DeadlineExceeded
 		if ee, ok := err.(*exec.ExitError); ok {
 			res.ExitCode = ee.ExitCode()
 			return res, nil
 		}
-		if ctx.Err() == context.DeadlineExceeded {
-			res.ExitCode = -1
-			return res, fmt.Errorf("timeout after %s: %s %s", c.Timeout, c.Name, strings.Join(c.Args, " "))
-		}
 		res.ExitCode = -1
+		if res.TimedOut {
+			return res, fmt.Errorf("timeout after %s: %s %s: %w", c.Timeout, c.Name, strings.Join(c.Args, " "), ErrTimeout)
+		}
 		return res, err
 	}
 	return res, nil

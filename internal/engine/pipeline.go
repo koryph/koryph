@@ -82,6 +82,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			Persona:          persona,
 			Model:            res.Model,
 			Effort:           effort,
+			TimeoutSec:       st.TimeoutSec, // <=0 → stage.DefaultTimeoutSec (koryph-a59)
 			ExtraPrompt:      st.Prompt,
 			BeadID:           sl.PhaseID,
 			BeadTitle:        issue.Title,
@@ -138,6 +139,22 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		})
 
 		if !sr.OK {
+			// A timeout is not a failure (koryph-a59): the stage ran out of time,
+			// not correctness — surface it distinctly so a complete-but-slow stage
+			// is not mistaken for broken work, and point the operator at the lever
+			// (its timeout_sec) rather than a phantom failure.
+			if sr.TimedOut {
+				effTimeout := st.TimeoutSec
+				if effTimeout <= 0 {
+					effTimeout = stage.DefaultTimeoutSec
+				}
+				if st.Optional {
+					r.progress("bead %s: optional stage %q timed out after %ds — continuing (raise its timeout_sec)", sl.PhaseID, st.Name, effTimeout)
+					continue
+				}
+				r.progress("bead %s: stage %q timed out after %ds — not a failure; raise its timeout_sec", sl.PhaseID, st.Name, effTimeout)
+				return false, fmt.Sprintf("%s timed out after %ds (raise its timeout_sec)", st.Name, effTimeout)
+			}
 			if st.Optional {
 				r.progress("bead %s: optional stage %q failed (%s) — continuing", sl.PhaseID, st.Name, sr.Note)
 				continue

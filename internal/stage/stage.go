@@ -21,8 +21,11 @@ import (
 
 // Defaults per the package contract.
 const (
-	defaultClaudeBin  = "claude"
-	defaultTimeoutSec = 600
+	defaultClaudeBin = "claude"
+	// DefaultTimeoutSec bounds a stage agent when the pipeline stage sets no
+	// explicit TimeoutSec. Exported so the engine can name it when a stage times
+	// out (koryph-a59).
+	DefaultTimeoutSec = 600
 	changedFilesTail  = 60
 )
 
@@ -41,7 +44,7 @@ func Run(ctx context.Context, o Opts) Result {
 	}
 	timeout := o.TimeoutSec
 	if timeout <= 0 {
-		timeout = defaultTimeoutSec
+		timeout = DefaultTimeoutSec
 	}
 	if o.Persona == "" || o.Model == "" {
 		return Result{Note: "stage misconfigured: persona and model are required"}
@@ -101,12 +104,23 @@ func Run(ctx context.Context, o Opts) Result {
 		}
 	}
 
+	// A timeout is not a failure — the stage may simply have needed more time
+	// (koryph-a59). It surfaces two ways: as a spawn-style error (err != nil) or,
+	// when the kill lands as a non-zero exit, via res.TimedOut. Flag it distinctly
+	// either way so the caller reports it honestly and points the operator at the
+	// stage's timeout_sec rather than treating complete-but-slow work as broken.
 	if err != nil {
+		out.TimedOut = res.TimedOut
 		out.Note = err.Error()
 		return out
 	}
 	if res.ExitCode != 0 {
-		out.Note = fmt.Sprintf("agent exited %d: %s", res.ExitCode, tail(res.Stderr, 400))
+		out.TimedOut = res.TimedOut
+		if res.TimedOut {
+			out.Note = fmt.Sprintf("timed out after %s", time.Duration(timeout)*time.Second)
+		} else {
+			out.Note = fmt.Sprintf("agent exited %d: %s", res.ExitCode, tail(res.Stderr, 400))
+		}
 		return out
 	}
 	out.OK = true
