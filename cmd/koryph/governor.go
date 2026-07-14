@@ -59,10 +59,10 @@ func cmdGovernor(args []string, stdout, stderr io.Writer) int {
 	case "set-resource":
 		return cmdGovernorSetResource(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		parentHelp(stdout, "governor", "inspect and set per-provider agent concurrency pools", []subVerb{
+		parentHelp(stdout, "governor", "inspect and set per-account agent concurrency pools", []subVerb{
 			{"show [--json]", "show every pool's cap, active leases, and demanding projects, plus the machine resource ledger when any kind is configured or held (default)"},
-			{"set --max-global N [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]",
-				"set one pool's cap (--provider omitted = anthropic); --adaptive enables the AIMD overlay (settle/breaker/smoothing apply only with --adaptive)"},
+			{"set --max-global N [--account NAME | --provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]",
+				"set one pool's cap (--account keys it per account, e.g. a larger subscription > a smaller seat; both omitted = anthropic); --adaptive enables the AIMD overlay (settle/breaker/smoothing apply only with --adaptive)"},
 			{"set-resource <kind> --capacity N [--mem-mb M] [--ramp-seconds S] [--probe CMD]",
 				"configure a machine resource kind's cross-pool capacity/reservation/ramp/leak-probe (koryph-4ql.5); flags partially update, like `set`'s --min-free-memory-mb"},
 			{"set-resource <kind> --unset", "remove a machine resource kind (may not be combined with any other flag)"},
@@ -282,7 +282,8 @@ func printResourcesSection(stdout io.Writer, gs *govern.Store) error {
 // when omitted or non-positive.
 func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("governor set", stderr)
-	provider := fs.String("provider", "", "governor pool to configure (default: anthropic) — koryph-v8u.11 independent per-provider pools")
+	account := fs.String("account", "", "account whose per-account concurrency pool to configure (koryph-1o2.1): the pool is keyed on the resolved account (e.g. \"personal\", \"work\"), so a larger subscription can run more agents than a smaller seat. Wins over --provider when both are given; omit both for the default \"anthropic\" pool")
+	provider := fs.String("provider", "", "governor pool to configure by raw pool key (default: anthropic) — koryph-v8u.11 independent pools; prefer --account")
 	maxGlobal := fs.Int("max-global", 0, "cap on concurrently running agents in this pool (required, > 0)")
 	adaptive := fs.Bool("adaptive", false, "enable the AIMD overlay: probe the cap up on quiet, halve it on rate-limit")
 	hardMax := fs.Int("hard-max", 0, "absolute ceiling for upward probing under --adaptive (default 2x --max-global)")
@@ -290,8 +291,8 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	breakSec := fs.Int("break-sec", 0, "circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600)")
 	minDispatchInterval := fs.Int("min-dispatch-interval", 0, "minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%)")
 	minFreeMem := fs.Int("min-free-memory-mb", 0, "memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global")
-	setUsage(fs, stdout, "set one provider pool's cap on concurrently running agents",
-		"[--max-global N] [--min-free-memory-mb N] [--provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
+	setUsage(fs, stdout, "set one pool's cap on concurrently running agents (per account with --account)",
+		"[--max-global N] [--min-free-memory-mb N] [--account NAME | --provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -303,7 +304,13 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 			memProvided = true
 		}
 	})
-	pool := govern.NormalizeProvider(*provider)
+	// The pool is keyed on the account (koryph-1o2.1); --account is the intuitive
+	// name for that key and wins over the raw --provider alias when both are set.
+	poolArg := *provider
+	if *account != "" {
+		poolArg = *account
+	}
+	pool := govern.NormalizeProvider(poolArg)
 	gs := govern.NewStore()
 
 	// Floor-only invocation: adjust the memory gate without resetting the pool's

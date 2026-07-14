@@ -579,6 +579,36 @@ persisted override as its width.
 `resize` are recorded in the central audit log (`~/.koryph/audit.jsonl`), same as other
 operator actions.
 
+### Per-account concurrency pools
+
+`--max` and `resize` bound a *single project's* wave width. The **concurrency governor** is
+the machine-wide cap that sits above them: it limits how many agents run at once across every
+`koryph run` on the host, so independent loops cannot collectively breach an account's API
+rate limits. That cap lives in `~/.koryph/governor.json` and is keyed **per account** — the
+same account identity the quota ledger already uses (a project's `quota_profile`, defaulting to
+its `account_profile`).
+
+Because two accounts have independent rate limits, they get **independent pools**: a larger
+subscription can run more agents than a smaller work seat, and running both at once does *not*
+sum into a shared machine ceiling (the [memory floor](#memory-admission-floor) and the resource
+governor protect the machine — concurrency pools protect each account's rate limit). Set a
+per-account cap with:
+
+```sh
+koryph governor set --account personal --max-global 12   # a 20x Max subscription
+koryph governor set --account work     --max-global 4    # a smaller work seat
+koryph governor show                                     # lists every pool's cap + live leases
+```
+
+`--account` names the pool; omit it (or the whole flag) to configure the default `anthropic`
+pool. An account with no configured cap defaults to the built-in ceiling until you set one.
+
+> **Migration.** Before per-account pools, `koryph governor set --max-global N` configured one
+> shared `anthropic` pool. A project whose `account_profile` is a named account (e.g. `personal`
+> or `work`) now resolves to its **own** pool, so re-assert its cap with
+> `koryph governor set --account <name> --max-global N`. A project with no account profile keeps
+> using the default `anthropic` pool unchanged. `koryph governor show` reveals which pools exist.
+
 ### Memory admission floor
 
 Every dispatched agent is a separate `claude` subprocess plus a git worktree, so a wide

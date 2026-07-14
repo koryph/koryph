@@ -19,22 +19,38 @@ import (
 // governor error never blocks dispatch — because a stuck governor must not wedge
 // the engine; the cap is a safety rail, not a correctness dependency.
 
-// providerAnthropic is the pool every lease this engine constructs is
-// admitted against today (koryph-v8u.11, L5c: independent per-provider
-// governor pools — see internal/govern's package doc). Hardcoded rather than
-// resolved from the bead/project until the koryph-v8u.2 runtime adapters
-// land and can supply the actual provider behind the dispatched agent; until
-// then every agent this engine launches IS a claude/Anthropic session, so
-// this constant is exactly today's (only) behavior, made explicit at the one
-// place leases are constructed.
-const providerAnthropic = govern.DefaultPool
+// poolKey is the governor pool every lease this engine constructs is admitted
+// against (koryph-v8u.11, L5c: independent governor pools — see internal/govern's
+// package doc). The pool is keyed on the resolved ACCOUNT (koryph-1o2.1), the
+// same identity the quota ledger already uses (runner.quotaName() =
+// Record.QuotaProfile ?? AccountProfile). This is the per-account concurrency
+// lever: two accounts on one host — e.g. a large subscription and a smaller work
+// seat — get INDEPENDENT pools, each with its own cap / fair-share / AIMD overlay
+// / circuit breaker, because they have independent provider rate limits.
+//
+// An empty account name normalizes to govern.DefaultPool ("anthropic") inside
+// every govern entry point, so a project with no resolved profile keeps today's
+// single-pool behavior. Migration: an operator's existing `governor set
+// --max-global` was scoped to the "anthropic" pool; a NAMED account (e.g.
+// "personal"/"work") now resolves to its own pool and must have its cap set with
+// `governor set --account <name>` (docs/user-guide/billing-and-quota.md).
+func (r *runner) poolKey() string {
+	// A runner with no resolved registry record (degenerate/test paths that
+	// exercise the governor without a project) has no account, so it keeps the
+	// default pool — exactly the old hardcoded constant's value, since
+	// govern.NormalizeProvider("") == govern.DefaultPool.
+	if r.rec == nil {
+		return ""
+	}
+	return r.quotaName()
+}
 
 // refreshDemand records this project's demand for slots (it has ready work).
 func (r *runner) refreshDemand() {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.RefreshDemand(providerAnthropic, r.opts.ProjectID, os.Getpid())
+	_ = r.gov.RefreshDemand(r.poolKey(), r.opts.ProjectID, os.Getpid())
 }
 
 // dropDemand withdraws this project from the fair-share denominator.
@@ -42,7 +58,7 @@ func (r *runner) dropDemand() {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.DropDemand(providerAnthropic, r.opts.ProjectID)
+	_ = r.gov.DropDemand(r.poolKey(), r.opts.ProjectID)
 }
 
 // warnIfOverFairShare logs, once per run, when this project's configured wave
@@ -52,13 +68,13 @@ func (r *runner) warnIfOverFairShare() {
 	if r.gov == nil || r.govWarned {
 		return
 	}
-	fs, err := r.gov.FairShareFor(providerAnthropic, r.opts.ProjectID)
+	fs, err := r.gov.FairShareFor(r.poolKey(), r.opts.ProjectID)
 	if err != nil || r.width <= fs {
 		return
 	}
 	r.govWarned = true
 	r.progress("warning: project width %d exceeds its global fair share %d (cap %d across active projects) — extra slots wait for others to idle and may pressure the Claude API rate limit",
-		r.width, fs, r.gov.Cap(providerAnthropic))
+		r.width, fs, r.gov.Cap(r.poolKey()))
 }
 
 // memStat reads current system memory (total + available), preferring an
@@ -91,7 +107,7 @@ func (r *runner) memoryFloorMB(totalMB uint64) int {
 	}
 	configured := 0
 	if r.gov != nil {
-		configured = r.gov.MinFreeMemoryMB(providerAnthropic)
+		configured = r.gov.MinFreeMemoryMB(r.poolKey())
 	}
 	return floorFromSetting(configured, totalMB)
 }
@@ -245,7 +261,7 @@ func (r *runner) acquireGlobalSlot(beadID string, kinds []string, memReserveMB i
 		Project:      r.opts.ProjectID,
 		Bead:         beadID,
 		EnginePID:    os.Getpid(),
-		Provider:     providerAnthropic,
+		Provider:     r.poolKey(),
 		Resources:    kinds,
 		MemReserveMB: memReserveMB,
 	}, mem)
@@ -309,7 +325,7 @@ func (r *runner) holdGlobalSlot(beadID string, agentPID int, model string, kinds
 		PID:          agentPID,
 		EnginePID:    os.Getpid(),
 		Model:        model,
-		Provider:     providerAnthropic,
+		Provider:     r.poolKey(),
 		Resources:    kinds,
 		MemReserveMB: memReserveMB,
 	})
@@ -321,7 +337,7 @@ func (r *runner) releaseGlobalSlot(beadID string) {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.Release(providerAnthropic, r.opts.ProjectID, beadID)
+	_ = r.gov.Release(r.poolKey(), r.opts.ProjectID, beadID)
 }
 
 // reportRateLimit informs the machine-wide governor of a rate-limit/overload
@@ -337,5 +353,5 @@ func (r *runner) reportRateLimit(beadID string) {
 	if r.gov == nil {
 		return
 	}
-	_ = r.gov.ReportRateLimit(providerAnthropic, r.opts.ProjectID, beadID, time.Now())
+	_ = r.gov.ReportRateLimit(r.poolKey(), r.opts.ProjectID, beadID, time.Now())
 }

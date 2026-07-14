@@ -232,7 +232,7 @@ func TestGuardOffDoesNotAffectRateLimitGoverning(t *testing.T) {
 	// The AIMD governor must have seen the 429 events — halving and event
 	// counting must be completely unaffected by the billing guard state.
 	gs := govern.NewStore()
-	status, err := gs.AIMDStatus("")
+	status, err := gs.AIMDStatus(fixtureAccount)
 	if err != nil {
 		t.Fatalf("AIMDStatus: %v", err)
 	}

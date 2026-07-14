@@ -234,13 +234,14 @@ circuit breaker is open/half-open (calling out "flapping" once
 is a signal the account is being persistently rate-limited, or `--hard-max`/
 `--break-sec` need attention.
 
-### Per-provider governor pools (koryph-v8u.11, L5c)
+### Per-account governor pools (koryph-v8u.11 → koryph-1o2.1, L5c)
 
-The service providers behind agent runtimes (Anthropic/claude, OpenAI/codex,
-Google/gemini, xAI/grok build, …) enforce **independent** rate limits. Every
-mechanism above — operator cap, leases, demand/fair-share, the AIMD overlay,
-settle window, circuit breaker, dispatch-smoothing clock — is **per-pool**,
-keyed by an opaque provider string:
+Different LLM accounts — even on the same provider (a 20x Max subscription vs. a
+work seat), and across providers (Anthropic/claude, OpenAI/codex, …) — enforce
+**independent** rate limits. Every mechanism above — operator cap, leases,
+demand/fair-share, the AIMD overlay, settle window, circuit breaker,
+dispatch-smoothing clock — is **per-pool**, keyed by an opaque string that the
+engine resolves to the account (see Key semantics):
 
 ```
 governor.json:
@@ -252,25 +253,29 @@ governor.json:
 }
 ```
 
-- **Key semantics.** `DefaultPool` (`"anthropic"`) is used whenever a lease,
-  demand heartbeat, or store entry point carries no explicit provider — i.e.
-  every behavior that existed before koryph-v8u.11. The key is deliberately
-  opaque (not an enum) so it can later refine to `"provider:account"` (rate
-  limits are really per-account within a provider) without another schema
-  change. Every store entry point normalizes `""` to `DefaultPool` at its
-  boundary (`govern.NormalizeProvider`), so on-disk state never carries an
-  empty pool key.
-- **A `govern.Lease` carries `Provider`**, resolved today from a single
-  hardcoded constant at the one place `internal/engine` constructs leases
-  (`internal/engine/govern.go`'s `providerAnthropic`) — every agent this
-  engine dispatches IS a claude/Anthropic session until the koryph-v8u.2
-  runtime adapters land and can supply the real provider. Behavior is
-  therefore identical to pre-koryph-v8u.11 until those adapters exist.
-- **No cross-provider shared cap, by design.** Total machine concurrency is
-  the sum of every pool's cap — each provider's API is an independently rate
-  limited resource, so an Anthropic 429 must never throttle a codex agent's
-  admission and vice versa. (Local CPU/RAM pressure is a separate concern:
-  the operator's `--max-global` choice, made per pool, is what bounds it.)
+- **Key semantics.** The pool key is deliberately opaque (not an enum). The
+  refinement to a per-account key that koryph-v8u.11 anticipated has landed
+  (koryph-1o2.1): `internal/engine` now keys every lease on the resolved
+  **account** — `runner.poolKey()` returns `quotaName()` (`Record.QuotaProfile
+  ?? AccountProfile`), the same identity the cost governor already uses. A
+  subscription is provider-specific, so the account subsumes the provider (a
+  20x Max seat and a work seat are both "anthropic" but have independent rate
+  limits, and get independent pools). `DefaultPool` (`"anthropic"`) is used
+  whenever a lease, demand heartbeat, or store entry point carries no account —
+  every store entry point normalizes `""` to `DefaultPool` at its boundary
+  (`govern.NormalizeProvider`), so on-disk state never carries an empty pool
+  key and a project with no account profile keeps the pre-koryph-1o2.1
+  single-pool behavior.
+- **A `govern.Lease` carries `Provider`** (the pool key), resolved at the one
+  place `internal/engine` constructs leases (`internal/engine/govern.go`'s
+  `poolKey()`). A `nil` record — degenerate/test paths with no project — keeps
+  the empty key (⇒ `DefaultPool`), matching the old hardcoded constant exactly.
+- **No cross-account shared cap, by design.** Total machine concurrency is
+  the sum of every pool's cap — each account's API is an independently rate
+  limited resource, so one account's 429 must never throttle another account's
+  (or a codex agent's) admission. (Local CPU/RAM pressure is a separate
+  concern: the operator's `--max-global` choice, made per pool, is what bounds
+  it, alongside the memory floor and machine resource ledger.)
 - **Migration.** A `governor.json` written before koryph-v8u.11 (any shape
   from koryph-1xk through koryph-2im.11 — a flat document with no top-level
   `"pools"` key) loads transparently as the `anthropic` pool, preserving
@@ -279,10 +284,11 @@ governor.json:
   directly (not through `Store`, since it honors `Options.Home` rather than
   `KORYPH_HOME`) and shares the same migration-aware type, so its checks see
   identical pool state.
-- `koryph governor set --provider P ...` configures one pool (`--provider`
-  omitted ⇒ `anthropic`, full back-compat); `koryph governor show` and
-  `koryph doctor` iterate every pool with any live state (an explicit
-  `governor.json` entry, a lease, or a demand heartbeat) — see CLI below.
+- `koryph governor set --account NAME ...` configures one account's pool
+  (`--provider P` remains as the raw-key alias; both omitted ⇒ `anthropic`,
+  full back-compat); `koryph governor show` and `koryph doctor` iterate every
+  pool with any live state (an explicit `governor.json` entry, a lease, or a
+  demand heartbeat) — see CLI below.
 
 ### Machine resource ledger: capacity + reservation admission (koryph-4ql)
 

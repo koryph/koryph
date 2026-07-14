@@ -716,13 +716,14 @@ set the machine-wide cap
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--account` | string |  | account whose per-account concurrency pool to configure (koryph-1o2.1): the pool is keyed on the resolved account (e.g. "personal", "work"), so a larger subscription can run more agents than a smaller seat. Wins over --provider when both are given; omit both for the default "anthropic" pool |
 | `--adaptive` | bool |  | enable the AIMD overlay: probe the cap up on quiet, halve it on rate-limit |
 | `--break-sec` | int |  | circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600) |
 | `--hard-max` | int |  | absolute ceiling for upward probing under --adaptive (default 2x --max-global) |
 | `--max-global` | int |  | cap on concurrently running agents in this pool (required, > 0) |
 | `--min-dispatch-interval` | int |  | minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%) |
 | `--min-free-memory-mb` | int |  | memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global |
-| `--provider` | string |  | governor pool to configure (default: anthropic) — koryph-v8u.11 independent per-provider pools |
+| `--provider` | string |  | governor pool to configure by raw pool key (default: anthropic) — koryph-v8u.11 independent pools; prefer --account |
 | `--settle-sec` | int |  | settle window after any cap change, under --adaptive (default 120) |
 
 ## `koryph governor set-resource` { #koryph-governor-set-resource }

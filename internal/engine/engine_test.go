@@ -136,6 +136,13 @@ exit 0
 
 const readyJSON = `[{"id":"tb1","title":"Test bead one","description":"do the work","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]`
 
+// fixtureAccount is the account profile every engine-test fixture runner
+// resolves to (the rec built in newFixture). The concurrency governor pool is
+// keyed on the account (koryph-1o2.1: runner.poolKey() == quotaName()), so a
+// test that pre-seeds a cap, holds a foreign lease, or reads pool state for the
+// fixture runner MUST target this pool key — not "" (govern.DefaultPool).
+const fixtureAccount = "work"
+
 // newFixture assembles the whole mock world and points the engine at it.
 func newFixture(t *testing.T, o fixOpts) *fix {
 	t.Helper()
@@ -247,7 +254,7 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 		BeadsStatus:      "initialized",
 		BeadsHooksStatus: "wired",
 		MigrationStatus:  o.migrationStatus,
-		AccountProfile:   "work",
+		AccountProfile:   fixtureAccount,
 		ClaudeConfigDir:  f.idDir,
 		ExpectedIdentity: o.expectedIdentity,
 		AllowedModels:    []string{"haiku", "sonnet", "opus"},
@@ -379,7 +386,7 @@ func TestRunOnceMergesAndDrains(t *testing.T) {
 	if m.BillingMode != "subscription" {
 		t.Errorf("manifest billing = %q, want subscription", m.BillingMode)
 	}
-	if m.AccountProfile != "work" || m.ClaudeConfigDir != f.idDir {
+	if m.AccountProfile != fixtureAccount || m.ClaudeConfigDir != f.idDir {
 		t.Errorf("manifest account fields = %q / %q", m.AccountProfile, m.ClaudeConfigDir)
 	}
 	if m.BaseCommit == "" || m.SessionID == "" || m.Branch != "agent/tb1" {

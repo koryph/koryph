@@ -24,11 +24,12 @@ func TestGlobalGovernorDefersWhenCapFull(t *testing.T) {
 	// Cap the machine at 1 and consume that slot with a live foreign lease
 	// (keyed to this test process's pid so it is not pruned as dead).
 	gs := govern.NewStore()
-	if err := gs.SetCap("", 1); err != nil {
+	if err := gs.SetCap(fixtureAccount, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := gs.Hold(govern.Lease{
 		Project: "other", Bead: "x1", PID: os.Getpid(), EnginePID: os.Getpid(),
+		Provider: fixtureAccount,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func TestGlobalGovernorDefersWhenCapFull(t *testing.T) {
 func TestGlobalGovernorDispatchesWhenSlotFree(t *testing.T) {
 	newFixture(t, fixOpts{}) // sets KORYPH_HOME + registry the run needs
 	gs := govern.NewStore()
-	if err := gs.SetCap("", 1); err != nil { // cap 1, but no lease held → one free slot
+	if err := gs.SetCap(fixtureAccount, 1); err != nil { // cap 1, but no lease held → one free slot
 		t.Fatal(err)
 	}
 
@@ -74,7 +75,7 @@ func TestGlobalGovernorDispatchesWhenSlotFree(t *testing.T) {
 		t.Errorf("Outcome = %+v, want 1 dispatched / 1 merged", got)
 	}
 	// The slot was released at merge — no lingering lease for this project.
-	_, leases, _, err := gs.Snapshot("")
+	_, leases, _, err := gs.Snapshot(fixtureAccount)
 	if err != nil {
 		t.Fatal(err)
 	}

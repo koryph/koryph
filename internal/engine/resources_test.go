@@ -253,11 +253,12 @@ func TestAcquireGlobalSlotCapBreak(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
 	r.gov = govern.NewStore()
-	if err := r.gov.SetCap("", 1); err != nil {
+	if err := r.gov.SetCap(fixtureAccount, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.gov.Hold(govern.Lease{
 		Project: "other", Bead: "y1", PID: os.Getpid(), EnginePID: os.Getpid(),
+		Provider: fixtureAccount,
 	}); err != nil {
 		t.Fatal(err)
 	}
