@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,9 +24,18 @@ const (
 	defaultPersona    = "koryph-security-reviewer"
 	defaultModel      = "opus"
 	defaultClaudeBin  = "claude"
-	defaultTimeoutSec = 240
+	defaultTimeoutSec = 600
 	defaultAttempts   = 4
 	diffStatTailLines = 40
+
+	// MaxTimeoutSec is the HARD ceiling on any single reviewer attempt: 20
+	// minutes. It is the authoritative "cannot be exceeded for any single task"
+	// bound — no per-project review config, KORYPH_REVIEW_TIMEOUT_SEC override,
+	// or adaptive escalation may push a spawn past it; a review that still
+	// times out at the ceiling degrades. internal/project mirrors this value
+	// (project.ReviewTimeoutHardCapSec) for config validation, and an
+	// engine-level drift guard asserts the two stay equal.
+	MaxTimeoutSec = 1200
 )
 
 // Exponential backoff between reviewer attempts: the nth retry waits
@@ -51,6 +62,63 @@ func backoffFor(retry int) time.Duration {
 	return d
 }
 
+// envTimeoutSec returns KORYPH_REVIEW_TIMEOUT_SEC parsed as a positive integer,
+// or 0 when unset/invalid. It is the break-glass runtime override for the
+// reviewer's STARTING timeout and takes precedence over the per-project review
+// config (same convention as KORYPH_POLL_SEC over project.poll_seconds). The
+// reviewer runs opus at xhigh effort and reads the changed files, so a large
+// diff can need well over the old 240s ceiling; exceeding the deadline
+// signal-kills the process, which previously surfaced as an opaque "reviewer
+// exit -1" (koryph review-timeout fix). Whatever this returns is still clamped
+// by resolveTimeouts to the effective ceiling (the project max, itself <=
+// MaxTimeoutSec) — no override may exceed the 20-minute per-task hard cap.
+func envTimeoutSec() int {
+	if v := strings.TrimSpace(os.Getenv("KORYPH_REVIEW_TIMEOUT_SEC")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// resolveTimeouts resolves the starting per-attempt timeout and the escalation
+// ceiling from the caller/project values, applying the env override, defaults,
+// and the 20-minute hard cap. Precedence for the starting timeout:
+// KORYPH_REVIEW_TIMEOUT_SEC env (break-glass) > caller/project value >
+// defaultTimeoutSec. The ceiling defaults to (and is clamped down to)
+// MaxTimeoutSec, and the starting timeout is clamped to the ceiling — so NO
+// source (env, project config, or a directly-constructed Opts) can produce a
+// spawn longer than 20 minutes. Returned values satisfy
+// 0 < start <= max <= MaxTimeoutSec.
+func resolveTimeouts(timeoutSec, maxTimeoutSec int) (start, max int) {
+	max = maxTimeoutSec
+	if max <= 0 || max > MaxTimeoutSec {
+		max = MaxTimeoutSec
+	}
+	start = timeoutSec
+	if env := envTimeoutSec(); env > 0 {
+		start = env
+	} else if start <= 0 {
+		start = defaultTimeoutSec
+	}
+	if start > max {
+		start = max
+	}
+	return start, max
+}
+
+// escalateTimeout returns the timeout for the next reviewer attempt after a
+// wall-clock timeout: double the current value, capped at max. It lets a large
+// diff that ran out of thinking time get progressively more room on retry,
+// bounded by the 20-minute ceiling. cur is assumed already <= max.
+func escalateTimeout(cur, max int) int {
+	next := cur * 2
+	if next <= 0 || next > max { // <=0 also absorbs int overflow for huge cur
+		next = max
+	}
+	return next
+}
+
 // Review runs the post-implementation review pass over o.Branch vs o.Base and
 // returns the verdict. A transient reviewer failure (rate/usage limit, timeout,
 // a one-off unparseable reply) is retried up to o.Attempts times with backoff;
@@ -71,9 +139,7 @@ func Review(ctx context.Context, o Opts) Verdict {
 	if o.ClaudeBin == "" {
 		o.ClaudeBin = defaultClaudeBin
 	}
-	if o.TimeoutSec <= 0 {
-		o.TimeoutSec = defaultTimeoutSec
-	}
+	o.TimeoutSec, o.MaxTimeoutSec = resolveTimeouts(o.TimeoutSec, o.MaxTimeoutSec)
 	attempts := o.Attempts
 	if attempts <= 0 {
 		attempts = defaultAttempts
@@ -130,6 +196,14 @@ func Review(ctx context.Context, o Opts) Verdict {
 			}
 			return v
 		}
+		// Adaptive: when an attempt runs out of wall-clock, give the next one
+		// more room — double the timeout up to MaxTimeoutSec — before retrying.
+		// A rate/usage limit (the other dominant transient failure) leaves the
+		// timeout unchanged; only the backoff grows. Once at the ceiling the
+		// timeout stays put and remaining attempts retry at 20 min.
+		if v.TimedOut && o.TimeoutSec < o.MaxTimeoutSec {
+			o.TimeoutSec = escalateTimeout(o.TimeoutSec, o.MaxTimeoutSec)
+		}
 		last = v
 	}
 	return last
@@ -161,6 +235,12 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 		return degradedReason("reviewer spawn error: " + err.Error())
 	}
 	if res.ExitCode != 0 {
+		if res.TimedOut {
+			if o.TimeoutSec >= o.MaxTimeoutSec {
+				return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds — the %d-minute per-task ceiling (opus %s effort on this diff); split the change into smaller beads", o.TimeoutSec, o.MaxTimeoutSec/60, o.Effort))
+			}
+			return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds (opus %s effort on this diff); the loop escalates the timeout on retry up to %ds — tune review.timeout_seconds / review.max_timeout_seconds", o.TimeoutSec, o.Effort, o.MaxTimeoutSec))
+		}
 		return degradedReason(fmt.Sprintf("reviewer exit %d: %s", res.ExitCode, strings.TrimSpace(agentjson.Tail(res.Stderr, 300))))
 	}
 
@@ -193,6 +273,16 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 // found something").
 func degradedReason(reason string) Verdict {
 	return Verdict{Degraded: true, Blocking: false, Reason: reason}
+}
+
+// degradedTimeout is degradedReason for a wall-clock timeout: it additionally
+// flags TimedOut so the retry loop escalates the timeout before the next
+// attempt (the only degradation the loop responds to by growing the deadline
+// rather than just backing off).
+func degradedTimeout(reason string) Verdict {
+	v := degradedReason(reason)
+	v.TimedOut = true
+	return v
 }
 
 // buildPrompt renders the reviewer prompt: diffstat tail + changed-file list

@@ -314,16 +314,19 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	if _, metaEffort, _, err := modelroute.PersonaMeta(rec.Root, prReviewPersona); err == nil {
 		prReviewEffort = metaEffort
 	}
+	rc := cfg.EffectiveReview()
 	v := reviewer(ctx, review.Opts{
-		RepoRoot:  rec.Root,
-		Worktree:  wt,
-		Branch:    ref,
-		Base:      rec.DefaultBranch,
-		Persona:   prReviewPersona,
-		Model:     modelroute.TierOpus,
-		Effort:    prReviewEffort,
-		Profile:   account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
-		ClaudeBin: os.Getenv(envClaudeBin),
+		RepoRoot:      rec.Root,
+		Worktree:      wt,
+		Branch:        ref,
+		Base:          rec.DefaultBranch,
+		Persona:       prReviewPersona,
+		Model:         modelroute.TierOpus,
+		Effort:        prReviewEffort,
+		Profile:       account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
+		ClaudeBin:     os.Getenv(envClaudeBin),
+		TimeoutSec:    rc.TimeoutSeconds,
+		MaxTimeoutSec: rc.MaxTimeoutSeconds,
 		// Deliberately the project's live config, not a bead-scoped arm
 		// (koryph-3l1.3): `koryph review-pr`/review-queue reviews arbitrary
 		// open GitHub PRs on operator demand — outside the wave/rolling

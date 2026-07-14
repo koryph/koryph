@@ -38,6 +38,7 @@ Created by `koryph onboard`, validated by `koryph validate`.
 | `dispatch_stagger_seconds` | int | 8 | Seconds between agent launches within a wave. |
 | `poll_seconds` | int | 10 | Poll-tick interval (seconds) for reading slot `status.json` heartbeats. 0 uses the engine default (10 s). Overridden by `KORYPH_POLL_SEC` or `Options.PollSec` at the programmatic call site. |
 | `dispatch_mode` | string | `"wave"` | `"wave"` or `"rolling"`. Rolling continuously refills a slot as it frees up instead of waiting for the whole batch; see [Running Waves](running-waves.md#dispatch-mode-wave-vs-rolling). `--dispatch-mode` on `koryph run` overrides this per run. |
+| `review` | object | — | Post-implementation reviewer timeout budget: `{timeout_seconds?, max_timeout_seconds?}`. See [Reviewer timeout](#reviewer-timeout) below. |
 
 **Conventional commits are enforced by default.** With `commit_style` unset or
 `"conventional"`, the merge and PR paths validate every commit subject in
@@ -48,6 +49,39 @@ implementer once — like a gate failure — and blocks it if the violation pers
 nothing non-conventional lands. Set `commit_style` to `"none"` to opt out, or
 `"custom"` (with `commit_template`) to govern messages by a project template
 instead.
+
+### Reviewer timeout
+
+The optional `review` block tunes how long the post-implementation reviewer
+(`--review`) may run per attempt. The reviewer runs `opus` and reads the changed
+files, so a large diff can need more wall-clock than a small one.
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `timeout_seconds` | int | 600 | Starting per-attempt wall-clock deadline. Must be ≤ 1200. |
+| `max_timeout_seconds` | int | 1200 | Ceiling the timeout may escalate to. May be **lower** than 1200, never higher. |
+
+**The loop reacts to a timeout by increasing it.** When a review attempt is
+killed for running out of time, the next retry **doubles** the deadline toward
+`max_timeout_seconds` — so an oversized diff gets progressively more room instead
+of failing at a fixed limit. A rate-limit failure (the other transient cause)
+does not grow the timeout; only the retry backoff does.
+
+**20 minutes is a hard ceiling.** No single review may run longer than 1200 s
+(20 minutes) for any one task — `max_timeout_seconds` cannot be set above it
+(`koryph validate` rejects a larger value), and escalation never exceeds it. A
+review that still times out at the ceiling degrades, and with `--review` a
+degraded verdict blocks the merge (koryph never auto-merges unreviewed work);
+the surfaced reason suggests splitting the change into smaller beads.
+
+The break-glass `KORYPH_REVIEW_TIMEOUT_SEC` environment variable overrides the
+**starting** timeout at runtime (it still cannot exceed the ceiling), taking
+precedence over `timeout_seconds` — the same convention as `KORYPH_POLL_SEC`
+over `poll_seconds`.
+
+```json
+{ "review": { "timeout_seconds": 900, "max_timeout_seconds": 1200 } }
+```
 
 ### Minimal example
 

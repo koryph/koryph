@@ -395,6 +395,66 @@ func (c *EpicValidationConfig) Effective() EpicValidationConfig {
 	return out
 }
 
+// Review-timeout bounds for the post-implementation reviewer. These mirror the
+// authoritative constants in internal/review (the runtime enforcer): a drift
+// guard in internal/engine asserts ReviewTimeoutHardCapSec stays equal to
+// review.MaxTimeoutSec so the config-validation ceiling here and the runtime
+// clamp there can never diverge.
+const (
+	// DefaultReviewTimeoutSec is the starting per-attempt reviewer timeout when
+	// review.timeout_seconds is unset (mirrors review.defaultTimeoutSec).
+	DefaultReviewTimeoutSec = 600
+	// ReviewTimeoutHardCapSec is the hard 20-minute ceiling on any single
+	// reviewer attempt. No review block may configure a timeout above it, and
+	// the engine may not escalate past it — the "cannot be exceeded for any
+	// single task" bound (mirrors review.MaxTimeoutSec).
+	ReviewTimeoutHardCapSec = 1200
+)
+
+// ReviewConfig is the optional review sub-block of koryph.project.json. It tunes
+// the post-implementation reviewer's wall-clock budget per project. The engine
+// escalates the timeout toward MaxTimeoutSeconds when a review attempt runs out
+// of wall-clock, so a large diff gets progressively more room on retry, bounded
+// by the 20-minute hard ceiling (ReviewTimeoutHardCapSec). Nil = block absent;
+// use EffectiveReview() to get the resolved values with defaults applied.
+type ReviewConfig struct {
+	// TimeoutSeconds is the STARTING per-attempt reviewer timeout in seconds
+	// (default DefaultReviewTimeoutSec, 600). Zero/absent resolves to the
+	// default. Must be <= ReviewTimeoutHardCapSec. The break-glass
+	// KORYPH_REVIEW_TIMEOUT_SEC env override still takes precedence over this
+	// value (same convention as KORYPH_POLL_SEC over poll_seconds).
+	TimeoutSeconds int `json:"timeout_seconds,omitempty" jsonschema:"minimum=0,maximum=1200"`
+
+	// MaxTimeoutSeconds caps how far a timed-out review may escalate (default
+	// and hard ceiling ReviewTimeoutHardCapSec, 1200 = 20 min). A project may
+	// set a LOWER ceiling; it can never exceed 1200. Zero/absent resolves to
+	// the default.
+	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty" jsonschema:"minimum=0,maximum=1200"`
+}
+
+// Effective resolves the review block with documented defaults and the hard
+// 20-minute ceiling applied to any zero-value or out-of-range field. Safe on a
+// nil receiver (nil = block absent = all defaults). The returned MaxTimeoutSeconds
+// is always in (0, ReviewTimeoutHardCapSec] and TimeoutSeconds in (0,
+// MaxTimeoutSeconds], so the caller can thread the values straight into
+// review.Opts.
+func (c *ReviewConfig) Effective() ReviewConfig {
+	var out ReviewConfig
+	if c != nil {
+		out = *c
+	}
+	if out.MaxTimeoutSeconds <= 0 || out.MaxTimeoutSeconds > ReviewTimeoutHardCapSec {
+		out.MaxTimeoutSeconds = ReviewTimeoutHardCapSec
+	}
+	if out.TimeoutSeconds <= 0 {
+		out.TimeoutSeconds = DefaultReviewTimeoutSec
+	}
+	if out.TimeoutSeconds > out.MaxTimeoutSeconds {
+		out.TimeoutSeconds = out.MaxTimeoutSeconds
+	}
+	return out
+}
+
 // PostureConfig is the optional desired-state posture sub-block of
 // koryph.project.json. When set, koryph doctor --project reports drift between
 // the live GitHub repo and the named profile as WARN, with the exact
@@ -645,6 +705,12 @@ type Config struct {
 	// docs/designs/2026-07-epic-validation.md §5). Nil = absent; use
 	// EffectiveEpicValidation() to get the resolved values with defaults.
 	EpicValidation *EpicValidationConfig `json:"epic_validation,omitempty"`
+
+	// Review tunes the post-implementation reviewer's per-attempt wall-clock
+	// budget for this project (starting timeout + escalation ceiling, bounded by
+	// the 20-minute hard cap). Nil = absent; use EffectiveReview() to get the
+	// resolved values with defaults.
+	Review *ReviewConfig `json:"review,omitempty"`
 }
 
 // Default returns a conservative baseline config.
@@ -757,6 +823,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateEpicValidation(c.EpicValidation); err != nil {
+		return err
+	}
+	if err := validateReview(c.Review); err != nil {
 		return err
 	}
 	return nil
@@ -939,6 +1008,45 @@ func validateEpicValidation(c *EpicValidationConfig) error {
 	}
 	if c.MaxRounds != 0 && c.MaxRounds < 1 {
 		return fmt.Errorf("epic_validation.max_rounds must be >= 1, got %d", c.MaxRounds)
+	}
+	return nil
+}
+
+// EffectiveReview returns the resolved ReviewConfig for this project, applying
+// documented defaults and the 20-minute hard ceiling to any zero-value or
+// absent field. It delegates to ReviewConfig.Effective(), which is safe to call
+// on a nil receiver (nil = block absent = all defaults).
+func (c *Config) EffectiveReview() ReviewConfig {
+	return c.Review.Effective()
+}
+
+// validateReview enforces the review block contract: timeouts are non-negative,
+// neither exceeds the 20-minute per-task hard cap, and the starting timeout does
+// not exceed the escalation ceiling. Zero (absent/omitted) is valid —
+// Effective() resolves it to the defaults. Rejecting an over-cap value here
+// gives a clear load-time error instead of a silent runtime clamp; the review
+// package still clamps at spawn time as defense in depth.
+func validateReview(c *ReviewConfig) error {
+	if c == nil {
+		return nil
+	}
+	if c.TimeoutSeconds < 0 {
+		return fmt.Errorf("review.timeout_seconds must be >= 0, got %d", c.TimeoutSeconds)
+	}
+	if c.MaxTimeoutSeconds < 0 {
+		return fmt.Errorf("review.max_timeout_seconds must be >= 0, got %d", c.MaxTimeoutSeconds)
+	}
+	if c.TimeoutSeconds > ReviewTimeoutHardCapSec {
+		return fmt.Errorf("review.timeout_seconds must be <= %d (the %d-minute per-task hard ceiling), got %d",
+			ReviewTimeoutHardCapSec, ReviewTimeoutHardCapSec/60, c.TimeoutSeconds)
+	}
+	if c.MaxTimeoutSeconds > ReviewTimeoutHardCapSec {
+		return fmt.Errorf("review.max_timeout_seconds must be <= %d (the %d-minute per-task hard ceiling), got %d",
+			ReviewTimeoutHardCapSec, ReviewTimeoutHardCapSec/60, c.MaxTimeoutSeconds)
+	}
+	if c.MaxTimeoutSeconds > 0 && c.TimeoutSeconds > c.MaxTimeoutSeconds {
+		return fmt.Errorf("review.timeout_seconds (%d) must be <= review.max_timeout_seconds (%d)",
+			c.TimeoutSeconds, c.MaxTimeoutSeconds)
 	}
 	return nil
 }

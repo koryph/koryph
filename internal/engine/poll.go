@@ -969,18 +969,25 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 		if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, reviewPersona); err == nil {
 			reviewEffort = metaEffort
 		}
+		// Per-project reviewer timeout budget: starting timeout + escalation
+		// ceiling, resolved with defaults and clamped to the 20-minute hard cap
+		// (EffectiveReview). The loop escalates the timeout toward the ceiling on
+		// a wall-clock timeout so a large diff gets more room on retry.
+		rc := r.cfg.EffectiveReview()
 		v := review.Review(ctx, review.Opts{
-			RepoRoot:     r.rec.Root,
-			Worktree:     sl.Worktree,
-			Branch:       sl.Branch,
-			Base:         r.rec.DefaultBranch,
-			Persona:      reviewPersona,
-			Model:        modelroute.TierOpus,
-			Effort:       reviewEffort,
-			Profile:      r.profile,
-			OutPath:      outPath,
-			ClaudeBin:    os.Getenv(envClaudeBin),
-			ProxyBaseURL: r.proxyBaseURLForSlot(sl),
+			RepoRoot:      r.rec.Root,
+			Worktree:      sl.Worktree,
+			Branch:        sl.Branch,
+			Base:          r.rec.DefaultBranch,
+			Persona:       reviewPersona,
+			Model:         modelroute.TierOpus,
+			Effort:        reviewEffort,
+			Profile:       r.profile,
+			OutPath:       outPath,
+			ClaudeBin:     os.Getenv(envClaudeBin),
+			TimeoutSec:    rc.TimeoutSeconds,
+			MaxTimeoutSec: rc.MaxTimeoutSeconds,
+			ProxyBaseURL:  r.proxyBaseURLForSlot(sl),
 		})
 		if v.Degraded {
 			// Fail CLOSED: --review was explicitly requested, so a review we

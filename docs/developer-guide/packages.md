@@ -540,10 +540,23 @@ to `ps` (no per-process disk I/O there), other platforms report unavailable.
 
 Runs a read-only post-implementation review pass before a branch is merged.
 
-- **`Opts`** — branch, project root, model to use
+- **`Opts`** — branch, project root, model, and the timeout budget
+  (`TimeoutSec` starting deadline, `MaxTimeoutSec` escalation ceiling)
 - **`Finding`** — one review comment (file, line, severity, message)
-- **`Verdict`** — pass/fail + `[]Finding`
+- **`Verdict`** — pass/fail + `[]Finding` (`TimedOut` flags a deadline kill)
 - **`Review(ctx, o)`** — launch reviewer agent, collect `Verdict`
+
+**Timeout budget.** Each attempt runs under a wall-clock deadline. It starts at
+`Opts.TimeoutSec` (resolved: `KORYPH_REVIEW_TIMEOUT_SEC` env > project
+`review.timeout_seconds` > 600s default) and, when an attempt is killed for
+running out of time, the retry loop **doubles** the deadline toward
+`Opts.MaxTimeoutSec` before the next attempt — so a large diff gets
+progressively more room. `review.MaxTimeoutSec` (1200s / 20 min) is the hard
+ceiling: no env override, project config, or escalation may exceed it, and every
+resolved value is clamped to it (`resolveTimeouts`). `internal/project` mirrors
+the ceiling as `project.ReviewTimeoutHardCapSec`; an `internal/engine` drift
+guard asserts the two stay equal. A rate/usage limit (the other transient
+failure) leaves the timeout unchanged — only the exponential backoff grows.
 
 ## runtime
 

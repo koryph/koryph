@@ -311,6 +311,25 @@
       "type": "object",
       "description": "ResourceSpec is one external resource kind's portable planning estimate in Config.Resources (koryph-4ql.3, design docs/designs/2026-07-resource-governor.md L2): the memory one unit of the kind is expected to consume when a bead declaring `res:\u003ckind\u003e` runs."
     },
+    "ReviewConfig": {
+      "properties": {
+        "timeout_seconds": {
+          "type": "integer",
+          "maximum": 1200,
+          "minimum": 0,
+          "description": "TimeoutSeconds is the STARTING per-attempt reviewer timeout in seconds\n(default DefaultReviewTimeoutSec, 600). Zero/absent resolves to the\ndefault. Must be \u003c= ReviewTimeoutHardCapSec. The break-glass\nKORYPH_REVIEW_TIMEOUT_SEC env override still takes precedence over this\nvalue (same convention as KORYPH_POLL_SEC over poll_seconds)."
+        },
+        "max_timeout_seconds": {
+          "type": "integer",
+          "maximum": 1200,
+          "minimum": 0,
+          "description": "MaxTimeoutSeconds caps how far a timed-out review may escalate (default\nand hard ceiling ReviewTimeoutHardCapSec, 1200 = 20 min). A project may\nset a LOWER ceiling; it can never exceed 1200. Zero/absent resolves to\nthe default."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ReviewConfig is the optional review sub-block of koryph.project.json."
+    },
     "RuntimeConfig": {
       "properties": {
         "enabled": {
@@ -634,6 +653,10 @@
     "epic_validation": {
       "$ref": "#/$defs/EpicValidationConfig",
       "description": "EpicValidation configures the whole-epic implementation review that fires\nonce all children of an epic are closed (koryph-wo0.2,\ndocs/designs/2026-07-epic-validation.md §5). Nil = absent; use\nEffectiveEpicValidation() to get the resolved values with defaults."
+    },
+    "review": {
+      "$ref": "#/$defs/ReviewConfig",
+      "description": "Review tunes the post-implementation reviewer's per-attempt wall-clock\nbudget for this project (starting timeout + escalation ceiling, bounded by\nthe 20-minute hard cap). Nil = absent; use EffectiveReview() to get the\nresolved values with defaults."
     }
   },
   "additionalProperties": false,

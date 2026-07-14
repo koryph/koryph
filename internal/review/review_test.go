@@ -222,6 +222,132 @@ func fakeClaudeFlaky(t *testing.T, failN int, okBody string) string {
 	return path
 }
 
+// fakeClaudeSleep writes a script that sleeps for `sleep` seconds (fractional
+// ok, e.g. "1.3") after draining stdin, then prints okBody. Used to exercise
+// the wall-clock timeout / escalation path: a short spawn deadline kills it
+// mid-sleep, a longer one lets it finish.
+func fakeClaudeSleep(t *testing.T, sleep, okBody string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-claude-sleep")
+	script := "#!/bin/sh\n" +
+		"cat > /dev/null\n" +
+		"sleep " + sleep + "\n" +
+		"cat <<'FAKE_EOF'\n" + okBody + "\nFAKE_EOF\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestEscalateTimeout(t *testing.T) {
+	cases := []struct{ cur, max, want int }{
+		{600, 1200, 1200},     // doubles to the ceiling
+		{300, 1200, 600},      // room to grow
+		{700, 1200, 1200},     // 1400 -> capped
+		{1200, 1200, 1200},    // already at ceiling
+		{1 << 40, 1200, 1200}, // overflow-safe -> capped
+	}
+	for _, tc := range cases {
+		if got := escalateTimeout(tc.cur, tc.max); got != tc.want {
+			t.Errorf("escalateTimeout(%d, %d) = %d, want %d", tc.cur, tc.max, got, tc.want)
+		}
+	}
+}
+
+// TestResolveTimeouts pins the precedence and the 20-minute hard cap: env >
+// caller/project value > default for the start, the ceiling defaults to and is
+// clamped down to MaxTimeoutSec, and the start is clamped to the ceiling — so no
+// source can produce a spawn longer than 20 minutes.
+func TestResolveTimeouts(t *testing.T) {
+	cases := []struct {
+		name               string
+		env                string
+		timeoutSec         int
+		maxTimeoutSec      int
+		wantStart, wantMax int
+	}{
+		{"defaults", "", 0, 0, defaultTimeoutSec, MaxTimeoutSec},
+		{"config start", "", 300, 0, 300, MaxTimeoutSec},
+		{"config max lower", "", 0, 900, defaultTimeoutSec, 900},
+		{"env overrides config start", "450", 300, 0, 450, MaxTimeoutSec},
+		{"env clamped to hard cap", "5000", 0, 0, MaxTimeoutSec, MaxTimeoutSec},
+		{"config start clamped to hard cap", "", 5000, 0, MaxTimeoutSec, MaxTimeoutSec},
+		{"config max clamped to hard cap", "", 0, 5000, defaultTimeoutSec, MaxTimeoutSec},
+		{"start clamped to configured max", "", 800, 500, 500, 500},
+		{"env clamped to configured max", "800", 0, 500, 500, 500},
+		{"invalid env ignored", "nope", 300, 0, 300, MaxTimeoutSec},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KORYPH_REVIEW_TIMEOUT_SEC", tc.env)
+			start, max := resolveTimeouts(tc.timeoutSec, tc.maxTimeoutSec)
+			if start != tc.wantStart || max != tc.wantMax {
+				t.Errorf("resolveTimeouts(%d, %d) env=%q = (%d, %d), want (%d, %d)",
+					tc.timeoutSec, tc.maxTimeoutSec, tc.env, start, max, tc.wantStart, tc.wantMax)
+			}
+			if max > MaxTimeoutSec || start > MaxTimeoutSec {
+				t.Errorf("resolved (%d, %d) exceeds the %ds hard cap", start, max, MaxTimeoutSec)
+			}
+		})
+	}
+}
+
+// TestReviewEscalatesTimeoutThenSucceeds is the acceptance test for the loop
+// reacting to a timeout by increasing it: attempt 1 (1s deadline) is killed
+// mid-sleep, the loop escalates to 2s, and attempt 2 finishes the same 1.3s
+// spawn cleanly. Proves the second attempt got room the first didn't.
+func TestReviewEscalatesTimeoutThenSucceeds(t *testing.T) {
+	old := backoffUnit
+	backoffUnit = time.Millisecond
+	t.Cleanup(func() { backoffUnit = old })
+	t.Setenv("KORYPH_REVIEW_TIMEOUT_SEC", "") // no break-glass override
+
+	repo := reviewRepo(t)
+	ok := `{"type":"result","is_error":false,"result":"{\"blocking\":false,\"findings\":[]}"}`
+	o := baseOpts(t, repo, fakeClaudeSleep(t, "1.3", ok))
+	o.TimeoutSec = 1 // attempt 1: 1s < 1.3s sleep -> timeout; escalates to 2s
+	o.Attempts = 3
+	v := Review(context.Background(), o)
+
+	if v.Degraded {
+		t.Fatalf("verdict degraded; escalation should have given attempt 2 enough time: %+v", v)
+	}
+	if v.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2 (timeout, then escalated success)", v.Attempts)
+	}
+}
+
+// TestReviewTimeoutAtCeilingDegrades verifies the 20-minute cap is a hard floor
+// on escalation: with the start already AT the ceiling, a persistent timeout
+// does not escalate further and degrades with the ceiling-worded reason.
+func TestReviewTimeoutAtCeilingDegrades(t *testing.T) {
+	old := backoffUnit
+	backoffUnit = time.Millisecond
+	t.Cleanup(func() { backoffUnit = old })
+	t.Setenv("KORYPH_REVIEW_TIMEOUT_SEC", "")
+
+	repo := reviewRepo(t)
+	ok := `{"type":"result","is_error":false,"result":"{\"blocking\":false}"}`
+	o := baseOpts(t, repo, fakeClaudeSleep(t, "2", ok))
+	o.TimeoutSec = 1
+	o.MaxTimeoutSec = 1 // start clamps to 1 == ceiling: no room to escalate
+	o.Attempts = 2
+	v := Review(context.Background(), o)
+
+	if !v.Degraded {
+		t.Fatalf("want degraded after persistent timeout at the ceiling: %+v", v)
+	}
+	if !v.TimedOut {
+		t.Errorf("degraded verdict from a timeout must set TimedOut")
+	}
+	if v.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2 (both attempts run at the ceiling)", v.Attempts)
+	}
+	if !strings.Contains(v.Reason, "per-task ceiling") {
+		t.Errorf("ceiling-worded reason expected, got %q", v.Reason)
+	}
+}
+
 func TestBackoffForExponentialAndCapped(t *testing.T) {
 	oldU, oldM := backoffUnit, maxBackoff
 	backoffUnit, maxBackoff = 2*time.Second, 30*time.Second

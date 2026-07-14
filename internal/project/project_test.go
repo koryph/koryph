@@ -117,6 +117,10 @@ func fullConfig() *Config {
 				Labels:  []string{"area:docs"},
 			},
 		},
+		Review: &ReviewConfig{
+			TimeoutSeconds:    450,
+			MaxTimeoutSeconds: 900,
+		},
 	}
 }
 
@@ -633,6 +637,101 @@ func TestEpicValidationConfig_RoundTrip(t *testing.T) {
 	}
 	if ev.StructuralParent != "koryph-abc" {
 		t.Errorf("StructuralParent: want %q, got %q", "koryph-abc", ev.StructuralParent)
+	}
+}
+
+// TestReviewConfig_Defaults covers ReviewConfig.Effective(): the absent block,
+// a zero-value block, an explicit lower ceiling, and clamping of over-cap or
+// mis-ordered values to the 20-minute hard ceiling.
+func TestReviewConfig_Defaults(t *testing.T) {
+	cases := []struct {
+		name                        string
+		in                          *ReviewConfig
+		wantTimeout, wantMaxTimeout int
+	}{
+		{"nil block", nil, DefaultReviewTimeoutSec, ReviewTimeoutHardCapSec},
+		{"zero-value block", &ReviewConfig{}, DefaultReviewTimeoutSec, ReviewTimeoutHardCapSec},
+		{"explicit start", &ReviewConfig{TimeoutSeconds: 300}, 300, ReviewTimeoutHardCapSec},
+		{"lower ceiling", &ReviewConfig{MaxTimeoutSeconds: 900}, DefaultReviewTimeoutSec, 900},
+		{"over-cap ceiling clamped", &ReviewConfig{MaxTimeoutSeconds: 5000}, DefaultReviewTimeoutSec, ReviewTimeoutHardCapSec},
+		{"over-cap start clamped to hard cap", &ReviewConfig{TimeoutSeconds: 5000}, ReviewTimeoutHardCapSec, ReviewTimeoutHardCapSec},
+		{"start above configured ceiling", &ReviewConfig{TimeoutSeconds: 800, MaxTimeoutSeconds: 500}, 500, 500},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.in.Effective()
+			if got.TimeoutSeconds != tc.wantTimeout || got.MaxTimeoutSeconds != tc.wantMaxTimeout {
+				t.Errorf("Effective() = {timeout:%d max:%d}, want {timeout:%d max:%d}",
+					got.TimeoutSeconds, got.MaxTimeoutSeconds, tc.wantTimeout, tc.wantMaxTimeout)
+			}
+			if got.MaxTimeoutSeconds > ReviewTimeoutHardCapSec || got.TimeoutSeconds > got.MaxTimeoutSeconds {
+				t.Errorf("Effective() violates invariants: %+v", got)
+			}
+		})
+	}
+
+	// EffectiveReview() on a Config with no review block resolves to defaults.
+	c := Default("proj")
+	if got := c.EffectiveReview(); got.TimeoutSeconds != DefaultReviewTimeoutSec || got.MaxTimeoutSeconds != ReviewTimeoutHardCapSec {
+		t.Errorf("EffectiveReview() default = %+v", got)
+	}
+}
+
+// TestReviewConfig_Validation covers the review block contract: timeouts are
+// non-negative, neither exceeds the 20-minute hard cap, and the start must not
+// exceed the ceiling. Absent/zero fields are always valid.
+func TestReviewConfig_Validation(t *testing.T) {
+	base := func(rc *ReviewConfig) *Config {
+		c := Default("proj")
+		c.Review = rc
+		return c
+	}
+	cases := []struct {
+		name    string
+		rc      *ReviewConfig
+		wantErr string
+	}{
+		{"nil block is fine", nil, ""},
+		{"zero-value block is fine", &ReviewConfig{}, ""},
+		{"in-range values are valid", &ReviewConfig{TimeoutSeconds: 300, MaxTimeoutSeconds: 900}, ""},
+		{"start at hard cap is valid", &ReviewConfig{TimeoutSeconds: ReviewTimeoutHardCapSec}, ""},
+		{"start over hard cap is rejected", &ReviewConfig{TimeoutSeconds: 1201}, "timeout_seconds must be <= 1200"},
+		{"max over hard cap is rejected", &ReviewConfig{MaxTimeoutSeconds: 1800}, "max_timeout_seconds must be <= 1200"},
+		{"negative start is rejected", &ReviewConfig{TimeoutSeconds: -1}, "timeout_seconds must be >= 0"},
+		{"negative max is rejected", &ReviewConfig{MaxTimeoutSeconds: -1}, "max_timeout_seconds must be >= 0"},
+		{"start above max is rejected", &ReviewConfig{TimeoutSeconds: 900, MaxTimeoutSeconds: 500}, "must be <= review.max_timeout_seconds"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.rc).Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestReviewConfig_RoundTrip asserts an explicit review block survives a JSON
+// save/load cycle intact.
+func TestReviewConfig_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	c := Default("proj")
+	c.Review = &ReviewConfig{TimeoutSeconds: 450, MaxTimeoutSeconds: 900}
+	if err := c.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Review == nil {
+		t.Fatal("Review: nil after round-trip, want non-nil")
+	}
+	if got.Review.TimeoutSeconds != 450 || got.Review.MaxTimeoutSeconds != 900 {
+		t.Errorf("Review after round-trip = %+v, want {450, 900}", got.Review)
 	}
 }
 
