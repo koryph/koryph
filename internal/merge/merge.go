@@ -218,7 +218,12 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 	}
 	result := Result{Status: StatusMerged, MergedSHA: strings.TrimSpace(shaRes.Stdout)}
 
-	// (9) push.
+	// (9) push. Best-effort by design: a push is skipped when no remote exists so
+	// the engine's auto-merge on a local-only project still lands (see poll.go's
+	// "merge itself skips push when no remote exists"). Result.Pushed records
+	// whether it actually happened, so a caller that REQUIRED the push — the
+	// `koryph merge --push` CLI — can detect a no-op and refuse to report success
+	// (koryph-8eh, enforced in cmdMerge, not here).
 	if o.Push && hasRemote {
 		if _, err := execx.MustSucceed(ctx, execx.Cmd{
 			Dir: o.RepoRoot, Name: "git", Args: []string{"push", "origin", def},

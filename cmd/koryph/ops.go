@@ -570,6 +570,15 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	if res.Status != "merged" {
 		return engine.ExitFatal
 	}
+	// A requested --push that produced no push is a silent no-op the operator
+	// must see (koryph-8eh): merge.Merge best-effort-skips the push when there is
+	// no remote (the engine's auto-merge relies on that), but here --push was an
+	// explicit request. Surface it non-zero and do NOT close the bead — the
+	// requested merge+push+close did not fully happen.
+	if *push && !res.Pushed {
+		fmt.Fprintln(stderr, "koryph merge: --push was requested but nothing was pushed (no git remote configured?); not closing the bead")
+		return engine.ExitFatal
+	}
 	if *closeBead != "" {
 		bd := beads.New(rec.Root)
 		if v := os.Getenv("KORYPH_BD_BIN"); v != "" {

@@ -396,6 +396,34 @@ func TestMergePushWithRemoteSetsResultPushed(t *testing.T) {
 	}
 }
 
+// TestMergePushWithoutRemoteIsBestEffortNoPush documents the contract koryph-8eh
+// depends on: merge.Merge with Push=true and NO remote lands the merge and
+// records Pushed=false WITHOUT erroring — the engine's auto-merge relies on this
+// so a local-only project still merges. Detecting the no-op and refusing to
+// report success is the CLI's job (cmdMerge), not merge.Merge's.
+func TestMergePushWithoutRemoteIsBestEffortNoPush(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t) // no remote configured
+	ctx := context.Background()
+
+	wt := worktreeOn(t, repo, "agent/x")
+	commitIn(t, wt.Path, "b.txt", "feature\n", "add b")
+
+	res, err := Merge(ctx, Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main",
+		Gate: []string{"true"}, Push: true,
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v (status=%s) — a missing remote must not fail the merge", err, res.Status)
+	}
+	if res.Status != "merged" {
+		t.Errorf("Status=%q, want merged", res.Status)
+	}
+	if res.Pushed {
+		t.Error("Pushed=true, want false — there was no remote to push to")
+	}
+}
+
 // TestMergePushFalseWithRemoteDoesNotPush ensures that when Push=false the
 // remote is not advanced even when a remote is present.
 func TestMergePushFalseWithRemoteDoesNotPush(t *testing.T) {
