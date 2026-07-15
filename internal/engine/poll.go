@@ -817,7 +817,7 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	r.progress("bead %s: budget-killed — warm-resume requeue, attempt %d (budget-kill %d/%d)",
 		sl.PhaseID, attempt, requeues, budgetKillRequeueBudget)
 	logSlotRequeue(sl.PhaseID, "budget-killed requeue", attempt)
-	logRequeueEvent(sl.PhaseID, "budget-killed requeue", attempt, sl.CostUSD)
+	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, "budget-killed requeue", attempt, sl.CostUSD)
 	r.backoffSleep(ctx, sl.Attempts)
 
 	// Preserve the worktree/branch on a zero-commit death so the
@@ -1500,7 +1500,7 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	attempt := sl.Attempts + 1
 	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
 	logSlotRequeue(sl.PhaseID, why, attempt)
-	logRequeueEvent(sl.PhaseID, why, attempt, sl.CostUSD)
+	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, why, attempt, sl.CostUSD)
 
 	// In-run escalation (koryph-qf6.4): the FINAL attempt of a bead-fault
 	// requeue runs on the recovery tier instead of burning the last attempt

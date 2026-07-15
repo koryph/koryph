@@ -96,9 +96,15 @@ func logSlotRequeue(beadID, reason string, attempt int) {
 	)
 }
 
-// logRequeueEvent emits an INFO record for a requeue, including accumulated cost.
-func logRequeueEvent(beadID, reason string, attempt int, accumulatedCostUSD float64) {
+// logRequeueEvent emits an INFO record for a requeue, including accumulated
+// cost. run_id/project are carried so per-project cost rollups include
+// requeued-attempt spend — without them, requeue cost is invisible to
+// project-filtered accounting (unlike engine.slot.merged, which has always
+// carried both), understating true run cost by ~20-30% (koryph-x5d).
+func logRequeueEvent(runID, project, beadID, reason string, attempt int, accumulatedCostUSD float64) {
 	log.Info("engine.slot.requeue_event",
+		slog.String(obs.KeyRunID, runID),
+		slog.String(obs.KeyProject, project),
 		slog.String(obs.KeyBeadID, beadID),
 		slog.String("reason", reason),
 		slog.Int(obs.KeyAttempt, attempt),
