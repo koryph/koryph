@@ -457,6 +457,13 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s: no live pid recorded (status %s)\n", phaseID, sl.Status)
 		return 0
 	}
+	// Record operator-stop intent BEFORE signalling (koryph-a1x, F1a) so the
+	// engine's next death classification parks the phase instead of auto-
+	// retrying it. Best-effort: a sentinel-write failure must not block the
+	// actual stop signal.
+	if serr := ledger.NewStore(recSel.Root).RequestStop(phaseID); serr != nil {
+		fmt.Fprintf(stderr, "warning: could not record operator-stop for %s: %v\n", phaseID, serr)
+	}
 	if err := stop(sl.PID); err != nil {
 		return fail(stderr, err)
 	}
@@ -479,6 +486,10 @@ func stopAll(ctx context.Context, store *registry.Store, records []*registry.Rec
 		for _, sl := range run.Slots {
 			if sl == nil || ledger.Terminal(sl.Status) || sl.PID <= 0 || !dispatch.Alive(sl.PID) {
 				continue
+			}
+			// Record operator-stop intent before signalling (koryph-a1x, F1a).
+			if rerr := ledger.NewStore(rec.Root).RequestStop(sl.PhaseID); rerr != nil {
+				fmt.Fprintf(stderr, "warning: could not record operator-stop for %s/%s: %v\n", rec.ProjectID, sl.PhaseID, rerr)
 			}
 			if serr := stop(sl.PID); serr != nil {
 				fmt.Fprintf(stderr, "stop %s/%s pid %d: %v\n", rec.ProjectID, sl.PhaseID, sl.PID, serr)

@@ -12,10 +12,13 @@ import (
 )
 
 // conventionalTypes are the commit types promptc promises to agents
-// (internal/promptc/compile.go): type(scope): subject.
+// (internal/promptc/compile.go): type(scope): subject. `revert` is a canonical
+// Conventional Commits type (koryph-aw9, F3): its earlier absence made a
+// legitimate revert(...) commit fail the merge gate and require a hand history
+// rewrite — keep this set in sync with the list promptc shows agents.
 var conventionalTypes = map[string]bool{
 	"feat": true, "fix": true, "docs": true, "chore": true, "refactor": true,
-	"test": true, "ci": true, "build": true, "perf": true, "style": true,
+	"revert": true, "test": true, "ci": true, "build": true, "perf": true, "style": true,
 }
 
 // conventionalSubject matches the STRUCTURAL Conventional Commits grammar:

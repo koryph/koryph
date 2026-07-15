@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/koryph/koryph/internal/fsx"
 )
@@ -21,6 +22,11 @@ import (
 const (
 	drainFile  = "drain.request"
 	resizeFile = "resize.json"
+	// stopRequestDir holds one marker file per phase an operator stopped via
+	// `koryph stop` (koryph-a1x, F1a). A per-phase directory (not a single
+	// file) lets `stop <phase>` and `stop --all` add markers independently and
+	// lets the engine consume exactly the phase it parked.
+	stopRequestDir = "stop.request"
 )
 
 // DrainSentinel is the one-shot operator drain request written by
@@ -65,6 +71,63 @@ func (s *Store) ConsumeDrain() bool {
 	}
 	_ = os.Remove(s.drainPath())
 	return true
+}
+
+// --- Operator-stop sentinels (koryph-a1x, F1a) ---------------------------
+//
+// `koryph stop` records intent here BEFORE it signals the agent, so the
+// engine's next death classification (completeSlot) can tell an operator stop
+// from a crash and park the phase — terminally, never auto-retried — instead
+// of redispatching it into a race with the operator's own hand-work. Same
+// file-sentinel discipline as drain: presence is the signal, re-read every
+// poll (never cached), so a stop from a separate process takes effect on the
+// running loop's next boundary with no restart.
+
+func (s *Store) stopDir() string { return filepath.Join(s.KoryphRoot, stopRequestDir) }
+
+// stopMarkerName maps a phase id to a safe marker filename. Phase ids are bead
+// ids (hyphens, dots) — never a path — but a stray separator is defensively
+// flattened so the marker can never escape stopDir.
+func stopMarkerName(phaseID string) string {
+	return strings.ReplaceAll(phaseID, string(filepath.Separator), "_")
+}
+
+func (s *Store) stopPath(phaseID string) string {
+	return filepath.Join(s.stopDir(), stopMarkerName(phaseID))
+}
+
+// RequestStop records an operator stop for one phase. Idempotent — a repeated
+// stop just refreshes the marker.
+func (s *Store) RequestStop(phaseID string) error {
+	if err := os.MkdirAll(s.stopDir(), 0o755); err != nil {
+		return err
+	}
+	return fsx.WriteJSONAtomic(s.stopPath(phaseID), DrainSentinel{RequestedAt: nowRFC3339()})
+}
+
+// StopRequested reports whether an operator stop is pending for phaseID.
+func (s *Store) StopRequested(phaseID string) bool {
+	return fsx.Exists(s.stopPath(phaseID))
+}
+
+// ConsumeStop removes one phase's stop marker (best-effort; a missing marker is
+// not an error) and reports whether it was present. The engine consumes the
+// marker the moment it parks the phase, so a later deliberate re-dispatch is
+// not blocked.
+func (s *Store) ConsumeStop(phaseID string) bool {
+	if !s.StopRequested(phaseID) {
+		return false
+	}
+	_ = os.Remove(s.stopPath(phaseID))
+	return true
+}
+
+// ClearStops removes every stop marker (best-effort). Called at run start,
+// mirroring the unconditional ConsumeDrain there: a marker stranded by a prior
+// run that never reached the phase's death must not spuriously park that phase
+// in a fresh, intentional run.
+func (s *Store) ClearStops() {
+	_ = os.RemoveAll(s.stopDir())
 }
 
 // ResizeOverride is the live wave-width override written by `koryph resize`.

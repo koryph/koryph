@@ -44,6 +44,31 @@ func ProtectedUnliftable(diffPaths, extra []string) []string {
 	return protectedAgainst(diffPaths, base, extra)
 }
 
+// AllLiftable reports whether every protected-path hit falls under the
+// LiftableProtected subset (.github/, Makefile) — i.e. `--allow-protected`
+// would clear the block (koryph-zfg, F2). A hit matching any other governance
+// default, or a project-declared protected path, is not liftable, so a mixed
+// or governance-only touch returns false. An empty hit set returns false (no
+// block to resolve).
+func AllLiftable(hits []string) bool {
+	if len(hits) == 0 {
+		return false
+	}
+	for _, h := range hits {
+		liftable := false
+		for _, pre := range LiftableProtected {
+			if matchProtected(h, pre) {
+				liftable = true
+				break
+			}
+		}
+		if !liftable {
+			return false
+		}
+	}
+	return true
+}
+
 // protectedAgainst returns the diff paths matching any prefix in base+extra.
 func protectedAgainst(diffPaths, base, extra []string) []string {
 	prefixes := make([]string, 0, len(base)+len(extra))

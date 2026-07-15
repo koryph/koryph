@@ -115,7 +115,7 @@ func projectBlock(in Input) string {
 		b.WriteString(strings.TrimRight(in.CommitTemplate, "\n"))
 	} else {
 		b.WriteString("\n\nCommit style: Conventional Commits — `type(scope): subject` ")
-		b.WriteString("(feat|fix|docs|chore|refactor|test|ci|build|perf|style; imperative, lowercase, <=72 chars).")
+		b.WriteString("(feat|fix|docs|chore|refactor|revert|test|ci|build|perf|style; imperative, lowercase, <=72 chars).")
 	}
 
 	b.WriteString("\n\nGreen gate (keep these green):")

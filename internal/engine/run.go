@@ -324,6 +324,10 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	if r.store.ConsumeDrain() {
 		r.progress("cleared a stale operator-drain request from a previous run")
 	}
+	// Same rationale for operator-stop markers (koryph-a1x, F1a): a marker
+	// stranded by a prior run that never reached the phase's death must not
+	// spuriously park that phase in this fresh, intentional run.
+	r.store.ClearStops()
 
 	// Snapshot the resize override present at run start (koryph-bzf): a resize
 	// override persists across runs, so governorGate compares each boundary's

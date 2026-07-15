@@ -463,6 +463,15 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		logBeadTokensUnavailable(sl.PhaseID)
 	}
 
+	// koryph-a1x (F1a): an operator SIGTERM via `koryph stop` is a terminal
+	// intent, not a death to classify. Park the phase — no retry, and no
+	// auto-merge of partial commits (which could open a merge racing the
+	// operator's own hand-fix) — before any classification below. This attempt's
+	// cost and tokens above are still recorded.
+	if r.parkForOperatorStop(sl) {
+		return
+	}
+
 	// Rate-limit classification runs upstream of the commits/finishCandidate
 	// check (koryph-2im.4): a death caused by the API throttling us is not a
 	// completed candidate even if some work landed before the 429/overload hit,
@@ -616,6 +625,10 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 	}
 	r.reportRateLimit(sl.PhaseID)
 
+	// Drain active: park, don't requeue (koryph-z0x, F1b).
+	if r.parkForDrain(sl) {
+		return
+	}
 	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q), even
 	// though a rate-limit requeue burns no attempt — over the cap is over the cap.
 	if r.parkForRunBudget(sl) {
@@ -776,6 +789,10 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.DeathReason = deathReasonBudgetKilled })
 	logBudgetKilled(sl.PhaseID, sl.Attempts, sl.CostUSD, sl.Model, sl.ModelActual)
 
+	// Drain active: park, don't warm-resume requeue (koryph-z0x, F1b).
+	if r.parkForDrain(sl) {
+		return
+	}
 	// Run --budget exhausted: park instead of a warm-resume requeue (koryph-u7q).
 	// The per-agent budget kill already fired; spending another attempt would
 	// also breach the whole-run ceiling.
@@ -1225,7 +1242,9 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		}
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
-			s.Note = "commit-style failed after requeue: " + tailOf(res.GateOutput, 400)
+			s.Note = "commit-style: non-conventional commit subject(s) persist after a reword requeue — " +
+				"reword each to 'type(scope): subject' (type ∈ feat|fix|docs|chore|refactor|revert|test|ci|build|perf|style) " +
+				"then re-dispatch with koryph run. Offending: " + tailOf(res.GateOutput, 300)
 		})
 		r.checkpointSlot(sl, "commit-style")
 		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
@@ -1259,13 +1278,15 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		logSlotConflict(sl.PhaseID, res.ConflictMD)
 
 	case merge.StatusProtected:
+		note := "protected paths touched: " + strings.Join(res.Protected, ", ") +
+			" — " + r.protectedResolutionHint(res.Protected, sl.Branch, sl.PhaseID)
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
-			s.Note = "protected paths touched: " + strings.Join(res.Protected, ", ")
+			s.Note = note
 		})
 		r.checkpointSlot(sl, "protected")
-		r.progress("bead %s: blocked (protected paths: %s)", sl.PhaseID, strings.Join(res.Protected, ", "))
-		r.auditBlocked(sl, "protected", strings.Join(res.Protected, ", "))
+		r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
+		r.auditBlocked(sl, "protected", note)
 
 	case merge.StatusUnsigned:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -1433,6 +1454,64 @@ func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
 	return true
 }
 
+// parkForOperatorStop parks a phase an operator explicitly stopped via `koryph
+// stop` (koryph-a1x, F1a). An operator stop is a terminal intent, not a death
+// to classify: never auto-retry it, and never auto-merge its partial commits —
+// a redispatch (or an auto-merge of half-finished work) can race the operator's
+// own hand-fix on the same files. Consumes the sentinel so a later deliberate
+// re-dispatch (koryph run) is not blocked. Returns true when it parked.
+func (r *runner) parkForOperatorStop(sl *ledger.Slot) bool {
+	if !r.store.StopRequested(sl.PhaseID) {
+		return false
+	}
+	r.store.ConsumeStop(sl.PhaseID)
+	const note = "operator-stopped via koryph stop — not auto-retried; re-dispatch explicitly with koryph run"
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotBlocked
+		s.Note = note
+	})
+	r.releaseGlobalSlot(sl.PhaseID) // terminal
+	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
+	logSlotBlocked(sl.PhaseID, note, sl.Model, sl.ModelActual, sl.Attempts)
+	return true
+}
+
+// parkForDrain parks a death that arrived while an operator drain is active
+// (koryph-z0x, F1b). Drain's contract is "start no new work", which must cover
+// retries, not only fresh pulls from bd ready — the requeue path had no drain
+// check, so a death during drain silently admitted a new attempt. finishing an
+// active slot's committed work (finishCandidate) is unaffected; only requeues
+// park here. Returns true when it parked.
+func (r *runner) parkForDrain(sl *ledger.Slot) bool {
+	if !r.store.DrainRequested() {
+		return false
+	}
+	const note = "drain active — not requeued; re-dispatch after the drain completes"
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotBlocked
+		s.Note = note
+	})
+	r.releaseGlobalSlot(sl.PhaseID) // terminal for this run
+	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
+	logSlotBlocked(sl.PhaseID, note, sl.Model, sl.ModelActual, sl.Attempts)
+	return true
+}
+
+// protectedResolutionHint composes the operator's next step for a protected-
+// path block (koryph-zfg, F2). When every touched path is in the liftable
+// subset (.github/, Makefile) it names the one-command sanctioned landing;
+// otherwise it says manual review is required because --allow-protected will
+// not lift governance defaults or the project's own protected_paths — so the
+// operator does not waste an attempt on a flag that will still refuse.
+func (r *runner) protectedResolutionHint(hits []string, branch, phaseID string) string {
+	if merge.AllLiftable(hits) {
+		return fmt.Sprintf(
+			"routine CI/build paths — land with: koryph merge --project %s %s --allow-protected --push --close-bead %s --reason <why>",
+			r.opts.ProjectID, branch, phaseID)
+	}
+	return "includes governance or project-policy paths — requires manual review; --allow-protected will not lift these"
+}
+
 // slotEscalated reports whether a slot's model rationale records an in-run
 // escalation (koryph-qf6.4) — the same substring the TUI's ↑ marker keys on
 // (tui/threads.go), so ledger, display, and write-back agree on what counts.
@@ -1491,6 +1570,11 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	// running; without this check the engine would waste a full re-dispatch on
 	// a bead the operator has already retired (live repro koryph-pln).
 	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
+		return
+	}
+	// Drain active: park, don't requeue (koryph-z0x, F1b) — drain must suppress
+	// retries, not only fresh dispatch.
+	if r.parkForDrain(sl) {
 		return
 	}
 	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q).
