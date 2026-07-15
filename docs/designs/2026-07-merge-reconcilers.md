@@ -319,7 +319,11 @@ for the log/audit; an un-healed or reconciler-free merge leaves them zero.
   merge, not only on a conflict; a clean tree is a no-op. A command regression is
   a gate-shaped failure (requeue), never a hard error. The renumber-to-tip
   command is the canonical use; the seam is general "normalize the rebased tree
-  before the gate."
+  before the gate." koryph invokes the command opaquely and depends on no
+  migration tool; examples stay on OSS/community tooling — a project script or
+  Atlas's Apache-2.0 Community Edition, whose `migrate hash` is community but
+  whose `migrate rebase` is **not** (it needs the source-available standard
+  binary), so renumber with a script, not `migrate rebase`.
 
 ## 4. Compatibility
 

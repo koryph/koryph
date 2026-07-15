@@ -50,7 +50,7 @@ func fullConfig() *Config {
 		MergeReconcilers: []MergeReconciler{
 			{Path: "migrations/atlas.sum", Command: "atlas migrate hash --dir file://migrations"},
 		},
-		MergePrepare:  []string{"atlas migrate rebase --dir file://migrations"},
+		MergePrepare:  []string{"scripts/renumber-migration-to-tip.sh"},
 		Validation:    []string{"make validate"},
 		EngineVersion: "0.2+",
 		// custom style forces CommitTemplate to be populated and legal.
@@ -763,7 +763,7 @@ func TestMergePrepare_Validation(t *testing.T) {
 		wantErr string
 	}{
 		{"nil is fine", nil, ""},
-		{"commands are valid", []string{"atlas migrate rebase --dir file://migrations"}, ""},
+		{"commands are valid", []string{"scripts/renumber-migration-to-tip.sh"}, ""},
 		{"blank command is rejected", []string{"  "}, "merge_prepare[0]: command cannot be empty"},
 		{"blank among valid is rejected", []string{"ok", ""}, "merge_prepare[1]: command cannot be empty"},
 	}

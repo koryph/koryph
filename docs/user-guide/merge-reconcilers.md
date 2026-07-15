@@ -129,11 +129,13 @@ so 14→15…) is this problem compounding.
 The root fix is to allocate the number at **merge time**, against the branch the
 work is actually landing on. `merge_prepare` is that seam — an ordered command
 list run in the worktree **after** the (possibly reconciler-healed) rebase and
-**before** the gate:
+**before** the gate. Point it at a small project script that renames the newly
+added migration to the next free sequence and regenerates the checksum with a
+community command (`atlas migrate hash`):
 
 ```json
 "merge_prepare": [
-  "atlas migrate rebase --dir file://migrations"
+  "scripts/renumber-migration-to-tip.sh"
 ]
 ```
 
@@ -150,6 +152,25 @@ Because a duplicate number is not a git conflict, `merge_prepare` runs on **ever
 merge, not only on a conflict. As with reconcilers, the first-line fix is still a
 footprint label — with the migration-touching beads serialized, they pick
 sequential numbers to begin with and `merge_prepare` is only the backstop.
+
+## Tooling: keep it OSS/community
+
+koryph invokes whatever you put in these fields as an opaque shell command and
+depends on **no** migration tool itself — nothing here is a koryph dependency.
+Keep the commands you configure on OSS/community tooling.
+
+If you use Atlas, install the Apache-2.0 **Community Edition** — the default
+`atlas` install is a source-available (Atlas EULA) binary with proprietary
+extras, not the OSS build:
+
+```
+curl -sSf https://atlasgo.sh | sh -s -- --community
+```
+
+`atlas migrate hash` (regenerate the lockfile) and `atlas migrate validate` (a
+gate check) are in the Community build. `atlas migrate rebase`, `migrate lint`,
+and `migrate checkpoint` are **not** — they require the standard binary — so
+renumber-to-tip with a small script rather than `atlas migrate rebase`.
 
 ## Applies to
 
