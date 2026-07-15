@@ -72,6 +72,29 @@ later attempt's prefix collapse.
 
 ---
 
+## Trimming the fixed prompt prefix — `agent_mcp`
+
+Every dispatched agent opens with a fixed context prefix — system prompt, tool
+schemas, and any **ambient MCP-server instructions** the machine has
+configured — that is re-read on *every* turn of the session. koryph implementer
+personas use only file and Bash tools, so a full MCP suite in that prefix is
+dead weight: it inflates the per-turn cache-read bill (see
+[Token telemetry](#token-telemetry-koryph-metrics-tokens)) without ever being
+called.
+
+Set the registry field `agent_mcp` to `"strict"` (in
+`~/.koryph/registry.d/<project-id>.json`) to pass `--strict-mcp-config` on the
+implementer dispatch, so the agent loads **no** ambient MCP servers:
+
+```json
+{ "agent_mcp": "strict" }
+```
+
+The default (`""`/`"inherit"`) is unchanged behavior — dispatch argv is
+byte-identical — so turning this on is an explicit, per-project opt-in. Leave it
+unset for any project whose agents genuinely need an MCP server. See the
+[registry record fields](projects-and-accounts.md#the-registry-record).
+
 ## Quiet gate — `make gate-agent`
 
 `make gate` is the human-facing green gate. For agents, use `make gate-agent`

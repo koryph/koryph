@@ -43,7 +43,7 @@ Created by `koryph onboard`, validated by `koryph validate`.
 **Conventional commits are enforced by default.** With `commit_style` unset or
 `"conventional"`, the merge and PR paths validate every commit subject in
 `<default>..<branch>` against the Conventional Commits grammar
-(`type(scope): subject`; types `feat|fix|docs|chore|refactor|test|ci|build|perf|style`)
+(`type(scope): subject`; types `feat|fix|docs|chore|refactor|revert|test|ci|build|perf|style`)
 before any merge or PR. A non-conforming subject bounces the bead back to the
 implementer once — like a gate failure — and blocks it if the violation persists;
 nothing non-conventional lands. Set `commit_style` to `"none"` to opt out, or
@@ -200,6 +200,7 @@ history is `git log ~/.koryph`.
 | `impl_model` | Default implementer tier (default `"sonnet"`). |
 | `recovery_model_policy` | Always `"upgrade-opus"`; Fable is never used for recovery. |
 | `batch_policy` | `"deny"` \| `"explicit"` — whether the Batch API is available. |
+| `agent_mcp` | `"inherit"` (default, also when empty) \| `"strict"` — MCP loading for dispatched implementer agents. `"strict"` passes `--strict-mcp-config` so the agent loads **no** ambient MCP servers, trimming the re-read-every-turn prompt prefix; koryph implementer personas use only file/bash tools, so this is a pure context-economy win. Leave unset unless a project's agents genuinely call an MCP. See [Context economy](context-economy.md). |
 | `api_fallback` | `"off"` \| `"explicit"` — whether direct API key use is allowed. |
 | `api_key_env_var` | Env-var **name** holding the key (never the key value itself). |
 | `billing_guard` | `"enforce"` (default) or `"advisory"` — whether the quota governor blocks or only warns. Automatically advisory while the account is uncalibrated. |

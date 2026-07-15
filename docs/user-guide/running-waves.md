@@ -303,6 +303,22 @@ tree and continues instead of aborting. See [Merge reconcilers](merge-reconciler
   The engine runs the same green gate locally before it pushes, so required status checks stay
   satisfied; GitHub marks the PR merged automatically once its commits land on the base.
 
+### Protected-path blocks
+
+When a branch touches a [protected path](../reference/cli#koryph-merge) the merge is
+refused and the phase is **blocked** — and the block reason now names the way out:
+
+- If every touched path is in the liftable subset (`.github/`, `Makefile`), the reason
+  prints the exact one-command landing to run yourself:
+  `koryph merge --project <p> <branch> --allow-protected --push --close-bead <id> --reason <why>`.
+- If the touch includes a governance default (`.claude/`, `CLAUDE.md`, `hooks/`, …) or a
+  project-declared `protected_paths` entry, the reason says manual review is required and
+  that `--allow-protected` **will not** lift it — so you don't waste an attempt on a flag
+  that still refuses.
+
+`--allow-protected` is operator-only (never available to a dispatched agent) and lifts
+*only* the routine CI/build subset; governance and project protections always refuse.
+
 ## Reviewing other people's PRs
 
 `koryph review-pr` is a **human-in-the-loop** tool for reviewing pull requests authored by
@@ -486,9 +502,13 @@ the inbox between steps and adjusts course:
 koryph nudge --project myproject beads-042 "prefer the interface approach from issue 38"
 ```
 
-**stop** — send SIGTERM to an agent's process group. The agent commits any open work
-and exits cleanly; the engine detects the exit on the next poll tick and either requeues
-(no commits) or proceeds to review/merge:
+**stop** — send SIGTERM to an agent's process group. `koryph stop` is a **terminal
+operator intent**, not a crash: koryph records the stop before it signals, so when the
+engine detects the exit it **parks the phase** (`blocked`, with an `operator-stopped`
+reason) instead of auto-retrying it — and it does **not** auto-merge any partial work the
+agent had already committed. Both suppressions are deliberate: a silent retry or an
+auto-merge of half-finished work can race a fix you are landing by hand on the same
+files. Re-dispatch the bead explicitly with `koryph run` when you want it worked again:
 
 ```sh
 koryph stop --project myproject beads-042
@@ -528,8 +548,8 @@ Pick the narrowest one that does what you need:
 
 | Command | Scope | Effect |
 |---|---|---|
-| `koryph drain` | the whole loop | stop new dispatch; let whatever is running **finish**; then exit |
-| `koryph stop <phase-id>` | one agent | SIGTERM that agent; the loop requeues or proceeds to merge as usual |
+| `koryph drain` | the whole loop | stop **all** new starts (fresh dispatch *and* retries); let whatever is running **finish**; then exit |
+| `koryph stop <phase-id>` | one agent | SIGTERM that agent; the phase is **parked** (operator intent), never auto-retried or auto-merged |
 | `koryph stop <phase-id> --force` (or `--all --force`) | one agent, or every agent | SIGKILL immediately; **uncommitted work is lost** |
 
 **drain** — request a graceful wind-down of the loop itself, without touching any running
@@ -541,8 +561,11 @@ koryph drain --project myproject
 
 The engine checks for a drain request at every scheduling boundary (every wave in `wave`
 mode, every refill tick in `rolling` mode — see [Dispatch mode](#dispatch-mode-wave-vs-rolling)
-above): once seen, no new bead is dispatched, but any agent already running is left
-completely alone to finish its current attempt. The moment the last active slot lands, the
+above): once seen, no new agent is started, but any agent already running is left
+completely alone to finish its current attempt. "No new start" covers **retries too**, not
+only fresh pulls from `bd ready`: if a running agent dies while the drain is active, its
+phase is parked (`blocked`, "drain active") rather than requeued — re-dispatch it after the
+drain completes. The moment the last active slot lands, the
 run exits through the normal drained path with reason `operator-drain` (distinct from the
 ordinary `drained` reason, which means the frontier itself was empty) — even if more work is
 still ready, it is left for the next invocation. The request is one-shot: it consumes itself
