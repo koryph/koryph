@@ -66,6 +66,13 @@ shape, boundary decisions, data-ownership changes, security-model changes.
      suite (vocabulary in `koryph.project.json` `resources`). Footprints
      protect the merge; resources protect the machine. Undeclared resources
      risk thrashing the host mid-wave; over-declared only costs parallelism.
+   - **Derived-artifact footprints**: a bead adding a file to a directory
+     with a checked-in derived artifact (a migrations lockfile, a secrets
+     baseline, a generated index) shares a **write** token with every other
+     such bead — the checksum-over-a-listing collides at merge though the
+     inputs don't. Serialize them on one token and confirm the project
+     declares a `merge_reconcilers` / `merge_prepare` entry so a residual
+     collision self-heals (docs/user-guide/merge-reconcilers.md).
 
 ## Output format
 

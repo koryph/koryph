@@ -77,6 +77,12 @@ own claims:
   carries a `res:<kind>` label per kind. Footprints protect the merge;
   resources protect the machine — flag any bead whose description implies a
   running dependency but carries no `res:*` label.
+- Every bead that adds a file to a directory with a checked-in **derived**
+  artifact (a migrations lockfile, a secrets baseline, a generated index)
+  shares a write token with every other such bead — flag any bead whose
+  description implies a migration/lockfile/baseline touch but carries no
+  shared write footprint (the derived file collides at merge even when the
+  inputs don't).
 
 ## Output format
 

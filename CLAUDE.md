@@ -50,6 +50,12 @@ Task→doc map; keep this file small and stable (prompt-cache warmth).
 - **Footprints protect the merge; resources protect the machine.** Beads
   needing a running cluster/compose/dev-server/database/browser suite get
   `res:<kind>`; see docs/designs/2026-07-resource-governor.md.
+- **Derived artifacts serialize even when their inputs don't.** A bead adding a
+  file to a directory with a checked-in derived artifact (a migrations lockfile,
+  a secrets baseline, a generated index) shares a **write** footprint with every
+  other such bead — the checksum collides at merge though the inputs don't.
+  Declare a `merge_reconcilers` / `merge_prepare` entry so a residual collision
+  self-heals; see docs/user-guide/merge-reconcilers.md.
 - Protected paths (worktree merges refused): `.claude/`, `.beads/`, `hooks/`,
   `agents/`, `.github/`, `koryph.project.json`, `Makefile`,
   `.pre-commit-config.yaml`, `.envrc`, `LICENSE`.

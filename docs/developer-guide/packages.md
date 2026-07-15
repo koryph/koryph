@@ -306,6 +306,14 @@ configured green gate.
 - **`Protected(diffPaths, extra)`** — returns protected paths hit by a diff
 - **`Merge(ctx, o)`** — main entry: run gate → ff-merge (squash optional)
 - **`RunGate(ctx, dir, cmds)`** — execute green-gate commands; returns `ok`, output
+- **`Reconciler`** / **`reconcileRebase`** — auto-heal a pre-merge rebase
+  conflict confined entirely to configured generated files (a migrations
+  lockfile, a secrets baseline) by regenerating each from the post-merge tree
+  and continuing, instead of aborting; all-or-nothing and gated
+  (docs/user-guide/merge-reconcilers.md)
+- **`runMergePrepare`** — post-rebase, pre-gate normalization of the rebased
+  tree (renumber a migration to tip at merge time); koryph commits any change so
+  it rides the ff-merge and is gated
 
 ## metrics
 

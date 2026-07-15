@@ -281,6 +281,15 @@ rewrite SHAs and the committer identity, destroying the signatures `signing.requ
 mandates. koryph therefore lands with **mechanism (a): a local `git merge --ff-only` + push**
 by the engine's signing identity — the only method that keeps the signed SHAs byte-for-byte.
 
+### Self-healing generated-file conflicts
+
+The pre-merge rebase can trip over a **derived file** — a migrations lockfile, a secrets
+baseline — that two beads each regenerated from their own view of a directory. The inputs
+merge cleanly but git reads the divergent checksum block as a conflict. A footprint label is
+the first fix (serialize the beads so the collision never happens); for the residual case,
+declare a `merge_reconcilers` entry so koryph regenerates the derived file from the post-merge
+tree and continues instead of aborting. See [Merge reconcilers](merge-reconcilers.md).
+
 - **Base moved.** If the base advanced, `koryph land` rebases the branch onto it and
   re-verifies; a genuine conflict is reported (the bead is rebased/re-run, **never**
   rewrite-merged). A clean rebase re-signs the rewritten commits with the engine's signing

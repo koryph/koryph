@@ -199,6 +199,35 @@ real gap, so err toward labeling on any plausible match.
 
 ---
 
+### Step 3c — Repair derived-artifact shared-write footprints
+
+Scan every open bead's title and description for adding a file to a directory
+that carries a checked-in **derived** artifact: `migration`, `atlas.sum`,
+`.secrets.baseline`, `lockfile`, `checksum`, `baseline`, a `generated` index. A
+derived artifact is a checksum-over-a-listing — two beads that each add an input
+regenerate it independently and collide at merge even though the inputs (distinct
+filenames) don't.
+
+Any such bead that does **not** share a **write** token with the other
+derived-artifact beads is under-serialized. Fix it:
+
+1. **Give them a shared write token.** One `area:<key>` (or explicit
+   `fp:<token>`) common to every bead writing that directory:
+   ```
+   bd update <id> --label area:<shared-key>
+   ```
+2. **Confirm the self-heal is declared.** The project should carry a
+   `merge_reconcilers` / `merge_prepare` entry for the artifact in
+   `koryph.project.json` (a protected-path, orchestrator-applied change — note
+   it in the report, do not edit `koryph.project.json` yourself). See
+   docs/user-guide/merge-reconcilers.md.
+
+Like Step 3b this is keyword-driven, not judgment-gated: over-sharing a token
+only costs parallelism, while an under-shared derived artifact re-collides at
+merge.
+
+---
+
 ### Step 4 — Wire missing dependency edges (frontier tier required)
 
 After re-labeling, scan the corpus for implied order that has no explicit
@@ -301,6 +330,7 @@ RELABELING SUMMARY
   unlabeled remaining: <count>  (were <before_unlabeled_count>)
   conflicting pairs remaining: <count>  (were <before_conflict_count>)
   res:* labels added (step 3b): <count>
+  derived-artifact shared-write fixes (step 3c): <count>
 
 RESIDUAL SERIALIZATION (if any)
   <id>  <title>  → <reason: shared write token / refactor-core / domain:unknown / no-dispatch>

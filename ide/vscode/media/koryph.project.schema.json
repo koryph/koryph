@@ -174,6 +174,25 @@
       ],
       "description": "IntakeSource configures one issue-tracker source in the koryph.project.json intake list."
     },
+    "MergeReconciler": {
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path matches an unmerged path with path.Match semantics — an exact path\n(\"migrations/atlas.sum\", \".secrets.baseline\") or a glob\n(\"migrations/*.sum\"); no \"**\"."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command reconciles the file. It runs via `sh -c` in the worktree with the\ngate's allowlisted environment plus KORYPH_MERGE_PATH (the file to write)\nand KORYPH_MERGE_OURS / _THEIRS / _BASE (temp files with the three\nconflict stages), and must leave $KORYPH_MERGE_PATH a valid,\nconflict-marker-free file. Two idioms: regenerate-from-tree (a checksum:\n\"atlas migrate hash --dir file://migrations\", ignores the stage env) and\nstructured union (a secrets baseline: a helper reading _OURS/_THEIRS).\nThe healed tree still runs the project gate before merge, so put the\nartifact's validator in the gate — that is what catches a bad regeneration."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "command"
+      ],
+      "description": "MergeReconciler auto-heals a pre-merge rebase conflict confined to a known generated / derived file — a checksum-over-a-directory (a migrations lockfile like atlas.sum), a secrets baseline — by regenerating it from the post-merge tree instead of surfacing the line-level divergence as a fatal conflict (design docs/designs/2026-07-merge-reconcilers.md)."
+    },
     "PipelineStage": {
       "properties": {
         "name": {
@@ -530,6 +549,20 @@
       },
       "type": "array",
       "description": "ProtectedPaths extend the engine's default protected list; diffs\ntouching them are never mergeable from a worktree."
+    },
+    "merge_reconcilers": {
+      "items": {
+        "$ref": "#/$defs/MergeReconciler"
+      },
+      "type": "array",
+      "description": "MergeReconcilers auto-heal a pre-merge rebase conflict confined ENTIRELY\nto known generated / derived files (a migrations lockfile, a secrets\nbaseline) by regenerating each from the post-merge tree and continuing,\ninstead of aborting and requeueing (design\ndocs/designs/2026-07-merge-reconcilers.md). A conflict touching any path\nwith no reconciler always aborts unchanged. Additive/omitempty: empty =\ntoday's behavior. Footprints protect the merge; reconcilers heal the\nderivatives."
+    },
+    "merge_prepare": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "MergePrepare are commands run in the worktree AFTER the (possibly\nreconciler-healed) rebase and BEFORE the gate — the merge-time\nnormalization seam (design docs/designs/2026-07-merge-reconcilers.md L6).\nTheir canonical use is renumbering a newly added migration to the next\nfree sequence against the branch it is landing on (KORYPH_DEFAULT_BRANCH\nin the env), so two in-flight beads never land a duplicate number and no\nrenumber cascade is possible. koryph commits any change so it rides the\nff-merge and is gated; a command regression is a gate-shaped requeue.\nAdditive/omitempty: empty = no normalization (today's behavior)."
     },
     "validation": {
       "items": {

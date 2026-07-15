@@ -168,6 +168,20 @@ func printAuditReport(w io.Writer, r *plan.AuditReport) {
 	}
 	fmt.Fprintln(w)
 
+	// --- Derived-artifact co-footprint risks ---------------------------------
+	fmt.Fprintf(w, "DERIVED-ARTIFACT CO-FOOTPRINT RISKS — %d\n", len(r.DerivedArtifactRisks))
+	if len(r.DerivedArtifactRisks) > 0 {
+		fmt.Fprintln(w, "  These pairs both touch a checked-in derived artifact (migrations lockfile,")
+		fmt.Fprintln(w, "  secrets baseline) but are write-disjoint, so they may co-dispatch and collide")
+		fmt.Fprintln(w, "  at merge. Fix: share a write token or order them; declare merge_reconcilers.")
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		for _, da := range r.DerivedArtifactRisks {
+			fmt.Fprintf(tw, "  %s × %s\t(%s)\n", da.A.ID, da.B.ID, da.Keyword)
+		}
+		tw.Flush()
+	}
+	fmt.Fprintln(w)
+
 	// --- Width ---------------------------------------------------------------
 	fmt.Fprintf(w, "PARALLEL WIDTH\n")
 	fmt.Fprintf(w, "  current:   %d  (greedy, current footprint labels)\n", r.ParallelWidth.Current)
@@ -181,7 +195,7 @@ func printAuditReport(w io.Writer, r *plan.AuditReport) {
 	fmt.Fprintln(w)
 
 	// Summary line
-	problems := len(r.Unlabeled) + len(r.Conflicts)
+	problems := len(r.Unlabeled) + len(r.Conflicts) + len(r.DerivedArtifactRisks)
 	if problems == 0 && len(r.NonDispatch) == 0 {
 		fmt.Fprintln(w, "✓ No corpus parallelism issues detected.")
 	} else {

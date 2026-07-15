@@ -18,6 +18,7 @@ Do this:
    - If the bead only **reads** an area (docs about it, tests over fixtures, analysis), declare that with `fp:read:<token>` — readers co-run with each other; only writers exclude.
    - If the footprint can't be expressed with the `area_map`, use explicit `fp:<token>` labels, or leave it unlabeled (it serializes safely) and note that.
    - Declare external runtime resources — do not guess: if the bead's acceptance criteria need something *running* (kind/k8s cluster, docker compose stack, dev server, database, browser suite), label `res:<kind>` per kind (vocabulary in `koryph.project.json` `resources`). Footprints protect the merge; resources protect the machine. Undeclared resources risk thrashing the host mid-wave; over-declared only costs parallelism.
+   - Derived artifacts serialize even when their inputs don't: if the bead adds a file to a directory with a checked-in **derived** artifact (a migrations lockfile like `atlas.sum`, a secrets baseline, a generated index), it must share a **write** token (`area:<key>` or explicit `fp:<token>`) with every other such bead — the checksum collides at merge though the added files don't. Ensure the project declares a `merge_reconcilers` / `merge_prepare` entry so a residual collision self-heals (see docs/user-guide/merge-reconcilers.md).
 4. **Dedup before creating** (mandatory): `bd children <epic-id>` on the
    target epic and `bd search "<keywords>"` on the title's scope words.
    `bd ready` is NOT a dedup check — blocked/deferred beads are invisible

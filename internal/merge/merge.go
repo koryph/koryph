@@ -153,15 +153,53 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 
 	// (5) rebase the worktree onto the LOCAL default (now synced to origin) —
 	// the exact ref the ff-merge below targets.
+	var reconciled []string
+	var reconcileRounds int
 	rb, err := gitRun(ctx, wt.Path, "rebase", def)
 	if err != nil {
 		return Result{Status: StatusError}, err
 	}
 	if rb.ExitCode != 0 {
-		_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
-		mdPath := filepath.Join(wt.Path, "CONFLICT.md")
-		_ = fsx.WriteAtomic(mdPath, []byte(conflictMarkdown(o.Branch, def, rb.Stdout+rb.Stderr)), 0o644)
-		return Result{Status: StatusConflict, ConflictMD: mdPath}, nil
+		// A rebase conflict confined ENTIRELY to configured generated files
+		// (a migrations lockfile, a secrets baseline) self-heals: regenerate
+		// each from the post-merge tree and continue, instead of aborting.
+		// Any conflict touching a path with no reconciler — or any reconciler
+		// failure — falls through to the unchanged abort path (design
+		// docs/designs/2026-07-merge-reconcilers.md, invariants I1/I2).
+		healed, paths, rounds, herr := reconcileRebase(ctx, wt.Path, o.Reconcilers)
+		if herr != nil {
+			_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
+			return Result{Status: StatusError}, herr
+		}
+		if !healed {
+			_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
+			mdPath := filepath.Join(wt.Path, "CONFLICT.md")
+			_ = fsx.WriteAtomic(mdPath, []byte(conflictMarkdown(o.Branch, def, rb.Stdout+rb.Stderr)), 0o644)
+			return Result{Status: StatusConflict, ConflictMD: mdPath}, nil
+		}
+		reconciled, reconcileRounds = paths, rounds
+	}
+
+	// (5b) merge_prepare: normalize the rebased tree before the gate — its
+	// canonical use is renumbering a newly added migration to the next free
+	// sequence at merge time so two in-flight beads never land a duplicate
+	// number (the renumber-cascade root cause; design
+	// docs/designs/2026-07-merge-reconcilers.md L6). koryph commits any change
+	// so it rides the ff-merge and is gated. A command regression is a
+	// gate-shaped failure (requeue), not a hard error.
+	prepared := false
+	if len(o.Prepare) > 0 {
+		p, pok, pout, perr := runMergePrepare(ctx, wt.Path, def, o.Prepare)
+		if perr != nil {
+			return Result{Status: StatusError}, perr
+		}
+		if !pok {
+			// Discard any partial modification the failing step left, mirroring
+			// the gate-failure cleanup, then requeue.
+			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
+			return Result{Status: StatusGateFailed, GateOutput: tail(pout, gateOutputCap)}, nil
+		}
+		prepared = p
 	}
 
 	// (6) green gate AFTER rebase.
@@ -216,7 +254,13 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 	if err != nil {
 		return Result{Status: StatusError}, err
 	}
-	result := Result{Status: StatusMerged, MergedSHA: strings.TrimSpace(shaRes.Stdout)}
+	result := Result{
+		Status:          StatusMerged,
+		MergedSHA:       strings.TrimSpace(shaRes.Stdout),
+		Reconciled:      reconciled,
+		ReconcileRounds: reconcileRounds,
+		Prepared:        prepared,
+	}
 
 	// (9) push. Best-effort by design: a push is skipped when no remote exists so
 	// the engine's auto-merge on a local-only project still lands (see poll.go's

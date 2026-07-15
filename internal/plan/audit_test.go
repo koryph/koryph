@@ -122,6 +122,56 @@ func TestAudit_DependencyOrderedNotConflict(t *testing.T) {
 	}
 }
 
+// TestAudit_DerivedArtifact verifies the co-footprint risk heuristic: two beads
+// that both touch a derived artifact but are write-disjoint and unordered are
+// flagged (they will collide at merge invisibly to sched.Conflicts), while a
+// shared write token or a dependency edge clears the risk.
+func TestAudit_DerivedArtifact(t *testing.T) {
+	desc := func(id, kw string, labels ...string) beads.Issue {
+		return beads.Issue{
+			ID: id, Title: "Test: " + id, IssueType: "task", Status: "open",
+			Description: "adds a " + kw + " to the schema", Labels: labels,
+		}
+	}
+
+	t.Run("write-disjoint derived-artifact beads are flagged", func(t *testing.T) {
+		issues := []beads.Issue{
+			desc("a", "migration", "fp:engine"),
+			desc("b", "migration", "fp:cli"), // write-disjoint from a
+			makeIssue("c", "task", "fp:api"), // no derived-artifact mention
+		}
+		r := plan.Audit(issues, nil, cfg(nil))
+		if got := len(r.DerivedArtifactRisks); got != 1 {
+			t.Fatalf("DerivedArtifactRisks: got %d, want 1", got)
+		}
+		if kw := r.DerivedArtifactRisks[0].Keyword; kw != "migration" {
+			t.Errorf("keyword = %q, want migration", kw)
+		}
+	})
+
+	t.Run("shared write token clears the risk", func(t *testing.T) {
+		issues := []beads.Issue{
+			desc("a", "migration", "fp:migrations"),
+			desc("b", "migration", "fp:migrations"), // shares the token -> serialized
+		}
+		r := plan.Audit(issues, nil, cfg(nil))
+		if got := len(r.DerivedArtifactRisks); got != 0 {
+			t.Errorf("shared-token beads flagged: got %d risks, want 0", got)
+		}
+	})
+
+	t.Run("dependency edge clears the risk", func(t *testing.T) {
+		issues := []beads.Issue{
+			desc("a", "migration", "fp:engine"),
+			desc("b", "migration", "fp:cli"),
+		}
+		r := plan.Audit(issues, map[string][]string{"a": {"b"}}, cfg(nil))
+		if got := len(r.DerivedArtifactRisks); got != 0 {
+			t.Errorf("dependency-ordered beads flagged: got %d risks, want 0", got)
+		}
+	})
+}
+
 // TestAudit_TransitiveDependency verifies transitive ordering is respected.
 func TestAudit_TransitiveDependency(t *testing.T) {
 	// a → b → c (a depends on b, b depends on c); all share the same token.

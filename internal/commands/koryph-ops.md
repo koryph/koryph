@@ -388,7 +388,11 @@ dependency edges between conflicting unordered beads. The audit shows
 achievable parallel width before and after. Keep `res:<kind>` declarations
 just as honest: footprints protect the merge, resources protect the
 machine, and an undeclared cluster/compose/server bead can thrash the host
-mid-wave with no admission-time signal.
+mid-wave with no admission-time signal. And share a write token across beads
+that add files to a directory with a checked-in derived artifact (a migrations
+lockfile, a secrets baseline) — the derived file collides at merge even when the
+inputs don't; a `merge_reconcilers` / `merge_prepare` entry self-heals the
+residual (docs/user-guide/merge-reconcilers.md).
 
 ### Route by model tier
 

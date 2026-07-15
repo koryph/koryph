@@ -168,6 +168,66 @@ Work through beads in this priority order:
 
 ---
 
+### Step 3b — Repair missing resource declarations
+
+Scan every open bead's title and description for a mention of a running
+external dependency: `kind`, `k8s`, `docker`, `compose`, `dev server`,
+`database`, `browser` (browser-suite / e2e-in-browser wording). Any match
+that carries no `res:*` label is under-declared. Footprints protect the
+merge; resources protect the machine — an undeclared cluster/compose/server
+bead can thrash the host mid-wave with no admission-time signal.
+
+1. **Grep the corpus.** For each match, read the bead's description to name
+   the concrete kind(s) it will provision (`kind-cluster`, `docker`,
+   `dev-server`, `database`, `browser-suite`, …).
+2. **Add the label.** One `res:<kind>` per kind:
+   ```
+   bd update <id> --label res:<kind>
+   ```
+   If the kind is new to the project, note it in the report (step 7) — the
+   `koryph.project.json` `resources` vocabulary entry (with a `mem_mb`
+   estimate) is a protected-path, orchestrator-applied change; do not edit
+   `koryph.project.json` yourself.
+3. **Note the rationale:**
+   ```
+   bd update <id> --note "replan: added res:<kind> (description mentions <keyword>)"
+   ```
+
+This pass is deliberately keyword-driven, not judgment-gated like Step 3:
+over-declaring only costs parallelism, while a missed declaration leaves a
+real gap, so err toward labeling on any plausible match.
+
+---
+
+### Step 3c — Repair derived-artifact shared-write footprints
+
+Scan every open bead's title and description for adding a file to a directory
+that carries a checked-in **derived** artifact: `migration`, `atlas.sum`,
+`.secrets.baseline`, `lockfile`, `checksum`, `baseline`, a `generated` index. A
+derived artifact is a checksum-over-a-listing — two beads that each add an input
+regenerate it independently and collide at merge even though the inputs (distinct
+filenames) don't.
+
+Any such bead that does **not** share a **write** token with the other
+derived-artifact beads is under-serialized. Fix it:
+
+1. **Give them a shared write token.** One `area:<key>` (or explicit
+   `fp:<token>`) common to every bead writing that directory:
+   ```
+   bd update <id> --label area:<shared-key>
+   ```
+2. **Confirm the self-heal is declared.** The project should carry a
+   `merge_reconcilers` / `merge_prepare` entry for the artifact in
+   `koryph.project.json` (a protected-path, orchestrator-applied change — note
+   it in the report, do not edit `koryph.project.json` yourself). See
+   docs/user-guide/merge-reconcilers.md.
+
+Like Step 3b this is keyword-driven, not judgment-gated: over-sharing a token
+only costs parallelism, while an under-shared derived artifact re-collides at
+merge.
+
+---
+
 ### Step 4 — Wire missing dependency edges (frontier tier required)
 
 After re-labeling, scan the corpus for implied order that has no explicit
@@ -235,9 +295,9 @@ and explain what additional information the operator needs to provide.
 
 ### Step 6 — Apply mechanical updates
 
-Run the decided `bd update` and `bd dep add` commands from steps 3–5.  This
-step is mechanical — running already-decided commands is fine at any model
-tier.
+Run the decided `bd update` and `bd dep add` commands from steps 3, 3b, 4,
+and 5.  This step is mechanical — running already-decided commands is fine
+at any model tier.
 
 For large corpora, run updates per-epic and write progress notes as described
 in step 1 before moving to the next epic.  The note pattern is:
@@ -269,6 +329,8 @@ RELABELING SUMMARY
   dep edges added: <count>
   unlabeled remaining: <count>  (were <before_unlabeled_count>)
   conflicting pairs remaining: <count>  (were <before_conflict_count>)
+  res:* labels added (step 3b): <count>
+  derived-artifact shared-write fixes (step 3c): <count>
 
 RESIDUAL SERIALIZATION (if any)
   <id>  <title>  → <reason: shared write token / refactor-core / domain:unknown / no-dispatch>

@@ -55,6 +55,7 @@ nav:
       - Projects & accounts: user-guide/projects-and-accounts.md
       - Choosing a forge: user-guide/forges.md
       - Running waves: user-guide/running-waves.md
+      - Merge reconcilers: user-guide/merge-reconcilers.md
       - Billing & quota: user-guide/billing-and-quota.md
       - Context economy: user-guide/context-economy.md
       - "Experimental: headroom-ai integration": user-guide/headroom-integration.md

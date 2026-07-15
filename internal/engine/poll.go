@@ -1042,6 +1042,20 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 }
 
 // mergeSlot lands a review-clean candidate on the default branch.
+// mergeReconcilers maps the project's generated-file reconciler vocabulary to
+// the merge package's type. merge deliberately does not import project, so the
+// two types are kept in sync by this one-line copy (like Gate []string).
+func mergeReconcilers(cfg *project.Config) []merge.Reconciler {
+	if cfg == nil || len(cfg.MergeReconcilers) == 0 {
+		return nil
+	}
+	out := make([]merge.Reconciler, len(cfg.MergeReconcilers))
+	for i, rc := range cfg.MergeReconcilers {
+		out[i] = merge.Reconciler{Path: rc.Path, Command: rc.Command}
+	}
+	return out
+}
+
 func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 	res, err := merge.Merge(ctx, merge.Opts{
 		RepoRoot:            r.rec.Root,
@@ -1055,6 +1069,8 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		Slot:                r.slotLocker(ctx),
 		RequireSigned:       r.requireSigned(),
 		RequireConventional: r.cfg.EnforceConventional(),
+		Reconcilers:         mergeReconcilers(r.cfg),
+		Prepare:             r.cfg.MergePrepare,
 	})
 	if err != nil {
 		// A merge error is usually transient (base moved, push raced). Self-heal
@@ -1098,6 +1114,34 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 			},
 		})
 		r.progress("bead %s: merged (%s)", sl.PhaseID, shortSHA(res.MergedSHA))
+		if len(res.Reconciled) > 0 {
+			// A healed rebase is not a silent success: surface it so a rising
+			// heal rate flags a missing footprint label upstream (the cheaper
+			// fix). See docs/designs/2026-07-merge-reconcilers.md L7.
+			r.progress("bead %s: rebase conflict auto-healed (%d generated file(s), %d round(s)): %s",
+				sl.PhaseID, len(res.Reconciled), res.ReconcileRounds, strings.Join(res.Reconciled, ", "))
+			_ = r.reg.Audit(registry.Event{
+				Kind:      "merge-reconcile",
+				ProjectID: r.opts.ProjectID,
+				Actor:     r.owner,
+				Detail: map[string]string{
+					"bead": sl.PhaseID, "branch": sl.Branch,
+					"paths":  strings.Join(res.Reconciled, ","),
+					"rounds": strconv.Itoa(res.ReconcileRounds),
+				},
+			})
+		}
+		if res.Prepared {
+			// merge_prepare normalized the rebased tree (e.g. renumbered a
+			// migration to tip) and koryph committed it before the gate.
+			r.progress("bead %s: merge-prepare normalized the rebased tree before merge", sl.PhaseID)
+			_ = r.reg.Audit(registry.Event{
+				Kind:      "merge-prepare",
+				ProjectID: r.opts.ProjectID,
+				Actor:     r.owner,
+				Detail:    map[string]string{"bead": sl.PhaseID, "branch": sl.Branch},
+			})
+		}
 		if sl2 := r.run.Slots[sl.PhaseID]; sl2 != nil {
 			logSlotMerged(r.run.RunID, r.opts.ProjectID, sl.PhaseID, shortSHA(res.MergedSHA), sl2.CostUSD,
 				sl2.Model, sl2.ModelActual, sl2.Attempts)
@@ -1262,6 +1306,8 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 		Slot:                r.slotLocker(ctx),
 		RequireSigned:       r.requireSigned(),
 		RequireConventional: r.cfg.EnforceConventional(),
+		Reconcilers:         mergeReconcilers(r.cfg),
+		Prepare:             r.cfg.MergePrepare,
 		OpenPR:              true,
 		KeepWorktree:        true, // the branch parks for a later landing step
 		PRTitle:             prTitle(iss),

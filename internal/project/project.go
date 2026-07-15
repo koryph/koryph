@@ -9,6 +9,7 @@ package project
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -51,6 +52,29 @@ type ResourceSpec struct {
 	// kind. 0/absent means uncalibrated (no reservation from this vocabulary —
 	// the machine ledger may still supply one).
 	MemMB int `json:"mem_mb,omitempty"`
+}
+
+// MergeReconciler auto-heals a pre-merge rebase conflict confined to a known
+// generated / derived file — a checksum-over-a-directory (a migrations
+// lockfile like atlas.sum), a secrets baseline — by regenerating it from the
+// post-merge tree instead of surfacing the line-level divergence as a fatal
+// conflict (design docs/designs/2026-07-merge-reconcilers.md). Additive/omitempty:
+// no entries = today's behavior (any conflict aborts to a requeue).
+type MergeReconciler struct {
+	// Path matches an unmerged path with path.Match semantics — an exact path
+	// ("migrations/atlas.sum", ".secrets.baseline") or a glob
+	// ("migrations/*.sum"); no "**".
+	Path string `json:"path"`
+	// Command reconciles the file. It runs via `sh -c` in the worktree with the
+	// gate's allowlisted environment plus KORYPH_MERGE_PATH (the file to write)
+	// and KORYPH_MERGE_OURS / _THEIRS / _BASE (temp files with the three
+	// conflict stages), and must leave $KORYPH_MERGE_PATH a valid,
+	// conflict-marker-free file. Two idioms: regenerate-from-tree (a checksum:
+	// "atlas migrate hash --dir file://migrations", ignores the stage env) and
+	// structured union (a secrets baseline: a helper reading _OURS/_THEIRS).
+	// The healed tree still runs the project gate before merge, so put the
+	// artifact's validator in the gate — that is what catches a bad regeneration.
+	Command string `json:"command"`
 }
 
 // AdaptiveEscalation configures the learned-model auto-apply
@@ -561,6 +585,27 @@ type Config struct {
 	// touching them are never mergeable from a worktree.
 	ProtectedPaths []string `json:"protected_paths,omitempty"`
 
+	// MergeReconcilers auto-heal a pre-merge rebase conflict confined ENTIRELY
+	// to known generated / derived files (a migrations lockfile, a secrets
+	// baseline) by regenerating each from the post-merge tree and continuing,
+	// instead of aborting and requeueing (design
+	// docs/designs/2026-07-merge-reconcilers.md). A conflict touching any path
+	// with no reconciler always aborts unchanged. Additive/omitempty: empty =
+	// today's behavior. Footprints protect the merge; reconcilers heal the
+	// derivatives.
+	MergeReconcilers []MergeReconciler `json:"merge_reconcilers,omitempty"`
+
+	// MergePrepare are commands run in the worktree AFTER the (possibly
+	// reconciler-healed) rebase and BEFORE the gate — the merge-time
+	// normalization seam (design docs/designs/2026-07-merge-reconcilers.md L6).
+	// Their canonical use is renumbering a newly added migration to the next
+	// free sequence against the branch it is landing on (KORYPH_DEFAULT_BRANCH
+	// in the env), so two in-flight beads never land a duplicate number and no
+	// renumber cascade is possible. koryph commits any change so it rides the
+	// ff-merge and is gated; a command regression is a gate-shaped requeue.
+	// Additive/omitempty: empty = no normalization (today's behavior).
+	MergePrepare []string `json:"merge_prepare,omitempty"`
+
 	// Validation commands for `koryph validate` (beyond the engine checks).
 	Validation []string `json:"validation,omitempty"`
 
@@ -827,6 +872,32 @@ func (c *Config) Validate() error {
 	}
 	if err := validateReview(c.Review); err != nil {
 		return err
+	}
+	if err := validateMergeReconcilers(c.MergeReconcilers); err != nil {
+		return err
+	}
+	for i, cmd := range c.MergePrepare {
+		if strings.TrimSpace(cmd) == "" {
+			return fmt.Errorf("merge_prepare[%d]: command cannot be empty", i)
+		}
+	}
+	return nil
+}
+
+// validateMergeReconcilers enforces that each generated-file reconciler names a
+// non-empty path with a legal path.Match pattern and a non-empty command —
+// rejected at config load rather than discovered mid-merge.
+func validateMergeReconcilers(recs []MergeReconciler) error {
+	for i, r := range recs {
+		if strings.TrimSpace(r.Path) == "" {
+			return fmt.Errorf("merge_reconcilers[%d]: path required", i)
+		}
+		if _, err := path.Match(r.Path, ""); err != nil {
+			return fmt.Errorf("merge_reconcilers[%d]: invalid path glob %q: %w", i, r.Path, err)
+		}
+		if strings.TrimSpace(r.Command) == "" {
+			return fmt.Errorf("merge_reconcilers[%d] (%s): command required", i, r.Path)
+		}
 	}
 	return nil
 }

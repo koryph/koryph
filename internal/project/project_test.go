@@ -47,8 +47,12 @@ func fullConfig() *Config {
 			Mapping:     map[string]string{"priority": "labels"},
 		}},
 		ProtectedPaths: []string{"hooks/"},
-		Validation:     []string{"make validate"},
-		EngineVersion:  "0.2+",
+		MergeReconcilers: []MergeReconciler{
+			{Path: "migrations/atlas.sum", Command: "atlas migrate hash --dir file://migrations"},
+		},
+		MergePrepare:  []string{"atlas migrate rebase --dir file://migrations"},
+		Validation:    []string{"make validate"},
+		EngineVersion: "0.2+",
 		// custom style forces CommitTemplate to be populated and legal.
 		CommitStyle:     "custom",
 		CommitTemplate:  "{type}: {subject}",
@@ -704,6 +708,68 @@ func TestReviewConfig_Validation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := base(tc.rc).Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestMergeReconcilers_Validation(t *testing.T) {
+	base := func(recs []MergeReconciler) *Config {
+		c := Default("proj")
+		c.MergeReconcilers = recs
+		return c
+	}
+	cases := []struct {
+		name    string
+		recs    []MergeReconciler
+		wantErr string
+	}{
+		{"nil is fine", nil, ""},
+		{"empty is fine", []MergeReconciler{}, ""},
+		{"exact path is valid", []MergeReconciler{{Path: "migrations/atlas.sum", Command: "atlas migrate hash --dir file://migrations"}}, ""},
+		{"glob path is valid", []MergeReconciler{{Path: "migrations/*.sum", Command: "regen"}}, ""},
+		{"empty path is rejected", []MergeReconciler{{Path: "", Command: "regen"}}, "path required"},
+		{"whitespace path is rejected", []MergeReconciler{{Path: "  ", Command: "regen"}}, "path required"},
+		{"bad glob is rejected", []MergeReconciler{{Path: "migrations/[", Command: "regen"}}, "invalid path glob"},
+		{"empty command is rejected", []MergeReconciler{{Path: ".secrets.baseline", Command: ""}}, "command required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.recs).Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestMergePrepare_Validation(t *testing.T) {
+	base := func(cmds []string) *Config {
+		c := Default("proj")
+		c.MergePrepare = cmds
+		return c
+	}
+	cases := []struct {
+		name    string
+		cmds    []string
+		wantErr string
+	}{
+		{"nil is fine", nil, ""},
+		{"commands are valid", []string{"atlas migrate rebase --dir file://migrations"}, ""},
+		{"blank command is rejected", []string{"  "}, "merge_prepare[0]: command cannot be empty"},
+		{"blank among valid is rejected", []string{"ok", ""}, "merge_prepare[1]: command cannot be empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.cmds).Validate()
 			switch {
 			case tc.wantErr == "" && err != nil:
 				t.Errorf("Validate() = %v, want nil", err)

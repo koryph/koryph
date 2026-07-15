@@ -128,6 +128,24 @@ type Opts struct {
 	// PR opens the pull request on the OpenPR path. A nil PR defaults to the
 	// gh CLI (GhCLI); tests inject a fake to avoid a real GitHub round-trip.
 	PR PROpener
+
+	// Reconcilers auto-heal a rebase conflict confined ENTIRELY to known
+	// generated / derived files (a migrations lockfile, a secrets baseline):
+	// each conflicted path matching a reconciler is regenerated from the
+	// post-merge tree and the rebase continues, instead of aborting. Empty =
+	// today's behavior (any conflict aborts to StatusConflict). A conflict on
+	// any path NOT covered by a reconciler always aborts unchanged. See
+	// docs/designs/2026-07-merge-reconcilers.md.
+	Reconcilers []Reconciler
+
+	// Prepare are commands run in the worktree AFTER the (possibly healed)
+	// rebase and BEFORE the gate — the merge-time normalization seam. Their
+	// canonical use is renumbering a newly added migration to the next free
+	// sequence against the branch it is landing on (KORYPH_DEFAULT_BRANCH in the
+	// env), so two in-flight beads never land a duplicate number. Any change is
+	// committed by koryph so it rides the ff-merge and is gated; a command
+	// regression is a gate-shaped failure (requeue). Empty = no normalization.
+	Prepare []string
 }
 
 // PROpener publishes a pull request for a pushed branch. The gh-CLI default
@@ -170,4 +188,17 @@ type Result struct {
 	Pushed     bool     `json:"pushed"`
 	PRURL      string   `json:"pr_url,omitempty"`
 	PRNumber   int      `json:"pr_number,omitempty"`
+
+	// Reconciled lists the generated files a reconciler auto-healed during the
+	// pre-merge rebase, and ReconcileRounds the number of --continue rounds it
+	// took (the cascade depth). Both zero on an un-healed or reconciler-free
+	// merge. Surfaced so the engine can log/audit how often the derived-file
+	// collision fires — the signal that a footprint label is missing upstream.
+	Reconciled      []string `json:"reconciled,omitempty"`
+	ReconcileRounds int      `json:"reconcile_rounds,omitempty"`
+
+	// Prepared is true when a merge_prepare step normalized the rebased tree and
+	// koryph committed the result before the gate (e.g. a migration renumbered
+	// to tip). Surfaced for the same observability reason as Reconciled.
+	Prepared bool `json:"prepared,omitempty"`
 }

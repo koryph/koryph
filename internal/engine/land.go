@@ -86,6 +86,8 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 		RequireSigned:       cfg.Signing != nil && cfg.Signing.Required,
 		RequireConventional: cfg.EnforceConventional(),
 		AllowProtected:      o.AllowProtected,
+		Reconcilers:         mergeReconcilers(cfg),
+		Prepare:             cfg.MergePrepare,
 	})
 	if err != nil {
 		return LandResult{Status: string(res.Status), Branch: branch}, err

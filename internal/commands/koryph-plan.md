@@ -80,7 +80,14 @@ build, ...).
      express the footprint;
    - unlabeled only when genuinely unavoidable — say so explicitly, and
      note it lands in the catch-all `domain:unknown` write token, which
-     collides with every other unlabeled bead and serializes the wave.
+     collides with every other unlabeled bead and serializes the wave;
+   - a **shared write token** across every bead that adds a file to a
+     directory with a checked-in **derived** artifact (a migrations
+     lockfile, a secrets baseline, a generated index): the derived file
+     is a checksum-over-a-listing, so it collides at merge even though the
+     added inputs don't. Serialize such beads on one token and ensure the
+     project declares a `merge_reconcilers` / `merge_prepare` entry so a
+     residual collision self-heals (docs/user-guide/merge-reconcilers.md).
 
 4. **Declare external runtime resources — do not guess.** For every bead, ask
    what must be *running* for its acceptance criteria: a kind/k8s cluster, a

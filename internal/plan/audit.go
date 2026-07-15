@@ -18,11 +18,17 @@
 //     ready at the same time.
 //  4. Width metrics — the achievable parallel width under current labels and
 //     the potential width if all unlabeled beads were properly labeled.
+//  5. Derived-artifact co-footprint risks — dependency-unordered beads that both
+//     touch a checked-in derived artifact (a migrations lockfile, a secrets
+//     baseline) yet are write-disjoint, so the scheduler may co-dispatch them
+//     and their regenerated derived file collides at merge (the inverse of a
+//     conflict finding — sched.Conflicts cannot see it).
 package plan
 
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/project"
@@ -54,6 +60,13 @@ type AuditReport struct {
 	// they could in principle run simultaneously, but their footprints prevent
 	// it.
 	Conflicts []ConflictPair `json:"conflicts"`
+
+	// DerivedArtifactRisks lists dependency-unordered pairs of beads that both
+	// touch a checked-in derived artifact (a migrations lockfile, a secrets
+	// baseline) yet are write-DISJOINT — the inverse of a Conflicts finding.
+	// The scheduler may co-dispatch them, and they will regenerate the derived
+	// file independently and collide at merge, invisibly to sched.Conflicts.
+	DerivedArtifactRisks []DerivedArtifactRisk `json:"derived_artifact_risks"`
 
 	// ParallelWidth reports the achievable and potential parallel widths.
 	ParallelWidth WidthReport `json:"parallel_width"`
@@ -87,6 +100,18 @@ type ConflictPair struct {
 	B            ItemSummary `json:"b"`
 	SharedTokens []string    `json:"shared_tokens"`
 	Mode         string      `json:"mode"`
+}
+
+// DerivedArtifactRisk is a dependency-unordered pair of open beads that both
+// touch a checked-in derived artifact yet are write-disjoint, so the scheduler
+// may co-dispatch them and their independently regenerated derived file (a
+// checksum-over-a-listing) collides at merge. The fix is a shared write token
+// or a dependency edge; a merge_reconcilers / merge_prepare entry heals the
+// residual (docs/user-guide/merge-reconcilers.md).
+type DerivedArtifactRisk struct {
+	A       ItemSummary `json:"a"`
+	B       ItemSummary `json:"b"`
+	Keyword string      `json:"keyword"`
 }
 
 // WidthReport carries the current and potential parallel widths.
@@ -209,6 +234,39 @@ func Audit(issues []beads.Issue, deps map[string][]string, cfg *project.Config) 
 		}
 	}
 
+	// --- 6. Derived-artifact co-footprint risks -----------------------------
+	// Beads that each add an input to a directory with a checked-in derived
+	// artifact must share a write token: the artifact is a
+	// checksum-over-a-listing that collides at merge even when the added inputs
+	// (distinct filenames) do not — a collision sched.Conflicts cannot see,
+	// because write-disjoint footprints look safe. Flag keyword-matching,
+	// dependency-unordered pairs that do NOT already conflict (share a token).
+
+	for i := range sorted {
+		kwA, okA := mentionsDerivedArtifact(sorted[i])
+		if !okA {
+			continue
+		}
+		for j := i + 1; j < len(sorted); j++ {
+			if _, okB := mentionsDerivedArtifact(sorted[j]); !okB {
+				continue
+			}
+			a, b := sorted[i], sorted[j]
+			if isDependencyOrdered(a.ID, b.ID, reach) {
+				continue // serialized by a dependency edge — safe
+			}
+			fpA, fpB := fps[a.ID], fps[b.ID]
+			if sched.Conflicts(fpA, fpB) {
+				continue // already serialized by a shared token — safe
+			}
+			r.DerivedArtifactRisks = append(r.DerivedArtifactRisks, DerivedArtifactRisk{
+				A:       ItemSummary{ID: a.ID, Title: a.Title, IssueType: a.IssueType, Footprint: fpA},
+				B:       ItemSummary{ID: b.ID, Title: b.Title, IssueType: b.IssueType, Footprint: fpB},
+				Keyword: kwA,
+			})
+		}
+	}
+
 	// --- 5. Parallel width --------------------------------------------------
 
 	eligible := dispatchEligible(issues)
@@ -247,6 +305,28 @@ func nonDispatchReason(iss beads.Issue) string {
 // write token equal to sched.TokenUnknown, no reads).
 func isUnknown(fp sched.Footprint) bool {
 	return len(fp.Reads) == 0 && len(fp.Writes) == 1 && fp.Writes[0] == sched.TokenUnknown
+}
+
+// derivedArtifactKeywords name checked-in derived artifacts whose beads must
+// share a write footprint — a checksum-over-a-listing (a migrations lockfile, a
+// secrets baseline, a generated index) collides at merge even when its inputs
+// (distinct filenames) do not. Matched case-insensitively against a bead's
+// title + description.
+var derivedArtifactKeywords = []string{
+	"migration", "atlas.sum", "atlas migrate", ".secrets.baseline",
+	"secrets baseline", "lockfile", "generated index",
+}
+
+// mentionsDerivedArtifact reports whether a bead's title or description names a
+// derived artifact, returning the matched keyword.
+func mentionsDerivedArtifact(iss beads.Issue) (string, bool) {
+	hay := strings.ToLower(iss.Title + "\n" + iss.Description)
+	for _, kw := range derivedArtifactKeywords {
+		if strings.Contains(hay, kw) {
+			return kw, true
+		}
+	}
+	return "", false
 }
 
 // dispatchEligible filters issues to those the loop can potentially dispatch

@@ -110,6 +110,12 @@ batches. For each item:
    `koryph.project.json` `resources`). Footprints protect the merge;
    resources protect the machine — undeclared resources risk thrashing the
    host mid-wave, over-declared only costs parallelism.
+2c. Share a write token for derived-artifact touches: if the item adds a file
+   to a directory with a checked-in **derived** artifact (a migrations
+   lockfile, a secrets baseline, a generated index), give it a `fp:<token>`
+   (or `area:<key>`) shared with every other such item — the checksum collides
+   at merge even though the added files don't. A `merge_reconcilers` /
+   `merge_prepare` entry self-heals the residual (docs/user-guide/merge-reconcilers.md).
 3. Write a `--description` that states *why* the item exists, what "done"
    looks like, and carries a provenance pointer:
    ```
@@ -119,7 +125,7 @@ batches. For each item:
    ```
    bd create --type <type> --title "<title>" \
      --description "<description>" \
-     --label area:<key> [--label area:<key2>] [--label res:<kind>] \
+     --label area:<key> [--label area:<key2>] [--label res:<kind>] [--label fp:<shared-token>] \
      --validate --silent
    ```
 
