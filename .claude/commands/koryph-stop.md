@@ -8,8 +8,9 @@ Optional arguments: $ARGUMENTS  (a phase/bead id, and/or `--all` to span every p
 
 Do this:
 
-1. If `--all` is given, stop across all projects: `koryph stop --all`.
+1. If `--all` is given without a project, stop across every project: `koryph stop --all`.
 2. Otherwise resolve the project id from `koryph.project.json`:
+   - to stop **every** agent in that project, run `koryph stop --all --project <id>`,
    - if a phase/bead id was given, run `koryph stop --project <id> <phase>`,
    - if not, list active phases with `koryph status --project <id>` and ask me which to stop.
 3. Report what was signalled.
