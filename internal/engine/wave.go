@@ -1192,6 +1192,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		SSHAuthSock:      r.sshAuthSock,
 		EnvPassthrough:   r.rec.EnvPassthrough,
 		ProxyBaseURL:     proxyBaseURL,
+		StrictMCP:        r.rec.StrictMCP(),
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "dispatch refused: "+err.Error())

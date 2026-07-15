@@ -102,6 +102,31 @@ func TestCommandArgvResumeAndFallbackBin(t *testing.T) {
 	}
 }
 
+// TestCommandArgvStrictMCP pins koryph-kwv: StrictMCP=true adds
+// --strict-mcp-config immediately before --add-dir so the dispatched agent
+// loads no ambient MCP servers; the default (false) leaves argv byte-identical.
+func TestCommandArgvStrictMCP(t *testing.T) {
+	rt := Claude{Bin: "claude"}
+
+	base, _, err := rt.Command(goldenSpec())
+	if err != nil {
+		t.Fatalf("Command (default): %v", err)
+	}
+	if strings.Contains(strings.Join(base, " "), "--strict-mcp-config") {
+		t.Errorf("default argv unexpectedly contains --strict-mcp-config: %q", base)
+	}
+
+	spec := goldenSpec()
+	spec.StrictMCP = true
+	argv, _, err := rt.Command(spec)
+	if err != nil {
+		t.Fatalf("Command (strict): %v", err)
+	}
+	if joined := strings.Join(argv, " "); !strings.Contains(joined, "--strict-mcp-config --add-dir "+spec.PhaseDir) {
+		t.Errorf("strict argv missing --strict-mcp-config before --add-dir: %q", joined)
+	}
+}
+
 // TestCommandArgvOmitsOptionalFlags mirrors
 // dispatch/cli_test.go's TestDispatchOmitsOptionalFlags.
 func TestCommandArgvOmitsOptionalFlags(t *testing.T) {

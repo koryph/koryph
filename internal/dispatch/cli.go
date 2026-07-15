@@ -285,6 +285,7 @@ func toRuntimeSpec(s Spec) runtime.DispatchSpec {
 		SSHAuthSock:      s.SSHAuthSock,
 		EnvPassthrough:   s.EnvPassthrough,
 		ProxyBaseURL:     s.ProxyBaseURL,
+		StrictMCP:        s.StrictMCP,
 	}
 }
 

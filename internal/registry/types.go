@@ -76,6 +76,15 @@ type Record struct {
 	ImplModel           string   `json:"impl_model"`            // default "sonnet"
 	RecoveryModelPolicy string   `json:"recovery_model_policy"` // "upgrade-opus" (fixed; Fable never)
 
+	// AgentMCP controls whether dispatched agents inherit the machine's
+	// ambient MCP servers. "" / "inherit" (default) preserves current
+	// behavior; "strict" passes --strict-mcp-config so the agent loads NO MCP
+	// servers (koryph-kwv). koryph implementer/reviewer personas use only
+	// file+bash tools, so their MCP instruction+schema block (~15-18k tokens,
+	// re-read every turn) is dead weight; "strict" removes it. Opt-in per
+	// project — leave unset unless a project's agents genuinely call an MCP.
+	AgentMCP string `json:"agent_mcp,omitempty"`
+
 	// Billing / batch
 	BatchPolicy  string `json:"batch_policy"`              // "deny" | "explicit"
 	APIFallback  string `json:"api_fallback"`              // "off" | "explicit"
@@ -269,6 +278,14 @@ func (r *Record) ProxyBaseURL() string {
 		return ""
 	}
 	return r.AgentProxy.BaseURL
+}
+
+// StrictMCP reports whether dispatched agents for this project should run with
+// --strict-mcp-config (no ambient MCP servers) — true only when AgentMCP ==
+// "strict" (koryph-kwv). The default ("" / "inherit") is false, so dispatch
+// behavior is unchanged unless a project opts in.
+func (r *Record) StrictMCP() bool {
+	return r.AgentMCP == "strict"
 }
 
 // RuntimeAccount is one runtime's account-scoped identity/env configuration

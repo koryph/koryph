@@ -215,6 +215,12 @@ func buildArgs(spec runtime.DispatchSpec) []string {
 	if spec.ResumeSessionID != "" {
 		args = append(args, "--resume", spec.ResumeSessionID, "--fork-session")
 	}
+	if spec.StrictMCP {
+		// koryph-kwv: agents use only file+bash tools, so loading the
+		// machine's ambient MCP servers just bloats the re-read-every-turn
+		// prompt prefix. --strict-mcp-config drops all of them.
+		args = append(args, "--strict-mcp-config")
+	}
 	args = append(args,
 		"--add-dir", spec.PhaseDir,
 		"--output-format", "stream-json",

@@ -59,4 +59,10 @@ type DispatchSpec struct {
 	// as ANTHROPIC_BASE_URL via account.ChildEnvSpec.ProxyBaseURL. Empty
 	// (the default) means direct dispatch — no override.
 	ProxyBaseURL string
+
+	// StrictMCP, when true, adds --strict-mcp-config to the agent invocation
+	// so the dispatched agent loads NO ambient MCP servers (koryph-kwv,
+	// registry.Record.StrictMCP()). False (the default) leaves MCP loading to
+	// the CLI's normal resolution — argv is byte-identical to pre-koryph-kwv.
+	StrictMCP bool
 }
