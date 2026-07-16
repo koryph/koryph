@@ -128,6 +128,14 @@ type runner struct {
 	epicPatrolIssues   []beads.Issue
 	epicPatrolFindings []patrolFinding // patrolCheckUnvalidatedEpics's cache from the last real scan
 
+	// staleClaimsAt/staleClaimsFindings cache patrolCheckStaleClaims's own
+	// ledger scan (ListRuns + LoadRun per recent run — not free, unlike the
+	// epic checks' pure in-memory work), independently throttled from
+	// epicPatrolAt since a same-tick sibling call may already have consumed
+	// that cache's refresh signal. See health.go's doc comment.
+	staleClaimsAt       time.Time
+	staleClaimsFindings []patrolFinding
+
 	// reportedSkips dedups structural-skip warnings so each non-dispatchable
 	// ready bead is surfaced once per run, not every wave (koryph-6g2.1).
 	reportedSkips map[string]bool

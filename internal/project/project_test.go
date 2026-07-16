@@ -80,6 +80,7 @@ func fullConfig() *Config {
 		DispatchStaggerSeconds: 6,
 		PollSeconds:            5,
 		HealthIntervalSeconds:  120,
+		StaleClaimWarnHours:    48,
 		DispatchMode:           "rolling",
 		DefaultRuntime:         "claude",
 		Runtimes: map[string]RuntimeConfig{

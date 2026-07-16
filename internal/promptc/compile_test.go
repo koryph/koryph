@@ -151,6 +151,26 @@ func TestPreambleTerseOutputContract(t *testing.T) {
 	}
 }
 
+// TestPreambleBlockedOnAnotherBead is the 2026-07-15/16 stampede-games
+// handoff regression test: the preamble must tell a stuck agent to wire a
+// formal `bd dep add`/`--blocked-by` edge and release its claim (reset to
+// open) rather than leaving the bead in_progress with only a prose note —
+// bd ready excludes in_progress unconditionally, so a self-parked bead left
+// that way is otherwise invisible to bd's dependency engine forever.
+func TestPreambleBlockedOnAnotherBead(t *testing.T) {
+	p := Preamble("v1")
+	for _, want := range []string{
+		"bd dep add",
+		"--blocked-by",
+		"bd update <this-id> --status open",
+		"no-dispatch",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preamble missing self-park guidance %q", want)
+		}
+	}
+}
+
 // TestPreambleInboxCheckedAtStartAndFinish is the koryph-o72 leg-3 regression
 // test: the preamble must tell the agent to read INBOX.md at the start and
 // again before finishing, not just "between steps" — a nudge landed after

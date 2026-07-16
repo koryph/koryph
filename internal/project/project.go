@@ -684,6 +684,17 @@ type Config struct {
 	// precedence (koryph-gus).
 	HealthIntervalSeconds int `json:"health_interval_seconds,omitempty" jsonschema:"minimum=0"`
 
+	// StaleClaimWarnHours is the age (in hours, by bd's updated_at) an
+	// in_progress bead must exceed, with no live agent PID found in any
+	// recent run, before the health patrol's stale-claims check warns about
+	// it (default 24 when zero/omitted). KORYPH_STALE_CLAIM_WARN_HOURS env
+	// takes precedence. Report-only: never auto-resets the bead, since some
+	// in_progress beads are correctly parked on a blocker bd cannot
+	// represent (an operator action, unscoped future work) — see
+	// patrolCheckStaleClaims's doc comment (2026-07-15/16 stampede-games
+	// handoff).
+	StaleClaimWarnHours int `json:"stale_claim_warn_hours,omitempty" jsonschema:"minimum=0"`
+
 	// DispatchMode selects the engine's dispatch loop (koryph-2im.3,
 	// docs/designs/2026-07-scheduler-throughput.md L1): "wave" (also
 	// when empty) dispatches a fixed-width batch and blocks until every slot

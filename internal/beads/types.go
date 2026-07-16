@@ -61,6 +61,13 @@ type Issue struct {
 	// always null; live repro 2026-07-05, first consumer koryph-wo0.4's
 	// epic-validation trigger).
 	ParentID string `json:"parent,omitempty"`
+	// UpdatedAt is bd's RFC3339 `updated_at` timestamp — the last time ANY
+	// field on this issue changed (status, notes, labels, ...). bd's `bd
+	// list`/`bd show`/`bd ready` JSON has always carried this key; it was
+	// simply never parsed into Issue until patrolCheckStaleClaims
+	// (internal/engine/health.go) needed a staleness signal for self-parked
+	// in_progress claims (2026-07-15/16 stampede-games handoff).
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // ReadyOpts scopes the ready-frontier query.

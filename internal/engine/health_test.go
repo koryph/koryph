@@ -1108,6 +1108,195 @@ func TestPatrolCheckEpicValidations_SharesCacheWithUnvalidatedEpics(t *testing.T
 	}
 }
 
+// --- stale self-parked in_progress claims (2026-07-15/16 handoff) ----------
+
+// staleClaimsRunner builds a runner around fake with a real ledger.Store
+// rooted at a temp dir, so liveClaimedBeadIDs has somewhere to ListRuns/LoadRun.
+func staleClaimsRunner(t *testing.T, fake *epicFakeStore) *runner {
+	t.Helper()
+	return &runner{
+		cfg:     &project.Config{},
+		adapter: fake,
+		store:   &ledger.Store{KoryphRoot: t.TempDir()},
+	}
+}
+
+// writeFixtureRun persists a run directly (bypassing Store.NewRun, whose
+// second-resolution RunID would collide across calls within one test) with
+// the given slots, keyed by PhaseID.
+func writeFixtureRun(t *testing.T, store *ledger.Store, runID string, slots ...ledger.Slot) {
+	t.Helper()
+	run := &ledger.Run{RunID: runID, Status: ledger.RunRunning, Slots: map[string]*ledger.Slot{}}
+	for i := range slots {
+		sl := slots[i]
+		run.Slots[sl.PhaseID] = &sl
+	}
+	if err := store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPatrolCheckStaleClaims_StaleNoLivePID_Warns is the AC's fixture-locked
+// test: an in_progress bead updated well past the threshold with no live PID
+// in any run is flagged WARN, naming the bead and citing both the
+// bd-representable-blocker and the no-dispatch remediation.
+func TestPatrolCheckStaleClaims_StaleNoLivePID_Warns(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.issues["stuck"] = beads.Issue{
+		ID: "stuck", Title: "self-parked bead", IssueType: "task", Status: "in_progress",
+		UpdatedAt: time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	r := staleClaimsRunner(t, fake)
+
+	findings := r.patrolCheckStaleClaims(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 1 {
+		t.Fatalf("warn findings = %d, want 1; findings = %+v", got, findings)
+	}
+	msg := findings[0].message
+	if !strings.Contains(msg, "stuck") || !strings.Contains(msg, "bd dep add") || !strings.Contains(msg, "no-dispatch") {
+		t.Errorf("finding message = %q, want it to name the bead and cite both remediations", msg)
+	}
+}
+
+// TestPatrolCheckStaleClaims_LivePIDInOlderRun_NotFlagged verifies the
+// "not just the latest run" requirement: a live PID for the bead in an OLDER
+// (non-latest) run must suppress the finding.
+func TestPatrolCheckStaleClaims_LivePIDInOlderRun_NotFlagged(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.issues["stuck"] = beads.Issue{
+		ID: "stuck", Title: "still being worked", IssueType: "task", Status: "in_progress",
+		UpdatedAt: time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	r := staleClaimsRunner(t, fake)
+
+	// Newest run: no slot for "stuck". Older run: a slot with OUR OWN pid
+	// (guaranteed alive) — proves the scan looks beyond just the latest run.
+	writeFixtureRun(t, r.store, "20260601-000200")
+	writeFixtureRun(t, r.store, "20260601-000100", ledger.Slot{PhaseID: "stuck", PID: os.Getpid(), Status: ledger.SlotRunning})
+
+	findings := r.patrolCheckStaleClaims(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 0 {
+		t.Errorf("warn findings = %d, want 0 (live pid in an older run); findings = %+v", got, findings)
+	}
+}
+
+// TestPatrolCheckStaleClaims_DeadPID_Warns is the negative of the above: a
+// slot naming the bead exists, but its PID is dead — still flagged.
+func TestPatrolCheckStaleClaims_DeadPID_Warns(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.issues["stuck"] = beads.Issue{
+		ID: "stuck", Title: "abandoned claim", IssueType: "task", Status: "in_progress",
+		UpdatedAt: time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	r := staleClaimsRunner(t, fake)
+	writeFixtureRun(t, r.store, "20260601-000100", ledger.Slot{PhaseID: "stuck", PID: 9999999, Status: ledger.SlotRunning})
+
+	findings := r.patrolCheckStaleClaims(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 1 {
+		t.Errorf("warn findings = %d, want 1 (pid is dead); findings = %+v", got, findings)
+	}
+}
+
+// TestPatrolCheckStaleClaims_RecentlyTouched_NotFlagged verifies the
+// staleness threshold: an in_progress bead updated moments ago must not be
+// flagged even with no live PID anywhere — it may simply have been claimed
+// seconds before this patrol tick ran.
+func TestPatrolCheckStaleClaims_RecentlyTouched_NotFlagged(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.issues["fresh"] = beads.Issue{
+		ID: "fresh", Title: "just claimed", IssueType: "task", Status: "in_progress",
+		UpdatedAt: time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+	}
+	r := staleClaimsRunner(t, fake)
+
+	findings := r.patrolCheckStaleClaims(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 0 {
+		t.Errorf("warn findings = %d, want 0 (not yet stale); findings = %+v", got, findings)
+	}
+}
+
+// TestPatrolCheckStaleClaims_ConfigThreshold verifies
+// project.Config.StaleClaimWarnHours is honored: a bead stale by the default
+// (24h) but within a configured 96h threshold must not be flagged.
+func TestPatrolCheckStaleClaims_ConfigThreshold(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.issues["stuck"] = beads.Issue{
+		ID: "stuck", Title: "within configured threshold", IssueType: "task", Status: "in_progress",
+		UpdatedAt: time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	r := staleClaimsRunner(t, fake)
+	r.cfg.StaleClaimWarnHours = 96
+
+	findings := r.patrolCheckStaleClaims(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 0 {
+		t.Errorf("warn findings = %d, want 0 (within the configured 96h threshold); findings = %+v", got, findings)
+	}
+}
+
+// TestPatrolCheckStaleClaims_OpenBead_NotFlagged verifies only in_progress
+// issues are considered — an open bead, however old, is already visible to
+// bd ready and is not this check's concern.
+func TestPatrolCheckStaleClaims_OpenBead_NotFlagged(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.issues["old-open"] = beads.Issue{
+		ID: "old-open", Title: "just old, not claimed", IssueType: "task", Status: "open",
+		UpdatedAt: time.Now().Add(-720 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	r := staleClaimsRunner(t, fake)
+
+	findings := r.patrolCheckStaleClaims(t.Context(), time.Now())
+
+	if got := countLevel(findings, "warn"); got != 0 {
+		t.Errorf("warn findings = %d, want 0 (bead is open, not in_progress); findings = %+v", got, findings)
+	}
+}
+
+func TestPatrolCheckStaleClaims_NoListerAdapter_OK(t *testing.T) {
+	r := &runner{adapter: &fakeSource{}}
+	findings := r.patrolCheckStaleClaims(t.Context(), time.Now())
+	if len(findings) != 1 || findings[0].level != "ok" {
+		t.Errorf("findings = %+v, want a single ok finding for an adapter without List", findings)
+	}
+}
+
+// TestPatrolCheckStaleClaims_CadenceThrottlesRescans verifies this check's
+// own cadence gate (staleClaimsAt/staleClaimsScanCadence): a resolved claim
+// within the cadence window still replays the cached WARN, and a rescan only
+// happens once the window elapses.
+func TestPatrolCheckStaleClaims_CadenceThrottlesRescans(t *testing.T) {
+	fake := closedEpicFixture()
+	fake.issues["stuck"] = beads.Issue{
+		ID: "stuck", Title: "self-parked", IssueType: "task", Status: "in_progress",
+		UpdatedAt: time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	r := staleClaimsRunner(t, fake)
+
+	now := time.Now()
+	findings := r.patrolCheckStaleClaims(t.Context(), now)
+	if got := countLevel(findings, "warn"); got != 1 {
+		t.Fatalf("first scan: warn findings = %d, want 1; findings = %+v", got, findings)
+	}
+
+	// Bead resolves, but well within staleClaimsScanCadence — the finding
+	// must replay from cache, unaffected by the underlying change.
+	delete(fake.issues, "stuck")
+	findings = r.patrolCheckStaleClaims(t.Context(), now.Add(time.Minute))
+	if got := countLevel(findings, "warn"); got != 1 {
+		t.Errorf("within cadence: warn findings = %d, want 1 (cached); findings = %+v", got, findings)
+	}
+
+	// Past the cadence window: rescans and picks up the resolved bead.
+	findings = r.patrolCheckStaleClaims(t.Context(), now.Add(staleClaimsScanCadence+time.Minute))
+	if got := countLevel(findings, "warn"); got != 0 {
+		t.Errorf("after cadence: warn findings = %d, want 0 (bead closed, rescanned); findings = %+v", got, findings)
+	}
+}
+
 // --- beadIsTerminal --------------------------------------------------------
 
 func TestBeadIsTerminal(t *testing.T) {

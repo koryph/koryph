@@ -644,6 +644,11 @@
       "minimum": 0,
       "description": "HealthIntervalSeconds sets how often the engine's in-loop health patrol\nfires for this project (default 600 = 10 minutes when zero/omitted).\nKORYPH_HEALTH_INTERVAL_SEC env and Options.HealthIntervalSec take\nprecedence (koryph-gus)."
     },
+    "stale_claim_warn_hours": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "StaleClaimWarnHours is the age (in hours, by bd's updated_at) an\nin_progress bead must exceed, with no live agent PID found in any\nrecent run, before the health patrol's stale-claims check warns about\nit (default 24 when zero/omitted). KORYPH_STALE_CLAIM_WARN_HOURS env\ntakes precedence. Report-only: never auto-resets the bead, since some\nin_progress beads are correctly parked on a blocker bd cannot\nrepresent (an operator action, unscoped future work) — see\npatrolCheckStaleClaims's doc comment (2026-07-15/16 stampede-games\nhandoff)."
+    },
     "dispatch_mode": {
       "type": "string",
       "enum": [

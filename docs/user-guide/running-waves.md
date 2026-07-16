@@ -464,6 +464,36 @@ Parked budget-kill slots surface the same way as any other `blocked` slot —
 via `koryph board`, the TUI, and the health-patrol channels — with the note
 prefixed `needs-attention:` and the accumulated `CostUSD` so far.
 
+### Self-parked beads and stale in_progress claims
+
+`bd ready` unconditionally excludes `in_progress` issues — by design, so a
+bead an agent has claimed is never handed to a second agent. But that also
+means an agent that gets stuck mid-task and simply leaves the bead
+`in_progress` with an explanatory note — instead of wiring a formal
+dependency edge and releasing its claim — makes that bead invisible to bd's
+otherwise-correct, live-recomputed dependency engine *permanently*: nothing
+re-checks it, and there is no event, re-scan, or expiry. Every dispatched
+agent's instructions cover this case explicitly (see the dispatch preamble):
+when it determines it cannot proceed, it is expected to either
+
+- wire the blocker as a real dependency edge and reopen the bead
+  (`bd dep add <id> --blocked-by <blocker>` then `bd update <id> --status
+  open`) so `bd ready` re-surfaces it automatically once the blocker
+  closes, or
+- label the bead `no-dispatch`, reopen it, and explain the blocker in a
+  note, when the blocker is not something any bead represents (an operator
+  action, unscoped future work).
+
+As a backstop for beads that self-park anyway, the health patrol's
+`stale-claims` check periodically scans every `in_progress` issue in the
+project (not just the current run's slots) and warns when one has gone
+stale — its `updated_at` older than `stale_claim_warn_hours` (default 24;
+set in `koryph.project.json`) — with no live agent found in any recent run.
+This is report-only: it never resets the bead itself, because an
+`in_progress` bead can also be correctly parked on something bd cannot
+represent, and an automatic reset would just get it redispatched into the
+same blocker.
+
 ## Poll interval
 
 The engine polls each running slot's `status.json` heartbeat every **10 seconds**

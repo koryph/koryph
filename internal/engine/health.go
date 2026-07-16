@@ -32,6 +32,12 @@ package engine
 //     validation:parked or validation:degraded, level warn — an operator
 //     decision is required, mirroring internal/doctor's checkEpicValidations
 //     (koryph-wo0.7)
+//   - stale self-parked in_progress claims: any in_progress issue (not just
+//     this run's slots) whose bd updated_at is stale and has no live agent
+//     PID in any recent run, level warn — bd ready unconditionally excludes
+//     in_progress issues, so a bead an agent self-parks instead of releasing
+//     is otherwise invisible to bd's dependency engine forever (2026-07-15/
+//     16 stampede-games handoff; see patrolCheckStaleClaims)
 //
 // Findings are:
 //  1. surfaced as progress WARN/INFO lines, throttled to once per hour per
@@ -216,6 +222,7 @@ func (r *runner) collectPatrolFindings(ctx context.Context, now time.Time) []pat
 	out = append(out, r.patrolCheckStaleWorktrees(ctx)...)
 	out = append(out, r.patrolCheckUnvalidatedEpics(ctx, now)...)
 	out = append(out, r.patrolCheckEpicValidations(ctx, now)...)
+	out = append(out, r.patrolCheckStaleClaims(ctx, now)...)
 	return out
 }
 
@@ -1087,4 +1094,174 @@ func parkedNoteForPatrol(notes string) (round int, reason string) {
 		}
 	}
 	return 0, ""
+}
+
+// --- check: stale self-parked in_progress claims ---------------------------
+
+// patrolCheckStaleClaims is the check name for stale-claim WARN findings.
+const patrolCheckStaleClaims = "stale-claims"
+
+// defaultStaleClaimWarnHours is the age (bd's updated_at) an in_progress
+// bead must exceed, with no live agent PID found anywhere, before this check
+// warns about it.
+const defaultStaleClaimWarnHours = 24
+
+// staleClaimsScanCadence throttles this check's ledger scan (ListRuns +
+// LoadRun per recent run — a directory walk plus JSON reads, unlike the
+// epic checks' pure in-memory work) to once per window, INDEPENDENTLY of
+// epicPatrolAt/epicListCadence: a same-tick call from
+// patrolCheckUnvalidatedEpics or patrolCheckEpicValidations may already have
+// consumed that cache's one-shot "refreshed" signal this tick, so gating on
+// it here would silently skip the scan on the very tick the issue list
+// changed. patrolEpicIssues is still reused for the CHEAP part (the shared
+// bd `List` call), just not for cadence control.
+const staleClaimsScanCadence = patrolThrottleWindow
+
+// staleClaimsMaxRunsScanned bounds the ledger scan to the N most recent runs
+// (ledger.Store.ListRuns returns newest-first). A live agent process backing
+// an in_progress claim can only belong to a run that started recently;
+// capping keeps this check's one exception to the "no bd subprocess, < 1s"
+// design note (see file doc comment) cheap regardless of how much run
+// history gc.Config.RunDirs retention has left on disk.
+const staleClaimsMaxRunsScanned = 20
+
+// staleClaimWarnThreshold resolves the effective staleness threshold:
+// KORYPH_STALE_CLAIM_WARN_HOURS env, then project.Config.StaleClaimWarnHours,
+// then defaultStaleClaimWarnHours (24h).
+func (r *runner) staleClaimWarnThreshold() time.Duration {
+	if v, ok := envInt("KORYPH_STALE_CLAIM_WARN_HOURS"); ok && v > 0 {
+		return time.Duration(v) * time.Hour
+	}
+	if r.cfg != nil && r.cfg.StaleClaimWarnHours > 0 {
+		return time.Duration(r.cfg.StaleClaimWarnHours) * time.Hour
+	}
+	return time.Duration(defaultStaleClaimWarnHours) * time.Hour
+}
+
+// patrolCheckStaleClaims flags an in_progress bead nothing is actively
+// working on. `bd ready` unconditionally excludes in_progress issues — by
+// design, so a bead an agent has claimed is never handed to a second agent —
+// but that means a bead an agent SELF-PARKS (left in_progress with an
+// explanatory note instead of a formal `bd dep add` edge plus a released
+// claim) is invisible to bd's otherwise-correct, live-recomputed dependency
+// engine permanently: nothing re-checks it, there is no event, no re-scan,
+// no expiry (2026-07-15/16 stampede-games handoff, reproduced live: closing
+// a P0 blocker instantly and correctly flipped ITS dependents to ready —
+// zero koryph changes — but a sibling bead already carrying that same
+// formal dependency edge stayed invisible because it was in_progress, not
+// open). recover.go's reconcileOrphans is the nearest existing safety net
+// but only scans the LATEST run's slots, and only at a fresh (non-resume)
+// start — a bead self-parked several runs ago, or claimed by a process this
+// run never adopted, is outside that scan surface entirely. This check is
+// corpus-wide (every in_progress issue via the shared bd `List` call, not
+// just this run's slots) and periodic (every patrol tick, not just at
+// start).
+//
+// Deliberately WARN/report-only, never auto-reset: the same 2026-07-16 scan
+// that found this gap also found two in_progress beads correctly staying
+// parked — one blocked on an operator action (no bd item represents "the
+// operator signs up for an account"), one blocked on genuinely unscoped
+// future work (no bd item to depend on either) — where a naive age-based
+// auto-reset would just get them redispatched, rediscover the same
+// non-bd-representable blocker, and loop burning tokens. An operator (or a
+// better-behaved future dispatch, per this check's remediation hint in the
+// message) decides case by case; this check's job is only to make the
+// stale claim visible, which today it is not.
+func (r *runner) patrolCheckStaleClaims(ctx context.Context, now time.Time) []patrolFinding {
+	lister, ok := r.adapter.(epicLister)
+	if !ok {
+		return []patrolFinding{{check: patrolCheckStaleClaims, level: "ok",
+			message: "adapter has no issue-listing verb"}}
+	}
+	issues, _, err := r.patrolEpicIssues(ctx, lister, now)
+	if err != nil {
+		return []patrolFinding{{check: patrolCheckStaleClaims, level: "warn",
+			message: fmt.Sprintf("list issues: %v", err)}}
+	}
+
+	if !r.staleClaimsAt.IsZero() && now.Sub(r.staleClaimsAt) < staleClaimsScanCadence {
+		return r.staleClaimsFindings
+	}
+	r.staleClaimsAt = now
+
+	threshold := r.staleClaimWarnThreshold()
+	var candidates []beads.Issue
+	for _, iss := range issues {
+		if iss.Status != "in_progress" {
+			continue
+		}
+		t, perr := time.Parse(time.RFC3339, iss.UpdatedAt)
+		if perr != nil || now.Sub(t) < threshold {
+			continue
+		}
+		candidates = append(candidates, iss)
+	}
+	if len(candidates) == 0 {
+		r.staleClaimsFindings = []patrolFinding{{check: patrolCheckStaleClaims, level: "ok",
+			message: "no stale in_progress claims"}}
+		return r.staleClaimsFindings
+	}
+
+	live := r.liveClaimedBeadIDs()
+	var out []patrolFinding
+	for _, iss := range candidates {
+		if live[iss.ID] {
+			continue
+		}
+		out = append(out, patrolFinding{
+			check: patrolCheckStaleClaims,
+			level: "warn",
+			message: fmt.Sprintf(
+				"stale claim: %s %q in_progress since %s, no live agent found in the %d most recent run(s) — "+
+					"if self-parked on another bead: `bd dep add %s --blocked-by <blocker>` then `bd update %s --status open`; "+
+					"if blocked on something bd cannot represent: label no-dispatch and reopen",
+				iss.ID, iss.Title, iss.UpdatedAt, staleClaimsMaxRunsScanned, iss.ID, iss.ID),
+		})
+	}
+	if len(out) == 0 {
+		out = []patrolFinding{{check: patrolCheckStaleClaims, level: "ok",
+			message: fmt.Sprintf("%d stale-by-age in_progress bead(s), all have a live agent", len(candidates))}}
+	}
+	r.staleClaimsFindings = out
+	return out
+}
+
+// liveClaimedBeadIDs scans the staleClaimsMaxRunsScanned most recent runs
+// (ListRuns returns newest-first) and returns the set of bead IDs with at
+// least one slot whose PID is alive in SOME run — not just the latest,
+// since more than one koryph engine can hold a live run against the same
+// project (patrolCheckStaleDemand's "stale demand from OTHER engine PIDs"
+// above is the same multi-engine reality applied to a different resource).
+// A read error on one run is skipped, not fatal — this is a best-effort
+// liveness signal for a report-only check, not a strict audit.
+func (r *runner) liveClaimedBeadIDs() map[string]bool {
+	live := map[string]bool{}
+	if r.store == nil {
+		return live
+	}
+	runIDs, err := r.store.ListRuns()
+	if err != nil {
+		return live
+	}
+	if len(runIDs) > staleClaimsMaxRunsScanned {
+		runIDs = runIDs[:staleClaimsMaxRunsScanned]
+	}
+	for _, id := range runIDs {
+		run, rerr := r.store.LoadRun(id)
+		if rerr != nil {
+			continue
+		}
+		for _, sl := range run.Slots {
+			if sl == nil || sl.PID <= 0 || !dispatch.Alive(sl.PID) {
+				continue
+			}
+			if sl.PhaseID != "" {
+				live[sl.PhaseID] = true
+			}
+			if sl.BeadID != "" {
+				live[sl.BeadID] = true
+			}
+		}
+	}
+	return live
 }
