@@ -22,6 +22,7 @@ import (
 type BeadStore interface {
 	Show(ctx context.Context, id string) (beads.Issue, error)
 	ListChildren(ctx context.Context, id string) ([]beads.Issue, error)
+	ListChildrenAll(ctx context.Context, id string) ([]beads.Issue, error)
 	Create(ctx context.Context, in beads.CreateInput) (string, error)
 	Close(ctx context.Context, id, reason string) error
 	AppendNotes(ctx context.Context, id, text string) error
@@ -179,7 +180,7 @@ func Act(ctx context.Context, bd BeadStore, o ActOpts, v Verdict) (ActResult, er
 // exists (dedup by canonical title OR the validation:docs label). Returns the
 // bead id and whether this call created it.
 func fileDocsBead(ctx context.Context, bd BeadStore, o ActOpts, labels []string) (string, bool, error) {
-	children, err := bd.ListChildren(ctx, o.EpicID)
+	children, err := bd.ListChildrenAll(ctx, o.EpicID)
 	if err != nil {
 		return "", false, err
 	}
@@ -225,7 +226,7 @@ func fileDocsBead(ctx context.Context, bd BeadStore, o ActOpts, labels []string)
 // re-reported across rounds must not pile up duplicates).
 func fileGaps(ctx context.Context, bd BeadStore, o ActOpts, gaps []Gap, progress func(string, ...any)) ([]string, error) {
 	existing := map[string]string{} // title → id
-	if children, err := bd.ListChildren(ctx, o.EpicID); err == nil {
+	if children, err := bd.ListChildrenAll(ctx, o.EpicID); err == nil {
 		for _, c := range children {
 			existing[c.Title] = c.ID
 		}

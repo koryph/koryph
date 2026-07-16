@@ -173,6 +173,20 @@ func TestListChildren(t *testing.T) {
 	}
 }
 
+func TestListChildrenAll(t *testing.T) {
+	a, log := newFakeAdapter(t)
+	got, err := a.ListChildrenAll(context.Background(), "epic-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "c-1" {
+		t.Fatalf("children = %+v", got)
+	}
+	if args := lastArgs(t, log)[0]; args != "list --parent epic-1 --json --all --limit 0" {
+		t.Fatalf("list argv = %q", args)
+	}
+}
+
 func TestMutationVerbs(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {

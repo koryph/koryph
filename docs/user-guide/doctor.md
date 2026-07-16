@@ -210,6 +210,23 @@ koryph ci setup --project <id>
 koryph ci setup --project <id> --force   # overwrite a locally modified file
 ```
 
+### epic-validations
+Reports open epics carrying `validation:parked` (exceeded `max_rounds`,
+awaiting an operator decision) or `validation:degraded` (validator infra
+failure) as **warnings**, each naming `koryph epic validate <id>` as the
+recovery command. See [Epic validation](epic-validation.md) for the full
+label vocabulary.
+
+### unvalidated-epics
+Reports open epics whose children are **all closed** but that never
+themselves closed — validation was never triggered, or the docs-bead
+close-after-docs path stalled after the docs bead closed. This is the
+offline counterpart to the live loop's hourly health-patrol backstop (see
+[Self-healing: stranded completed epics](epic-validation.md#self-healing-stranded-completed-epics)):
+useful when no `koryph run` loop is currently active to self-heal it. Each
+finding is a **warning** naming `koryph epic validate <id>` as the recovery
+command.
+
 ## JSON output
 
 ```json

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/epicreview"
 )
 
 // --- fixture-locked tests ---------------------------------------------------
@@ -238,6 +239,199 @@ func TestRunProjectEpicValidationsIntegrated(t *testing.T) {
 		t.Errorf("RunProject: epic-validations message missing epic ID: %s", f.Message)
 	}
 	// ExitCode should be 1 (warnings)
+	if code := r.ExitCode(); code != 1 {
+		t.Errorf("ExitCode = %d, want 1 (warnings present)", code)
+	}
+}
+
+// --- checkUnvalidatedEpics unit tests ----------------------------------------
+
+// fakeChildrenAll injects a static open-epic-id -> children map (no bd
+// subprocess).
+func fakeChildrenAll(byEpic map[string][]beads.Issue) func(string, string) ([]beads.Issue, error) {
+	return func(_ string, epicID string) ([]beads.Issue, error) {
+		return byEpic[epicID], nil
+	}
+}
+
+// TestUnvalidatedEpicsAllClosedChildrenWarns verifies that an open, unlabeled
+// epic whose every child is closed produces a LevelWarn finding naming the
+// recovery command — the offline mirror of
+// TestPatrolCheckUnvalidatedEpics_ReQueuesAndValidationStarts in
+// internal/engine/health_test.go.
+func TestUnvalidatedEpicsAllClosedChildrenWarns(t *testing.T) {
+	epic := beads.Issue{ID: "koryph-duzu", Title: "stranded epic", IssueType: "epic", Status: "open"}
+	opts := ProjectOptions{
+		RepoRoot:  t.TempDir(),
+		ListEpics: fakeEpics(epic),
+		ListChildrenAll: fakeChildrenAll(map[string][]beads.Issue{
+			"koryph-duzu": {
+				{ID: "c1", Status: "closed"},
+				{ID: "c2", Status: "done"},
+			},
+		}),
+	}
+	findings := checkUnvalidatedEpics(opts, opts.RepoRoot)
+
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d: %v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.Check != checkNameUnvalidatedEpics {
+		t.Errorf("check = %q, want %q", f.Check, checkNameUnvalidatedEpics)
+	}
+	if f.Level != LevelWarn {
+		t.Errorf("level = %q, want warn", f.Level)
+	}
+	if !strings.Contains(f.Message, "koryph-duzu") {
+		t.Errorf("message missing epic ID: %s", f.Message)
+	}
+	if !strings.Contains(f.Message, "koryph epic validate koryph-duzu") {
+		t.Errorf("message missing recovery command: %s", f.Message)
+	}
+}
+
+// TestUnvalidatedEpicsPassedLabelStillWarns verifies the close-after-docs
+// stall case: an epic already carrying validation:passed with all children
+// (including the docs bead) closed still warns, with a reason naming the
+// stalled close-after-docs path.
+func TestUnvalidatedEpicsPassedLabelStillWarns(t *testing.T) {
+	epic := beads.Issue{
+		ID: "koryph-q9v", Title: "passed but unclosed", IssueType: "epic", Status: "open",
+		Labels: []string{epicreview.LabelPassed},
+	}
+	opts := ProjectOptions{
+		RepoRoot:  t.TempDir(),
+		ListEpics: fakeEpics(epic),
+		ListChildrenAll: fakeChildrenAll(map[string][]beads.Issue{
+			"koryph-q9v": {{ID: "docs-1", Status: "closed"}},
+		}),
+	}
+	findings := checkUnvalidatedEpics(opts, opts.RepoRoot)
+
+	if len(findings) != 1 || findings[0].Level != LevelWarn {
+		t.Fatalf("want 1 warn finding, got %v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "close-after-docs") {
+		t.Errorf("message should name the close-after-docs stall: %s", findings[0].Message)
+	}
+}
+
+// TestUnvalidatedEpicsOpenChildNotReported verifies an epic with at least one
+// still-open child is not flagged — it is genuinely still in progress.
+func TestUnvalidatedEpicsOpenChildNotReported(t *testing.T) {
+	epic := beads.Issue{ID: "koryph-e1", Title: "in progress", IssueType: "epic", Status: "open"}
+	opts := ProjectOptions{
+		RepoRoot:  t.TempDir(),
+		ListEpics: fakeEpics(epic),
+		ListChildrenAll: fakeChildrenAll(map[string][]beads.Issue{
+			"koryph-e1": {{ID: "c1", Status: "closed"}, {ID: "c2", Status: "open"}},
+		}),
+	}
+	findings := checkUnvalidatedEpics(opts, opts.RepoRoot)
+
+	if len(findings) != 1 || findings[0].Level != LevelOK {
+		t.Errorf("epic with an open child should not warn; got: %v", findings)
+	}
+}
+
+// TestUnvalidatedEpicsChildlessNotReported verifies a genuinely childless
+// epic (never decomposed) is not flagged — len(children) == 0 must stay a
+// valid "nothing to validate" signal, not be conflated with "all closed".
+func TestUnvalidatedEpicsChildlessNotReported(t *testing.T) {
+	epic := beads.Issue{ID: "koryph-e2", Title: "never decomposed", IssueType: "epic", Status: "open"}
+	opts := ProjectOptions{
+		RepoRoot:        t.TempDir(),
+		ListEpics:       fakeEpics(epic),
+		ListChildrenAll: fakeChildrenAll(nil),
+	}
+	findings := checkUnvalidatedEpics(opts, opts.RepoRoot)
+
+	if len(findings) != 1 || findings[0].Level != LevelOK {
+		t.Errorf("childless epic should not warn; got: %v", findings)
+	}
+}
+
+// TestUnvalidatedEpicsSkipsParkedDegradedNoValidate verifies parked,
+// degraded, and no-validate epics are left to checkEpicValidations (or are
+// deliberately excluded) rather than double-reported here, even when every
+// child is closed.
+func TestUnvalidatedEpicsSkipsParkedDegradedNoValidate(t *testing.T) {
+	for _, label := range []string{epicreview.LabelParked, epicreview.LabelDegraded, epicreview.LabelNoValidate} {
+		epic := beads.Issue{ID: "koryph-sk", Title: "skip me", IssueType: "epic", Status: "open", Labels: []string{label}}
+		opts := ProjectOptions{
+			RepoRoot:  t.TempDir(),
+			ListEpics: fakeEpics(epic),
+			ListChildrenAll: fakeChildrenAll(map[string][]beads.Issue{
+				"koryph-sk": {{ID: "c1", Status: "closed"}},
+			}),
+		}
+		findings := checkUnvalidatedEpics(opts, opts.RepoRoot)
+		if len(findings) != 1 || findings[0].Level != LevelOK {
+			t.Errorf("label %s: epic must not be reported; got %v", label, findings)
+		}
+	}
+}
+
+// TestUnvalidatedEpicsClosedEpicSkipped verifies an already-closed epic is
+// never inspected, regardless of its children.
+func TestUnvalidatedEpicsClosedEpicSkipped(t *testing.T) {
+	epic := beads.Issue{ID: "koryph-done", Title: "already closed", IssueType: "epic", Status: "closed"}
+	opts := ProjectOptions{
+		RepoRoot:  t.TempDir(),
+		ListEpics: fakeEpics(epic),
+		ListChildrenAll: fakeChildrenAll(map[string][]beads.Issue{
+			"koryph-done": {{ID: "c1", Status: "closed"}},
+		}),
+	}
+	findings := checkUnvalidatedEpics(opts, opts.RepoRoot)
+	if len(findings) != 1 || findings[0].Level != LevelOK {
+		t.Errorf("closed epic should not warn; got: %v", findings)
+	}
+}
+
+// TestUnvalidatedEpicsListChildrenError verifies a per-epic list-children
+// error surfaces as its own LevelWarn finding rather than aborting the scan.
+func TestUnvalidatedEpicsListChildrenError(t *testing.T) {
+	epic := beads.Issue{ID: "koryph-e3", Title: "boom", IssueType: "epic", Status: "open"}
+	opts := ProjectOptions{
+		RepoRoot:  t.TempDir(),
+		ListEpics: fakeEpics(epic),
+		ListChildrenAll: func(_, _ string) ([]beads.Issue, error) {
+			return nil, fmt.Errorf("bd: exit status 1")
+		},
+	}
+	findings := checkUnvalidatedEpics(opts, opts.RepoRoot)
+	if len(findings) != 1 || findings[0].Level != LevelWarn {
+		t.Fatalf("want 1 warn finding, got %v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "koryph-e3") || !strings.Contains(findings[0].Message, "list children") {
+		t.Errorf("unexpected message: %s", findings[0].Message)
+	}
+}
+
+// TestRunProjectUnvalidatedEpicsIntegrated verifies that checkUnvalidatedEpics
+// appears in the RunProject output when both injection seams are set.
+func TestRunProjectUnvalidatedEpicsIntegrated(t *testing.T) {
+	root := fabricateProject(t)
+	epic := beads.Issue{ID: "koryph-int1", Title: "integrated stranded epic", IssueType: "epic", Status: "open"}
+	opts := projectOpts(root)
+	opts.ListEpics = fakeEpics(epic)
+	opts.ListChildrenAll = fakeChildrenAll(map[string][]beads.Issue{
+		"koryph-int1": {{ID: "c1", Status: "closed"}},
+	})
+
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameUnvalidatedEpics)
+	if f.Level != LevelWarn {
+		t.Errorf("RunProject: unvalidated-epics level = %q, want warn", f.Level)
+	}
+	if !strings.Contains(f.Message, "koryph-int1") {
+		t.Errorf("RunProject: unvalidated-epics message missing epic ID: %s", f.Message)
+	}
 	if code := r.ExitCode(); code != 1 {
 		t.Errorf("ExitCode = %d, want 1 (warnings present)", code)
 	}

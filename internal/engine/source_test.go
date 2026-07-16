@@ -28,8 +28,11 @@ func (f *fakeSource) Show(_ context.Context, id string) (beads.Issue, error) {
 	return beads.Issue{ID: id}, nil
 }
 func (f *fakeSource) ListChildren(context.Context, string) ([]beads.Issue, error) { return nil, nil }
-func (f *fakeSource) Claim(context.Context, string) error                         { return nil }
-func (f *fakeSource) Close(context.Context, string, string) error                 { return nil }
+func (f *fakeSource) ListChildrenAll(context.Context, string) ([]beads.Issue, error) {
+	return nil, nil
+}
+func (f *fakeSource) Claim(context.Context, string) error         { return nil }
+func (f *fakeSource) Close(context.Context, string, string) error { return nil }
 func (f *fakeSource) Comment(_ context.Context, id, text string) error {
 	f.comments = append(f.comments, [2]string{id, text})
 	return nil

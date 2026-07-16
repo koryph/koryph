@@ -857,14 +857,15 @@ const patrolCheckEpics = "unvalidated-epics"
 // epicListCadence gates the bd subprocess calls this check (and its sibling,
 // koryph-wo0.7's parked/degraded WARN check) need — bd has no verb cheaper
 // than a full project listing for "every open epic", and a per-epic
-// ListChildren call is needed on top of that to see closed children (bd's
-// plain list excludes closed issues by default; ListChildren does not) — to a
-// coarser cadence than healthInterval: once per patrolThrottleWindow (1 h)
-// rather than once per patrol tick (default every 10 m). The raw open-issue
-// listing (r.epicPatrolIssues) is cached for wo0.7 to reuse without a second
-// bd call; this check additionally caches its own derived findings
-// (r.epicPatrolFindings) so the per-epic ListChildren calls are also paid
-// once per refresh, not once per patrol tick.
+// ListChildrenAll call is needed on top of that to see closed children too
+// (bd's plain list excludes closed issues by default, which is exactly why
+// ListChildren alone can never confirm an epic is complete — see its doc
+// comment) — to a coarser cadence than healthInterval: once per
+// patrolThrottleWindow (1 h) rather than once per patrol tick (default every
+// 10 m). The raw open-issue listing (r.epicPatrolIssues) is cached for wo0.7
+// to reuse without a second bd call; this check additionally caches its own
+// derived findings (r.epicPatrolFindings) so the per-epic ListChildrenAll
+// calls are also paid once per refresh, not once per patrol tick.
 const epicListCadence = patrolThrottleWindow
 
 // epicLister is the optional WorkSource capability for listing every OPEN
@@ -956,7 +957,7 @@ func (r *runner) patrolCheckUnvalidatedEpics(ctx context.Context, now time.Time)
 		if epic.ID == r.epicInFlight {
 			continue // already validating — never double-queue
 		}
-		children, cerr := r.adapter.ListChildren(ctx, epic.ID)
+		children, cerr := r.adapter.ListChildrenAll(ctx, epic.ID)
 		if cerr != nil {
 			out = append(out, patrolFinding{check: patrolCheckEpics, level: "warn",
 				message: fmt.Sprintf("epic %s: list children: %v", epic.ID, cerr)})

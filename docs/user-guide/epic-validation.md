@@ -213,6 +213,28 @@ surfaces degraded epics in its health report. Retry by running
 `koryph epic validate` again after addressing the root cause (usually a
 timeout — raise `timeout_seconds` or check quota headroom).
 
+## Self-healing: stranded completed epics
+
+The ordinary trigger is edge-driven: closing a child bead queues its parent
+epic for a completion check on the next tick. Two situations fall outside
+that edge — a crash between a child's close and the tick that would have
+noticed it, or an epic that finished while no `koryph run` loop was active at
+all — leaving an epic whose children are all closed but that never itself
+closed or validated. Two backstops catch this:
+
+- **Live loop.** The health patrol re-scans every open epic once per hour
+  (independent of the normal 10-minute patrol cadence — listing every epic's
+  children is comparatively expensive) and re-queues any stranded completed
+  epic for validation exactly as if its last child had just closed.
+- **`koryph doctor --project <id>`.** The `unvalidated-epics` check reports
+  the same condition offline, as a warning naming `koryph epic validate <id>`
+  as the recovery command — the check a stopped or never-started loop cannot
+  run itself.
+
+Both checks skip epics already carrying `no-validate`, `validation:parked`,
+or `validation:degraded` — those are operator-decision or infra-failure
+states surfaced elsewhere (see the label vocabulary above).
+
 ## See also
 
 - [Work: beads and the ready-graph](../concepts/beads.md) — the bead

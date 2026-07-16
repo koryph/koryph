@@ -79,9 +79,26 @@ func (a *Adapter) Show(ctx context.Context, id string) (Issue, error) {
 	return parseIssue([]byte(res.Stdout))
 }
 
-// ListChildren returns the children of id via `bd list --parent <id> --json`.
+// ListChildren returns the OPEN children of id via `bd list --parent <id>
+// --json` (bd's plain list excludes closed issues by default). Callers that
+// need to know whether an epic's children are all DONE must use
+// ListChildrenAll instead — an epic with every child closed looks
+// indistinguishable from a childless epic through this method.
 func (a *Adapter) ListChildren(ctx context.Context, id string) ([]Issue, error) {
 	res, err := a.run(ctx, "list", "--parent", id, "--json")
+	if err != nil {
+		return nil, err
+	}
+	return parseIssueList([]byte(res.Stdout))
+}
+
+// ListChildrenAll returns every child of id, open and closed, via
+// `bd list --parent <id> --json --all --limit 0`. Use this (not
+// ListChildren) for any "are this epic's children all done?" completeness
+// check — ListChildren's default bd filter excludes closed issues, so it
+// cannot distinguish a fully-completed epic from a childless one.
+func (a *Adapter) ListChildrenAll(ctx context.Context, id string) ([]Issue, error) {
+	res, err := a.run(ctx, "list", "--parent", id, "--json", "--all", "--limit", "0")
 	if err != nil {
 		return nil, err
 	}

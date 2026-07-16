@@ -49,7 +49,26 @@ func (f *epicFakeStore) Show(_ context.Context, id string) (beads.Issue, error) 
 	}
 	return beads.Issue{}, fmt.Errorf("no such issue %s", id)
 }
+
+// ListChildren mirrors the real bd default filter (open only) so a
+// production call site that mistakenly uses ListChildren instead of
+// ListChildrenAll on a fully-closed epic fails its test the same way it
+// fails against real bd, rather than passing because the fake was too
+// permissive (the gap that let koryph-duzu/koryph-q9v ship undetected).
 func (f *epicFakeStore) ListChildren(_ context.Context, id string) ([]beads.Issue, error) {
+	f.childrenCalls++
+	var open []beads.Issue
+	for _, c := range f.children[id] {
+		if c.Status != "closed" && c.Status != "done" {
+			open = append(open, c)
+		}
+	}
+	return open, nil
+}
+
+// ListChildrenAll returns every child, open and closed, mirroring `bd list
+// --all`.
+func (f *epicFakeStore) ListChildrenAll(_ context.Context, id string) ([]beads.Issue, error) {
 	f.childrenCalls++
 	return f.children[id], nil
 }

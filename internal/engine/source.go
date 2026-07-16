@@ -20,6 +20,7 @@ type WorkSource interface {
 	Ready(ctx context.Context, opts beads.ReadyOpts) ([]beads.Issue, error)
 	Show(ctx context.Context, id string) (beads.Issue, error)
 	ListChildren(ctx context.Context, id string) ([]beads.Issue, error)
+	ListChildrenAll(ctx context.Context, id string) ([]beads.Issue, error)
 	Claim(ctx context.Context, id string) error
 	Close(ctx context.Context, id, reason string) error
 	Comment(ctx context.Context, id, text string) error

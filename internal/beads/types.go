@@ -11,7 +11,12 @@
 //   - Ready(ctx, ReadyOpts) ([]Issue, error) — `bd ready --json --limit 0`
 //     (+ --parent when Parent != ""), preserving priority order P0→P3.
 //   - Show(ctx, id) (Issue, error) — `bd show --json <id>`.
-//   - ListChildren(ctx, id) ([]Issue, error) — `bd list --parent <id> --json`.
+//   - ListChildren(ctx, id) ([]Issue, error) — `bd list --parent <id> --json`;
+//     OPEN children only (bd's default filter excludes closed issues).
+//   - ListChildrenAll(ctx, id) ([]Issue, error) — `bd list --parent <id>
+//     --json --all --limit 0`; every child, open and closed. Required for any
+//     "are this epic's children all done?" check — ListChildren alone cannot
+//     tell a fully-closed epic from a childless one.
 //   - ListByLabel(ctx, label) ([]Issue, error) — `bd list --label <label>
 //     --json --limit 0`; used for idempotency checks (e.g. gh-intake dedupe).
 //   - Create(ctx, CreateInput) (id string, error) — `bd create --silent

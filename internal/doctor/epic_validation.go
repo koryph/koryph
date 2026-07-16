@@ -107,6 +107,117 @@ func defaultListEpics(repoRoot string) ([]beads.Issue, error) {
 	return epics, nil
 }
 
+// checkNameUnvalidatedEpics is the check name reported for completed-but-
+// unvalidated epic findings — deliberately matching
+// internal/engine/health.go's patrolCheckEpics string so both surfaces
+// report under the same check label (mirrors checkNameEpicValidations's
+// pairing with patrolCheckEpicVal above).
+const checkNameUnvalidatedEpics = "unvalidated-epics"
+
+// checkUnvalidatedEpics scans all open epics for ones whose children are ALL
+// closed but that never closed themselves — the offline counterpart to
+// internal/engine/health.go's patrolCheckUnvalidatedEpics live backstop. It
+// exists because that backstop only runs inside a live `koryph run` loop: an
+// epic that finishes while no loop is running (or between patrol ticks, on a
+// crash) is otherwise invisible until an operator happens to look. A `koryph
+// doctor` run only reports — it cannot re-queue into a live loop's pending
+// set — so the remediation named in the finding is the same recovery path
+// epicvalidate.go's own doc comment documents: `koryph epic validate <id>`.
+//
+// This must call ListChildrenAll, NOT ListChildren: bd's plain list excludes
+// closed issues by default, so a fully-closed epic (the exact case this
+// check exists to catch) would look indistinguishable from a childless one
+// through ListChildren — see beads.Adapter.ListChildren's doc comment.
+func checkUnvalidatedEpics(opts ProjectOptions, repoRoot string) []Finding {
+	listEpics := opts.ListEpics
+	if listEpics == nil {
+		listEpics = defaultListEpics
+	}
+	listChildrenAll := opts.ListChildrenAll
+	if listChildrenAll == nil {
+		listChildrenAll = defaultListChildrenAll
+	}
+
+	epics, err := listEpics(repoRoot)
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameUnvalidatedEpics,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("cannot list epics: %v", err),
+		}}
+	}
+
+	var findings []Finding
+	for _, epic := range epics {
+		if epic.Status == "closed" || epic.Status == "done" {
+			continue
+		}
+		if epic.HasLabel(epicreview.LabelNoValidate) || epic.HasLabel(epicreview.LabelParked) ||
+			epic.HasLabel(epicreview.LabelDegraded) {
+			continue // operator-decision or infra-failure states — surfaced by checkEpicValidations, not here
+		}
+		children, cerr := listChildrenAll(repoRoot, epic.ID)
+		if cerr != nil {
+			findings = append(findings, Finding{
+				Check:   checkNameUnvalidatedEpics,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("epic %s: list children: %v", epic.ID, cerr),
+			})
+			continue
+		}
+		if len(children) == 0 || anyOpenChild(children) {
+			continue // childless, or genuinely still in progress
+		}
+
+		reason := "validation was never triggered"
+		if epic.HasLabel(epicreview.LabelPassed) {
+			reason = "validation:passed but the epic never closed (close-after-docs path stalled)"
+		}
+		findings = append(findings, Finding{
+			Check: checkNameUnvalidatedEpics,
+			Level: LevelWarn,
+			Message: fmt.Sprintf(
+				"epic %s %q: all %d child(ren) closed, %s — run `koryph epic validate %s` to recover, or restart the loop",
+				epic.ID, epic.Title, len(children), reason, epic.ID),
+		})
+	}
+
+	if len(findings) == 0 {
+		return []Finding{{
+			Check:   checkNameUnvalidatedEpics,
+			Level:   LevelOK,
+			Message: "no stranded completed epics",
+		}}
+	}
+	return findings
+}
+
+// anyOpenChild reports whether any child is non-terminal. Mirrors
+// internal/engine/epicvalidate.go's helper of the same name (deferred counts
+// as open there too — doctor has no dependency on engine to share it, so the
+// two copies must be kept in sync by hand).
+func anyOpenChild(children []beads.Issue) bool {
+	for _, c := range children {
+		if c.Status != "closed" && c.Status != "done" {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultListChildrenAll queries bd for every child of epicID, open and
+// closed. When bd is not on PATH it returns (nil, nil) — bd unavailability is
+// already reported by the global doctor checks.
+func defaultListChildrenAll(repoRoot, epicID string) ([]beads.Issue, error) {
+	a := beads.New(repoRoot)
+	if !a.Available() {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return a.ListChildrenAll(ctx, epicID)
+}
+
 // --- note parsing -----------------------------------------------------------
 //
 // Both note formats are written by epicreview (Act's degraded note,

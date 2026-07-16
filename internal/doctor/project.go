@@ -114,6 +114,12 @@ type ProjectOptions struct {
 	// on error. nil means: call beads.Adapter.List and filter for type "epic".
 	// Inject a fake in tests to avoid spawning bd.
 	ListEpics func(repoRoot string) ([]beads.Issue, error)
+	// ListChildrenAll returns every child (open and closed) of the given epic
+	// ID. Return (nil, nil) when bd is unavailable; (nil, err) on failure —
+	// checkUnvalidatedEpics degrades gracefully on error. nil means: call
+	// beads.Adapter.ListChildrenAll. Inject a fake in tests to avoid spawning
+	// bd.
+	ListChildrenAll func(repoRoot, epicID string) ([]beads.Issue, error)
 
 	// CIService overrides the forge CIService used for gate pipeline rendering
 	// (test seam). When set, forge remote detection is skipped entirely; the
@@ -314,6 +320,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	r.add(checkForge(cfg))
 	r.add(checkBeadsUpgrade(opts, repoRoot))
 	r.addAll(checkEpicValidations(opts, repoRoot))
+	r.addAll(checkUnvalidatedEpics(opts, repoRoot))
 	r.add(checkCIGatePipeline(opts, repoRoot, cfg))
 
 	for _, f := range r.Findings {

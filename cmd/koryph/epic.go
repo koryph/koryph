@@ -123,7 +123,7 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Require all children to be closed.
-	children, err := bd.ListChildren(ctx, epicID)
+	children, err := bd.ListChildrenAll(ctx, epicID)
 	if err != nil {
 		fmt.Fprintf(stderr, "epic validate: cannot list children of %s: %v\n", epicID, err)
 		return engine.ExitFatal

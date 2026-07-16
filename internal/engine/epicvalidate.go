@@ -117,7 +117,7 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 			epic.HasLabel(epicreview.LabelNoValidate) || epic.HasLabel(epicreview.LabelParked) {
 			continue
 		}
-		children, err := r.adapter.ListChildren(ctx, epicID)
+		children, err := r.adapter.ListChildrenAll(ctx, epicID)
 		if err != nil {
 			r.progress("epic %s: list children: %v", epicID, err)
 			continue

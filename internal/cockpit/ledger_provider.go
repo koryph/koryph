@@ -276,7 +276,7 @@ func (p *LedgerProvider) refreshBurndown(ctx context.Context, now time.Time) Bur
 	}
 	epicChildren := map[string][]beads.Issue{}
 	for epicID := range epicIDs {
-		if children, err := p.bd.ListChildren(ctx, epicID); err == nil {
+		if children, err := p.bd.ListChildrenAll(ctx, epicID); err == nil {
 			epicChildren[epicID] = children
 		}
 	}
