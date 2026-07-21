@@ -275,7 +275,7 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		return jsonPlanExit(stdout, stderr, snap, replan(ctx, snap))
 	}
-	fmt.Fprintf(out, "\nadopted: %s is ready — next: /koryph-plan a design (or /koryph-import existing TODOs), then\n  koryph run --project %s --once --dry-run\n", projectID, projectID)
+	fmt.Fprintf(out, "\nadopted: %s is ready — next: describe what to build (or /koryph-design an idea, /koryph-plan a design, /koryph-import existing TODOs), then\n  koryph run --project %s --once --dry-run\n", projectID, projectID)
 	if blocked > 0 {
 		fmt.Fprintf(stderr, "koryph: %d step(s) remain blocked — see the lines above\n", blocked)
 		return 1

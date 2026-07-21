@@ -83,9 +83,14 @@ validation output.
 ## Stage 2 — Turn intent into a bead graph (Build)
 
 Waves dispatch **beads** (issues in the project's local beads/Dolt database).
-`bd ready` must be non-empty or the loop has nothing to build. Two shipped
+`bd ready` must be non-empty or the loop has nothing to build. Three shipped
 paths get you there:
 
+- **From an idea in your head** — just describe what you want to build,
+  change, or fix in an agent session: the installed `koryph-intent.sh`
+  hook detects work-shaped prompts and routes the session to the right
+  planning command. Or run `/koryph-design "<ask>"` directly — it writes a
+  repo-grounded design doc, waits for your approval, then decomposes it.
 - **From a design doc** — run `/koryph-plan <doc>` in your editor (or the
   `koryph-plan` skill) to decompose a design into a filed, conflict-aware bead
   graph with footprints and dependencies wired.
@@ -228,7 +233,7 @@ see [The release bot](release-bot.md) for the three replication models
 | Pillar | Stage | Command(s) |
 |---|---|---|
 | Build | Adopt | `koryph adopt` (or `koryph project add`, `koryph validate`) |
-| Build | Plan | `/koryph-plan`, `/koryph-import`, `/koryph-issue` |
+| Build | Plan | `/koryph-design`, `/koryph-plan`, `/koryph-import`, `/koryph-issue` |
 | Build | Run | `koryph run --project … [--review --auto-merge]` |
 | Protect | Hygiene | `koryph repo check` / `apply`, `koryph posture apply`, `koryph doctor` |
 | Protect | Signing | `koryph signing setup / enable / status` |

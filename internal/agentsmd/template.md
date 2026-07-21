@@ -33,6 +33,23 @@ All work lives in **beads** (`bd`) — never TodoWrite or markdown TODO lists. L
 insight with `bd remember` (no MEMORY.md files). Run `bd prime` once per session for the
 full reference; the managed block below is the short form.
 
+## From intent to beads (the planning front door)
+
+When the operator describes something to **build, change, or fix** — rather than asking a
+question or requesting one concrete edit — do not implement it ad hoc. Route it through the
+planning commands so it becomes dispatch-shaped beads carrying the footprint
+(`area:*`/`fp:*`) and resource (`res:*`) labels the parallel scheduler needs:
+
+- `/koryph-design <ask>` — feature-sized or multi-part asks: writes a repo-grounded design
+  doc, then decomposes it on approval.
+- `/koryph-plan <doc>` — a written design doc already exists.
+- `/koryph-import [path]` — existing roadmap/TODO/FIXME markdown.
+- `/koryph-issue <desc>` — one small, self-contained fix or chore.
+
+On runtimes without slash-command support, open the same prompt files under
+`.claude/commands/koryph-*.md` and follow them directly. Questions need no bead — just
+answer; so does a trivial edit the operator asks for directly.
+
 ## The green gate
 
 One command validates everything: `make gate` (format, build, vet, tests, lint — identical

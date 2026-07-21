@@ -29,6 +29,16 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-intent.sh\"",
+            "type": "command"
+          }
+        ]
+      }
     ]
   },
   "permissions": {

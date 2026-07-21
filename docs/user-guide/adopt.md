@@ -124,7 +124,8 @@ Dependency-ordered, each step idempotent, streamed as `ok`/`skip`/`warn`/
    lands half-committed. Declining leaves the tree dirty with a summary of
    what's unstaged.
 8. **verify** — runs the `koryph validate` check sequence in-process and
-   prints next steps (`/koryph-plan`, `koryph run --once --dry-run`).
+   prints next steps (describe what to build, `/koryph-design`,
+   `/koryph-plan`, `koryph run --once --dry-run`).
 
 ### 5 — Verify
 
@@ -223,6 +224,22 @@ install itself. A session in a repo that hasn't been adopted yet won't have
 the skill — that's what the agent runbook in
 [`llms.txt`](https://koryph.build/llms.txt) is for: point any AI session at
 it and ask it to adopt koryph.
+
+## From adoption to work: describe what you want built
+
+An adopted repo needs no koryph-aware `CLAUDE.md` — most repos predate
+koryph or have no instruction file at all. The bridge is installed, not
+assumed: the `koryph-intent.sh` hook (wired as a `UserPromptSubmit` hook in
+`.claude/settings.json`) watches interactive prompts, and when one reads
+like a description of something to **build, change, or fix**, it injects a
+small routing note telling the session to map the ask onto the planning
+commands — `/koryph-design` for feature-sized asks, `/koryph-plan` for an
+existing design doc, `/koryph-import` for TODO/roadmap markdown,
+`/koryph-issue` for a single small fix — rather than implementing ad hoc.
+Those commands compute the footprint (`area:*`/`fp:*`) and resource
+(`res:*`) labels the parallel scheduler needs. The same routing ships in
+the installed `AGENTS.md` for runtimes without hook support. See
+[Zero to shipped](zero-to-shipped.md) Stage 2.
 
 ## Re-run any time
 

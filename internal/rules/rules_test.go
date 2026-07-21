@@ -60,8 +60,9 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	// PreToolUse/SessionStart hook) but rides along for free via
 	// scaffold.CopyEmbed's "every embedded file ships" contract — this
 	// assertion is the regression guard for that. koryph-prime.sh
-	// (koryph-77r.4) IS the SessionStart hook command.
-	for _, want := range []string{"agent-boundary-guard", "worktree-guard", "koryph-spill", "koryph-prime"} {
+	// (koryph-77r.4) IS the SessionStart hook command, and koryph-intent.sh
+	// is the UserPromptSubmit intent→beads router.
+	for _, want := range []string{"agent-boundary-guard", "worktree-guard", "koryph-spill", "koryph-prime", "koryph-intent"} {
 		found := false
 		for _, r := range hookResults {
 			if r.Name == want && r.Action == scaffold.ActionInstalled {
@@ -85,7 +86,7 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	// Settings carry the koryph wiring, referenced via KORYPH_HOME (not the
 	// agent-writable project dir).
 	blob := settingsBlob(t, root)
-	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "koryph-prime.sh", "bd prime", "Bash(git push --force*)", "${KORYPH_HOME:-$HOME/.koryph}/hooks/"} {
+	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "koryph-prime.sh", "koryph-intent.sh", "UserPromptSubmit", "bd prime", "Bash(git push --force*)", "${KORYPH_HOME:-$HOME/.koryph}/hooks/"} {
 		if !strings.Contains(blob, want) {
 			t.Errorf("settings.json missing %q:\n%s", want, blob)
 		}

@@ -120,6 +120,7 @@ editor's command list):
 
 | Command | Does |
 |---|---|
+| `/koryph-design "<ask>"` | Turn a described ask into a reviewed design doc, then decompose it into beads |
 | `/koryph-issue "<desc>"` | File a well-formed beads issue (no work started) |
 | `/koryph-build [bead]` | Build one issue — picks from `bd ready` if none named |
 | `/koryph-import [path]` | Convert existing markdown plans/TODOs into a bead corpus (onboarding) |

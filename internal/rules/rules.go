@@ -3,8 +3,9 @@
 
 // Package rules installs the koryph enforcement "rules" into a managed
 // project: the hook scripts (hooks/*.sh) and their wiring in
-// .claude/settings.json (the agent-boundary + worktree guards and the bd-prime
-// SessionStart hook, plus the baseline permission allow/deny lists).
+// .claude/settings.json (the agent-boundary + worktree guards, the bd-prime
+// SessionStart hook, and the intent→beads UserPromptSubmit router, plus the
+// baseline permission allow/deny lists).
 //
 // Hook scripts install like agents/commands — whole files, hash-idempotent,
 // --force overwrites a differing file. settings.json is different: it is MERGED
@@ -34,8 +35,8 @@ const (
 
 // hookSpec is one koryph hook to ensure present in .claude/settings.json.
 type hookSpec struct {
-	event   string // "PreToolUse" | "SessionStart"
-	matcher string // tool matcher ("" for SessionStart)
+	event   string // "PreToolUse" | "SessionStart" | "UserPromptSubmit"
+	matcher string // tool matcher ("" for SessionStart/UserPromptSubmit)
 	command string // the hook command
 	marker  string // substring identifying an equivalent existing hook
 }
@@ -61,6 +62,11 @@ var koryphHooks = []hookSpec{
 	{event: "PreToolUse", matcher: "Bash", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh"`, marker: "agent-boundary-guard.sh"},
 	{event: "PreToolUse", matcher: "Bash|Edit|Write", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/worktree-guard.sh"`, marker: "worktree-guard.sh"},
 	{event: "SessionStart", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-prime.sh"  # replaces: bd prime --hook-json`, marker: "bd prime"},
+	// The intent router exists because an adopted repo's CLAUDE.md predates
+	// koryph (or doesn't exist): nothing repo-side tells a session that
+	// implementation work must become beads, so the routing rubric has to
+	// arrive at runtime, per prompt (docs/designs/2026-07-intent-routing.md).
+	{event: "UserPromptSubmit", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-intent.sh"`, marker: "koryph-intent.sh"},
 }
 
 var koryphAllow = []string{"Bash(*)", "Read(**)", "Glob(**)", "Grep(**)", "Edit(**)", "Write(**)"}
