@@ -103,7 +103,7 @@ func (m *burndownModel) View() string {
 	if epicH < 4 {
 		epicH = 4
 	}
-	statsH := avail - epicH - 4 // 4 lines for backlog+cost summary
+	statsH := avail - epicH - 6 // 6 lines: backlog (title+2) + cost (title+2)
 	if statsH < 3 {
 		statsH = 3
 	}
@@ -130,14 +130,41 @@ func (m *burndownModel) renderEpicSection(bd cockpit.BurndownSnapshot, maxRows i
 
 	// Column widths.
 	// Epic(variable) | Remaining | Velocity  | Sparkline | ETA P50/P90
+	//
+	// Overhead: tableHeader (and epicRow's own format string) join 5 columns
+	// with 2-space gaps plus a 2-space leading indent — 2 + 4*2 = 10 chars
+	// that are NOT part of any column's width. The previous "-4" undercounted
+	// this by 6, so epicW came out 6 characters too wide and every row spilled
+	// that far past the terminal's right edge (epic titles pushed
+	// Remaining/Vel/Trend/ETA off-screen).
+	//
+	// etaW is fixed-budget (32) but flexes down on narrow terminals: at the
+	// app's enforced minimum (80x24) the fixed columns alone (etaW+velW+remW+
+	// spkW+overhead = 76) leave only 4 for the epic title, below its own
+	// epicMinW floor — clamping epicW up to that floor without shrinking
+	// anything else reproduced the same overflow the "-4" fix just closed, at
+	// the narrow end instead of every width. Shrinking etaW first keeps the
+	// row within the terminal at every supported width; FormatETARange text
+	// is truncated defensively below so a smaller etaW degrades gracefully
+	// (an ellipsis) rather than overflowing.
+	const rowOverhead = 10
+	const epicMinW = 8
+	const etaMinW = 16
 	w := m.width
-	etaW := 32
 	velW := 10
 	remW := 10
 	spkW := cockpit.SparklineLen + 2
-	epicW := w - etaW - velW - remW - spkW - 4
-	if epicW < 8 {
-		epicW = 8
+	available := w - velW - remW - spkW - rowOverhead
+	etaW := 32
+	if slack := available - epicMinW; etaW > slack {
+		etaW = slack
+	}
+	if etaW < etaMinW {
+		etaW = etaMinW
+	}
+	epicW := available - etaW
+	if epicW < epicMinW {
+		epicW = epicMinW
 	}
 
 	header := m.tableHeader(
@@ -207,7 +234,7 @@ func (m *burndownModel) renderBacklogSection(bd cockpit.BurndownSnapshot) string
 
 	line1 := fmt.Sprintf("  %s  %s%s", readyStr, cpStr, parallelismStr)
 	line2 := fmt.Sprintf("  drain ETA: %s%s", etaStr, sparkLine)
-	return title + "\n" + line1 + "\n" + line2
+	return title + "\n" + m.clipLine(line1) + "\n" + m.clipLine(line2)
 }
 
 // renderCostSection renders the Cost Burndown section.
@@ -239,18 +266,32 @@ func (m *burndownModel) renderCostSection(bd cockpit.BurndownSnapshot) string {
 			cb.ProjectedP90USD/float64(max1(cb.RemainingBeads)))
 	}
 
-	windowStr := ""
+	// remaining+projected and window+fit are split onto two lines (rather than
+	// one long concatenation) so the fit badge — the single most actionable
+	// piece of this section — is never the part silently dropped when a line
+	// is clipped to the terminal width.
+	line1 := fmt.Sprintf("  remaining: %d beads  projected: %s", cb.RemainingBeads, projStr)
+
+	var line2 string
 	if cb.WindowCeilingUSD > 0 {
-		windowStr = fmt.Sprintf("  window: $%.2f left of $%.2f  %s",
-			cb.WindowRemainingUSD, cb.WindowCeilingUSD,
-			fitStyle.Render(fitText))
+		line2 = fmt.Sprintf("  window: $%.2f left of $%.2f  %s",
+			cb.WindowRemainingUSD, cb.WindowCeilingUSD, fitStyle.Render(fitText))
 	} else {
-		windowStr = "  window: not available (run koryph quota calibrate)"
+		line2 = "  window: not available (run koryph quota calibrate)"
 	}
 
-	line := fmt.Sprintf("  remaining: %d beads  projected: %s%s",
-		cb.RemainingBeads, projStr, windowStr)
-	return title + "\n" + line
+	return title + "\n" + m.clipLine(line1) + "\n" + m.clipLine(line2)
+}
+
+// clipLine clips a free-text summary line to the terminal width, ANSI-safe
+// (lipgloss.MaxWidth respects embedded escape codes rather than counting
+// their bytes as visible characters or cutting mid-sequence, unlike the
+// rune-based truncate() used for plain table cells). Used by the Backlog and
+// Cost Burndown sections, whose lines are prose-style concatenations with no
+// column budget to enforce ahead of time — the Epic table's fixed-width
+// columns are the right tool there, but not for a single free-form sentence.
+func (m *burndownModel) clipLine(s string) string {
+	return lipgloss.NewStyle().MaxWidth(m.width).Render(s)
 }
 
 // renderDurationSection renders the Duration Stats section.
@@ -338,7 +379,11 @@ func (m *burndownModel) epicRow(ep cockpit.EpicBurndown, epicW, remW, velW, spkW
 
 	eta := ""
 	if !ep.ETAP50.IsZero() {
-		eta = cockpit.FormatETARange(ep.ETAP50, ep.ETAP90, ep.VelocityN, time.Now())
+		// FormatETARange is unstyled plain text and its length varies with the
+		// day count (e.g. "+365d" vs "+5d"), so it can exceed etaW on a
+		// long-running epic — truncate defensively rather than let it push
+		// past the row's right edge.
+		eta = truncate(cockpit.FormatETARange(ep.ETAP50, ep.ETAP90, ep.VelocityN, time.Now()), etaW)
 	} else if ep.VelocityN < cockpit.MinSamples {
 		eta = m.dimText(fmt.Sprintf("insufficient history (n=%d)", ep.VelocityN))
 	} else if ep.Remaining == 0 {

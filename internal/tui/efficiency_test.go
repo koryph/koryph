@@ -71,8 +71,8 @@ func TestRenderTokenSection_HealthyRatio(t *testing.T) {
 			stripANSI(out)[:min(len(stripANSI(out)), 200)])
 	}
 	// No tripwire warning should appear.
-	if strings.Contains(stripANSI(out), "I7 WARN") {
-		t.Errorf("healthy ratio should not show I7 WARN; got: %q", stripANSI(out))
+	if strings.Contains(stripANSI(out), "cache_read share collapsed") {
+		t.Errorf("healthy ratio should not show the tripwire warning; got: %q", stripANSI(out))
 	}
 	// The bead ID should appear in the table.
 	if !strings.Contains(stripANSI(out), "abc-1") {
@@ -103,8 +103,8 @@ func TestRenderTokenSection_TripwireWarn(t *testing.T) {
 	snap := effSnap([]cockpit.TokenCompositionRow{row}, 0.099, "warn", nil)
 	out := m.renderTokenSection(snap)
 
-	if !strings.Contains(stripANSI(out), "I7 WARN") {
-		t.Errorf("expected I7 WARN in output for low cache-hit ratio; got: %q",
+	if !strings.Contains(stripANSI(out), "cache_read share collapsed") {
+		t.Errorf("expected tripwire warning in output for low cache-hit ratio; got: %q",
 			stripANSI(out)[:min(len(stripANSI(out)), 300)])
 	}
 }

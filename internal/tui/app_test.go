@@ -121,6 +121,48 @@ func TestAppRendersHeader(t *testing.T) {
 	})
 }
 
+// TestAppStatusBarFleetAndProviderQuota is a regression test for the
+// status-bar redesign: the governor's leases/cap are machine-global (shared
+// by every project dispatching under the same account), so the "here"
+// (this-project running count) and "fleet" (global leases/cap) readings must
+// be visibly distinct — a prior version showed a single "agents R/C" pair
+// that silently mixed a project-scoped R against a global C. It also proves
+// the quota segment is provider-labeled and shows BOTH the 5-hour and weekly
+// windows, not just 5-hour.
+func TestAppStatusBarFleetAndProviderQuota(t *testing.T) {
+	snap := newTestSnap()
+	// This project has 1 running slot (see newTestSnap); the pool's Leases
+	// (5) represents the GLOBAL count across every project sharing the
+	// account — deliberately different from 1 so a regression back to a
+	// single shared number would be caught.
+	snap.Governor.Pools = map[string]cockpit.PoolSnapshot{
+		"anthropic": {Provider: "anthropic", Cap: 8, Dynamic: 6, Adaptive: true, Leases: 5},
+	}
+	snap.Efficiency.ProviderQuotas = []cockpit.ProviderQuotaSnapshot{
+		{
+			Runtime: "claude", Provider: "anthropic",
+			Window5hCeiling: 100, WeeklyCeiling: 500,
+			Window5hFrac: 0.42, WeeklyFrac: 0.18,
+			Window5hSpent: 42, WeeklySpent: 90,
+			Source: "jsonl-scan",
+		},
+	}
+
+	p := &staticProvider{id: "proj-1", snap: snap}
+	app := tui.NewApp([]cockpit.Provider{p}, false)
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(160, 40))
+	defer func() { _ = tm.Quit() }()
+
+	waitFor(t, tm, func(bts []byte) bool {
+		s := string(bts)
+		return strings.Contains(s, "here 1") &&
+			strings.Contains(s, "fleet 5/6") &&
+			strings.Contains(s, "claude 5h 42%") &&
+			strings.Contains(s, "wk 18%")
+	})
+}
+
 // TestAppMinSize verifies the too-small warning is shown when the terminal
 // is below 80×24.
 func TestAppMinSize(t *testing.T) {

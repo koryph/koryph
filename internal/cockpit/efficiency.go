@@ -37,12 +37,13 @@ const (
 
 // efficiencyInput carries the raw data collected before computing the snapshot.
 type efficiencyInput struct {
-	runs        []*ledger.Run    // historical ledger runs (newest first)
-	activeSlots []*ledger.Slot   // slots currently running/dispatching
-	govStore    *govern.Store    // live governor (nil → pools from govSnap only)
-	govSnap     GovernorSnapshot // already-fetched pool snapshot (fallback)
-	quotaCfg    *quota.Config    // may be nil (uncalibrated)
-	quotaUsage  *quota.Usage     // may be nil (ccusage not run in TUI path)
+	runs        []*ledger.Run      // historical ledger runs (newest first)
+	activeSlots []*ledger.Slot     // slots currently running/dispatching
+	govObs      govern.Observation // read-only governor observation (may be zero)
+	govSnap     GovernorSnapshot   // already-fetched pool snapshot (fallback)
+	quotaCfg    *quota.Config      // may be nil (uncalibrated)
+	quotaUsage  *quota.Usage       // may be nil (no transcript scan available)
+	titles      map[string]string  // bead id → display title (may be nil)
 	now         time.Time
 }
 
@@ -62,21 +63,22 @@ func computeEfficiency(inp efficiencyInput) EfficiencySnapshot {
 	snap.TopDeferralTokens = topDeferralTokens(inp.activeSlots)
 
 	// --- governor pool detail ------------------------------------------------
-	snap.GovernorPools = buildGovernorPools(inp.govStore, inp.govSnap, inp.now)
+	snap.GovernorPools = buildGovernorPools(inp.govObs, inp.govSnap, inp.now)
 
 	// --- estimator table -----------------------------------------------------
 	snap.EstimatorRows = buildEstimatorTable(inp.quotaCfg)
 
-	// --- quota windows -------------------------------------------------------
-	snap.QuotaSource, snap.QuotaWindow5hCeiling, snap.QuotaWindowWeeklyCeiling,
-		snap.QuotaWindow5hSpent, snap.QuotaWindowWeeklySpent,
-		snap.QuotaWindow5hFrac, snap.QuotaWindowWeeklyFrac =
-		buildQuotaWindow(inp.quotaCfg, inp.quotaUsage)
+	// --- quota windows (per provider) -----------------------------------------
+	snap.ProviderQuotas = buildQuotaWindows(inp.quotaCfg, inp.quotaUsage)
 
 	// --- token economy (koryph-77r.3, design §3 L1) ---------------------------
-	snap.TokenRows, snap.FleetCacheHitRatio, snap.CacheHitTripwire,
-		snap.TokensPerBeadTrend =
-		buildTokenEconomy(inp.runs, inp.now)
+	te := buildTokenEconomy(inp.runs, inp.titles, inp.now)
+	snap.TokenRows = te.rows
+	snap.ModelRows = te.modelRows
+	snap.FleetCacheHitRatio = te.fleetRatio
+	snap.FleetCacheHit24h = te.recentRatio
+	snap.CacheHitTripwire = te.tripwire
+	snap.TokensPerBeadTrend = te.trend
 
 	return snap
 }
@@ -89,43 +91,49 @@ const maxTokenRows = 12
 // collapses mid-run".
 const cacheHitWarnThreshold = 0.80
 
-// buildTokenEconomy assembles the per-bead token table, fleet cache-hit ratio,
-// tripwire state, and tokens-per-bead trend from historical ledger runs.
+// tokenEconomy is buildTokenEconomy's result bundle.
+type tokenEconomy struct {
+	rows       []TokenCompositionRow
+	modelRows  []ModelTokenRow
+	fleetRatio float64 // all-history cache_read share
+	// recentRatio is the cache_read share over slots dispatched in the last
+	// 24 h; negative when no slot in that window carries token data. This is
+	// the actionable number — an all-history ratio buries a fresh prompt or
+	// cache regression under weeks of healthy data.
+	recentRatio float64
+	tripwire    string
+	trend       []float64
+}
+
+// buildTokenEconomy assembles the per-bead token table, per-model rollup,
+// fleet cache-hit ratios, tripwire state, and tokens-per-bead trend from
+// historical ledger runs. titles maps bead id → display title (may be nil).
 // All errors are soft; empty/zero values render gracefully in the TUI.
-func buildTokenEconomy(runs []*ledger.Run, now time.Time) (
-	rows []TokenCompositionRow,
-	fleetCacheHitRatio float64,
-	tripwire string,
-	trendSeries []float64,
-) {
-	// Collect one row per completed slot that has non-zero token fields.
-	// We use a slice to preserve ledger order (newest run first from caller).
-	var allRows []TokenCompositionRow
-	// Per-day totals for the trend sparkline (index 0 = oldest).
-	tokensByDay := make([]float64, SparklineLen) // total tokens
-	countsByDay := make([]float64, SparklineLen) // beads with data
+func buildTokenEconomy(runs []*ledger.Run, titles map[string]string, now time.Time) tokenEconomy {
+	te := tokenEconomy{recentRatio: -1}
+
+	// One row per slot with non-zero token fields, tagged with its dispatch
+	// time so the table can show the most RECENT beads (the previous code
+	// sorted by slot id within each run, so the "recent work" table was
+	// actually alphabetical).
+	type timedRow struct {
+		row        TokenCompositionRow
+		dispatched time.Time
+	}
+	var all []timedRow
+	tokensByDay := make([]float64, SparklineLen)
+	countsByDay := make([]float64, SparklineLen)
 	todayUTC := now.UTC().Truncate(24 * time.Hour)
 
-	// Fleet-wide accumulators for the cache-hit ratio.
-	var (
-		fleetFresh    int64
-		fleetRead     int64
-		fleetCreation int64
-	)
+	var fleetFresh, fleetRead, fleetCreation int64
+	var recentFresh, recentRead, recentCreation int64
+	modelAgg := map[string]*ModelTokenRow{}
 
 	for _, run := range runs {
 		if run == nil {
 			continue
 		}
-		// Sort slot keys for stable row ordering within a run.
-		ids := make([]string, 0, len(run.Slots))
-		for id := range run.Slots {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-
-		for _, id := range ids {
-			sl := run.Slots[id]
+		for _, sl := range run.Slots {
 			if sl == nil {
 				continue
 			}
@@ -135,7 +143,6 @@ func buildTokenEconomy(runs []*ledger.Run, now time.Time) (
 				continue // ledger predates token fields or no data yet
 			}
 
-			// Compute per-slot cache-hit ratio.
 			inputTotal := sl.InputTokens + sl.CacheReadTokens + sl.CacheCreationTokens
 			ratio := 0.0
 			if inputTotal > 0 {
@@ -146,64 +153,120 @@ func buildTokenEconomy(runs []*ledger.Run, now time.Time) (
 			if beadID == "" {
 				beadID = sl.PhaseID
 			}
+			title := titles[beadID]
+			if title == "" {
+				title = beadID
+			}
 
-			allRows = append(allRows, TokenCompositionRow{
-				BeadID:        beadID,
-				Title:         beadID, // no bd lookup in this path; caller may enrich
-				TotalTokens:   total,
-				InputFresh:    sl.InputTokens,
-				CacheRead:     sl.CacheReadTokens,
-				CacheCreation: sl.CacheCreationTokens,
-				Output:        sl.OutputTokens,
-				CacheHitRatio: ratio,
-				CostUSD:       sl.CostUSD,
+			var dispatched time.Time
+			if sl.DispatchedAt != "" {
+				dispatched, _ = time.Parse(time.RFC3339, sl.DispatchedAt)
+			}
+
+			all = append(all, timedRow{
+				row: TokenCompositionRow{
+					BeadID:        beadID,
+					Title:         title,
+					TotalTokens:   total,
+					InputFresh:    sl.InputTokens,
+					CacheRead:     sl.CacheReadTokens,
+					CacheCreation: sl.CacheCreationTokens,
+					Output:        sl.OutputTokens,
+					CacheHitRatio: ratio,
+					CostUSD:       sl.CostUSD,
+				},
+				dispatched: dispatched,
 			})
 
-			// Fleet-wide accumulation.
 			fleetFresh += sl.InputTokens
 			fleetRead += sl.CacheReadTokens
 			fleetCreation += sl.CacheCreationTokens
+			if !dispatched.IsZero() && now.Sub(dispatched) <= 24*time.Hour {
+				recentFresh += sl.InputTokens
+				recentRead += sl.CacheReadTokens
+				recentCreation += sl.CacheCreationTokens
+			}
+
+			// Per-model rollup, keyed on the model that ACTUALLY served
+			// (ModelActual) with the requested model as fallback — this is the
+			// "how many tokens am I burning on which model" table that drives
+			// tier-change decisions.
+			model := sl.ModelActual
+			if model == "" {
+				model = sl.Model
+			}
+			if model == "" {
+				model = "unknown"
+			}
+			mr := modelAgg[model]
+			if mr == nil {
+				mr = &ModelTokenRow{Model: model}
+				modelAgg[model] = mr
+			}
+			mr.Beads++
+			mr.TotalTokens += total
+			mr.InputFresh += sl.InputTokens
+			mr.CacheRead += sl.CacheReadTokens
+			mr.CacheCreation += sl.CacheCreationTokens
+			mr.Output += sl.OutputTokens
+			mr.CostUSD += sl.CostUSD
 
 			// Trend: bucket by dispatch day.
-			if sl.DispatchedAt != "" {
-				if t, err := time.Parse(time.RFC3339, sl.DispatchedAt); err == nil {
-					delta := int(todayUTC.Sub(t.UTC().Truncate(24*time.Hour)).Hours() / 24)
-					if delta >= 0 && delta < SparklineLen {
-						idx := SparklineLen - 1 - delta
-						tokensByDay[idx] += float64(total)
-						countsByDay[idx]++
-					}
+			if !dispatched.IsZero() {
+				delta := int(todayUTC.Sub(dispatched.UTC().Truncate(24*time.Hour)).Hours() / 24)
+				if delta >= 0 && delta < SparklineLen {
+					idx := SparklineLen - 1 - delta
+					tokensByDay[idx] += float64(total)
+					countsByDay[idx]++
 				}
 			}
 		}
 	}
 
-	// Fleet cache-hit ratio.
-	fleetDenom := fleetFresh + fleetRead + fleetCreation
-	if fleetDenom > 0 {
-		fleetCacheHitRatio = float64(fleetRead) / float64(fleetDenom)
+	if denom := fleetFresh + fleetRead + fleetCreation; denom > 0 {
+		te.fleetRatio = float64(fleetRead) / float64(denom)
+	}
+	if denom := recentFresh + recentRead + recentCreation; denom > 0 {
+		te.recentRatio = float64(recentRead) / float64(denom)
 	}
 
-	// I7 cache-hit tripwire: WARN when ratio is below threshold and we have data.
-	if fleetDenom > 0 && fleetCacheHitRatio < cacheHitWarnThreshold {
-		tripwire = "warn"
+	// I7 cache-hit tripwire on the RECENT window when one exists (falling
+	// back to all-history when nothing dispatched in 24 h): warn only about
+	// a live regression, not archaeology.
+	switch {
+	case te.recentRatio >= 0 && te.recentRatio < cacheHitWarnThreshold:
+		te.tripwire = "warn"
+	case te.recentRatio < 0 && te.fleetRatio > 0 && te.fleetRatio < cacheHitWarnThreshold:
+		te.tripwire = "warn"
 	}
 
-	// Tokens-per-bead trend: mean for each day bucket.
-	trendSeries = make([]float64, SparklineLen)
-	for i := range trendSeries {
+	te.trend = make([]float64, SparklineLen)
+	for i := range te.trend {
 		if countsByDay[i] > 0 {
-			trendSeries[i] = tokensByDay[i] / countsByDay[i]
+			te.trend[i] = tokensByDay[i] / countsByDay[i]
 		}
 	}
 
-	// Trim allRows to the most recent maxTokenRows (the slice is already in
-	// run order with newest runs first from the caller's load order).
-	if len(allRows) > maxTokenRows {
-		allRows = allRows[:maxTokenRows]
+	// Most recent dispatches first; rows without a timestamp sink to the end.
+	sort.SliceStable(all, func(i, j int) bool {
+		return all[i].dispatched.After(all[j].dispatched)
+	})
+	if len(all) > maxTokenRows {
+		all = all[:maxTokenRows]
 	}
-	rows = allRows
-	return
+	te.rows = make([]TokenCompositionRow, len(all))
+	for i, tr := range all {
+		te.rows[i] = tr.row
+	}
+
+	te.modelRows = make([]ModelTokenRow, 0, len(modelAgg))
+	for _, mr := range modelAgg {
+		te.modelRows = append(te.modelRows, *mr)
+	}
+	sort.Slice(te.modelRows, func(i, j int) bool {
+		return te.modelRows[i].TotalTokens > te.modelRows[j].TotalTokens
+	})
+	return te
 }
 
 // buildDispatchSparkline counts slots dispatched per calendar day (UTC) for
@@ -248,9 +311,10 @@ func countRunning(slots []*ledger.Slot) int {
 	return n
 }
 
-// permittedCap returns the effective AIMD cap from the default pool.
+// permittedCap returns the effective AIMD cap from the primary (default,
+// else alphabetically-first) pool — deterministic, never map iteration.
 func permittedCap(gs GovernorSnapshot) int {
-	if ps, ok := gs.Pools[govern.DefaultPool]; ok {
+	if ps, ok := gs.PrimaryPool(); ok {
 		if ps.Dynamic > 0 {
 			return ps.Dynamic
 		}
@@ -298,12 +362,49 @@ func topDeferralTokens(slots []*ledger.Slot) []DeferralToken {
 	return tokens
 }
 
-// buildGovernorPools assembles per-pool detail from the govern store (preferred)
-// with govSnap as fallback when the store is unavailable.
-func buildGovernorPools(gs *govern.Store, snap GovernorSnapshot, now time.Time) []GovernorPoolDetail {
-	if gs != nil {
-		return buildGovernorPoolsFromStore(gs, now)
+// buildGovernorPools assembles per-pool detail from the read-only governor
+// observation (preferred; carries settle/probe detail) with govSnap as
+// fallback when the observation is empty. Neither path touches the store —
+// the days of the efficiency tab re-scanning (and pruning!) the lease
+// directory on its own are over; there is exactly one governor read per
+// refresh (Observe) and both consumers share it.
+func buildGovernorPools(obs govern.Observation, snap GovernorSnapshot, now time.Time) []GovernorPoolDetail {
+	if len(obs.Pools) > 0 {
+		pools := make([]GovernorPoolDetail, 0, len(obs.Pools))
+		for name, ps := range obs.Pools {
+			cfg := ps.AIMD
+			dynamic := cfg.DynamicCap
+			if dynamic <= 0 {
+				dynamic = cfg.MaxGlobalAgents
+			}
+			if dynamic <= 0 {
+				dynamic = govern.DefaultMaxGlobalAgents
+			}
+
+			settling := false
+			if cfg.SettleUntil != "" {
+				if t, err := time.Parse(time.RFC3339, cfg.SettleUntil); err == nil {
+					settling = t.After(now)
+				}
+			}
+
+			pools = append(pools, GovernorPoolDetail{
+				Provider:     name,
+				Cap:          cfg.MaxGlobalAgents,
+				Dynamic:      dynamic,
+				Leases:       len(ps.Leases),
+				Adaptive:     cfg.Adaptive,
+				BreakerState: cfg.BreakerState,
+				Settling:     settling,
+				SettleUntil:  cfg.SettleUntil,
+				ProbeProject: cfg.ProbeProject,
+				ProbeBead:    cfg.ProbeBead,
+			})
+		}
+		sort.Slice(pools, func(i, j int) bool { return pools[i].Provider < pools[j].Provider })
+		return pools
 	}
+
 	// Fallback: build from already-fetched snapshot (no settle/probe detail).
 	pools := make([]GovernorPoolDetail, 0, len(snap.Pools))
 	for _, ps := range snap.Pools {
@@ -314,52 +415,6 @@ func buildGovernorPools(gs *govern.Store, snap GovernorSnapshot, now time.Time) 
 			Leases:       ps.Leases,
 			Adaptive:     ps.Adaptive,
 			BreakerState: ps.BreakerState,
-		})
-	}
-	sort.Slice(pools, func(i, j int) bool { return pools[i].Provider < pools[j].Provider })
-	return pools
-}
-
-// buildGovernorPoolsFromStore reads richer pool detail directly from the govern
-// store (settle window, probe identity) for the efficiency dashboard.
-func buildGovernorPoolsFromStore(gs *govern.Store, now time.Time) []GovernorPoolDetail {
-	poolNames, err := gs.Pools()
-	if err != nil {
-		return nil
-	}
-	pools := make([]GovernorPoolDetail, 0, len(poolNames))
-	for _, name := range poolNames {
-		ps, err := gs.PoolStatus(name)
-		if err != nil {
-			continue
-		}
-		cfg := ps.AIMD
-		dynamic := cfg.DynamicCap
-		if dynamic <= 0 {
-			dynamic = cfg.MaxGlobalAgents
-		}
-		if dynamic <= 0 {
-			dynamic = govern.DefaultMaxGlobalAgents
-		}
-
-		settling := false
-		if cfg.SettleUntil != "" {
-			if t, err := time.Parse(time.RFC3339, cfg.SettleUntil); err == nil {
-				settling = t.After(now)
-			}
-		}
-
-		pools = append(pools, GovernorPoolDetail{
-			Provider:     name,
-			Cap:          cfg.MaxGlobalAgents,
-			Dynamic:      dynamic,
-			Leases:       len(ps.Leases),
-			Adaptive:     cfg.Adaptive,
-			BreakerState: cfg.BreakerState,
-			Settling:     settling,
-			SettleUntil:  cfg.SettleUntil,
-			ProbeProject: cfg.ProbeProject,
-			ProbeBead:    cfg.ProbeBead,
 		})
 	}
 	sort.Slice(pools, func(i, j int) bool { return pools[i].Provider < pools[j].Provider })
@@ -412,41 +467,47 @@ func buildEstimatorTable(cfg *quota.Config) []EstimatorRow {
 	return rows
 }
 
-// buildQuotaWindow extracts quota window data from cfg and usage.
-// Returns (source, 5hCeiling, weeklyCeiling, 5hSpent, weeklySpent, 5hFrac, weeklyFrac).
-func buildQuotaWindow(cfg *quota.Config, usage *quota.Usage) (
-	source string,
-	w5hCeiling, wWeeklyCeiling float64,
-	w5hSpent, wWeeklySpent float64,
-	w5hFrac, wWeeklyFrac float64,
-) {
+// buildQuotaWindows extracts quota window data from cfg and usage, one entry
+// per AI provider (ProviderQuotaSnapshot). Only "claude" is ever populated
+// today — internal/quota's usage sources (ccusage, the transcript JSONL scan)
+// are Claude-specific, and no other runtime yet reports
+// Capabilities().UsageSource == true — but the slice return shape is the
+// provider-keyed join point a future runtime's quota reader appends to,
+// rather than a flat pair of fields that would need a second flat pair
+// bolted on beside it once a second provider exists.
+func buildQuotaWindows(cfg *quota.Config, usage *quota.Usage) []ProviderQuotaSnapshot {
+	pq := ProviderQuotaSnapshot{Runtime: "claude", Provider: govern.DefaultPool}
+
 	if cfg == nil || (cfg.WindowCeilingUSD == 0 && cfg.WeeklyCeilingUSD == 0) {
-		return "uncalibrated", 0, 0, 0, 0, -1, -1
+		pq.Source = "uncalibrated"
+		pq.Window5hFrac = -1
+		pq.WeeklyFrac = -1
+		return []ProviderQuotaSnapshot{pq}
 	}
-	w5hCeiling = cfg.WindowCeilingUSD
-	wWeeklyCeiling = cfg.WeeklyCeilingUSD
+	pq.Window5hCeiling = cfg.WindowCeilingUSD
+	pq.WeeklyCeiling = cfg.WeeklyCeilingUSD
 
 	if usage != nil {
-		w5hSpent = usage.Window5h.SpentUSD
-		wWeeklySpent = usage.Weekly.SpentUSD
-		if w5hCeiling > 0 {
-			w5hFrac = w5hSpent / w5hCeiling
+		pq.Window5hSpent = usage.Window5h.SpentUSD
+		pq.WeeklySpent = usage.Weekly.SpentUSD
+		if pq.Window5hCeiling > 0 {
+			pq.Window5hFrac = pq.Window5hSpent / pq.Window5hCeiling
 		}
-		if wWeeklyCeiling > 0 {
-			wWeeklyFrac = wWeeklySpent / wWeeklyCeiling
+		if pq.WeeklyCeiling > 0 {
+			pq.WeeklyFrac = pq.WeeklySpent / pq.WeeklyCeiling
 		}
-		source = usage.Window5h.Source
-		if source == "" {
-			source = "unavailable"
+		pq.Source = usage.Window5h.Source
+		if pq.Source == "" {
+			pq.Source = "unavailable"
 		}
 	} else {
 		// No live usage available in this TUI path; mark fracs negative to
 		// signal "not measured" to the renderer.
-		w5hFrac = -1
-		wWeeklyFrac = -1
-		source = "unavailable"
+		pq.Window5hFrac = -1
+		pq.WeeklyFrac = -1
+		pq.Source = "unavailable"
 	}
-	return
+	return []ProviderQuotaSnapshot{pq}
 }
 
 // splitBucket splits a "<tier>:<size>" or "<tier>:<size>@<proxyID>" bucket

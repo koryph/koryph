@@ -60,9 +60,10 @@ show consistent data from the same refresh.
 
 ### Threads (tab 0)
 
-Live table of dispatched slots. The Bead column is a narrow id column paired
-with a compact Description (the bead's short title); the leftover width is split
-so the Status column — the live agent step — still gets the bulk of it:
+Live table of dispatched slots. The Bead column is a narrow id column; the
+Description column (the bead's short title) takes the larger flexible share —
+operators recognize rows by title, not id — and the live Status step gets the
+rest. Terminals ≥ 110 columns also get a Mem column:
 
 | Column | Description |
 |--------|-------------|
@@ -73,13 +74,27 @@ so the Status column — the live agent step — still gets the bulk of it:
 | Retries | Re-dispatch count with cause codes — `×N g/m/c/rl/bk` (gate, merge, conflict, rate-limit, budget-kill); `—` on a clean first attempt |
 | Elapsed | Wall time since dispatch (final wall time once terminal) |
 | Cost/Est | Actual spend vs the estimator's pre-dispatch estimate |
-| Status | Last line from the agent's `status.json` |
+| Mem(MB) | Average/peak resident memory of the agent's process cohort (wide terminals only) |
+| Status | Last line from the agent's `status.json`; `⚠ stalled <age>` when a running agent's step heartbeat has been silent for 15+ minutes; `✗ <death reason>` on a classified failure |
 
-The title line above the table shows the active filter and counts:
-`filter:active  showing 3/7  (3 active)`.
+The title line above the table shows the active filter and counts —
+`filter:active  showing 3/7  (3 active)` — plus `⚠ N stalled` and `✗ N failed`
+tallies whenever those need attention. Stall detection is structured (work
+assigned + `status.json` mtime + liveness), never output scraping.
 
 Press `Enter` on any slot row to open the **Detail** panel for that bead
 (including its per-bead resource usage). Press `Esc` or `Backspace` to return.
+
+#### Stopping a thread (`s`)
+
+Press `s` on a live slot to gracefully stop it: the TUI records the
+operator-stop sentinel first (so the engine's death classification **parks**
+the bead instead of auto-retrying it into a race with your hand-work), then
+sends SIGTERM to the agent's process group — exactly `koryph stop <phase>`.
+A confirmation prompt replaces the title line; `y` confirms, any other key
+cancels. Never SIGKILL: uncommitted worktree work survives. Disabled in
+`--read-only` mode. To re-dispatch a parked bead later, clear its parked
+state from the CLI.
 
 #### Filtering, and why a merged thread is not "active"
 
@@ -100,6 +115,7 @@ them as active threads. Cycle the filter with `f`:
 |-----|--------|
 | `↑`/`k`, `↓`/`j` | Move selection up/down |
 | `f` | Cycle the state filter (`active` → `all` → `terminal`) |
+| `s` | Gracefully stop the selected thread (confirm with `y`) |
 | `Enter` | Open Detail panel for selected bead |
 
 ---
@@ -197,11 +213,15 @@ and the machine-wide audit log (`~/.koryph/audit.jsonl`):
 |---|---|---|
 | `dispatch` | green | A bead was dispatched to a worktree |
 | `merge` | green | A bead's worktree was merged and closed |
-| `requeue` | amber | A slot transitioned to a non-running state |
+| `requeue` | amber | A slot came back for another attempt |
+| `fail` | red | A running slot died (failed/conflict/blocked) — includes the engine's death classification and any block note, so an escalation watcher can decide whether a higher-tier model should take over |
+| `patrol` | amber | A warn-level health-patrol finding (stuck claim, stale worktree, …); `(auto-fixed)` when the engine repaired it itself |
 | `drain` | red | An operator requested a graceful wind-down |
 | `cap-change` / `resize` | cyan | A concurrency-cap override was applied |
 
-Events are ordered oldest → newest. The feed is bounded to 500 entries.
+Event messages lead with the bead's **title** (`<title> [id]`) so the feed is
+readable at a glance. Events are ordered oldest → newest; the feed is bounded
+to 500 entries. To watch for escalation candidates, filter with `/fail`.
 
 #### Events tab keys
 
@@ -236,8 +256,9 @@ dispatch occurs after the sentinel is written.
 ### Efficiency (tab 3)
 
 The "self-hosting case study rendered live": shows exactly why concurrency
-is what it is, which footprint tokens are most contended, and whether the
-quota estimator is tracking reality. Five sections top-to-bottom:
+is what it is, which footprint tokens are most contended, whether the quota
+estimator is tracking reality, and where the tokens are going. Sections
+top-to-bottom:
 
 #### 1. Dispatch Rate
 
@@ -274,11 +295,22 @@ One line per provider pool. Fields per line:
 
 #### 4. Quota Windows
 
-Two burn bars — 5-hour window and weekly window — each showing:
-`[filled bar] $spent/$ceiling (pct%)`. When live spend data is unavailable,
-the bar renders as empty with a hint to run `koryph quota usage`.
-When the quota source is `uncalibrated`, the section shows a hint to run
-`koryph quota calibrate`.
+One labeled block per **AI provider/runtime** with a configured quota
+ceiling — different dispatched threads can run under different runtimes
+(each bead may carry a `runtime:<name>` label), and each runtime is billed
+against its own provider's rate limits with its own measurement source. Only
+one block ("claude") exists today, since claude is the only runtime koryph
+ships an adapter for; a future runtime's quota reader adds its own block here
+with no further changes to this tab.
+
+Each block shows two burn bars — 5-hour window and weekly window — as
+`[filled bar] $spent/$ceiling (pct%)`. Live spend comes from a background
+transcript scan of the account's Claude sessions (refreshed every minute, no
+subprocess), marked `spend ≈ transcript scan`; the same two fractions appear
+compactly in the status bar as `claude 5h N% wk M%`. When no transcripts are
+readable the bar renders empty with a hint to run `koryph quota usage`; when
+the block's quota source is `uncalibrated`, it shows a hint to run
+`koryph quota calibrate` instead of bars.
 
 Bar colour escalates: green → yellow (≥ 80 %) → amber (≥ 90 %) → red (≥ 95 %).
 
@@ -298,6 +330,23 @@ is tracking observed reality:
 
 Rows with N = 0 show `—` for all computed fields.
 
+#### 6. Token Economy
+
+The "how many tokens am I consuming, on which model, and is caching working"
+section:
+
+- **Cache-hit ratios** — `cache_read / (fresh + cache_read + cache_creation)`
+  over the **last 24 h** (the actionable number) and all-time. A tripwire
+  warning appears when the recent share collapses below 80 % — check
+  prompt-prefix hygiene.
+- **Tokens/bead trend** — sparkline of mean tokens per bead per day.
+- **Per-model rollup** — token classes and accumulated cost per *serving*
+  model (the model that actually answered, so fallback downgrades are
+  attributed correctly). This is the table that drives "do I need to change
+  models or serialize to stay inside the 5 h / weekly allowances".
+- **Recent beads** — per-bead token composition, most recent dispatches
+  first, labeled by bead **title**.
+
 #### Efficiency tab keys
 
 The Efficiency tab has no interactive keys beyond global navigation in v1.
@@ -308,9 +357,13 @@ The Efficiency tab has no interactive keys beyond global navigation in v1.
 
 Hierarchical view of the project's work queue. Epics appear at the top level;
 their child beads are nested below, drawn with `├─ / └─ / │` tree connectors so
-the grouping is unambiguous. The State and ID columns stay aligned at every
-depth; the hierarchy lives in the Title column. Each row shows the bead's true
-dispatch state as computed by the scheduler.
+the grouping is unambiguous. Columns are `State | Title | P | Reason | ID` —
+the title leads (that is how you recognize work), priority is its own column,
+and the bead id trails in gray for cross-referencing with `koryph nudge`/
+`koryph stop`. Blocked rows name their blockers by **title** ("needs: fix the
+gateway; add retry budget +1 more"), and a footprint deferral names the
+in-flight bead it waits on. Each row shows the bead's true dispatch state as
+computed by the scheduler.
 
 **Closed parents stay grouped.** Over a multi-day run an epic often closes while
 a few of its children are still open. `bd list` omits closed issues, so those
@@ -324,11 +377,12 @@ its title via `bd show`) so its open children remain nested under it.
 |-------|--------|---------|
 | `running` | green | A slot is actively working this bead |
 | `ready` | white | Dep-unblocked, no footprint conflict — will be dispatched next wave |
-| `dep-blocked` | red | Has one or more open dependencies |
-| `fp-deferred` | amber | Ready but footprint conflicts with a running bead |
+| `dep-blocked` | red | Has one or more open dependencies (named by title in Reason) |
+| `fp-deferred` | amber | Ready but footprint conflicts with a running bead (named in Reason) |
 | `human` | purple | Carries a `no-dispatch` / human-only label |
 | `deferred` | yellow | Carries a `deferred-until:<date>` label |
 | `parked` | gray | Parked label or status |
+| `waiting` | gray | Open with no visible open deps, but withheld by `bd ready` — an `in_progress` claim held elsewhere (possibly stale), sync lag, or an eligibility filter. These beads will **not** dispatch; older builds mislabeled them `ready` |
 | `epic` | bold | Container node (epic, feature, decision) — not directly dispatchable |
 
 #### Freshness
@@ -393,8 +447,8 @@ The state filter cycles through five modes:
 | `all` | Everything |
 | `running` | Running beads only |
 | `ready` | Running + ready |
-| `blocked` | `dep-blocked` + `fp-deferred` |
-| `deferred` | `fp-deferred` + `deferred-until` + `human` + `parked` |
+| `blocked` | `dep-blocked` + `fp-deferred` + `res-deferred` |
+| `deferred` | `fp-deferred` + `res-deferred` + `deferred-until` + `human` + `parked` + `waiting` |
 
 #### Inline detail panel
 
@@ -415,22 +469,53 @@ came from. It shows a full bead detail snapshot fetched asynchronously from the
 active provider, including:
 
 - Bead metadata (ID, type, status, priority, labels, parent, deps).
-- Description and notes.
-- Live slot information (branch, worktree, model, cost vs estimate, log path).
+- Description and notes — the body is a **scrollable viewport**, so long
+  descriptions and plans are fully readable.
+- Live slot information (branch, worktree, model, cost vs estimate, log path,
+  death classification, and any ledger note on failure).
 - **Resources** — per-bead clock times and process-cohort usage (see below).
 - Attempt history with per-attempt requeue cause.
 
-Within Detail, `↑`/`↓` navigate dependency rows, `Enter` jumps into a dep,
-`Backspace` pops the navigation stack, and `t` tails the agent log.
+Within Detail, `j`/`k` (or `↑`/`↓`) scroll the body line-by-line, `Ctrl-D`/
+`Ctrl-U` scroll half-pages, `g`/`G` jump to top/bottom, `n`/`N` cycle focus
+through the dependency rows (the view follows the focused row), `Enter` jumps
+into the focused dep, `Backspace` pops the navigation stack, and `t` tails
+the raw agent log.
 
-`T` (capital) tails the agent's **thinking**: the live extended-thinking
-stream parsed from the slot's `stream.jsonl`, following as the agent reasons.
-Blank lines separate reasoning stretches, and when the agent hands work to a
-nested subagent the divider `── subagent …<id> ──` marks whose reasoning you
-are reading (`── main agent ──` on return). `f` toggles follow, `↑`/`↓`
-scroll, `T`/`Esc` returns to the detail panel. While the agent is blocked
-inside a long tool call there may be no new thinking to show — the pane says
-so rather than going blank.
+`T` (capital) opens the **activity tail**: the agent's live `stream.jsonl`
+parsed into its train of thought — **thinking**, **tool calls** (with the tool
+name and its key argument), and **assistant messages** — following as the agent
+works. Filter with the number keys shown in the footer:
+
+| Key | Shows |
+|-----|-------|
+| `0` (or `a`) | Everything, interleaved in stream order |
+| `1` | Thinking only |
+| `2` | Tool calls only |
+| `3` | Assistant messages only |
+
+Each footer entry carries a live count, so `2:tools(18)` tells you how many tool
+calls are in the current window. When the agent hands work to a nested subagent
+the divider `── subagent …<id> ──` marks whose activity you are reading
+(`── main agent ──` on return).
+
+By default the tail reads the **last 512 KB** of the stream — enough for a live
+window and cheap to re-read many times a second. Press `h` to switch to **full
+history** (`Activity [full history]` in the header): the whole run from the first
+event, so you can scroll all the way back to the agent's opening thoughts. Full
+history is parsed **incrementally** — the stream is read once and only the newly
+appended bytes are parsed on each refresh — so it stays cheap even on a large,
+still-growing stream. Press `h` again to return to the bounded tail window. The
+footer's `h full`/`h tail` hint names the mode the key switches to.
+
+The tail **follows live** and keeps following even when nothing else on screen
+changes — the reasoning stream advances many times a second while the slot's
+status heartbeat is quiet, and the tail tracks the stream, not the heartbeat.
+Scroll up (`↑`/`↓`, `PgUp`/`PgDn`) and follow **auto-pauses** (the header shows
+`[paused]`) so you can read back through earlier activity without being yanked to
+the bottom; scroll back to the bottom, or press `f`, to resume (`[follow]`).
+`T`/`Esc` returns to the detail panel. If the visible window holds no entries of
+the selected kind yet, the pane says so rather than going blank.
 
 #### Resources section (per-bead process metrics)
 
@@ -454,17 +539,57 @@ for the sampler architecture and the eBPF/kernel-hook accuracy roadmap.
 
 ## Status bar
 
-The bottom line of the TUI shows:
+The bottom line of the TUI is one de-duplicated fleet summary:
 
-- **threads N** — total slot count in the snapshot.
-- **running N** — count of slots in `running` or `dispatching` stage.
-- **gov N/N** — first governor pool's `leases/dynamic` cap.
+- **here N** — agents running/dispatching in **this project only**, counted
+  from its own slots.
+- **fleet G/C** — running agents **across every project** sharing the same
+  account, over the permitted concurrency cap; read deterministically from
+  the governor's primary pool. This is deliberately a separate number from
+  `here`: the governor's leases and cap are machine-global — every koryph
+  project dispatching under the same account draws from the same pool — so a
+  single combined `agents R/C` reading (an earlier build's design) silently
+  compared this project's own count against a fleet-wide cap, which
+  understated what the number actually meant. (That earlier build also
+  showed separate `threads`/`running`/`gov` readouts that duplicated each
+  other, and picked the gov pool via random map iteration — which is why it
+  appeared to flicker between values.) `fleet` is omitted when no governor
+  pool data is available.
+- **ready N  blocked N** — queue pulse: beads that could dispatch now vs
+  beads waiting on deps/footprints/resources.
+- **✗ N failed** — terminal failed/conflict/blocked slots needing attention
+  (red; hidden at zero).
+- **`<runtime>` 5h N% wk M%** — one segment per AI provider with a
+  configured quota ceiling, each showing BOTH the 5-hour and weekly window
+  burn (green/amber/red/gray by the worse of the two; gray means a ceiling is
+  set but nothing is currently measurable). Different dispatched threads may
+  run under different runtimes, each billed against its own provider's rate
+  limits — so this is a list of segments, not a single hardcoded pair of
+  numbers, even though only `claude` exists to populate one today. Providers
+  with no ceiling configured at all are omitted (see the Efficiency tab's
+  Quota Windows section for the full "run koryph quota calibrate" hint).
 - **⚠ message** — last error (e.g. failed refresh, rejected nudge).
 - **✓ message** — last successful action (e.g. `nudged koryph-9af.6`).
 - **?** / **q** key hints — always visible.
 - **Mon DD HH:MM:SS** — timestamp of the last snapshot, carrying the date as
   well as the time so a cockpit left running across several days is never
   ambiguous. The Events feed likewise date-stamps each entry.
+
+The governor read is **observation-only**: the TUI never prunes lease files
+or advances the AIMD probe clock (earlier builds did both on every poll,
+making the monitor a writer in the engine's control loop).
+
+## Bead ID display
+
+Bead IDs follow `<project>-<suffix>` (e.g. `koryph-9af.6`). Wherever a bead
+ID has to fit a narrow column or line — the Threads tab's Bead column, the
+Queue tab's trailing ID column, and the Detail panel's navigation
+breadcrumb — the cockpit drops the redundant project prefix and shows just
+the suffix (`9af.6`) rather than character-truncating the full id from the
+right, which used to keep the prefix and cut the digits that actually
+distinguish one bead from another (`koryph-9a…`). The full id is always
+shown when there is room for it; the suffix-only form only kicks in once it
+would not otherwise fit.
 
 ## Minimum terminal size
 

@@ -31,6 +31,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/koryph/koryph/internal/cockpit"
+	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
 )
@@ -77,6 +78,13 @@ type nudgeRequestMsg struct {
 
 // drainRequestMsg is sent by a tab (events) to request a drain on the active project.
 type drainRequestMsg struct{}
+
+// stopRequestMsg is sent by the Threads tab to request a graceful stop of one
+// phase's agent (SIGTERM to the process group; the engine parks the phase).
+type stopRequestMsg struct {
+	PhaseID string
+	PID     int
+}
 
 // actionResultMsg carries the result of a nudge or drain operation.
 type actionResultMsg struct {
@@ -243,6 +251,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		cmds = append(cmds, a.doRefresh(), a.adaptiveTick())
+		// Live tails (Detail's log/activity views) advance far faster than the
+		// slot status fields that gate snapshotUnchanged: a running agent's
+		// stream.jsonl grows with reasoning/tool deltas many times a second
+		// while its status.json heartbeat only changes once per step. doRefresh
+		// therefore suppresses most snapshotMsgs, so the tail must re-read its
+		// file on every tick directly — otherwise it freezes on whatever was
+		// captured when the tail was opened. RefreshTail is a no-op unless a
+		// tail is actually open, so this is cheap when the overlay is closed.
+		if len(a.tabs) > 0 {
+			if tr, ok := a.tabs[a.activeTab].(interface{ RefreshTail() }); ok {
+				tr.RefreshTail()
+			}
+		}
 
 	case snapshotMsg:
 		wasIdle := a.isIdle()
@@ -315,6 +336,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case drainRequestMsg:
 		cmds = append(cmds, a.doDrain())
+
+	case stopRequestMsg:
+		cmds = append(cmds, a.doStop(msg.PhaseID, msg.PID))
 
 	case actionResultMsg:
 		if msg.Err != nil {
@@ -444,25 +468,50 @@ func (a App) renderHelp() string {
 	return a.theme.HelpBorder.Width(a.width - 4).Render(helpView)
 }
 
-// renderStatusBar renders the bottom status bar.
+// renderStatusBar renders the bottom status bar: one de-duplicated line of
+// fleet state. The old separate "threads N" and "gov L/D" readouts showed the
+// same running count twice — leases track running slots — and the gov pair
+// was picked from RANDOM map iteration, so it flickered between pools on
+// every render (koryph TUI status-bar issue).
+//
+// "here N" vs "fleet G/C": the governor's leases/cap are machine-global —
+// shared by every koryph project dispatching under the same account — so a
+// bare "agents R/C" reading R (this project's running count) against C (the
+// global cap) understated what R actually meant. The two are now shown
+// separately and labeled: how many of THIS project's slots are running right
+// now, and how much of the GLOBAL concurrency budget the whole fleet (every
+// project sharing that account) is currently consuming.
 func (a App) renderStatusBar() string {
-	slots := len(a.snap.Slots)
-	// Count running slots.
 	running := 0
+	failed := 0
 	for _, sl := range a.snap.Slots {
-		if sl.Stage == "running" || sl.Stage == "dispatching" {
+		switch sl.Stage {
+		case "running", "dispatching":
 			running++
+		case "failed", "conflict", "blocked":
+			failed++
 		}
 	}
 
-	// Governor summary (first pool for now).
-	govSummary := ""
-	if len(a.snap.Governor.Pools) > 0 {
-		for _, ps := range a.snap.Governor.Pools {
-			govSummary = fmt.Sprintf("  gov %d/%d", ps.Leases, ps.Dynamic)
-			break
-		}
+	agentsPart := fmt.Sprintf("here %d", running)
+	if ps, ok := a.snap.Governor.PrimaryPool(); ok && ps.Dynamic > 0 {
+		agentsPart += fmt.Sprintf("  fleet %d/%d", ps.Leases, ps.Dynamic)
 	}
+
+	// Queue pulse: ready vs blocked counts from the queue snapshot.
+	queuePart := ""
+	if ready, blocked := queueStateCounts(a.snap.Queue.Roots); ready+blocked > 0 {
+		queuePart = fmt.Sprintf("  ready %d  blocked %d", ready, blocked)
+	}
+
+	// Failures needing attention (terminal failed/conflict/blocked slots).
+	failPart := ""
+	if failed > 0 {
+		failPart = "  " + lipgloss.NewStyle().Foreground(a.theme.Error).
+			Render(fmt.Sprintf("✗ %d failed", failed))
+	}
+
+	quotaPart := a.renderQuotaStatus()
 
 	errPart := ""
 	switch {
@@ -475,7 +524,7 @@ func (a App) renderStatusBar() string {
 	helpHint := a.theme.HelpKey.Render("?") + a.theme.HelpDesc.Render(" help  ") +
 		a.theme.HelpKey.Render("q") + a.theme.HelpDesc.Render(" quit")
 
-	left := fmt.Sprintf("threads %d  running %d%s%s", slots, running, govSummary, errPart)
+	left := agentsPart + queuePart + failPart + quotaPart + errPart
 	right := lipgloss.NewStyle().
 		Foreground(a.theme.Gray).
 		Render(fmt.Sprintf("%s  %s", helpHint, formatTimestamp(a.snap.CapturedAt)))
@@ -483,15 +532,97 @@ func (a App) renderStatusBar() string {
 	// Size the content to the style's INNER width — StatusBar carries
 	// horizontal padding, so filling the full terminal width made the bar
 	// wrap onto a second row, overflow the vertical budget, and scroll the
-	// header off (koryph-b01 follow-up). MaxWidth is the ANSI-aware backstop.
+	// header off (koryph-b01 follow-up). MaxWidth is the ANSI-aware backstop;
+	// left is styled, so rune-based truncate would cut inside an escape
+	// sequence — MaxWidth alone does the clipping.
 	inner := a.width - a.theme.StatusBar.GetHorizontalFrameSize()
 	gap := inner - lipglossLen(left) - lipglossLen(right)
 	if gap < 0 {
 		gap = 0
 	}
 	line := a.theme.StatusBar.Width(a.width).MaxWidth(a.width).
-		Render(truncate(left, inner) + strings.Repeat(" ", gap) + right)
+		Render(left + strings.Repeat(" ", gap) + right)
 	return "\n" + line
+}
+
+// renderQuotaStatus renders a compact "<runtime> 5h N% wk M%" segment per AI
+// provider with a configured quota ceiling (cockpit.ProviderQuotaSnapshot).
+// Different dispatched threads may run under different providers, each
+// billed against its own rate limits — this renders one segment per entry,
+// so a second provider's numbers appear alongside the first with no further
+// change once its quota measurement lands. Providers with no ceiling
+// configured at all are omitted here (the Efficiency tab has the full
+// "run koryph quota calibrate" hint); this is the always-visible pulse.
+func (a App) renderQuotaStatus() string {
+	var parts []string
+	for _, pq := range a.snap.Efficiency.ProviderQuotas {
+		if pq.Window5hCeiling <= 0 && pq.WeeklyCeiling <= 0 {
+			continue // uncalibrated
+		}
+		label := pq.Runtime
+		if label == "" {
+			label = pq.Provider
+		}
+
+		w5h := "—"
+		if pq.Window5hFrac >= 0 && pq.Window5hCeiling > 0 {
+			w5h = fmt.Sprintf("%.0f%%", pq.Window5hFrac*100)
+		}
+		wk := "—"
+		if pq.WeeklyFrac >= 0 && pq.WeeklyCeiling > 0 {
+			wk = fmt.Sprintf("%.0f%%", pq.WeeklyFrac*100)
+		}
+
+		// Colour by the worse of the two measurable fractions; gray when
+		// neither window is currently measurable (ceiling set but no live
+		// spend yet) — green would falsely read as "healthy".
+		maxFrac := -1.0
+		if pq.Window5hFrac > maxFrac {
+			maxFrac = pq.Window5hFrac
+		}
+		if pq.WeeklyFrac > maxFrac {
+			maxFrac = pq.WeeklyFrac
+		}
+		style := lipgloss.NewStyle().Foreground(a.theme.Gray)
+		switch {
+		case maxFrac >= 0.90:
+			style = lipgloss.NewStyle().Foreground(a.theme.Error)
+		case maxFrac >= 0.75:
+			style = lipgloss.NewStyle().Foreground(a.theme.Warning)
+		case maxFrac >= 0:
+			style = lipgloss.NewStyle().Foreground(a.theme.Done)
+		}
+
+		text := fmt.Sprintf("%s 5h %s wk %s", label, w5h, wk)
+		if label == "" {
+			text = fmt.Sprintf("5h %s wk %s", w5h, wk)
+		}
+		parts = append(parts, style.Render(text))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(parts, "  ")
+}
+
+// queueStateCounts walks the queue tree and tallies dispatchable-state rows:
+// ready (could run now) and blocked (dep-blocked or footprint/resource
+// deferred — waiting on something the operator may be able to unblock).
+func queueStateCounts(nodes []cockpit.QueueNode) (ready, blocked int) {
+	for _, n := range nodes {
+		switch n.State {
+		case cockpit.QueueStateReady:
+			ready++
+		case cockpit.QueueStateDepBlocked,
+			cockpit.QueueStateFootprintDeferred,
+			cockpit.QueueStateResourceDeferred:
+			blocked++
+		}
+		r, b := queueStateCounts(n.Children)
+		ready += r
+		blocked += b
+	}
+	return ready, blocked
 }
 
 // doNudge returns a Cmd that appends text to a bead's INBOX.md, mirroring
@@ -553,6 +684,41 @@ func (a App) doNudge(beadID, text string) tea.Cmd {
 			return actionResultMsg{Err: fmt.Errorf("nudge: close: %w", cerr)}
 		}
 		return actionResultMsg{Msg: fmt.Sprintf("nudged %s", beadID)}
+	}
+}
+
+// doStop returns a Cmd that gracefully stops one phase's agent, mirroring
+// cmdStop's single-phase path: record the operator-stop sentinel FIRST (so
+// the engine's death classification parks the phase instead of auto-retrying
+// it into a race with the operator), then SIGTERM the process group. Never
+// SIGKILL — uncommitted worktree work survives a graceful stop.
+func (a App) doStop(phaseID string, pid int) tea.Cmd {
+	if a.readOnly {
+		return func() tea.Msg {
+			return actionResultMsg{Err: fmt.Errorf("stop: disabled in --read-only mode")}
+		}
+	}
+	repoRoot := a.providers[a.projectIdx].RepoRoot()
+	return func() tea.Msg {
+		if phaseID == "" {
+			return actionResultMsg{Err: fmt.Errorf("stop: no phase selected")}
+		}
+		if pid <= 0 {
+			return actionResultMsg{Err: fmt.Errorf("stop: %s has no live pid", phaseID)}
+		}
+		if err := ledger.NewStore(repoRoot).RequestStop(phaseID); err != nil {
+			// Best-effort mirror of cmdStop: a sentinel failure must not block
+			// the actual stop, but the operator should know retry semantics
+			// may differ.
+			if serr := dispatch.StopGraceful(pid); serr != nil {
+				return actionResultMsg{Err: fmt.Errorf("stop %s: %v (and sentinel failed: %v)", phaseID, serr, err)}
+			}
+			return actionResultMsg{Msg: fmt.Sprintf("stopped %s (sentinel failed: %v)", phaseID, err)}
+		}
+		if err := dispatch.StopGraceful(pid); err != nil {
+			return actionResultMsg{Err: fmt.Errorf("stop %s: %v", phaseID, err)}
+		}
+		return actionResultMsg{Msg: fmt.Sprintf("SIGTERM sent to %s — engine will park it", phaseID)}
 	}
 }
 
@@ -658,6 +824,12 @@ func snapshotUnchanged(prev, next cockpit.Snapshot) bool {
 		if ps.PhaseID != ns.PhaseID || ps.Stage != ns.Stage ||
 			ps.StatusLine != ns.StatusLine || ps.StatusJSON != ns.StatusJSON ||
 			ps.Attempt != ns.Attempt {
+			return false
+		}
+		// A slot crossing the stall threshold changes its rendering (⚠ flag,
+		// title-bar count) with no other field moving — on an otherwise-quiet
+		// system that transition must still force a repaint.
+		if (ps.StatusAge > stallAfter) != (ns.StatusAge > stallAfter) {
 			return false
 		}
 	}

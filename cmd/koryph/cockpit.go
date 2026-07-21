@@ -118,6 +118,7 @@ func cmdCockpit(args []string, stdout, stderr io.Writer) int {
 	}
 
 	provider := cockpit.NewLedgerProvider(rec.ProjectID, rec.Root, rec.AccountProfile)
+	provider.SetAccountConfigDir(rec.AccountFor(resolvedRuntimeName).ConfigDir)
 	snap, err := provider.Refresh()
 	if err != nil {
 		return fail(stderr, fmt.Errorf("cockpit: refresh failed: %w", err))

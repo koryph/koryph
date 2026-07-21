@@ -366,6 +366,14 @@ func JSONLScan(configDir string, hours int) (float64, error) {
 
 	var total float64
 	for _, f := range files {
+		// mtime pre-filter: a transcript not written to since before the
+		// window start cannot contain in-window lines (line timestamps never
+		// exceed the file's last write), so skip the full read. On a
+		// long-lived account most files are historical — this turns a
+		// full-corpus scan into a scan of only the recently-active sessions.
+		if fi, err := os.Stat(f); err == nil && fi.ModTime().UTC().Before(windowStart) {
+			continue
+		}
 		v, err := scanFile(f, windowStart)
 		if err != nil {
 			continue // tolerate a single unreadable file

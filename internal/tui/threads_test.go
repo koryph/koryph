@@ -110,9 +110,10 @@ func TestModelWithEscalation(t *testing.T) {
 	}
 }
 
-// TestThreadsBeadColumnNarrow verifies the Bead column is a narrow id column, a
-// Description column is present, and the Status column still takes the bulk of
-// the width (issue #5 + the short-description request).
+// TestThreadsBeadColumnNarrow verifies the Bead column is a narrow id column,
+// the Description (title) column takes the larger flexible share — operators
+// recognize rows by title, not id — and the Status column keeps a workable
+// minimum.
 func TestThreadsBeadColumnNarrow(t *testing.T) {
 	cols := threadColumns(140)
 	var beadW, descW, statusW int
@@ -129,11 +130,11 @@ func TestThreadsBeadColumnNarrow(t *testing.T) {
 	if beadW > 18 {
 		t.Errorf("Bead column too wide: %d (want ≤18)", beadW)
 	}
-	if descW <= 0 {
-		t.Error("Description column missing")
+	if descW < statusW {
+		t.Errorf("Description column (%d) should get at least the Status column's share (%d) — titles first", descW, statusW)
 	}
-	if statusW <= descW {
-		t.Errorf("Status column (%d) should be wider than Description (%d)", statusW, descW)
+	if statusW < 12 {
+		t.Errorf("Status column too narrow: %d (want ≥12)", statusW)
 	}
 }
 
@@ -142,7 +143,7 @@ func TestThreadsBeadColumnNarrow(t *testing.T) {
 // column.
 func TestSlotToRow_Description(t *testing.T) {
 	// Real title present.
-	row := slotToRow(cockpit.SlotSnapshot{BeadID: "koryph-2im.9", Title: "footprint persistence"}, 30, 30)
+	row := slotToRow(cockpit.SlotSnapshot{BeadID: "koryph-2im.9", Title: "footprint persistence"}, "koryph", 30, 30, false)
 	if row[0] != "koryph-2im.9" {
 		t.Errorf("Bead cell = %q, want the id", row[0])
 	}
@@ -150,8 +151,18 @@ func TestSlotToRow_Description(t *testing.T) {
 		t.Errorf("Description cell = %q, want the title", row[1])
 	}
 	// Id-fallback title (provider could not resolve a real title) → blank.
-	row = slotToRow(cockpit.SlotSnapshot{BeadID: "x-1", Title: "x-1"}, 30, 30)
+	row = slotToRow(cockpit.SlotSnapshot{BeadID: "x-1", Title: "x-1"}, "koryph", 30, 30, false)
 	if row[1] != "" {
 		t.Errorf("Description cell = %q, want blank when title == id", row[1])
+	}
+}
+
+// TestSlotToRow_BeadColumnDropsProjectPrefix verifies the narrow Bead column
+// drops the redundant "<project>-" prefix (rather than rune-truncating the
+// full id) when the full id does not fit thBeadW.
+func TestSlotToRow_BeadColumnDropsProjectPrefix(t *testing.T) {
+	row := slotToRow(cockpit.SlotSnapshot{BeadID: "a-very-long-project-name-9af.6"}, "a-very-long-project-name", 30, 30, false)
+	if got := row[0]; got != "9af.6" {
+		t.Errorf("Bead cell = %q, want the project-stripped suffix %q", got, "9af.6")
 	}
 }

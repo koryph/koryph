@@ -161,9 +161,15 @@ type burndownInput struct {
 	runs         []*ledger.Run
 	readyIssues  []beads.Issue
 	epicChildren map[string][]beads.Issue // epicID → children
-	quotaCfg     *quota.Config            // may be nil
-	quotaUsage   *quota.Usage             // may be nil (not populated in TUI path)
-	now          time.Time
+	// epicTitles maps epic id → display title (from the queue tree); nil ok.
+	epicTitles map[string]string
+	// openTasks is the count of ALL open workable issues (from the queue
+	// tree), not just the ready frontier; 0 means unknown → fall back to the
+	// ready count.
+	openTasks  int
+	quotaCfg   *quota.Config // may be nil
+	quotaUsage *quota.Usage  // may be nil (no transcript scan available)
+	now        time.Time
 }
 
 // computeBurndown assembles a BurndownSnapshot from raw inputs.
@@ -311,8 +317,15 @@ func buildDurationStats(obs []slotObs) []DurationStat {
 func buildBacklog(inp burndownInput, obs []slotObs, runParallelisms []float64) BacklogBurndown {
 	b := BacklogBurndown{
 		Ready:          len(inp.readyIssues),
-		TotalRemaining: len(inp.readyIssues), // approximation
+		TotalRemaining: len(inp.readyIssues), // fallback when the queue tree is unavailable
 		HistoryN:       len(inp.runs),
+	}
+	// The queue tree's open-task count is the honest denominator: blocked and
+	// deferred beads still have to drain too. The old ready-frontier
+	// approximation could understate remaining work several-fold on a deeply
+	// chained backlog, making the drain ETA look far better than reality.
+	if inp.openTasks > b.TotalRemaining {
+		b.TotalRemaining = inp.openTasks
 	}
 	if b.HistoryN < MinSamples {
 		b.InsufficientHistory = true
@@ -347,18 +360,20 @@ func buildBacklog(inp burndownInput, obs []slotObs, runParallelisms []float64) B
 
 	// Drain ETA.
 	if !b.InsufficientHistory && vel > 0 && b.TotalRemaining > 0 {
-		parallelism := b.ObservedParallelism
-		if parallelism < 1 {
-			parallelism = 1
-		}
-		throughput := vel * parallelism // effective beads/day
+		// vel is OBSERVED fleet-wide merges/day — parallelism is already baked
+		// into it (N concurrent agents each merging shows up as N× the daily
+		// count). The previous code multiplied vel by ObservedParallelism
+		// again, double-counting concurrency and making every drain ETA
+		// optimistic by roughly that factor. ObservedParallelism stays a
+		// reported metric; it is no longer a throughput multiplier.
+		throughput := vel // beads/day, as measured
 		daysP50 := float64(b.TotalRemaining) / throughput
 
 		// P90: lower the throughput by 1.28σ (normal approximation).
 		stddev := math.Sqrt(velVar)
 		daysP90 := daysP50
 		if stddev > 0 {
-			reducedThroughput := math.Max(throughput-1.28*stddev*parallelism, throughput*0.3)
+			reducedThroughput := math.Max(throughput-1.28*stddev, throughput*0.3)
 			daysP90 = float64(b.TotalRemaining) / reducedThroughput
 		}
 
@@ -417,9 +432,13 @@ func buildEpicBurndowns(inp burndownInput, obs []slotObs) ([]EpicBurndown, EpicB
 		dailyCounts := dailyMergedCounts(eObs, inp.now, burndownVelocityDays)
 		vel, velVar := velocityStats(dailyCounts)
 
+		title := inp.epicTitles[epicID]
+		if title == "" {
+			title = epicID // no bd title available (e.g. epic already closed)
+		}
 		eb := EpicBurndown{
 			EpicID:         epicID,
-			Title:          epicID, // enriched below
+			Title:          title,
 			Total:          total,
 			Merged:         merged,
 			Remaining:      remaining,

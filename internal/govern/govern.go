@@ -662,62 +662,165 @@ func (s *Store) ResourcesStatus() ([]ResourceStatus, error) {
 		if err != nil {
 			return err
 		}
-		rc := f.Resources
 		all, err := s.leases()
 		if err != nil {
 			return err
 		}
-		now := s.Now()
-
-		// Union of configured kinds and held kinds → a stable sorted set.
-		kinds := map[string]struct{}{}
-		if rc != nil {
-			for k := range rc.Kinds {
-				kinds[k] = struct{}{}
-			}
-		}
-		for _, l := range all {
-			for _, k := range l.Resources {
-				kinds[k] = struct{}{}
-			}
-		}
-		names := make([]string, 0, len(kinds))
-		for k := range kinds {
-			names = append(names, k)
-		}
-		sort.Strings(names)
-
-		out = make([]ResourceStatus, 0, len(names))
-		for _, kind := range names {
-			st := ResourceStatus{
-				Kind:        kind,
-				Capacity:    rc.capacityOf(kind),
-				MemMB:       rc.memMBOf(kind),
-				RampSeconds: rc.rampSecondsOf(kind),
-				Probe:       rc.probeOf(kind),
-			}
-			for _, l := range all {
-				if !containsStr(l.Resources, kind) {
-					continue
-				}
-				ramping := leaseRamping(l, rc, now)
-				st.Holders = append(st.Holders, ResourceHolder{
-					Project:      l.Project,
-					Bead:         l.Bead,
-					MemReserveMB: l.MemReserveMB,
-					Ramping:      ramping,
-				})
-				if ramping {
-					st.ReservedMB += l.MemReserveMB
-				} else {
-					st.MaterializedMB += l.MemReserveMB
-				}
-			}
-			out = append(out, st)
-		}
+		out = assembleResourceStatuses(f.Resources, all, s.Now())
 		return nil
 	})
 	return out, err
+}
+
+// assembleResourceStatuses builds the per-kind resource ledger view from an
+// already-read config and lease set: every CONFIGURED kind plus every kind any
+// live lease HOLDS, with resolved capacity/cost/ramp/probe, live holders, and
+// the reserved-vs-materialized memory split. Pure — shared by ResourcesStatus
+// (pruning path) and Observe (read-only path).
+func assembleResourceStatuses(rc *ResourcesConfig, all []Lease, now time.Time) []ResourceStatus {
+	// Union of configured kinds and held kinds → a stable sorted set.
+	kinds := map[string]struct{}{}
+	if rc != nil {
+		for k := range rc.Kinds {
+			kinds[k] = struct{}{}
+		}
+	}
+	for _, l := range all {
+		for _, k := range l.Resources {
+			kinds[k] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(kinds))
+	for k := range kinds {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	out := make([]ResourceStatus, 0, len(names))
+	for _, kind := range names {
+		st := ResourceStatus{
+			Kind:        kind,
+			Capacity:    rc.capacityOf(kind),
+			MemMB:       rc.memMBOf(kind),
+			RampSeconds: rc.rampSecondsOf(kind),
+			Probe:       rc.probeOf(kind),
+		}
+		for _, l := range all {
+			if !containsStr(l.Resources, kind) {
+				continue
+			}
+			ramping := leaseRamping(l, rc, now)
+			st.Holders = append(st.Holders, ResourceHolder{
+				Project:      l.Project,
+				Bead:         l.Bead,
+				MemReserveMB: l.MemReserveMB,
+				Ramping:      ramping,
+			})
+			if ramping {
+				st.ReservedMB += l.MemReserveMB
+			} else {
+				st.MaterializedMB += l.MemReserveMB
+			}
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// Observation is a consistent snapshot of the whole governor — every pool's
+// status plus the machine resource ledger — assembled in ONE lock acquisition
+// and ONE scan of the lease/demand directories.
+type Observation struct {
+	Pools     map[string]PoolStatus
+	Resources []ResourceStatus
+}
+
+// Observe assembles an Observation WITHOUT mutating any governor state. Unlike
+// Pools/PoolStatus/ResourcesStatus — which prune stale lease files, resolve
+// crashed probes, and persist pending AIMD probe growth on every call — this
+// path never writes: stale leases and demand (dead PID / expired TTL) are
+// filtered from the returned counts in memory, and pending breaker promotion +
+// probe growth are applied to the returned Config copies only, so the observed
+// DynamicCap matches what the engine would compute next without the observer
+// advancing the probe clock or deleting files. This is the path for monitors
+// (the TUI cockpit, `koryph governor show --watch`) polling at high frequency:
+// a monitor must observe the control loop, not participate in it. The engine's
+// own next mutating call does the real pruning.
+func (s *Store) Observe() (Observation, error) {
+	obs := Observation{Pools: map[string]PoolStatus{}}
+	err := s.withLock(func() error {
+		now := s.Now()
+
+		leaseMap, err := s.leaseFiles()
+		if err != nil {
+			return err
+		}
+		leases := make([]Lease, 0, len(leaseMap))
+		for _, l := range leaseMap {
+			// Mirror prune's staleness rules, filtering instead of deleting.
+			alivePID := l.PID
+			if alivePID <= 0 {
+				alivePID = l.EnginePID
+			}
+			if !s.Alive(alivePID) || s.expired(l.AcquiredAt, s.LeaseTTL) {
+				continue
+			}
+			leases = append(leases, l)
+		}
+		sort.Slice(leases, func(i, j int) bool { return leases[i].AcquiredAt < leases[j].AcquiredAt })
+
+		demMap, err := s.demandFiles()
+		if err != nil {
+			return err
+		}
+		demand := make([]Demand, 0, len(demMap))
+		for _, d := range demMap {
+			if !s.Alive(d.EnginePID) || s.expired(d.UpdatedAt, s.DemandTTL) {
+				continue
+			}
+			demand = append(demand, d)
+		}
+		sort.Slice(demand, func(i, j int) bool { return demand[i].Project < demand[j].Project })
+
+		f, err := s.readFile()
+		if err != nil {
+			return err
+		}
+
+		poolSet := map[string]struct{}{DefaultPool: {}}
+		for p := range f.Pools {
+			poolSet[p] = struct{}{}
+		}
+		for _, l := range leases {
+			poolSet[NormalizeProvider(l.Provider)] = struct{}{}
+		}
+		for _, d := range demand {
+			poolSet[NormalizeProvider(d.Provider)] = struct{}{}
+		}
+
+		for pool := range poolSet {
+			c := f.Pools[pool]
+			// In-memory only: both helpers are pure; nothing is persisted.
+			resolveBreaker(&c, now)
+			applyProbe(&c, now)
+			ps := PoolStatus{Pool: pool, AIMD: c}
+			for _, l := range leases {
+				if NormalizeProvider(l.Provider) == pool {
+					ps.Leases = append(ps.Leases, l)
+				}
+			}
+			for _, d := range demand {
+				if NormalizeProvider(d.Provider) == pool {
+					ps.Demand = append(ps.Demand, d)
+				}
+			}
+			obs.Pools[pool] = ps
+		}
+
+		obs.Resources = assembleResourceStatuses(f.Resources, leases, now)
+		return nil
+	})
+	return obs, err
 }
 
 // Pools returns the sorted set of every pool with any live state: an

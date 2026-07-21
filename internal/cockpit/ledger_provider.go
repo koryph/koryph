@@ -90,7 +90,26 @@ type LedgerProvider struct {
 
 	// events — live events feed collector (koryph-9af.5).
 	events *eventCollector
+
+	// accountConfigDir is the account's CLAUDE_CONFIG_DIR ("" = personal
+	// profile, ~/.claude). Used by the quota transcript scan; set once via
+	// SetAccountConfigDir before the first Refresh.
+	accountConfigDir string
+
+	// quotaUsageCache is the last transcript-scan quota usage; recomputed at
+	// quotaTTL cadence inside refreshDerived (never on the fast tick). Guarded
+	// by quotaMu, NOT p.mu — the scan runs in the background goroutine which
+	// must not hold p.mu for seconds.
+	quotaMu         sync.Mutex
+	quotaUsageCache *quota.Usage
+	quotaUsageAt    time.Time
 }
+
+// quotaTTL is how often the transcript-scan quota usage is recomputed. The
+// scan reads every recently-modified Claude transcript file, which can take a
+// second or two on a heavy account — far too slow for the 5 s derived cadence,
+// fine once a minute (window fractions move slowly).
+const quotaTTL = 60 * time.Second
 
 // NewLedgerProvider returns a LedgerProvider for the project at repoRoot.
 // accountProfile is used to load the quota config for cost projections; pass ""
@@ -107,6 +126,61 @@ func NewLedgerProvider(projectID, repoRoot, accountProfile string) *LedgerProvid
 		events:         newEventCollector(),
 		derivedTimeout: derivedRefreshTimeout,
 	}
+}
+
+// SetAccountConfigDir sets the account's CLAUDE_CONFIG_DIR for the quota
+// transcript scan ("" = personal profile → ~/.claude). Call before the first
+// Refresh; not safe to call concurrently with Refresh.
+func (p *LedgerProvider) SetAccountConfigDir(dir string) { p.accountConfigDir = dir }
+
+// refreshQuotaUsage returns the cached transcript-scan quota usage, rescanning
+// when the cache is older than quotaTTL. Runs only on the background derived
+// goroutine. Returns nil when the account has no calibrated config or no
+// transcripts (the TUI then renders the calibrate/unavailable hints).
+func (p *LedgerProvider) refreshQuotaUsage(now time.Time) *quota.Usage {
+	if p.accountProfile == "" {
+		return nil
+	}
+	p.quotaMu.Lock()
+	if p.quotaUsageCache != nil && now.Sub(p.quotaUsageAt) < quotaTTL {
+		u := p.quotaUsageCache
+		p.quotaMu.Unlock()
+		return u
+	}
+	p.quotaMu.Unlock()
+
+	cfg, err := quota.LoadConfig(p.accountProfile)
+	if err != nil {
+		return nil
+	}
+	u := &quota.Usage{Account: cfg.Account}
+	u.Window5h.Hours = 5
+	u.Window5h.CeilingUSD = cfg.WindowCeilingUSD
+	u.Weekly.Hours = 24 * 7
+	u.Weekly.CeilingUSD = cfg.WeeklyCeilingUSD
+	if spent, err := quota.JSONLScan(p.accountConfigDir, 5); err == nil {
+		u.Window5h.SpentUSD = spent
+		u.Window5h.Source = "jsonl-scan"
+		u.Window5h.Approx = true
+	} else {
+		u.Window5h.Source = "unavailable"
+	}
+	if spent, err := quota.JSONLScan(p.accountConfigDir, 24*7); err == nil {
+		u.Weekly.SpentUSD = spent
+		u.Weekly.Source = "jsonl-scan"
+		u.Weekly.Approx = true
+	} else {
+		u.Weekly.Source = "unavailable"
+	}
+	if u.Window5h.Source == "unavailable" && u.Weekly.Source == "unavailable" {
+		u = nil
+	}
+
+	p.quotaMu.Lock()
+	p.quotaUsageCache = u
+	p.quotaUsageAt = now
+	p.quotaMu.Unlock()
+	return u
 }
 
 // ProjectID implements Provider.
@@ -146,11 +220,27 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 			return slots[i].PhaseID < slots[j].PhaseID
 		})
 		snap.Slots = slots
+
+		// Health-patrol history (koryph-gus) — mirrored for the events feed.
+		for _, pe := range run.PatrolEvents {
+			at, err := time.Parse(time.RFC3339, pe.At)
+			if err != nil {
+				continue
+			}
+			ps := PatrolEventSnapshot{At: at}
+			for _, f := range pe.Findings {
+				ps.Findings = append(ps.Findings, PatrolFindingSnapshot{
+					Check: f.Check, Level: f.Level, Message: f.Message, Fixed: f.Fixed,
+				})
+			}
+			snap.Patrol = append(snap.Patrol, ps)
+		}
 	}
 	// A missing ledger is not an error — project may not have started a run.
 
 	// --- governor ---------------------------------------------------------------
-	snap.Governor = p.refreshGovernor()
+	var govObs govern.Observation
+	snap.Governor, govObs = p.refreshGovernor()
 
 	// --- derived sections (burndown, efficiency, graph, queue) ------------------
 	// Served from cache and recomputed off the tick thread (see refreshDerived).
@@ -173,7 +263,7 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 		p.derivedRefreshing = true
 		// Pass the inputs the background job needs by value; it must not read
 		// p's mutable cache fields without the lock.
-		go p.refreshDerived(snap.Slots, snap.Governor, snap.RunID, snap.CapturedAt)
+		go p.refreshDerived(snap.Slots, snap.Governor, govObs, snap.RunID, snap.CapturedAt)
 	}
 
 	// --- events (koryph-9af.5) --------------------------------------------------
@@ -202,7 +292,7 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 // of the session; the next TTL tick simply retries. A pass whose queue
 // assembly failed (bd error/timeout) keeps the previous queueCache instead of
 // clobbering a good tree with an empty snapshot.
-func (p *LedgerProvider) refreshDerived(slots []SlotSnapshot, gov GovernorSnapshot, runID string, now time.Time) {
+func (p *LedgerProvider) refreshDerived(slots []SlotSnapshot, gov GovernorSnapshot, govObs govern.Observation, runID string, now time.Time) {
 	defer func() {
 		r := recover()
 		p.mu.Lock()
@@ -219,11 +309,29 @@ func (p *LedgerProvider) refreshDerived(slots []SlotSnapshot, gov GovernorSnapsh
 	ctx, cancel := context.WithTimeout(context.Background(), p.derivedTimeout)
 	defer cancel()
 
-	// Graph first — the queue computation consumes it.
+	// Graph first — the queue computation consumes it. Queue next — its bd
+	// titles enrich the burndown epic rows and the token-economy rows, so
+	// every derived surface shows titles instead of bare bead ids.
 	graphSnap := p.graph.Refresh(ctx, now)
-	burndown := p.refreshBurndown(ctx, now)
-	efficiency := p.refreshEfficiency(Snapshot{RunID: runID, Governor: gov}, now)
 	queue, queueOK := p.refreshQueue(ctx, Snapshot{Slots: slots, Graph: graphSnap, Governor: gov, CapturedAt: now})
+	titles := make(map[string]string)
+	if queueOK {
+		collectQueueTitles(queue.Roots, titles)
+	} else {
+		// This pass's bd read failed — enrich from the previous good tree.
+		p.mu.Lock()
+		collectQueueTitles(p.queueCache.Roots, titles)
+		p.mu.Unlock()
+	}
+
+	// Live quota usage on its own slow cadence (quotaTTL): a pure-Go scan of
+	// the account's Claude transcript JSONL — no ccusage subprocess — so the
+	// 5h/weekly burn bars finally show real spend in the TUI instead of a
+	// permanent "unavailable" hint.
+	usage := p.refreshQuotaUsage(now)
+
+	burndown := p.refreshBurndown(ctx, now, usage, titles, openTaskCount(queue.Roots))
+	efficiency := p.refreshEfficiency(runID, govObs, gov, usage, titles, now)
 
 	p.mu.Lock()
 	p.graphCache = graphSnap
@@ -243,7 +351,11 @@ func (p *LedgerProvider) refreshDerived(slots []SlotSnapshot, gov GovernorSnapsh
 
 // refreshBurndown builds a fresh BurndownSnapshot, soft-failing on any
 // data source that is unavailable (beads absent, quota uncalibrated, etc.).
-func (p *LedgerProvider) refreshBurndown(ctx context.Context, now time.Time) BurndownSnapshot {
+// usage is the transcript-scan quota usage (nil when unavailable); titles maps
+// bead/epic id → display title; openTasks is the count of open workable
+// (non-container) issues from the queue tree, a truer "remaining" than the
+// ready frontier alone.
+func (p *LedgerProvider) refreshBurndown(ctx context.Context, now time.Time, usage *quota.Usage, titles map[string]string, openTasks int) BurndownSnapshot {
 
 	// --- ledger history -------------------------------------------------------
 	runIDs, _ := p.ls.ListRuns()
@@ -282,10 +394,6 @@ func (p *LedgerProvider) refreshBurndown(ctx context.Context, now time.Time) Bur
 	}
 
 	// --- quota config (file read only; no ccusage subprocess in the TUI) --------
-	// We read the persisted Config for estimator calibration but do NOT call
-	// quota.Snapshot (which runs ccusage — too slow for a 5 s TUI refresh).
-	// Window data will be shown as "unknown" until a background refresh bead
-	// adds it (filed as a follow-up in SUMMARY.md).
 	var qcfg *quota.Config
 	if p.accountProfile != "" {
 		if cfg, err := quota.LoadConfig(p.accountProfile); err == nil {
@@ -297,15 +405,19 @@ func (p *LedgerProvider) refreshBurndown(ctx context.Context, now time.Time) Bur
 		runs:         runs,
 		readyIssues:  readyIssues,
 		epicChildren: epicChildren,
+		epicTitles:   titles,
+		openTasks:    openTasks,
 		quotaCfg:     qcfg,
-		quotaUsage:   nil, // see above
+		quotaUsage:   usage,
 		now:          now,
 	})
 }
 
 // refreshEfficiency builds a fresh EfficiencySnapshot, soft-failing on any
-// data source that is unavailable.
-func (p *LedgerProvider) refreshEfficiency(snap Snapshot, now time.Time) EfficiencySnapshot {
+// data source that is unavailable. govObs is the same read-only governor
+// observation the GovernorSnapshot was built from; usage/titles as in
+// refreshBurndown.
+func (p *LedgerProvider) refreshEfficiency(runID string, govObs govern.Observation, gov GovernorSnapshot, usage *quota.Usage, titles map[string]string, now time.Time) EfficiencySnapshot {
 	// Load historical runs for the dispatch sparkline.
 	runIDs, _ := p.ls.ListRuns()
 	if len(runIDs) > efficiencyMaxRuns {
@@ -321,8 +433,8 @@ func (p *LedgerProvider) refreshEfficiency(snap Snapshot, now time.Time) Efficie
 
 	// Active slots from the current run's snapshot (already fetched above).
 	var active []*ledger.Slot
-	if snap.RunID != "" {
-		if run, err := p.ls.LoadRun(snap.RunID); err == nil {
+	if runID != "" {
+		if run, err := p.ls.LoadRun(runID); err == nil {
 			active = activeSlots(run)
 		}
 	}
@@ -338,27 +450,53 @@ func (p *LedgerProvider) refreshEfficiency(snap Snapshot, now time.Time) Efficie
 	return computeEfficiency(efficiencyInput{
 		runs:        runs,
 		activeSlots: active,
-		govStore:    p.gs,
-		govSnap:     snap.Governor,
+		govObs:      govObs,
+		govSnap:     gov,
 		quotaCfg:    qcfg,
-		quotaUsage:  nil, // ccusage not run in TUI path
+		quotaUsage:  usage,
+		titles:      titles,
 		now:         now,
 	})
 }
 
-// refreshGovernor reads the machine-global governor state.
-func (p *LedgerProvider) refreshGovernor() GovernorSnapshot {
+// openTaskCount counts workable (non-container) nodes in the queue tree —
+// the honest "remaining backlog" denominator: dep-blocked and deferred beads
+// count too, not just the ready frontier.
+func openTaskCount(nodes []QueueNode) int {
+	n := 0
+	for _, node := range nodes {
+		if node.State != QueueStateContainer {
+			n++
+		}
+		n += openTaskCount(node.Children)
+	}
+	return n
+}
+
+// refreshGovernor reads the machine-global governor state through the
+// read-only Observe path. The previous Pools/PoolStatus/ResourcesStatus route
+// made the TUI a WRITER in the engine's control loop on every poll: those
+// calls prune lease files, resolve crashed probes, and persist pending AIMD
+// probe growth to governor.json — and they re-scanned the lease directory
+// three times per snapshot, so a single Snapshot could carry mutually
+// inconsistent lease counts that flickered against the engine's own writes.
+// Observe assembles everything in one lock/one scan with zero writes.
+// The returned Observation is also handed to the efficiency computation so
+// the pool-detail table is built from the same consistent read.
+func (p *LedgerProvider) refreshGovernor() (GovernorSnapshot, govern.Observation) {
 	gs := GovernorSnapshot{Pools: map[string]PoolSnapshot{}}
 
-	pools, err := p.gs.Pools()
+	obs, err := p.gs.Observe()
 	if err != nil {
-		return gs
-	}
-	for _, pool := range pools {
-		ps, err := p.gs.PoolStatus(pool)
-		if err != nil {
-			continue
+		// Ensure the default pool is present even when the governor is unreadable.
+		gs.Pools[govern.DefaultPool] = PoolSnapshot{
+			Provider: govern.DefaultPool,
+			Cap:      govern.DefaultMaxGlobalAgents,
+			Dynamic:  govern.DefaultMaxGlobalAgents,
 		}
+		return gs, govern.Observation{}
+	}
+	for pool, ps := range obs.Pools {
 		cfg := ps.AIMD
 		dynamicCap := cfg.DynamicCap
 		if dynamicCap <= 0 {
@@ -376,22 +514,11 @@ func (p *LedgerProvider) refreshGovernor() GovernorSnapshot {
 			BreakerState: cfg.BreakerState,
 		}
 	}
-	// Ensure the default pool is always present even if governor.json is missing.
-	if _, ok := gs.Pools[govern.DefaultPool]; !ok {
-		gs.Pools[govern.DefaultPool] = PoolSnapshot{
-			Provider: govern.DefaultPool,
-			Cap:      govern.DefaultMaxGlobalAgents,
-			Dynamic:  govern.DefaultMaxGlobalAgents,
-		}
-	}
 
 	// Per-kind external resource ledger (koryph-4ql.1 L7, koryph-4ql.10).
-	// Fail open (I6): on any error gs.Resources stays nil, matching an old
-	// pre-resources snapshot — the TUI/IDE render no resources section.
-	if rs, err := p.gs.ResourcesStatus(); err == nil {
-		gs.Resources = convertResourceStatuses(rs)
-	}
-	return gs
+	// Fail open (I6): nil renders no resources section.
+	gs.Resources = convertResourceStatuses(obs.Resources)
+	return gs, obs
 }
 
 // convertResourceStatuses maps govern.ResourceStatus to the cockpit-local
@@ -438,7 +565,10 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 		Title:              titleFor(sl),
 		Stage:              sl.Status,
 		Model:              sl.Model,
+		ModelActual:        sl.ModelActual,
 		ModelWhy:           sl.ModelWhy,
+		DeathReason:        sl.DeathReason,
+		Note:               sl.Note,
 		Attempt:            sl.Attempts,
 		PID:                sl.PID,
 		Branch:             sl.Branch,
@@ -473,11 +603,18 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 		}
 	}
 	ss.CPUUtilPct = cpuUtilPct(sl.CPUSeconds, ss.DispatchedAt, ss.FinishedAt, now)
-	// Read live agent status file if available.
+	// Read live agent status file if available. Its mtime is the agent's
+	// step-boundary heartbeat: a running slot with an old heartbeat is
+	// stalled, and the Threads tab flags it.
 	if sl.StatusPath != "" {
 		if as, err := readAgentStatus(sl.StatusPath); err == nil {
 			ss.StatusJSON = as.State
 			ss.StatusLine = as.Step
+		}
+		if fi, err := os.Stat(sl.StatusPath); err == nil {
+			if age := now.Sub(fi.ModTime()); age > 0 {
+				ss.StatusAge = age
+			}
 		}
 	}
 	return ss
@@ -722,6 +859,8 @@ func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time
 		d.Worktree = sl.Worktree
 		d.CostUSD = sl.CostUSD
 		d.EstimateUSD = sl.EstimateUSD
+		d.DeathReason = sl.DeathReason
+		d.SlotNote = sl.Note
 		d.LogPath = sl.LogPath
 		d.StreamPath = sl.Stream
 
@@ -778,8 +917,12 @@ func buildRequeueCause(sl *ledger.Slot) string {
 		return "gate"
 	case sl.MergeRequeues > 0:
 		return "merge"
+	case sl.ConflictRequeues > 0:
+		return "conflict"
 	case sl.RateLimitRequeues > 0:
 		return "ratelimit"
+	case sl.BudgetKillRequeues > 0:
+		return "budget-kill"
 	default:
 		return ""
 	}
