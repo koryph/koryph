@@ -3,10 +3,13 @@
 
 // Package engine obs.go -- structured logging helpers for the engine component.
 //
-// All engine progress events emit both a human-readable line (via
-// runner.progress, which writes to opts.Out for console/test capture) AND a
-// structured slog record via the helpers here. The two channels are byte-
-// identical at INFO level so golden console tests are stable.
+// Engine observability has two distinct channels that must not be conflated:
+// runner.progress writes a human-readable line to opts.Out (the console/run
+// log), while the helpers here emit structured, queryable slog records
+// (engine.*) for log pipelines and cost rollups. progress does NOT also mirror
+// its line into slog — doing so doubled every line once stdout and stderr were
+// merged into one run log (D8); it falls back to slog only when there is no
+// console sink at all (headless).
 //
 // Key naming follows the canonical obs attribute keys in internal/obs/attrs.go.
 // Section O2 bead: engine + scheduler instrumentation.

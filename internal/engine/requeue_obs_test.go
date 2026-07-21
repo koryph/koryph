@@ -4,8 +4,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -29,6 +31,66 @@ func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
 }
 func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestProgressDoesNotDoubleEmitToSlog proves D8: with a console sink set,
+// progress writes the human line only there — it does NOT also mirror the
+// same string into the structured slog stream, which doubled every line once
+// stdout and stderr were captured into one run log. The dedicated engine.*
+// records remain the structured channel.
+func TestProgressDoesNotDoubleEmitToSlog(t *testing.T) {
+	capH := &capturingHandler{}
+	obs.ReInitRaw(obs.Config{DefaultLevel: "info"}, capH)
+	orig := log
+	log = obs.For("engine")
+	t.Cleanup(func() {
+		log = orig
+		obs.ReInitRaw(obs.Config{DefaultLevel: "info"}, slog.NewTextHandler(nil, nil))
+	})
+
+	var out bytes.Buffer
+	r := &runner{opts: Options{Out: &out}}
+	r.progress("hello %d", 7)
+
+	if !strings.Contains(out.String(), "hello 7") {
+		t.Errorf("console sink missing the progress line: %q", out.String())
+	}
+	capH.mu.Lock()
+	defer capH.mu.Unlock()
+	for _, rec := range capH.recs {
+		if strings.Contains(rec.Message, "hello 7") {
+			t.Fatalf("progress mirrored the human line into slog (D8 duplication): %q", rec.Message)
+		}
+	}
+}
+
+// TestProgressFallsBackToSlogWhenHeadless proves the headless path still emits:
+// with no console sink, progress records the line via the structured logger so
+// it is not silently dropped.
+func TestProgressFallsBackToSlogWhenHeadless(t *testing.T) {
+	capH := &capturingHandler{}
+	obs.ReInitRaw(obs.Config{DefaultLevel: "info"}, capH)
+	orig := log
+	log = obs.For("engine")
+	t.Cleanup(func() {
+		log = orig
+		obs.ReInitRaw(obs.Config{DefaultLevel: "info"}, slog.NewTextHandler(nil, nil))
+	})
+
+	r := &runner{opts: Options{Out: nil}}
+	r.progress("headless %d", 9)
+
+	capH.mu.Lock()
+	defer capH.mu.Unlock()
+	found := false
+	for _, rec := range capH.recs {
+		if strings.Contains(rec.Message, "headless 9") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("headless progress was dropped; expected a slog fallback record")
+	}
+}
 
 // TestLogRequeueEventCarriesRunAndProject pins koryph-x5d: engine.slot.
 // requeue_event must carry run_id + project so per-project cost rollups include
