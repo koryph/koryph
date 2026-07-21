@@ -148,6 +148,17 @@ func (r *runner) patrolIfDue(ctx context.Context) {
 // throttled progress lines, and appends the full set to the run ledger.
 func (r *runner) runPatrol(ctx context.Context) {
 	now := time.Now()
+	// Seed the emit throttle from the run's persisted patrol history the first
+	// time a (possibly resumed) process patrols. patrolSeen is in-memory, so
+	// without this every engine restart re-emitted every still-persistent
+	// warning the prior generation had already surfaced — the same handful of
+	// stale-claim lines reprinted across every restart (D11). The ledger
+	// PatrolEvents survive resume and give us the last time each finding was
+	// recorded.
+	if r.patrolSeen == nil {
+		r.patrolSeen = make(map[string]time.Time)
+		r.seedPatrolThrottle()
+	}
 	findings := r.collectPatrolFindings(ctx, now)
 
 	// Surface WARN and INFO findings as progress lines, throttled to
@@ -162,9 +173,6 @@ func (r *runner) runPatrol(ctx context.Context) {
 		key := f.check + "\x00" + f.message
 		if last, seen := r.patrolSeen[key]; seen && now.Sub(last) < patrolThrottleWindow {
 			continue
-		}
-		if r.patrolSeen == nil {
-			r.patrolSeen = make(map[string]time.Time)
 		}
 		r.patrolSeen[key] = now
 		suffix := ""
@@ -203,6 +211,33 @@ func (r *runner) runPatrol(ctx context.Context) {
 		Findings: pf,
 	})
 	_ = r.store.SaveRun(r.run)
+}
+
+// seedPatrolThrottle pre-populates patrolSeen from the run's persisted patrol
+// history so the emit throttle survives an engine restart / resume (D11). Each
+// warn/info finding's key is stamped with the newest time it was recorded, so a
+// resumed engine treats a still-persistent warning as already-surfaced and does
+// not reprint it until patrolThrottleWindow elapses. Best-effort: unparseable
+// timestamps are skipped.
+func (r *runner) seedPatrolThrottle() {
+	if r.run == nil {
+		return
+	}
+	for _, ev := range r.run.PatrolEvents {
+		at, err := time.Parse(time.RFC3339, ev.At)
+		if err != nil {
+			continue
+		}
+		for _, f := range ev.Findings {
+			if f.Level != "warn" && f.Level != "info" {
+				continue
+			}
+			key := f.Check + "\x00" + f.Message
+			if prev, ok := r.patrolSeen[key]; !ok || at.After(prev) {
+				r.patrolSeen[key] = at
+			}
+		}
+	}
 }
 
 // collectPatrolFindings runs each curated check and returns the merged results.

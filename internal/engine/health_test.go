@@ -96,6 +96,39 @@ func TestPatrolIfDue_FiresAfterInterval(t *testing.T) {
 	}
 }
 
+// TestSeedPatrolThrottleFromLedgerHistory proves D11: a resumed engine seeds
+// its emit throttle from the run's persisted patrol history, so a warning the
+// prior generation already surfaced is not reprinted on restart. ok-level
+// findings are not throttle-tracked.
+func TestSeedPatrolThrottleFromLedgerHistory(t *testing.T) {
+	recent := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	old := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	r := &runner{run: &ledger.Run{
+		PatrolEvents: []ledger.PatrolEvent{
+			{At: old, Findings: []ledger.PatrolFinding{{Check: "stale-claims", Level: "warn", Message: "bead xdbk stale"}}},
+			{At: recent, Findings: []ledger.PatrolFinding{
+				{Check: "stale-claims", Level: "warn", Message: "bead xdbk stale"},
+				{Check: "governor-pool", Level: "ok", Message: "healthy"},
+			}},
+		},
+	}}
+	r.patrolSeen = make(map[string]time.Time)
+	r.seedPatrolThrottle()
+
+	seeded, ok := r.patrolSeen["stale-claims\x00bead xdbk stale"]
+	if !ok {
+		t.Fatal("warn finding not seeded from patrol history")
+	}
+	// Seeded with the NEWEST recorded time (recent, not old), so the throttle
+	// still suppresses right after a restart.
+	if time.Since(seeded) > patrolThrottleWindow {
+		t.Errorf("seeded time too old (%v); a recently-recorded warning must stay throttled after a restart", seeded)
+	}
+	if _, ok := r.patrolSeen["governor-pool\x00healthy"]; ok {
+		t.Error("ok-level finding must not seed the emit throttle")
+	}
+}
+
 // --- zombie lease detection ------------------------------------------------
 
 func TestPatrolCheckZombieLeases_NoSlotsDir(t *testing.T) {
