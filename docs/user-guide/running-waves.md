@@ -447,6 +447,32 @@ retried agent never runs against a checkout that predates a main-side fix: a bea
 no commits is rebuilt from a fresh checkout, and one carrying commits is rebased onto the
 advanced base before re-dispatch.
 
+### Keeping the engine running detached
+
+The engine runs in the foreground and shares its parent shell's lifetime — if
+that shell (or the terminal, or an SSH session, or a harness that spawned it) is
+reaped, the engine goes with it. For a long unattended run, detach it from the
+shell so it survives:
+
+```sh
+nohup koryph run --project myproject --auto-merge --review > run.log 2>&1 &
+disown
+```
+
+`nohup` decouples it from the controlling terminal (`disown` drops it from the
+shell's job table so a shell exit does not signal it); `> run.log 2>&1` captures
+both the human progress and the structured records for later `tail`/grep. It
+resumes cleanly after any interruption with `--resume` (above), so a killed
+detached run loses nothing.
+
+To **change a running loop's scope or width** — widen `--max`, or add work
+outside the current `--parent` epic — stop and `--resume`; there is no in-place
+inject. A newly-ready bead that already falls inside the run's frontier scope is
+picked up automatically on the next wave (the engine re-reads `bd ready` every
+wave), so a restart is only needed to change the run's *configuration*, not to
+pick up newly-unblocked in-scope work. `koryph nudge` delivers a note to a
+specific running agent; it does not change the frontier.
+
 ### Budget-killed agents
 
 An agent stopped by `--max-budget-usd` (see [Billing and
