@@ -6,6 +6,7 @@ package doctor
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -449,7 +450,54 @@ func checkHooksWiring(repoRoot string) []Finding {
 			})
 		}
 	}
+	// bd init, run after koryph project add, appends its own bare "bd prime
+	// --hook-json" SessionStart entry alongside koryph's koryph-prime.sh
+	// wrapper — double session priming (koryph-14p.2). rules.ensureHook now
+	// dedupes this on the NEXT merge, so surface it here rather than silently
+	// tolerate it.
+	if n := countBDPrimeEntries(data); n > 1 {
+		findings = append(findings, Finding{
+			Check: checkNameHooksWiring,
+			Level: LevelWarn,
+			Message: fmt.Sprintf(
+				`duplicate session priming (%d entries match "bd prime") — run 'koryph project install-assets <root> rules' to dedupe`, n),
+		})
+	}
 	return findings
+}
+
+// countBDPrimeEntries counts the hooks.SessionStart entries in settings.json
+// (data) that carry at least one hook command containing the "bd prime"
+// marker. Unlike the raw substring check above, this parses the JSON
+// structurally so it counts ENTRIES, not marker occurrences — two entries are
+// exactly the double-prime state this detects. Unparseable/absent shapes
+// count as zero; the marker-presence findings above already report on those.
+func countBDPrimeEntries(data []byte) int {
+	var cur map[string]any
+	if json.Unmarshal(data, &cur) != nil {
+		return 0
+	}
+	hks, _ := cur["hooks"].(map[string]any)
+	arr, _ := hks["SessionStart"].([]any)
+	n := 0
+	for _, e := range arr {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		inner, _ := em["hooks"].([]any)
+		for _, hk := range inner {
+			hm, ok := hk.(map[string]any)
+			if !ok {
+				continue
+			}
+			if cmd, ok := hm["command"].(string); ok && strings.Contains(cmd, "bd prime") {
+				n++
+				break // count the entry once even if it has multiple matching hooks
+			}
+		}
+	}
+	return n
 }
 
 // checkSigning validates the project's signing configuration sanity and

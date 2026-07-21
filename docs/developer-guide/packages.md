@@ -17,6 +17,20 @@ billing modes.
 - **`BillingMode`** — `"subscription"` | `"api-key"`
 - **`Env(p, billing, apiKey)`** — full `[]string` child env; scrubs/re-injects credentials
 - **`Verify(ctx, p)`** / **`VerifyExpected(ctx, p, email)`** — read and compare identity
+- **`Discover(ctx)`** — enumerate candidate profiles (`~/.claude.json`, `~/.claude-*/`) with verified identity + provenance, for the adopt wizard's account proposal
+
+## adopt
+
+Orchestration logic for the `koryph adopt` wizard (design:
+docs/designs/2026-07-adopt.md): detect → plan → confirm → execute → verify,
+sequencing the same primitives `project add` uses. The CLI glue (flags,
+prompts, streaming) lives in `cmd/koryph/adopt.go`; everything here is pure
+or unit-testable.
+
+- **`Detect(ctx, root)`** — read-only `Snapshot` (tools, platform, beads state, account candidates, gate/forge/area_map proposals, registry/config state)
+- **`BuildPlan(snap)`** — the ordered `[]Step` plan (states `done|needed|offer|blocked`, each with a why)
+- **`ResolveAccountNonInteractive`** / **`ResolveGateNonInteractive`** / **`ResolveForgeNonInteractive`** — fail-closed value resolvers for `--yes`/non-TTY
+- **`ExecuteBeads`** / **`RegisterAndConfigure`** / **`InstallAssets`** / **`CommitAdoption`** — idempotent execute-phase steps
 
 ## agentjson
 
@@ -680,6 +694,18 @@ account/billing/identity guarantees as a dispatch.
 - **`Opts`** — worktree, branch, resolved persona + model, per-stage prompt, profile/billing
 - **`Result`** — `Ran` / `OK` / `CostUSD` / `Note`
 - **`Run(ctx, o)`** — verify identity, run the `dontAsk` claude one-shot, persist the envelope, report cost
+
+## sysdeps
+
+Platform detection and consented install planning for koryph's external tool
+dependencies (`bd`, `claude`, `gh`), plus the consumer-flake edit route
+(design: docs/designs/2026-07-adopt.md §4). Planning is pure — this package
+never executes an install; the adopt wizard shows the exact argv (sudo called
+out) and runs it only on consent.
+
+- **`Detect()`** — `Platform` (GOOS, `/etc/os-release` distro, package managers on PATH in preference order)
+- **`Plan(p, tool)`** — `InstallPlan{Route, Argv, Manual, Verify, NeedsSudo}`; data-driven tool spec table, manual fallback always available
+- **`PlanFlakeBeads(root)`** / **`ApplyFlakeEdit(ctx, root, e)`** — minimal structural flake.nix edit adding the beads input + devShell package, diff-first, `nix flake lock` after
 
 ## sysmem
 

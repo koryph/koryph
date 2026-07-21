@@ -192,12 +192,23 @@ func getSlice(m map[string]any, key string) ([]any, bool) {
 
 // ensureHook makes arr carry exactly one up-to-date koryph hook for h. If an
 // entry already matches h.marker but its command differs (e.g. a legacy
-// ${CLAUDE_PROJECT_DIR}/hooks/... registration), the command is rewritten in
-// place — this migrates old worktree-relative guards to the central path. If no
-// entry matches the marker, a fresh entry is appended. Non-koryph hooks are
-// untouched. changed reports whether arr was modified.
+// ${CLAUDE_PROJECT_DIR}/hooks/... registration, or a pre-wrapper bare "bd
+// prime --hook-json" registration), the FIRST matching entry's command is
+// rewritten in place — this migrates old registrations to the current
+// command, exactly like the guards' CLAUDE_PROJECT_DIR migration. If no entry
+// matches the marker, a fresh entry is appended and becomes that keeper.
+//
+// Every marker-matching hook in every OTHER entry is then removed as a stale
+// duplicate (koryph-14p.2): `bd init`, run after `koryph project add`,
+// appends its own bare "bd prime --hook-json" SessionStart entry alongside
+// the one koryph already installed/migrated, producing double session
+// priming. Removal is per-HOOK, not per-entry: a mixed entry keeps its
+// non-marker hooks (a project's own SessionStart hook is never swept up) and
+// is dropped only when nothing remains. changed reports whether arr was
+// modified.
 func ensureHook(arr []any, h hookSpec) (out []any, changed bool) {
-	for _, e := range arr {
+	keeper := -1
+	for i, e := range arr {
 		em, ok := e.(map[string]any)
 		if !ok {
 			continue
@@ -213,13 +224,73 @@ func ensureHook(arr []any, h hookSpec) (out []any, changed bool) {
 				continue
 			}
 			if cmd != h.command {
-				hm["command"] = h.command // migrate legacy registration in place
+				hm["command"] = h.command // migrate legacy/duplicate registration in place
 				changed = true
 			}
-			return arr, changed // marker found → done (updated or already current)
+			keeper = i
+			break
+		}
+		if keeper == i {
+			break // first match wins — mirrors the pre-dedupe migration behavior
 		}
 	}
-	return append(arr, hookEntry(h)), true // absent → add
+	if keeper == -1 {
+		arr = append(arr, hookEntry(h)) // absent → add
+		keeper = len(arr) - 1
+		changed = true
+	}
+
+	deduped := make([]any, 0, len(arr))
+	for i, e := range arr {
+		if i == keeper {
+			deduped = append(deduped, e)
+			continue
+		}
+		kept, dropped := stripMarkerHooks(e, h.marker)
+		if dropped {
+			changed = true
+		}
+		if kept != nil {
+			deduped = append(deduped, kept)
+		}
+	}
+	return deduped, changed
+}
+
+// stripMarkerHooks removes every marker-matching hook from a non-keeper
+// settings.json entry ({hooks: [{type, command}, ...]}). It returns the entry
+// to keep (nil when every hook matched — the whole entry was a stale
+// duplicate, e.g. bd's own bare "bd prime" append) and whether anything was
+// removed. Non-entry shapes pass through untouched: ensureHook must never
+// destroy structure it does not understand.
+func stripMarkerHooks(e any, marker string) (kept any, dropped bool) {
+	em, ok := e.(map[string]any)
+	if !ok {
+		return e, false
+	}
+	inner, ok := em["hooks"].([]any)
+	if !ok || len(inner) == 0 {
+		return e, false
+	}
+	remaining := make([]any, 0, len(inner))
+	for _, hk := range inner {
+		hm, ok := hk.(map[string]any)
+		if ok {
+			if cmd, ok := hm["command"].(string); ok && strings.Contains(cmd, marker) {
+				dropped = true // stale duplicate of the keeper's hook — remove
+				continue
+			}
+		}
+		remaining = append(remaining, hk)
+	}
+	if !dropped {
+		return e, false
+	}
+	if len(remaining) == 0 {
+		return nil, true
+	}
+	em["hooks"] = remaining
+	return em, true
 }
 
 // hookEntry builds a settings.json hook entry for a koryph hook.

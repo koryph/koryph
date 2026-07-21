@@ -73,8 +73,9 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 // initNextSteps is the human-readable guide printed after a successful init.
 const initNextSteps = `
 Next steps:
-  1. Register your first project:
-       koryph project add <path/to/repo> --account personal --identity you@example.com
+  1. Adopt your first project (wizard: deps, beads, account, config, assets):
+       koryph adopt <path/to/repo>
+     (or flag-driven: koryph project add <root> --account personal --identity you@example.com)
 
   2. Run the pre-dispatch gate:
        koryph validate <project-id>

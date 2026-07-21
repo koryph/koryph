@@ -14,17 +14,15 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/koryph/koryph/internal/commands"
+	"github.com/koryph/koryph/internal/adopt"
 	"github.com/koryph/koryph/internal/engine"
 	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/onboard"
 	"github.com/koryph/koryph/internal/paths"
-	"github.com/koryph/koryph/internal/personas"
 	"github.com/koryph/koryph/internal/posture"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
-	"github.com/koryph/koryph/internal/scaffold"
 )
 
 func init() {
@@ -176,42 +174,10 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 	// Install the koryph scaffolding so the project enforces koryph semantics
 	// whether `koryph` is run explicitly or implied by a prompt. Idempotent;
 	// differing files are left untouched (re-run `koryph project install-assets
-	// <root> --force` to update them).
-	//
-	// Asset install order and capability-gating (koryph-v8u.9):
-	//
-	//   1. AGENTS.md — always installed; the canonical, runtime-neutral
-	//      instruction file read natively by Codex, Cursor, Grok, Copilot,
-	//      opencode, amp, and Claude Code.
-	//
-	//   2. agents (.claude/agents) — always installed; personas render correctly
-	//      for any runtime via InstallForRuntime (koryph-v8u.12; resolves to
-	//      "claude" when unset/unreadable, the pre-koryph-v8u.12 behavior).
-	//
-	//   3. commands (.claude/commands) — Claude Code only; skip when the project's
-	//      runtime does not support .claude/ (Capabilities.Personas == false).
-	//      Containment for runtimes without commands: worktree isolation +
-	//      merge-time protected-path refusal.
-	//
-	//   4. rules (hooks + settings.json) — Claude Code only; skip when the
-	//      project's runtime does not support lifecycle hooks (Capabilities.Hooks
-	//      == false). Same containment note as above.
-	onboardInstallAgentsMD(stderr, root)
-	onboardInstall(stderr, "agents", func() ([]scaffold.Result, error) {
-		results, _, ierr := personas.InstallForRuntime(root, false, resolveInstallRuntime(root, ""))
-		return results, ierr
-	})
-	caps := resolveRuntimeCapabilities(root)
-	if caps.Personas {
-		onboardInstall(stderr, "commands", func() ([]scaffold.Result, error) { return commands.Install(root, false) })
-	} else {
-		fmt.Fprintln(stderr, "koryph: commands skipped (runtime does not support .claude/commands; containment via worktree isolation + merge gate)")
-	}
-	if caps.Hooks {
-		onboardRules(stderr, root)
-	} else {
-		fmt.Fprintln(stderr, "koryph: rules skipped (runtime does not support hooks; containment via worktree isolation + merge gate)")
-	}
+	// <root> --force` to update them). The install order and capability-gating
+	// rationale live with the shared installer (adopt.InstallAssets), which
+	// `koryph adopt` runs too — one path, so the two front doors can't drift.
+	adopt.InstallAssets(stderr, root)
 
 	// --- posture profile offer -----------------------------------------------
 	// Offer the default posture profile (oss-solo-maintainer) unless:

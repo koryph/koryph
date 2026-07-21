@@ -116,7 +116,7 @@ func TestInitIdempotent(t *testing.T) {
 		t.Fatalf("second init: %v", err)
 	}
 
-	for _, d := range []string{".git", "registry.d", "quota"} {
+	for _, d := range []string{".git", "registry.d", "quota", "slots", filepath.Join("slots", "demand"), "telemetry"} {
 		if _, err := os.Stat(filepath.Join(home, d)); err != nil {
 			t.Fatalf("expected %s to exist: %v", d, err)
 		}
@@ -143,7 +143,7 @@ func TestInitTightensPerms(t *testing.T) {
 	if err := s.Init(context.Background()); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	for _, d := range []string{"", "registry.d", "quota"} {
+	for _, d := range []string{"", "registry.d", "quota", "slots", filepath.Join("slots", "demand"), "telemetry"} {
 		fi, err := os.Stat(filepath.Join(home, d))
 		if err != nil {
 			t.Fatalf("stat %q: %v", d, err)
