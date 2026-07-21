@@ -73,8 +73,11 @@ func runMergePrepare(ctx context.Context, wtPath, def string, cmds []string) (pr
 	if !dirty {
 		return false, true, b.String(), nil
 	}
+	// Stage everything the prepare commands changed, but never the engine's own
+	// CONFLICT.md breadcrumb: a stale copy left in a reused worktree would ride
+	// this commit and trip a project markdownlint hook, failing the merge (D13).
 	if _, aerr := execx.MustSucceed(ctx, execx.Cmd{
-		Dir: wtPath, Name: "git", Args: []string{"add", "-A"},
+		Dir: wtPath, Name: "git", Args: []string{"add", "-A", "--", ".", ":(exclude)" + conflictBreadcrumb},
 	}); aerr != nil {
 		return false, false, b.String(), aerr
 	}

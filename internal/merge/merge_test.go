@@ -358,6 +358,77 @@ func TestMergeConflictAbortsCleanly(t *testing.T) {
 	}
 }
 
+// TestMergeDirtyWorktreeResetBeforeRebase proves D3: an uncommitted edit left in
+// the branch worktree (which would make `git rebase` abort with "you have
+// unstaged changes" and be misread as a content conflict) is reset away, and
+// the committed work lands.
+func TestMergeDirtyWorktreeResetBeforeRebase(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t)
+	ctx := context.Background()
+	wt := worktreeOn(t, repo, "agent/x")
+	commitIn(t, wt.Path, "b.txt", "feature\n", "add b")
+	// main advances so the branch genuinely rebases.
+	commitIn(t, repo, "m.txt", "main\n", "main advance")
+	// A prior stage left the worktree dirty (uncommitted tracked edit) — a bare
+	// `git rebase` here aborts with "unstaged changes".
+	if err := os.WriteFile(filepath.Join(wt.Path, "b.txt"), []byte("uncommitted junk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Merge(ctx, Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main", Gate: []string{"true"},
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v (status=%s)", err, res.Status)
+	}
+	if res.Status != StatusMerged {
+		t.Fatalf("Status=%q, want merged (a dirty worktree must not be misread as a conflict)", res.Status)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(repo, "b.txt"))); got != "feature" {
+		t.Errorf("b.txt on main = %q, want committed 'feature' (dirty edit discarded)", got)
+	}
+}
+
+// TestMergeBranchContainingMergeCommitFastForwards proves D2: a branch that
+// merged main in to resolve a conflict (so it carries a merge commit and
+// already contains main) lands via fast-forward instead of being rebased —
+// rebasing would flatten the merge and re-raise the resolved conflict, parking
+// a branch that lands cleanly.
+func TestMergeBranchContainingMergeCommitFastForwards(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t)
+	ctx := context.Background()
+	commitIn(t, repo, "f.txt", "A\n", "seed f")
+	wt := worktreeOn(t, repo, "agent/x")
+	commitIn(t, wt.Path, "f.txt", "B\n", "branch f=B")
+	// main advances with a conflicting change to the same file.
+	commitIn(t, repo, "f.txt", "C\n", "main f=C")
+	// On the branch, merge main in; it conflicts — resolve to B and commit the
+	// merge, so the branch now contains main as an ancestor.
+	if mr, _ := gitRun(ctx, wt.Path, "merge", "--no-ff", "-m", "merge main", "main"); mr.ExitCode == 0 {
+		t.Fatal("expected the in-branch merge of main to conflict")
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "f.txt"), []byte("B\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, wt.Path, "add", "f.txt")
+	mustGit(t, wt.Path, "commit", "--no-edit")
+
+	res, err := Merge(ctx, Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main", Gate: []string{"true"},
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v (status=%s)", err, res.Status)
+	}
+	if res.Status != StatusMerged {
+		t.Fatalf("Status=%q, want merged (branch already contains main; ff, not rebase)", res.Status)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(repo, "f.txt"))); got != "B" {
+		t.Errorf("f.txt on main = %q, want the branch's resolved 'B'", got)
+	}
+}
+
 func TestMergeSquash(t *testing.T) {
 	isolateGit(t)
 	repo := initRepo(t)

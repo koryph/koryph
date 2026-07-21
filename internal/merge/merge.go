@@ -180,29 +180,52 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 	// the exact ref the ff-merge below targets.
 	var reconciled []string
 	var reconcileRounds int
-	rb, err := gitRun(ctx, wt.Path, "rebase", def)
-	if err != nil {
-		return Result{Status: StatusError}, err
+
+	// D3: a prior attempt or a pipeline stage can leave the worktree dirty, and
+	// `git rebase` then aborts with "cannot rebase: You have unstaged changes",
+	// which looks exactly like a content conflict and parks a landable bead.
+	// Uncommitted state is never part of the branch and never merges, so reset
+	// the tracked tree to the branch tip first; the rebase then either succeeds
+	// or fails on a genuine conflict.
+	if dirty, derr := worktreeDirty(ctx, wt.Path); derr == nil && dirty {
+		_, _ = gitRun(ctx, wt.Path, "reset", "--hard", "HEAD")
 	}
-	if rb.ExitCode != 0 {
-		// A rebase conflict confined ENTIRELY to configured generated files
-		// (a migrations lockfile, a secrets baseline) self-heals: regenerate
-		// each from the post-merge tree and continue, instead of aborting.
-		// Any conflict touching a path with no reconciler — or any reconciler
-		// failure — falls through to the unchanged abort path (design
-		// docs/designs/2026-07-merge-reconcilers.md, invariants I1/I2).
-		healed, paths, rounds, herr := reconcileRebase(ctx, wt.Path, o.Reconcilers)
-		if herr != nil {
-			_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
-			return Result{Status: StatusError}, herr
+
+	// D2: when the branch already contains <def> (e.g. it merged main in once to
+	// resolve conflicts, and carries that merge commit), it is already a
+	// fast-forward of the target and needs no rebase — and rebasing would
+	// flatten the merge commit and re-raise the resolved conflict, parking a
+	// branch that would otherwise land cleanly. Skip straight to the gate and
+	// ff-merge in that case.
+	rebaseNeeded := true
+	if anc, aerr := gitRun(ctx, wt.Path, "merge-base", "--is-ancestor", def, "HEAD"); aerr == nil && anc.ExitCode == 0 {
+		rebaseNeeded = false
+	}
+	if rebaseNeeded {
+		rb, rerr := gitRun(ctx, wt.Path, "rebase", def)
+		if rerr != nil {
+			return Result{Status: StatusError}, rerr
 		}
-		if !healed {
-			_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
-			mdPath := filepath.Join(wt.Path, "CONFLICT.md")
-			_ = fsx.WriteAtomic(mdPath, []byte(conflictMarkdown(o.Branch, def, rb.Stdout+rb.Stderr)), 0o644)
-			return Result{Status: StatusConflict, ConflictMD: mdPath}, nil
+		if rb.ExitCode != 0 {
+			// A rebase conflict confined ENTIRELY to configured generated files
+			// (a migrations lockfile, a secrets baseline) self-heals: regenerate
+			// each from the post-merge tree and continue, instead of aborting.
+			// Any conflict touching a path with no reconciler — or any reconciler
+			// failure — falls through to the unchanged abort path (design
+			// docs/designs/2026-07-merge-reconcilers.md, invariants I1/I2).
+			healed, paths, rounds, herr := reconcileRebase(ctx, wt.Path, o.Reconcilers)
+			if herr != nil {
+				_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
+				return Result{Status: StatusError}, herr
+			}
+			if !healed {
+				_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
+				mdPath := filepath.Join(wt.Path, conflictBreadcrumb)
+				_ = fsx.WriteAtomic(mdPath, []byte(conflictMarkdown(o.Branch, def, rb.Stdout+rb.Stderr)), 0o644)
+				return Result{Status: StatusConflict, ConflictMD: mdPath}, nil
+			}
+			reconciled, reconcileRounds = paths, rounds
 		}
-		reconciled, reconcileRounds = paths, rounds
 	}
 
 	// (5b) merge_prepare: normalize the rebased tree before the gate — its
@@ -412,9 +435,20 @@ func gitRun(ctx context.Context, dir string, args ...string) (execx.Result, erro
 	return execx.Run(ctx, execx.Cmd{Dir: dir, Name: "git", Args: args})
 }
 
+// conflictBreadcrumb is the file the engine drops in a worktree to explain an
+// aborted-rebase conflict. It is an engine artifact, never part of the branch:
+// it must be kept out of any engine-authored commit (a stale copy left in a
+// reused worktree was once staged into the merge-normalization commit and the
+// project's markdownlint rejected it, failing the merge — see mergeAddSpec).
+const conflictBreadcrumb = "CONFLICT.md"
+
+// conflictMarkdown renders the CONFLICT.md breadcrumb. The captured rebase
+// output is fenced as ```text (not a bare ```): a bare fence trips
+// markdownlint MD040 (fenced-code-language), and though koryph never commits
+// this file, a project whose gate lints all *.md still flagged it.
 func conflictMarkdown(branch, base, output string) string {
 	return fmt.Sprintf(
-		"# Merge conflict\n\nRebasing `%s` onto `%s` before merge hit a conflict and was aborted; the\nworktree is unchanged and nothing was merged. Resolve manually, then retry.\n\n```\n%s\n```\n",
+		"# Merge conflict\n\nRebasing `%s` onto `%s` before merge hit a conflict and was aborted; the\nworktree is unchanged and nothing was merged. Resolve manually, then retry.\n\n```text\n%s\n```\n",
 		branch, base, strings.TrimSpace(tail(output, 4000)),
 	)
 }

@@ -53,6 +53,45 @@ func TestMergePrepare_RenumbersAndCommits(t *testing.T) {
 	}
 }
 
+// TestMergePrepare_ExcludesConflictBreadcrumb proves D13: a stale CONFLICT.md
+// left in a reused worktree is never swept into the merge-normalization commit
+// (where a project markdownlint hook would reject it and fail the merge). The
+// real normalization still lands.
+func TestMergePrepare_ExcludesConflictBreadcrumb(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t)
+	ctx := context.Background()
+	wtPath := worktreeOn(t, repo, "agent/x").Path
+	commitFiles(t, wtPath, "work", map[string]string{"b.txt": "b\n"})
+
+	// A prior attempt's breadcrumb lingers untracked in the reused worktree.
+	if err := os.WriteFile(filepath.Join(wtPath, conflictBreadcrumb), []byte("# Merge conflict\n\n```\nx\n```\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A prepare step dirties the tree so koryph makes a normalization commit.
+	res, err := Merge(ctx, Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main",
+		Gate: []string{"true"}, SlotOwner: "o", Slot: &fakeSlot{},
+		Prepare: []string{"printf normalized > normalized.txt"},
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v (status=%s)", err, res.Status)
+	}
+	if res.Status != StatusMerged {
+		t.Fatalf("Status=%q, want merged", res.Status)
+	}
+	// The normalization landed on main...
+	if _, err := os.Stat(filepath.Join(repo, "normalized.txt")); err != nil {
+		t.Errorf("normalized.txt not on main: %v", err)
+	}
+	// ...but the breadcrumb did not (else it would be checked out in repo after
+	// the ff-merge).
+	if _, err := os.Stat(filepath.Join(repo, conflictBreadcrumb)); !os.IsNotExist(err) {
+		t.Errorf("%s reached main; the normalization commit must exclude it (err=%v)", conflictBreadcrumb, err)
+	}
+}
+
 func TestMergePrepare_ExposesDefaultBranch(t *testing.T) {
 	isolateGit(t)
 	repo := initRepo(t)
