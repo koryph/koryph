@@ -181,6 +181,29 @@ beads-a1b    planned  sonnet    $0.00  0         -       -
 
 Add `--json` to get the full ledger entry for scripting or post-processing.
 
+Add `--frontier` to see the **last wave's dispatch verdict** instead of the slot
+table — every ready bead the scheduler considered and why, with per-verdict
+counts and full reasons (no truncation):
+
+```sh
+koryph status --project myproject --frontier
+```
+
+```
+project myproject  run run-abc123  wave 4  frontier @ 2026-07-21T15:00:00Z
+  2 dispatched · 3 deferred · 1 skipped
+
+BEAD       VERDICT     REASON                                    TITLE
+beads-a1b  dispatched  -                                         add widget
+beads-c3d  deferred    footprint conflict with beads-a1b (in-flight)  widget tests
+beads-e5f  skipped     container bead                            widget epic
+```
+
+`deferred` = a ready bead the scheduler held back this wave (footprint/resource/
+wave-full); `skipped` = structurally non-dispatchable (wrong issue_type, gate
+bead). Beads that are not *ready* at all (blocked by an open bd dependency) are
+upstream of the wave and do not appear here — use `bd dep tree <id>` for those.
+
 ---
 
 ## What's next

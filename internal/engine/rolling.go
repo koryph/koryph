@@ -112,6 +112,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if err != nil {
 				return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
 			}
+			r.captureFrontier(w)
 			for _, iss := range issues {
 				if ok, _ := sched.Eligible(iss, active); ok {
 					eligible++

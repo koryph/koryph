@@ -76,6 +76,28 @@ type Run struct {
 	// patrol runs for this run. Appended by the engine's health patrol
 	// (koryph-gus); absent in older ledgers.
 	PatrolEvents []PatrolEvent `json:"patrol_events,omitempty"`
+
+	// Frontier is the most recent wave's per-candidate dispatch verdict — every
+	// ready bead the scheduler considered and why it was or was not dispatched —
+	// so `koryph status --frontier` can explain the frontier instead of an
+	// operator reverse-engineering it from a truncated "deferred N beads, +26
+	// more" log line (D7/D9). Overwritten each wave; absent in older ledgers.
+	Frontier *FrontierSnapshot `json:"frontier,omitempty"`
+}
+
+// FrontierSnapshot is the scheduler's per-candidate verdict for one wave.
+type FrontierSnapshot struct {
+	At      string          `json:"at"`
+	Wave    int             `json:"wave"`
+	Entries []FrontierEntry `json:"entries,omitempty"`
+}
+
+// FrontierEntry is one ready bead's dispatch verdict for the wave.
+type FrontierEntry struct {
+	BeadID  string `json:"bead_id"`
+	Title   string `json:"title,omitempty"`
+	Verdict string `json:"verdict"`          // "dispatched" | "deferred" | "skipped"
+	Reason  string `json:"reason,omitempty"` // why, for deferred/skipped
 }
 
 // Slot is one dispatched work item within a run.

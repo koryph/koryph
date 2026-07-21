@@ -631,6 +631,7 @@ latest-run per-slot detail
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--frontier` | bool |  | show the last wave's per-candidate dispatch verdict instead of the slot table |
 | `--json` | bool |  | emit the run as JSON |
 | `--project` | string |  | project id (default: the project containing the current directory) |
 
