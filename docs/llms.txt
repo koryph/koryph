@@ -45,6 +45,11 @@ can't resolve non-interactively.
 koryph adopt <repo-root> --yes --json
 ```
 
+Precondition: `koryph version` works — if the binary itself is missing,
+install it first (macOS/Linuxbrew: `brew install koryph/tap/koryph`; other
+platforms: the Install section above), asking the human before running any
+installer. Everything else below is the wizard's job.
+
 `koryph adopt` detects the repo, installs missing prerequisites (`claude`,
 `bd`, `gh`) with consent, initialises/hardens beads, derives the account,
 `gate`, `forge`, and `area_map`, installs the agent scaffolding, offers one
@@ -66,8 +71,12 @@ stderr); a non-zero exit means at least one step is `blocked` or `koryph
 validate` did not pass — inspect `steps[].state` for what remains. Preview
 the plan first with `koryph adopt <repo-root> --dry-run --json`, which
 writes nothing. Re-running `adopt` on an already-adopted repo is a no-op
-report — it doubles as an onboarding-scoped `koryph doctor`. Full
-phase-by-phase contract:
+report — it doubles as an onboarding-scoped `koryph doctor`. Adoption also
+installs a `/koryph-adopt` slash command into `.claude/commands`, so once
+one repo is adopted, later agent sessions can run this whole sequence
+conversationally (for this repo as a repair pass, or for another repo by
+path) instead of re-deriving it from this runbook. Full phase-by-phase
+contract:
 [koryph adopt](https://github.com/koryph/koryph/blob/main/docs/user-guide/adopt.md).
 
 ### Manual fallback (step by step)

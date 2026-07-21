@@ -211,6 +211,19 @@ never leaves you without an install path.
 
 ---
 
+## The `/koryph-adopt` skill
+
+Adoption installs a `/koryph-adopt` slash command into `.claude/commands`
+alongside `/koryph-plan` and friends, so an agent session in an adopted
+workspace can drive this whole wizard conversationally — adopt *another*
+repo (`/koryph-adopt ~/src/other-repo`), or re-run it here as a repair
+pass. The skill previews with `--dry-run --json`, asks you for exactly the
+fail-closed values the wizard couldn't derive, and never runs a `sudo`
+install itself. A session in a repo that hasn't been adopted yet won't have
+the skill — that's what the agent runbook in
+[`llms.txt`](https://koryph.build/llms.txt) is for: point any AI session at
+it and ask it to adopt koryph.
+
 ## Re-run any time
 
 Re-running `adopt` on an already-adopted repo costs nothing: `tools` through
