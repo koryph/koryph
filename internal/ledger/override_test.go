@@ -54,3 +54,28 @@ func TestOverridesRecordAndLoad(t *testing.T) {
 		t.Errorf("b2 status = %q, want blocked", byID["b2"].Status)
 	}
 }
+
+func TestRecordInjection(t *testing.T) {
+	root := t.TempDir()
+	s := &Store{KoryphRoot: root}
+	runID := "20260101-000000"
+	if err := os.MkdirAll(filepath.Join(root, runID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordInjection(runID, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordInjection(runID, "b2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordInjection(runID, "b1"); err != nil { // dedup
+		t.Fatal(err)
+	}
+	of, err := s.LoadOverrides(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(of.Inject) != 2 {
+		t.Fatalf("inject = %v, want [b1 b2] (deduped)", of.Inject)
+	}
+}

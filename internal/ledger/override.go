@@ -31,6 +31,11 @@ type SlotOverride struct {
 // OverrideFile is the on-disk shape of the sidecar.
 type OverrideFile struct {
 	Overrides []SlotOverride `json:"overrides"`
+	// Inject lists bead IDs the operator wants dispatched even though they fall
+	// outside the running loop's frontier scope (a --parent-scoped run), so a
+	// specific bead can be added to a live loop without a restart (D10). The
+	// engine only dispatches an injected bead once it is genuinely ready.
+	Inject []string `json:"inject,omitempty"`
 }
 
 // overridePath is the sidecar path for a run.
@@ -72,5 +77,22 @@ func (s *Store) RecordOverride(runID string, ov SlotOverride) error {
 		}
 	}
 	of.Overrides = append(of.Overrides, ov)
+	return fsx.WriteJSONAtomic(s.overridePath(runID), of)
+}
+
+// RecordInjection adds a bead ID to a run's inject list (read-modify-write,
+// atomic, deduplicated) so the engine dispatches it even if it is outside the
+// run's frontier scope (D10). A no-op if the bead is already listed.
+func (s *Store) RecordInjection(runID, beadID string) error {
+	of, err := s.LoadOverrides(runID)
+	if err != nil {
+		return err
+	}
+	for _, id := range of.Inject {
+		if id == beadID {
+			return nil
+		}
+	}
+	of.Inject = append(of.Inject, beadID)
 	return fsx.WriteJSONAtomic(s.overridePath(runID), of)
 }

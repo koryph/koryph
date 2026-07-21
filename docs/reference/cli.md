@@ -95,6 +95,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
 | ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
 | [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
+| [`koryph inject`](#koryph-inject) | add a bead to a running loop even if it is outside the run's scope |
 | [`koryph models`](#koryph-models) | model-routing insight: learn starting tiers from escalation history |
 | ↳ [`koryph models learn`](#koryph-models-learn) | recommend (and --apply) learned model labels from escalation history |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail, export, prune |
@@ -1110,6 +1111,19 @@ apply data lifecycle policy: compress old run dirs, rotate audit logs
 | `--dry-run` | bool |  | report without making any changes |
 | `--json` | bool |  | emit the result as JSON |
 | `--project` | string |  | apply run-dirs gc for this project |
+
+
+---
+
+## `koryph inject` { #koryph-inject }
+
+add a bead to a running loop even if it is outside the run's scope
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---

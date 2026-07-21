@@ -52,6 +52,14 @@ func init() {
 		},
 	})
 	registerCmd(command{
+		name:    "inject",
+		summary: "add a bead to a running loop even if it is outside the run's scope",
+		run:     cmdInject,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
+	registerCmd(command{
 		name:    "merge",
 		summary: "land a finished agent branch",
 		run:     cmdMerge,
@@ -609,6 +617,69 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 		// latest run — is a harmless no-op.
 		recordManualMergeOverride(rec.Root, *closeBead, *reason)
 		fmt.Fprintf(stdout, "closed bead %s\n", *closeBead)
+	}
+	return 0
+}
+
+// cmdInject adds a bead to a running loop's frontier even when it is outside the
+// run's --parent scope — the in-place alternative to stopping and resuming with
+// a wider scope (D10). It writes the injection to the latest run's override
+// sidecar; the engine picks it up on its next wave once the bead is ready.
+func cmdInject(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("inject", stderr)
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
+	setUsage(fs, stdout,
+		"inject a bead into a running loop — dispatch it even if it is outside the run's --parent scope",
+		"[--project ID] <bead-id>")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if len(pos) < 1 {
+		return usageErr(stderr, "inject: <bead-id> is required")
+	}
+	beadID := pos[0]
+
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "inject")
+	if code != 0 {
+		return code
+	}
+
+	lstore := ledger.NewStore(rec.Root)
+	run, err := lstore.LoadLatest()
+	if err != nil {
+		return fail(stderr, fmt.Errorf("inject: no active run to inject into (start one with `koryph run`): %w", err))
+	}
+
+	bd := beads.New(rec.Root)
+	if v := os.Getenv("KORYPH_BD_BIN"); v != "" {
+		bd.Bin = v
+	}
+	if iss, serr := bd.Show(ctx, beadID); serr != nil || iss.ID == "" {
+		return fail(stderr, fmt.Errorf("inject: bead %s not found", beadID))
+	}
+	readyNow := false
+	if ready, rerr := bd.Ready(ctx, beads.ReadyOpts{}); rerr == nil {
+		for _, iss := range ready {
+			if iss.ID == beadID {
+				readyNow = true
+				break
+			}
+		}
+	}
+
+	if err := lstore.RecordInjection(run.RunID, beadID); err != nil {
+		return fail(stderr, fmt.Errorf("inject: recording injection: %w", err))
+	}
+	if readyNow {
+		fmt.Fprintf(stdout, "injected %s — the running loop will dispatch it on its next wave\n", beadID)
+	} else {
+		fmt.Fprintf(stdout, "injected %s — not ready yet (open dependencies); the loop will dispatch it once it becomes ready\n", beadID)
 	}
 	return 0
 }

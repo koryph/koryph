@@ -3,7 +3,12 @@
 
 package engine
 
-import "github.com/koryph/koryph/internal/ledger"
+import (
+	"context"
+
+	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/ledger"
+)
 
 // applyOperatorOverrides folds any operator directives from the run's override
 // sidecar into the in-memory ledger, so a manual state change — a bead landed
@@ -51,4 +56,56 @@ func overrideNoteSuffix(note string) string {
 		return ""
 	}
 	return " (" + note + ")"
+}
+
+// applyInjections merges operator-injected beads into the wave frontier so a
+// specific bead can be added to a running --parent-scoped loop without a restart
+// (D10). An injected bead is added only when it is genuinely READY (present in
+// the unscoped bd frontier) and not already in scope or already dispatched, so a
+// blocked or unknown injection can never be force-dispatched — the scheduler and
+// governor then gate it exactly like any frontier bead. Best-effort: a sidecar
+// or bd read error leaves the scoped frontier unchanged.
+func (r *runner) applyInjections(ctx context.Context, scoped []beads.Issue) []beads.Issue {
+	if r.run == nil {
+		return scoped
+	}
+	of, err := r.store.LoadOverrides(r.run.RunID)
+	if err != nil || len(of.Inject) == 0 {
+		return scoped
+	}
+	inScope := make(map[string]bool, len(scoped))
+	for _, iss := range scoped {
+		inScope[iss.ID] = true
+	}
+	var wanted []string
+	for _, id := range of.Inject {
+		if id == "" || inScope[id] {
+			continue
+		}
+		if _, dispatched := r.run.Slots[id]; dispatched {
+			continue // injection already fulfilled — it has a slot
+		}
+		wanted = append(wanted, id)
+	}
+	if len(wanted) == 0 {
+		return scoped
+	}
+	// Only add beads that are genuinely ready (whole-frontier query, no parent
+	// scope), so an injection can widen scope but never force-dispatch a bead
+	// that bd still considers blocked.
+	ready, err := r.adapter.Ready(ctx, beads.ReadyOpts{})
+	if err != nil {
+		return scoped
+	}
+	readyByID := make(map[string]beads.Issue, len(ready))
+	for _, iss := range ready {
+		readyByID[iss.ID] = iss
+	}
+	for _, id := range wanted {
+		if iss, ok := readyByID[id]; ok {
+			scoped = append(scoped, iss)
+			r.progress("bead %s: operator-injected into the frontier (outside the run's --parent scope)", id)
+		}
+	}
+	return scoped
 }

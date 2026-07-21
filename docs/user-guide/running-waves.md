@@ -474,13 +474,21 @@ both the human progress and the structured records for later `tail`/grep. It
 resumes cleanly after any interruption with `--resume` (above), so a killed
 detached run loses nothing.
 
-To **change a running loop's scope or width** — widen `--max`, or add work
-outside the current `--parent` epic — stop and `--resume`; there is no in-place
-inject. A newly-ready bead that already falls inside the run's frontier scope is
-picked up automatically on the next wave (the engine re-reads `bd ready` every
-wave), so a restart is only needed to change the run's *configuration*, not to
-pick up newly-unblocked in-scope work. `koryph nudge` delivers a note to a
-specific running agent; it does not change the frontier.
+To **add one bead to a running loop** — even a bead outside the current
+`--parent` scope — inject it without a restart:
+
+```sh
+koryph inject --project myproject <bead-id>
+```
+
+The engine merges it into the frontier on its next wave and dispatches it once
+it is ready (the command tells you whether it is ready now or waiting on
+dependencies). An injection can only *widen* the frontier to a genuinely-ready
+bead — it never force-dispatches a bd-blocked bead. A newly-ready bead already
+inside the run's scope is picked up automatically anyway (the engine re-reads
+`bd ready` every wave). Injection does not change `--max`; to raise the width,
+stop and `--resume` at the new width. `koryph nudge` delivers a note to a
+specific running agent and does not change the frontier.
 
 ### Budget-killed agents
 
