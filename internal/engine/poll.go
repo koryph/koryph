@@ -363,15 +363,31 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 	}
 
 	if alive {
+		// Derive the slot's most-recent activity ONCE and use it for both the
+		// status decision and the last_activity_at stamp (distinct from
+		// updated_at, which only means "we polled"). Re-derived every tick from
+		// ground truth so status is never latched.
+		last := r.slotActivityAt(ctx, sl)
+		if !last.IsZero() {
+			stamp := last.UTC().Format(time.RFC3339)
+			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.LastActivityAt = stamp })
+		}
 		status := ledger.SlotRunning
-		if r.isStuck(ctx, sl) {
+		if r.stuckFrom(sl, last) {
 			status = ledger.SlotStuck
 		}
 		if sl.Status != status {
+			prev := sl.Status
 			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = status })
-			if status == ledger.SlotStuck {
-				r.progress("bead %s: silent — no heartbeat, commit, or CPU activity for >%ds (process alive; still polling — koryph never interrupts a running agent)",
+			switch {
+			case status == ledger.SlotStuck:
+				r.progress("bead %s: silent — no heartbeat, commit, stream, or CPU activity for >%ds (process alive; still polling — koryph never interrupts a running agent)",
 					sl.PhaseID, int(r.stuckThreshold(sl).Seconds()))
+			case prev == ledger.SlotStuck:
+				// Re-derived from ground truth, not latched: the agent resumed
+				// producing work, so the transient stuck flag clears instead of
+				// staying on the board after recovery.
+				r.progress("bead %s: activity resumed — clearing stuck", sl.PhaseID)
 			}
 		}
 		r.checkpointSlot(sl, "running")
@@ -1884,40 +1900,72 @@ func (r *runner) stuckThreshold(sl *ledger.Slot) time.Duration {
 	return threshold
 }
 
-// isStuck reports whether an alive slot shows no sign of life — no
-// agent-written heartbeat, no commit, and no cohort CPU activity
-// (koryph-2rf) — within its silence threshold. Informational only — polling
-// continues; koryph never interrupts a running agent.
+// isStuck reports whether an alive slot shows no sign of life — no stream
+// event, agent-written heartbeat, commit, or cohort CPU activity — within its
+// silence threshold. Re-derived from ground truth every poll tick (never
+// latched), so a slot recovers from a transient stuck flag the moment it
+// produces work again. Informational only — polling continues; koryph never
+// interrupts a running agent.
 func (r *runner) isStuck(ctx context.Context, sl *ledger.Slot) bool {
-	threshold := r.stuckThreshold(sl)
+	// Stuck = no ground-truth activity within the slot's silence threshold,
+	// re-derived from scratch every poll tick so a past silence can never latch
+	// as a present-tense board label. slotActivityAt folds every signal into one
+	// "last did real work" instant.
+	return r.stuckFrom(sl, r.slotActivityAt(ctx, sl))
+}
 
-	// Implicit CPU heartbeat (koryph-2rf): an actively-computing cohort is
-	// never stuck, no matter how long the agent-authored heartbeat has been
-	// silent — it is blocked inside a long tool call, not wedged. Zero
-	// lastActiveAt (resmon disabled/unsupported) falls through to the
-	// pre-existing signals unchanged.
-	if u := r.resUsage[sl.PhaseID]; u != nil && u.pid == sl.PID &&
-		!u.lastActiveAt.IsZero() && time.Since(u.lastActiveAt) <= threshold {
-		return false
+// stuckFrom is the pure stuck decision given a slot's most-recent activity
+// instant (from slotActivityAt): silent past the threshold, or — when no signal
+// is known yet — dispatched longer ago than the threshold. Split out so the poll
+// tick derives activity ONCE and reuses it for both the status decision and the
+// last_activity_at stamp, rather than paying the git probe twice.
+func (r *runner) stuckFrom(sl *ledger.Slot, last time.Time) bool {
+	if last.IsZero() {
+		return r.sinceDispatched(sl) > r.stuckThreshold(sl)
 	}
+	return time.Since(last) > r.stuckThreshold(sl)
+}
 
+// slotActivityAt returns the most recent instant the slot showed real work —
+// the max of every ground-truth signal so the newest one wins:
+//
+//   - stream.jsonl mtime — the agent emits a thinking/tool/result event; the
+//     most direct and finest-grained sign of life, fresh through long operations
+//     that write no status heartbeat and burn little leader CPU;
+//   - status.json mtime — the agent-authored step heartbeat;
+//   - cohort CPU last-advance (koryph-2rf implicit heartbeat);
+//   - last commit time.
+//
+// Zero when none is known. Evaluated fresh each tick — nothing is remembered
+// between calls — which is what lets a slot recover from a transient stuck flag
+// the instant it produces work again, rather than staying "stuck" on the board
+// after it has demonstrably resumed.
+func (r *runner) slotActivityAt(ctx context.Context, sl *ledger.Slot) time.Time {
+	var latest time.Time
+	bump := func(t time.Time) {
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	if sl.Stream != "" {
+		if fi, err := os.Stat(sl.Stream); err == nil {
+			bump(fi.ModTime())
+		}
+	}
 	if fi, err := os.Stat(sl.StatusPath); err == nil {
-		if time.Since(fi.ModTime()) <= threshold {
-			return false
-		}
-	} else if r.sinceDispatched(sl) <= threshold {
-		return false
+		bump(fi.ModTime())
 	}
-
-	res, err := execx.Run(ctx, execx.Cmd{
+	if u := r.resUsage[sl.PhaseID]; u != nil && u.pid == sl.PID {
+		bump(u.lastActiveAt)
+	}
+	if res, err := execx.Run(ctx, execx.Cmd{
 		Dir: sl.Worktree, Name: "git", Args: []string{"log", "-1", "--format=%ct", "HEAD"},
-	})
-	if err == nil && res.ExitCode == 0 {
+	}); err == nil && res.ExitCode == 0 {
 		if sec, perr := strconv.ParseInt(strings.TrimSpace(res.Stdout), 10, 64); perr == nil {
-			return time.Since(time.Unix(sec, 0)) > threshold
+			bump(time.Unix(sec, 0))
 		}
 	}
-	return r.sinceDispatched(sl) > threshold
+	return latest
 }
 
 // sinceDispatched is the age of the slot's dispatch (zero when unparseable).
