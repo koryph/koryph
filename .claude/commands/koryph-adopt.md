@@ -13,7 +13,7 @@ re-running `adopt` re-checks every onboarding step and re-validates.
 Do this:
 
 1. **Preflight.** `koryph version` must work. If koryph itself is missing,
-   install it first (macOS/Linuxbrew: `brew install koryph/tap/koryph`;
+   install it first (macOS: `brew install koryph/tap/koryph`;
    otherwise https://koryph.build/user-guide/installation/) — ask before
    running any installer.
 2. **Preview, never guess.** Run `koryph adopt <root> --dry-run --json` and

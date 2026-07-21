@@ -51,7 +51,8 @@ the full [zero-to-shipped journey](https://koryph.build/user-guide/zero-to-shipp
 ## Install
 
 koryph is a single static binary — no Go toolchain or runtime needed.
-The simplest path on macOS and Linuxbrew:
+The simplest path on macOS (the tap ships a cask; Homebrew casks are
+macOS-only — Linux installs use the tarball or `go install` below):
 
 ```sh
 brew install koryph/tap/koryph

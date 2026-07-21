@@ -368,6 +368,42 @@ the `sha256sum -c` chain above, every binary it lists) was built by this
 repository's GitHub Actions workflow at the claimed tag — Build Level 3,
 non-forgeable provenance, not just a keyless signature.
 
+## Homebrew tap publishing (the brew channel)
+
+`brew install koryph/tap/koryph` is served by a **cask** in
+[koryph/homebrew-tap](https://github.com/koryph/homebrew-tap), generated
+and pushed by GoReleaser (`homebrew_casks` in `.goreleaser.yaml`) at every
+real release. Casks are macOS-only — Linux users install the tarball or
+`go install`; the docs are scoped accordingly.
+
+**The credential chain, and how it fails.** `github.token` cannot push to a
+sibling repo, so the tag-and-build job mints a bot installation token
+scoped to the tap (`actions/create-github-app-token`, `repositories:
+homebrew-tap`) from the `RELEASE_BOT_APP_ID` / `RELEASE_BOT_PRIVATE_KEY`
+secrets, falling back to a `HOMEBREW_TAP_TOKEN` PAT. When **neither**
+exists, `.goreleaser.yaml`'s `skip_upload` guard skips cask publishing
+*without failing the release* — deliberate for consumers without a tap,
+but silent. That silence is exactly how koryph shipped v0.5.0–v0.9.0 with
+an **empty tap** (`brew install` failed for every user) until the secrets
+were wired via `koryph bot attach --name koryph-release-bot --repo
+koryph/koryph` and the v0.9.0 cask was backfilled by hand (2026-07-21).
+The workflow now emits a **warning annotation on the run summary**
+whenever `homebrew_tap` is set but no credential resolved — check it on
+every release until you've seen one cask commit land in the tap.
+
+**Verifying the channel after a release** (the whole loop, two minutes):
+
+```sh
+gh api repos/koryph/homebrew-tap/commits/main -q .commit.message  # expect: chore: update koryph cask to v<X>
+brew install koryph/tap/koryph && koryph version                  # expect: koryph <X>
+```
+
+**Backfilling by hand** (pipeline failed after the GitHub release
+published): write `Casks/koryph.rb` in the tap against the *published*
+release URLs, taking each `sha256` from the release's own
+`checksums.txt` — never from locally rebuilt archives, which are not
+byte-identical. The next GoReleaser release overwrites the file.
+
 ## Reusable release-train workflow
 
 (koryph-0vf.3) The four jobs above live in `.github/workflows/

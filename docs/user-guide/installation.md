@@ -42,7 +42,7 @@ bd doctor           # no errors
 
 ## Install `koryph`
 
-### Option A — Homebrew (recommended; macOS and Linuxbrew)
+### Option A — Homebrew (recommended; macOS only)
 
 ```sh
 brew install koryph/tap/koryph
@@ -50,7 +50,9 @@ brew install koryph/tap/koryph
 
 This installs the latest release binary from the
 [koryph/homebrew-tap](https://github.com/koryph/homebrew-tap) cask. No Go
-toolchain is required. Upgrades use the standard brew workflow:
+toolchain is required. The tap ships a **cask**, and Homebrew casks are
+macOS-only — on Linux (including Linuxbrew), use Option B or C below.
+Upgrades use the standard brew workflow:
 
 ```sh
 brew upgrade koryph/tap/koryph
