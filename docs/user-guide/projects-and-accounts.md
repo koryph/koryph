@@ -168,6 +168,19 @@ may add its own commits (docs, tests, changelog, …):
 | `effort` | Reasoning-effort hint. |
 | `prompt` | Extra stage-specific instructions appended to the built stage prompt. |
 | `optional` | `true` → a failed stage logs and continues. Default `false` → a failed stage **blocks the bead** (never auto-merges past incomplete pipeline work). |
+| `timeout_sec` | Per-stage wall-clock deadline in seconds. `≤ 0` (or omitted) uses the built-in default (600 s). Raise it for a legitimately slow stage rather than letting it time out. |
+
+```json
+{ "pipeline": [ { "name": "docs", "timeout_sec": 1200 } ] }
+```
+
+Each stage is rebased onto the current default branch immediately before it
+runs, so a docs/changelog stage writes against the latest tree — this keeps
+shared-file writes from colliding at merge time. If a **required** stage times
+out but the bead's implementer work is already committed, the engine **degrades
+rather than parks**: it lands the completed work and records a `followup:<stage>`
+label plus a comment on the bead so the skipped stage is picked up later, instead
+of stranding correct commits behind a slow enhancement stage.
 
 Stages honor the same account, billing, signing, and budget guarantees as the
 implementer, and their cost counts toward the quota governor. A bead bounced by
