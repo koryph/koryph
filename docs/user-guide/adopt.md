@@ -238,7 +238,9 @@ existing design doc, `/koryph-import` for TODO/roadmap markdown,
 `/koryph-issue` for a single small fix — rather than implementing ad hoc.
 Those commands compute the footprint (`area:*`/`fp:*`) and resource
 (`res:*`) labels the parallel scheduler needs. The same routing ships in
-the installed `AGENTS.md` for runtimes without hook support. See
+the installed `AGENTS.md` for runtimes without hook support. The full
+story — router invariants, the `/koryph-design` flow, and a worked
+example — is in [From prompt to beads](describing-work.md); see also
 [Zero to shipped](zero-to-shipped.md) Stage 2.
 
 ## Re-run any time

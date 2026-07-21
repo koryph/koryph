@@ -84,6 +84,9 @@ what it installs depends on the project's configured runtime (koryph-v8u.9):
 Copilot, opencode, and amp — it documents the koryph operating contract so every runtime
 follows the same rules. Runtimes without hook support rely on **worktree isolation** and
 **merge-time protected-path refusal** for containment instead of in-editor lifecycle guards.
+Note that reading the contract is not the same as being dispatched: **koryph dispatch
+supports Claude Code only today** — support for the other runtimes is alpha and dispatch to
+them is refused fail-closed. See [AI runtimes: support status](runtimes.md).
 
 The rules are what make koryph's boundaries hold in-editor (Claude Code only): the
 `agent-boundary-guard` and `worktree-guard` hooks and the `bd prime`

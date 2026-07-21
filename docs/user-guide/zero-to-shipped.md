@@ -101,6 +101,8 @@ paths get you there:
 You can also file a single well-formed issue with `/koryph-issue "<desc>"`.
 Footprint labels (`area:*`, `fp:read:*`) are what let the scheduler run
 conflict-free work in parallel — the planning commands assign them for you.
+The whole prompt-to-beads pipeline, including the design-approval stop and
+a worked example, is in [From prompt to beads](describing-work.md).
 
 ---
 

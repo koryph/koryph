@@ -150,6 +150,21 @@ the two values in step 2 (account profile name, account email).
 - [README](https://github.com/koryph/koryph/blob/main/README.md): project invariants (account-safe, subscription-first, beads-as-truth), install, and the package layout table.
 - [AGENTS.md](https://github.com/koryph/koryph/blob/main/AGENTS.md): canonical cross-runtime agent instructions.
 
+## Concepts
+
+- [Concepts overview](https://github.com/koryph/koryph/blob/main/docs/concepts/index.md): the ideas in dependency order — work, parallelism, time, safety, money, people, hygiene, shipping, the fence.
+- [The lifecycle](https://github.com/koryph/koryph/blob/main/docs/concepts/lifecycle.md): the whole SDLC loop from prompt → design → beads → dispatch → review → gate → merge → epic validation → release, with the stage-by-stage map.
+- [Beads and the ready-graph](https://github.com/koryph/koryph/blob/main/docs/concepts/beads.md): the dependency-aware issue database that feeds the scheduler.
+- [Footprints](https://github.com/koryph/koryph/blob/main/docs/concepts/footprints.md): declared touch-sets that make parallel dispatch conflict-free.
+- [Resources](https://github.com/koryph/koryph/blob/main/docs/concepts/resources.md): `res:<kind>` counted capacities — footprints protect the merge; resources protect the machine.
+- [Rolling dispatch](https://github.com/koryph/koryph/blob/main/docs/concepts/rolling-dispatch.md): continuous slot refill vs waves.
+- [Worktrees and the green gate](https://github.com/koryph/koryph/blob/main/docs/concepts/worktrees.md): isolation, protected paths, review → rebase → gate → fast-forward merge.
+- [Governors and quota](https://github.com/koryph/koryph/blob/main/docs/concepts/governors.md): subscription-first spend, AIMD concurrency, quota throttling.
+- [Accounts and personas](https://github.com/koryph/koryph/blob/main/docs/concepts/accounts.md): fail-closed identity, personas, model tiers.
+- [Postures and vaults](https://github.com/koryph/koryph/blob/main/docs/concepts/postures.md): hygiene as named, applyable configuration; vault-served secrets.
+- [The release train](https://github.com/koryph/koryph/blob/main/docs/concepts/release-train.md): draft-until-complete, signed, attested releases.
+- [Ejectability](https://github.com/koryph/koryph/blob/main/docs/concepts/ejectability.md): the opinionation boundary — delete koryph and your repo is still ordinary.
+
 ## User guide
 
 - [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md): install `koryph`; per-user machine-local registry.
@@ -158,7 +173,11 @@ the two values in step 2 (account profile name, account email).
 - [Zero to shipped](https://github.com/koryph/koryph/blob/main/docs/user-guide/zero-to-shipped.md): the full journey across the three pillars (Build/Protect/Ship) with today's shipped commands.
 - [Projects & accounts](https://github.com/koryph/koryph/blob/main/docs/user-guide/projects-and-accounts.md): the `~/.koryph` registry, per-project account isolation, identity verification.
 - [Choosing a forge](https://github.com/koryph/koryph/blob/main/docs/user-guide/forges.md): the `forge` field + remote sniffing, GitHub vs GitLab capability table, GitLab setup end-to-end (token flow, CI variables, release pipeline, supply-chain gap).
+- [From prompt to beads](https://github.com/koryph/koryph/blob/main/docs/user-guide/describing-work.md): intent routing — how a described ask becomes a design doc (`/koryph-design`, with a mandatory human approval stop) and then a dispatch-shaped bead graph (`/koryph-plan`).
 - [Running waves](https://github.com/koryph/koryph/blob/main/docs/user-guide/running-waves.md): the wave loop (scan → batch → preflight → dispatch → poll → review → merge), `--once`/`--only`/`--budget`.
+- [Merge reconcilers](https://github.com/koryph/koryph/blob/main/docs/user-guide/merge-reconcilers.md): self-healing merges for derived artifacts (lockfiles, generated indexes) that collide even when their inputs don't.
+- [Recovery & escalation](https://github.com/koryph/koryph/blob/main/docs/user-guide/recovery.md): stall/death detection, cause-coded retries, final-attempt escalation to the frontier tier, learned model labels, and the operator override toolkit (`inject`, `status --frontier`, the overrides sidecar).
+- [AI runtimes: support status](https://github.com/koryph/koryph/blob/main/docs/user-guide/runtimes.md): Claude Code is the production runtime; all other runtimes (codex, cursor, gemini, grok, copilot, opencode, amp) are ALPHA — dispatch to them is refused fail-closed; contributions welcome.
 - [Billing & quota](https://github.com/koryph/koryph/blob/main/docs/user-guide/billing-and-quota.md): subscription-first dispatch, the quota governor, throttling, calibration.
 - [Context economy](https://github.com/koryph/koryph/blob/main/docs/user-guide/context-economy.md): the native levers that keep agent context lean so quota goes to real work.
 - [Headroom integration](https://github.com/koryph/koryph/blob/main/docs/user-guide/headroom-integration.md): EXPERIMENTAL — pointing the `agent_proxy` seam at the third-party headroom-ai context-compression proxy.
@@ -189,7 +208,15 @@ the two values in step 2 (account profile name, account email).
 - [Self-hosting](https://github.com/koryph/koryph/blob/main/docs/developer-guide/self-hosting.md): koryph builds koryph — what the loop's own data buys during development.
 - [Editor setup](https://github.com/koryph/koryph/blob/main/docs/developer-guide/ide-setup.md): workspace setup for contributors working on koryph itself.
 
-## Optional
+## Reference
 
-- [Contributing](https://github.com/koryph/koryph/blob/main/CONTRIBUTING.md): contributor rules.
-- [Security](https://github.com/koryph/koryph/blob/main/SECURITY.md): security policy and reporting.
+- [CLI reference](https://github.com/koryph/koryph/blob/main/docs/reference/cli.md): every `koryph` command, flag, and environment variable.
+
+## Project
+
+- [Features](https://github.com/koryph/koryph/blob/main/docs/features.md): every major capability, grouped Adopt → Plan → Build → Gate → Govern → Recover → Operate → Protect → Ship, with links.
+- [How koryph compares](https://github.com/koryph/koryph/blob/main/docs/compare.md): the July-2026 agent-orchestration landscape — Claude Managed Agents, Gas Town, Agenc, Conductor, and the wider field — with a capability matrix.
+- [Security](https://github.com/koryph/koryph/blob/main/docs/security.md): how the project secures its supply chain, how the product protects machines/accounts, and what it deliberately does not claim.
+- [Community & contributing](https://github.com/koryph/koryph/blob/main/docs/community.md): filing issues (forms at https://github.com/koryph/koryph/issues/new/choose), contribution rules, licensing model.
+- [Contributing](https://github.com/koryph/koryph/blob/main/CONTRIBUTING.md): contributor rules (DCO, signed commits, Conventional Commits, `make gate`).
+- [Security policy](https://github.com/koryph/koryph/blob/main/SECURITY.md): private vulnerability reporting via GitHub Security Advisories — never public issues.

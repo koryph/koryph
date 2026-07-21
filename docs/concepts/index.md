@@ -6,7 +6,9 @@
 This track explains the ideas koryph is built on — independent of any
 particular command. The [user guide](../user-guide/installation.md) tells you
 *what to type*; this section tells you *why it works*, in the order the ideas
-build on each other.
+build on each other. For all of them chained into one loop — prompt to
+design to beads to merge to release — see
+[The lifecycle](lifecycle.md).
 
 ## Work: beads and the ready-graph
 
@@ -87,7 +89,8 @@ needs (implementer, reviewer, architect, …) and carry a **model tier**
 (frontier / standard / light) rather than a hard-coded model name; each
 runtime maps tiers to its own models. That is what keeps koryph
 runtime-neutral: Claude Code today, other agent CLIs through the same
-adapter seam.
+adapter seam — support for those is
+[alpha](../user-guide/runtimes.md), stated plainly.
 
 → **[People: accounts, identity, and personas](accounts.md)**
 

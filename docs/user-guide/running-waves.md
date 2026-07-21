@@ -422,6 +422,11 @@ does not delay the merge.
 
 ## Recovery and resume
 
+*For the one-page overview of the whole failure story — detection,
+classified retries, escalation to stronger models, and the operator
+toolkit — see [Recovery & escalation](recovery.md). This section covers
+the run-level mechanics.*
+
 Interrupt a run (Ctrl-C, host sleep, etc.) and resume where it left off:
 
 ```sh

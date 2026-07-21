@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+name: Documentation issue
+description: A page on koryph.build (or in docs/) is wrong, stale, or missing
+labels: [documentation, triage]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: URL on https://koryph.build/ (or a docs/ path) — leave blank if the problem is a *missing* page
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing
+      description: Quote the sentence if it's wrong; describe what you expected to find if it's missing.
+    validations: { required: true }
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: Optional — a corrected sentence or an outline is a huge head start.

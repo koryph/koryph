@@ -4,7 +4,28 @@
 # Contributing to Koryph
 
 Thank you for your interest in contributing! Please read this document before
-opening a pull request.
+opening a pull request. All participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md) — one page, one rule: be kind, and
+argue about the work.
+
+## Filing Issues
+
+Bug reports, feature requests, and documentation fixes all start at the
+issue forms: **<https://github.com/koryph/koryph/issues/new/choose>**.
+Blank issues are disabled on purpose — the forms collect what triage needs
+(version, area, runtime, reproduction), so filled-in forms get routed and
+answered fastest.
+
+Two rules:
+
+- **Security vulnerabilities never go in public issues.** Report them
+  privately via
+  [GitHub Security Advisories](https://github.com/koryph/koryph/security/advisories/new)
+  — see [SECURITY.md](SECURITY.md).
+- **Redact identities, emails, tokens, and keys** from any pasted output.
+
+Not sure whether something is a bug? File it anyway — a wrong docs sentence
+or a confusing error message is a valid issue.
 
 ## Licensing
 

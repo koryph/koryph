@@ -4,6 +4,27 @@ name: Feature request
 description: Propose an improvement
 labels: [enhancement, triage]
 body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of koryph would this change? Pick the closest — this routes the issue.
+      options:
+        - adopt / onboarding / project add
+        - planning skills / intent routing (/koryph-design, /koryph-plan, …)
+        - scheduler / footprints / dispatch
+        - governor / quota / billing / resources
+        - merge / review / green gate
+        - epic validation
+        - recovery / retries / escalation
+        - TUI / board / cockpit / VS Code
+        - signing / vaults
+        - posture / repo IaC
+        - release train / release bot / CI setup
+        - runtime adapters (codex, cursor, gemini, grok, …)
+        - docs site
+        - other / not sure
+    validations: { required: true }
   - type: textarea
     id: problem
     attributes:
@@ -19,3 +40,10 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to implement this behind a maintainer-reviewed design
+          required: false

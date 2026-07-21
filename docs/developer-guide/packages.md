@@ -432,7 +432,10 @@ scaffold hash-aware, force-guarded copy policy — no network access at onboard
 time. For non-Claude runtimes, `InstallForRuntime` rewrites each persona's
 `model:` frontmatter through the target runtime's `ModelMap`, keyed by the
 persona's `tier:` scalar, so a codex/cursor/grok project never receives a
-Claude model name it cannot honor.
+Claude model name it cannot honor. (Rendering personas for those runtimes
+works today; dispatching to them does not — the engine blocks non-Claude
+runtimes fail-closed. See
+[AI runtimes: support status](../user-guide/runtimes.md).)
 
 - **`Install(root, force)`** — byte-identical copy (equivalent to runtime `"claude"`)
 - **`InstallForRuntime(root, force, runtimeName)`** — tier-mapped render; also
