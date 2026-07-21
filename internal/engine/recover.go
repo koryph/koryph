@@ -141,7 +141,7 @@ func (r *runner) drainResumeBacklog(ctx context.Context, width int, allowDispatc
 		case admitBreak:
 			return // machine-wide (pool cap / memory floor) — stop draining this boundary
 		}
-		r.requeueSlot(ctx, sl, "", "resume: width-gated re-dispatch")
+		r.requeueSlot(ctx, sl, "", resumeRequeueNote)
 		// requeueSlot replaces the slot with a freshly dispatched one; if it
 		// bailed without dispatching (bead closed mid-flight, run budget park)
 		// the slot is still SlotQueued and we hold an unpaired global slot —

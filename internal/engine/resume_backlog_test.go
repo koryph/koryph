@@ -141,6 +141,34 @@ func TestDrainResumeBacklogHonorsWidth(t *testing.T) {
 	}
 }
 
+// TestResumeRedispatchDoesNotConsumeAttempt proves D4 (faults ≠ dispatches): a
+// resume backlog re-dispatch — an engine restart or width deferral, not a bead
+// fault — must leave the attempt counter unchanged, so a mid-run restart never
+// pushes a bead toward the final-attempt model escalation it did not earn.
+func TestResumeRedispatchDoesNotConsumeAttempt(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	drainRunner(t, r)
+	ctx := context.Background()
+
+	// A bead that already spent two real fault attempts, parked in the resume
+	// backlog when the engine was interrupted.
+	sl := &ledger.Slot{
+		PhaseID: "tb1", BeadID: "tb1", Status: ledger.SlotQueued,
+		Model: "sonnet", Agent: "koryph-implementer", ModelWhy: "test frozen",
+		Commits: 1, Attempts: 2,
+	}
+	if err := r.store.SetSlot(r.run, sl); err != nil {
+		t.Fatalf("SetSlot: %v", err)
+	}
+
+	r.drainResumeBacklog(ctx, 2, true)
+
+	if got := r.run.Slots["tb1"].Attempts; got != 2 {
+		t.Errorf("Attempts=%d after a resume re-dispatch, want 2 unchanged — resume is not a fault (D4)", got)
+	}
+}
+
 // TestDrainResumeBacklogSkippedWhenDispatchForbidden proves the drain is a no-op
 // when dispatch is not allowed this boundary (quota stop / operator drain): the
 // backlog is preserved untouched for a later --resume rather than force-placed.

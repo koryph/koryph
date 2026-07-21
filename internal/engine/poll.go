@@ -50,6 +50,26 @@ const conflictRequeueNote = "rebase-conflict requeue"
 // subject or it won't, so a second bounce buys nothing.
 const commitStyleRequeueNote = "commit-style requeue"
 
+// resumeRequeueNote marks a slot re-dispatched by the resume backlog after an
+// engine restart or a width-gated deferral. This is NOT a bead fault — the
+// agent did not fail, the engine was interrupted — so requeueSlot must not
+// consume an attempt or drive the final-attempt escalation for it. Counting
+// resume re-dispatches as faults let a mid-run restart push otherwise-healthy
+// beads to "final attempt, escalated to the recovery tier" having genuinely
+// failed zero or one time, spending recovery-tier money on non-faults (D4:
+// faults ≠ dispatches). See requeueSlot's `fault` gate and drainResumeBacklog.
+const resumeRequeueNote = "resume: width-gated re-dispatch"
+
+// cleanNoCommitExitNote marks a slot whose agent exited cleanly (exit 0) but
+// produced no commits and no SUMMARY.md — the agent deliberately concluded it
+// could not or need not act (an environment-gated no-op: a resource it needs is
+// absent, the host is too contended, work is already done). Re-dispatching a
+// higher tier just reproduces the identical no-op, so this requeue is excluded
+// from the final-attempt model escalation: it is an environmental signal, not a
+// capability fault (D14). It still counts an attempt, so the bead parks with an
+// environment reason once the attempt budget is spent rather than looping.
+const cleanNoCommitExitNote = "agent exited cleanly with no new commits"
+
 // gateRequeueBudget and mergeRequeueBudget are the per-slot requeue budgets
 // for a post-rebase gate failure and a merge error, respectively — each
 // raised from a single-shot Note-marker dedup to 2 (koryph-2im.6). A rare
@@ -524,7 +544,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// unclean death (crashed / killed before producing a result line).
 	deathDesc := "agent died with no commits"
 	if sl.Stream != "" && dispatch.ParseCleanExit(sl.Stream) {
-		deathDesc = "agent exited cleanly with no new commits"
+		deathDesc = cleanNoCommitExitNote
 	}
 
 	if sl.Attempts >= ledger.MaxAttempts {
@@ -1581,7 +1601,15 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	if r.parkForRunBudget(sl) {
 		return
 	}
-	attempt := sl.Attempts + 1
+	// A resume re-dispatch is not a bead fault (the engine restarted, or a lower
+	// width deferred the bead), so it must neither consume an attempt nor drive
+	// the escalation ladder — track faults, not dispatches (D4). Every other
+	// requeue reason IS a fault and increments as before.
+	fault := why != resumeRequeueNote
+	attempt := sl.Attempts
+	if fault {
+		attempt = sl.Attempts + 1
+	}
 	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
 	logSlotRequeue(sl.PhaseID, why, attempt)
 	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, why, attempt, sl.CostUSD)
@@ -1597,7 +1625,7 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	// change opus/fable/unknown models and enforces the project allowlist
 	// that the frozen-model path otherwise bypasses.
 	frozenModel, frozenWhy := sl.Model, sl.ModelWhy
-	if attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote {
+	if fault && attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote && why != cleanNoCommitExitNote {
 		if up := modelroute.EscalationTier(sl.Model, r.rec.AllowedModels); up != "" {
 			frozenModel = up
 			frozenWhy = fmt.Sprintf("escalated from %s after %d bead-fault attempts (%s)", sl.Model, sl.Attempts, why)
