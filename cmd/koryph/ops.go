@@ -603,9 +603,32 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "koryph merge: merged, but %v — close it manually (bd close %s)\n", cerr, *closeBead)
 			return engine.ExitFatal
 		}
+		// Tell a running engine the bead was landed by hand, so it adopts the
+		// merged state instead of reverting the ledger row on its next
+		// single-writer rewrite (D5). Best-effort: no running engine — or no
+		// latest run — is a harmless no-op.
+		recordManualMergeOverride(rec.Root, *closeBead, *reason)
 		fmt.Fprintf(stdout, "closed bead %s\n", *closeBead)
 	}
 	return 0
+}
+
+// recordManualMergeOverride writes a merged override for beadID into the latest
+// run's operator-override sidecar (D5). The running engine reads the sidecar
+// each cycle and folds the directive into its in-memory ledger.
+func recordManualMergeOverride(repoRoot, beadID, reason string) {
+	st := ledger.NewStore(repoRoot)
+	run, err := st.LoadLatest()
+	if err != nil {
+		return // no run to inform
+	}
+	note := "landed manually via koryph merge"
+	if reason != "" {
+		note += ": " + reason
+	}
+	_ = st.RecordOverride(run.RunID, ledger.SlotOverride{
+		BeadID: beadID, Status: ledger.SlotMerged, Note: note,
+	})
 }
 
 // beadCloser is the subset of the beads adapter verifiedClose needs; a small

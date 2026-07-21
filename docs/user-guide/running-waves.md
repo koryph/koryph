@@ -319,6 +319,15 @@ refused and the phase is **blocked** — and the block reason now names the way 
 `--allow-protected` is operator-only (never available to a dispatched agent) and lifts
 *only* the routine CI/build subset; governance and project protections always refuse.
 
+When you land a bead by hand with `koryph merge --close-bead <id>` while a loop is
+running, the command also drops a **merged directive** into that run's operator-override
+sidecar (`overrides.json`, beside `ledger.json`). The engine reads the sidecar every
+cycle and folds the directive into its in-memory ledger, so the row it rewrites shows the
+bead merged — you no longer have to hand-edit `ledger.json` (which the engine's
+single-writer rewrite would immediately revert), and the manual land is not clobbered. The
+directive is idempotent and only ever marks a not-yet-terminal slot terminal, so it can
+never re-touch a slot that legitimately went back to work.
+
 ## Reviewing other people's PRs
 
 `koryph review-pr` is a **human-in-the-loop** tool for reviewing pull requests authored by

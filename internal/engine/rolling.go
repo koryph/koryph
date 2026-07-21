@@ -50,6 +50,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		}
 		syncObsConfig() // pick up `koryph obs level` changes without a restart
 		r.patrolIfDue(ctx)
+		r.applyOperatorOverrides()
 		r.drainEpicResults(ctx)
 
 		gate := r.governorGate(ctx)
