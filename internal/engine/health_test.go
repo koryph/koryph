@@ -129,6 +129,32 @@ func TestSeedPatrolThrottleFromLedgerHistory(t *testing.T) {
 	}
 }
 
+// TestPatrolCheckDeadActiveAgents proves D1/D12: a slot the ledger still marks
+// running whose agent process is gone is surfaced as a warn, while a live agent
+// or a terminal slot is not.
+func TestPatrolCheckDeadActiveAgents(t *testing.T) {
+	dead := &runner{run: &ledger.Run{Slots: map[string]*ledger.Slot{
+		"b1": {PhaseID: "b1", Status: ledger.SlotRunning, PID: deadPID(t)},
+	}}}
+	if fs := dead.patrolCheckDeadActiveAgents(); len(fs) != 1 || fs[0].level != "warn" || !strings.Contains(fs[0].message, "b1") {
+		t.Fatalf("dead agent on a running slot: want one warn naming b1, got %+v", fs)
+	}
+
+	live := &runner{run: &ledger.Run{Slots: map[string]*ledger.Slot{
+		"b2": {PhaseID: "b2", Status: ledger.SlotRunning, PID: os.Getpid()},
+	}}}
+	if fs := live.patrolCheckDeadActiveAgents(); len(fs) != 1 || fs[0].level != "ok" {
+		t.Errorf("live agent: want a single ok finding, got %+v", fs)
+	}
+
+	terminal := &runner{run: &ledger.Run{Slots: map[string]*ledger.Slot{
+		"b3": {PhaseID: "b3", Status: ledger.SlotMerged, PID: deadPID(t)},
+	}}}
+	if fs := terminal.patrolCheckDeadActiveAgents(); len(fs) != 1 || fs[0].level != "ok" {
+		t.Errorf("terminal slot with a dead pid: want ok (not flagged), got %+v", fs)
+	}
+}
+
 // --- zombie lease detection ------------------------------------------------
 
 func TestPatrolCheckZombieLeases_NoSlotsDir(t *testing.T) {

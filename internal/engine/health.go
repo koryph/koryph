@@ -258,6 +258,43 @@ func (r *runner) collectPatrolFindings(ctx context.Context, now time.Time) []pat
 	out = append(out, r.patrolCheckUnvalidatedEpics(ctx, now)...)
 	out = append(out, r.patrolCheckEpicValidations(ctx, now)...)
 	out = append(out, r.patrolCheckStaleClaims(ctx, now)...)
+	out = append(out, r.patrolCheckDeadActiveAgents()...)
+	return out
+}
+
+// --- check: dead active agents (mid-run liveness) -------------------------
+
+const patrolCheckDeadAgents = "dead-active-agent"
+
+// patrolCheckDeadActiveAgents flags a slot the ledger still marks running whose
+// agent process is gone — the mid-run counterpart to resume-time dead-agent
+// classification (D1/D12). The engine's SIGCHLD-driven exit handling normally
+// catches an agent exit within a tick, but a lost signal or a zombie parented to
+// the still-live engine can leave a slot "running" with no live process for many
+// minutes; a periodic sweep surfaces that within a patrol cycle instead of
+// leaving it stuck until the operator notices. Report-only (warn): the patrol
+// never touches the slot, so it cannot race the poll loop's own exit processing.
+func (r *runner) patrolCheckDeadActiveAgents() []patrolFinding {
+	if r.run == nil {
+		return []patrolFinding{{check: patrolCheckDeadAgents, level: "ok"}}
+	}
+	var out []patrolFinding
+	for _, sl := range r.run.Slots {
+		if sl == nil || sl.Status != ledger.SlotRunning || sl.PID <= 0 {
+			continue
+		}
+		if dispatch.Alive(sl.PID) {
+			continue
+		}
+		out = append(out, patrolFinding{
+			check:   patrolCheckDeadAgents,
+			level:   "warn",
+			message: fmt.Sprintf("slot %s marked running but agent pid %d is dead — its exit has not been processed (koryph stop then koryph merge if it stays stuck)", sl.PhaseID, sl.PID),
+		})
+	}
+	if len(out) == 0 {
+		return []patrolFinding{{check: patrolCheckDeadAgents, level: "ok"}}
+	}
 	return out
 }
 
