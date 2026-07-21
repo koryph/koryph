@@ -5,6 +5,7 @@ package merge
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,62 @@ func TestMergeGateFailedLeavesMainUntouched(t *testing.T) {
 	}
 	if !fsx.Exists(wt.Path) {
 		t.Errorf("worktree removed on gate failure; must be kept")
+	}
+}
+
+// TestMergeGateFlakeRetriedOnceThenMerges proves the gate retry-once behavior:
+// a gate that fails the first time and passes afterwards (the shape of a
+// load-sensitive flake) must be retried and the bead landed, not requeued —
+// otherwise an infra flake burns a fault attempt and eventually a model
+// escalation on a bead whose own code is fine.
+func TestMergeGateFlakeRetriedOnceThenMerges(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t)
+	ctx := context.Background()
+	wt := worktreeOn(t, repo, "agent/x")
+	commitIn(t, wt.Path, "b.txt", "feature\n", "add b")
+
+	// The marker (outside the worktree so `git checkout -- .` can't clear it)
+	// makes the gate fail exactly once: absent on the first run, present after.
+	marker := filepath.Join(t.TempDir(), "flaked")
+	gate := fmt.Sprintf("if [ -e %q ]; then exit 0; else : > %q; exit 1; fi", marker, marker)
+
+	res, err := Merge(ctx, Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main", Gate: []string{gate},
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if res.Status != StatusMerged {
+		t.Fatalf("Status=%q, want merged (a flaky gate must be retried once, not requeued)", res.Status)
+	}
+	if !fsx.Exists(filepath.Join(repo, "b.txt")) {
+		t.Errorf("feature file did not land on main after the retried gate passed")
+	}
+}
+
+// TestMergeGateDeterministicFailureStillFails proves the retry never masks a
+// real regression: a gate that always fails is retried once and still returns
+// gate-failed with main untouched.
+func TestMergeGateDeterministicFailureStillFails(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t)
+	ctx := context.Background()
+	wt := worktreeOn(t, repo, "agent/x")
+	commitIn(t, wt.Path, "b.txt", "feature\n", "add b")
+	mainBefore := headOf(t, repo, "main")
+
+	res, err := Merge(ctx, Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main", Gate: []string{"false"},
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if res.Status != StatusGateFailed {
+		t.Fatalf("Status=%q, want gate-failed", res.Status)
+	}
+	if got := headOf(t, repo, "main"); got != mainBefore {
+		t.Errorf("main moved on a persistent gate failure: %s != %s", got, mainBefore)
 	}
 }
 

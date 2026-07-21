@@ -227,11 +227,24 @@ func Merge(ctx context.Context, o Opts) (Result, error) {
 		prepared = p
 	}
 
-	// (6) green gate AFTER rebase.
+	// (6) green gate AFTER rebase. A first failure is retried once from a clean
+	// tree before it is allowed to count. The gate compiles and runs the
+	// project's whole suite, so a load-sensitive flake there would otherwise
+	// force a wasted requeue — and eventually a costly model escalation — on a
+	// bead whose own code is fine. The retry only ever absorbs a transient
+	// failure: a deterministic gate failure fails again and still returns
+	// gate-failed, so a real regression is never masked (a genuinely
+	// nondeterministic regression is the only edge the retry can hide — an
+	// accepted trade against penalizing every infra flake).
 	if !o.SkipGate && len(o.Gate) > 0 {
 		ok, out := RunGate(ctx, wt.Path, o.Gate)
 		if !ok {
-			// pre-commit auto-fixers may leave the tree dirty; discard.
+			// pre-commit auto-fixers or a partial step may leave the tree dirty;
+			// discard so the retry runs against the same clean state as the first.
+			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
+			ok, out = RunGate(ctx, wt.Path, o.Gate)
+		}
+		if !ok {
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
 			// Keep a generous tail: the engine persists this to
 			// <phase-dir>/gate-output.log, so a 2 KB clip was often too small to
