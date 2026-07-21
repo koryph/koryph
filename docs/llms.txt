@@ -35,9 +35,48 @@ On macOS and Linuxbrew the tap is the simplest path: `brew install koryph/tap/ko
 ## Enable koryph in a project (agent runbook)
 
 This section is a complete, executable sequence for an AI agent asked to
-"enable koryph in this project". Execute it top to bottom; every step is
-idempotent and safe to re-run. Ask the human only for the two values in
-step 2 (account profile name, account email).
+"enable koryph in this project". The fast path is the one-command adoption
+wizard; a manual step-by-step fallback follows for anything the wizard
+can't resolve non-interactively.
+
+### Fast path: `koryph adopt`
+
+```sh
+koryph adopt <repo-root> --yes --json
+```
+
+`koryph adopt` detects the repo, installs missing prerequisites (`claude`,
+`bd`, `gh`) with consent, initialises/hardens beads, derives the account,
+`gate`, `forge`, and `area_map`, installs the agent scaffolding, offers one
+signed `chore: adopt koryph` commit, and finishes by running `koryph
+validate` in-process — all in one run. `--yes` accepts only unambiguous
+derivations and fails closed, naming the flag to set, on anything ambiguous:
+
+- **`--account <profile> --identity <email>`** — zero or 2+ verified Claude
+  account candidates found (checked against `~/.claude.json` and each
+  `CLAUDE_CONFIG_DIR`'s copy).
+- **`--gate "cmd1;;cmd2"`** (repeatable, or one `;;`-separated flag) — no
+  gate command could be inferred from the repo (Makefile/package.json/
+  go.mod/Cargo.toml/pyproject.toml).
+- **`--forge github|gitlab`** — the git remote does not match a known forge
+  host.
+
+`--json` emits `{root, project_id, steps[]}` on stdout (progress moves to
+stderr); a non-zero exit means at least one step is `blocked` or `koryph
+validate` did not pass — inspect `steps[].state` for what remains. Preview
+the plan first with `koryph adopt <repo-root> --dry-run --json`, which
+writes nothing. Re-running `adopt` on an already-adopted repo is a no-op
+report — it doubles as an onboarding-scoped `koryph doctor`. Full
+phase-by-phase contract:
+[koryph adopt](https://github.com/koryph/koryph/blob/main/docs/user-guide/adopt.md).
+
+### Manual fallback (step by step)
+
+Use this path when a fast-path `blocked` step needs something the current
+environment can't resolve non-interactively (e.g. a tool install needing
+`sudo`), or when each step should run independently. Execute it top to
+bottom; every step is idempotent and safe to re-run. Ask the human only for
+the two values in step 2 (account profile name, account email).
 
 1. **Preconditions.** `koryph version` works (else run the Install section
    above); the target is a git repository; the agent runtime CLI is
@@ -106,6 +145,7 @@ step 2 (account profile name, account email).
 
 - [Installation](https://github.com/koryph/koryph/blob/main/docs/user-guide/installation.md): install `koryph`; per-user machine-local registry.
 - [Quickstart](https://github.com/koryph/koryph/blob/main/docs/user-guide/quickstart.md): register a project and run a first wave end-to-end.
+- [koryph adopt](https://github.com/koryph/koryph/blob/main/docs/user-guide/adopt.md): the onboarding wizard — detect → plan → confirm → execute → verify in one command, with a non-interactive/`--json` contract for agents.
 - [Zero to shipped](https://github.com/koryph/koryph/blob/main/docs/user-guide/zero-to-shipped.md): the full journey across the three pillars (Build/Protect/Ship) with today's shipped commands.
 - [Projects & accounts](https://github.com/koryph/koryph/blob/main/docs/user-guide/projects-and-accounts.md): the `~/.koryph` registry, per-project account isolation, identity verification.
 - [Choosing a forge](https://github.com/koryph/koryph/blob/main/docs/user-guide/forges.md): the `forge` field + remote sniffing, GitHub vs GitLab capability table, GitLab setup end-to-end (token flow, CI variables, release pipeline, supply-chain gap).

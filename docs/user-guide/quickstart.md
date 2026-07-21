@@ -4,19 +4,64 @@
 # Quickstart
 
 This walkthrough takes you from zero to a first dry-run wave in about ten
-minutes. You will register a project, pass the pre-dispatch gate, fire a
-single wave in dry-run mode, and read the board and slot status.
+minutes. The fastest path installs koryph and runs the adoption wizard end to
+end; an alternative section further down shows the equivalent flag-driven
+`project add` path for scripting or skipping the prompts. Either way you'll
+pass the pre-dispatch gate, fire a single wave in dry-run mode, and read the
+board and slot status.
 
 ## Prerequisites
 
-- `koryph` binary on your `PATH` (`koryph version` should print a version)
 - A git repository you want to manage (we call it `~/src/myproject` below)
-- `bd` (beads) initialised in that repo (`bd stats` should succeed)
-- A Claude account profile name and the email address tied to it
+- `git` on your `PATH`
+- A Claude account profile name and the email address tied to it — the
+  adoption wizard usually derives both from `~/.claude.json`, so you may not
+  need to know them up front
 
 ---
 
-## Step 1 — Register the project
+## Step 1 — Install koryph and adopt the project
+
+```sh
+brew install koryph/tap/koryph
+koryph adopt ~/src/myproject
+```
+
+`koryph adopt` is the wizard front door: it detects what your repo already
+has, prints a plan naming each step and why it's needed, asks for your
+consent in three scopes (the repo-wide plan, each system-level install, and
+the derived account/gate/forge values), then executes — installing missing
+prerequisites (`claude`, `bd`, `gh`), initializing `~/.koryph` and the beads
+issue DB, registering the project under a derived account, writing
+`koryph.project.json` with confirmed `gate`/`forge`/`area_map`, installing
+the koryph scaffolding, offering signing/posture, offering one signed
+`chore: adopt koryph` commit, and finally running `koryph validate`
+in-process. See [koryph adopt](adopt.md) for the full phase-by-phase
+walkthrough.
+
+Confirm the project was registered:
+
+```sh
+koryph project list
+```
+
+You should see one row with `STATUS` of `migrated` — `adopt` already ran
+`koryph validate` for you on the first green pass. If a beads database
+existed before you ran `adopt`, `bd stats` remains a quick way to sanity-check
+its health at any time.
+
+Skip ahead to [Step 2 — Fire a first dry-run wave](#step-2-fire-a-first-dry-run-wave).
+
+---
+
+## Alternative: register manually with `project add`
+
+Prefer to drive every step yourself, or scripting onboarding without
+prompts? `koryph project add` is the lower-level primitive `adopt` sequences:
+it registers the project and installs the agent scaffolding, but does
+**not** initialize or harden beads, install missing tools, or infer
+`gate`/`forge`/`area_map` for you — those are yours to handle first or by
+hand.
 
 ```sh
 koryph project add ~/src/myproject \
@@ -99,9 +144,10 @@ koryph project list
 
 You should see one row with `STATUS` of `registered`.
 
----
-
-## Step 2 — Run the pre-dispatch gate
+This path leaves beads uninitialised and `koryph.project.json` unwritten —
+initialise beads yourself (`bd init`, confirm with `bd stats`) and write
+`gate`/`merge_policy` (at minimum) into `koryph.project.json` before
+continuing. Then run the pre-dispatch gate:
 
 ```sh
 koryph validate myproject
@@ -121,7 +167,7 @@ means at least one check did not pass — the output names the failing check.
 
 ---
 
-## Step 3 — Fire a first dry-run wave
+## Step 2 — Fire a first dry-run wave
 
 ```sh
 koryph run --project myproject --once --dry-run
@@ -145,7 +191,7 @@ Other useful flags for early exploration:
 
 ---
 
-## Step 4 — Read the board
+## Step 3 — Read the board
 
 ```sh
 koryph board
@@ -164,7 +210,7 @@ count. Add `--json` for the machine-readable payload.
 
 ---
 
-## Step 5 — Read slot status
+## Step 4 — Read slot status
 
 ```sh
 koryph status --project myproject

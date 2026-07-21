@@ -12,7 +12,9 @@ The registry record also binds the **account** that dispatched agents run under.
 
 ## koryph.project.json
 
-Created by `koryph onboard`, validated by `koryph validate`.
+Created by `koryph project add` or `koryph adopt` — `koryph onboard` is a
+separate, read-only inspection tool and never writes this file — validated
+by `koryph validate`.
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|

@@ -27,6 +27,17 @@ claude --version    # must be authenticated
 bd doctor           # no errors
 ```
 
+!!! tip "Let the wizard install the rest for you"
+    Installing `koryph` itself (below) and having `git` on your `PATH` are
+    the only prerequisites that have to happen by hand. Once `koryph` is
+    installed, `koryph adopt <root>` detects `claude`, `bd`, and `gh` and
+    proposes an install for anything missing — via Homebrew, apt/dnf/pacman/
+    zypper, `nix profile install`, or the repo's own `flake.nix` — asking
+    for your consent before running each one, showing the exact command and
+    calling out any `sudo` explicitly. Manually working through the rest of
+    the table above is optional if you're about to run `adopt`; see
+    [koryph adopt](adopt.md).
+
 ---
 
 ## Install `koryph`

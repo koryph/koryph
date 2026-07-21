@@ -51,6 +51,7 @@ nav:
   - User guide:
       - Installation: user-guide/installation.md
       - Quickstart: user-guide/quickstart.md
+      - "koryph adopt: the onboarding wizard": user-guide/adopt.md
       - Zero to shipped: user-guide/zero-to-shipped.md
       - Projects & accounts: user-guide/projects-and-accounts.md
       - Choosing a forge: user-guide/forges.md
