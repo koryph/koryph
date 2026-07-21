@@ -595,13 +595,44 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 		if v := os.Getenv("KORYPH_BD_BIN"); v != "" {
 			bd.Bin = v
 		}
-		if cerr := bd.Close(ctx, *closeBead, *reason); cerr != nil {
-			fmt.Fprintln(stderr, "koryph: warning: close bead failed:", cerr)
-		} else {
-			fmt.Fprintf(stdout, "closed bead %s\n", *closeBead)
+		// The operator explicitly asked to close the bead on a successful merge,
+		// so a close that does not actually close must be surfaced non-zero — not
+		// buried as a warning that let merged beads sit open until a manual
+		// `bd close` (D5).
+		if cerr := verifiedClose(ctx, bd, *closeBead, *reason); cerr != nil {
+			fmt.Fprintf(stderr, "koryph merge: merged, but %v — close it manually (bd close %s)\n", cerr, *closeBead)
+			return engine.ExitFatal
 		}
+		fmt.Fprintf(stdout, "closed bead %s\n", *closeBead)
 	}
 	return 0
+}
+
+// beadCloser is the subset of the beads adapter verifiedClose needs; a small
+// interface so the close-and-confirm logic is unit-testable without a real bd.
+type beadCloser interface {
+	Close(ctx context.Context, id, reason string) error
+	Show(ctx context.Context, id string) (beads.Issue, error)
+}
+
+// verifiedClose closes id and confirms it actually reached a terminal status.
+// `bd close` can exit 0 without closing (e.g. the bead still has open
+// dependents), which silently left merged beads open (D5), so a zero exit is
+// not trusted on its own — the status is re-read and a non-terminal result is
+// an error. A transient Show failure is not treated as a close failure (the
+// close itself succeeded; verification is best-effort).
+func verifiedClose(ctx context.Context, bc beadCloser, id, reason string) error {
+	if err := bc.Close(ctx, id, reason); err != nil {
+		return fmt.Errorf("closing bead %s failed: %w", id, err)
+	}
+	iss, err := bc.Show(ctx, id)
+	if err != nil {
+		return nil
+	}
+	if iss.Status != "closed" && iss.Status != "done" {
+		return fmt.Errorf("bead %s is still %q after close (open dependents?)", id, iss.Status)
+	}
+	return nil
 }
 
 // cmdLand lands an engine-opened PR (a pr-opened bead) fast-forward-only.
