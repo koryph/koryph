@@ -64,12 +64,18 @@ func writeFakeAdoptBD(t *testing.T) string {
 // verifies as email, so account.Discover finds exactly one verified
 // candidate (the personal profile) without touching the operator's real
 // ~/.claude.json. Mirrors internal/account/account_test.go's writeConfig
-// fixture shape.
+// fixture shape. Also clears the two ambient non-subscription credential env
+// vars account.Discover now scans (koryph-i3b, design §8) — CLAUDE_CODE_OAUTH_TOKEN /
+// ANTHROPIC_API_KEY — so this stays hermetic to exactly one verified
+// candidate regardless of whether the host shell running the test happens to
+// have either exported.
 func writeFakeClaudeHome(t *testing.T, email string) string {
 	t.Helper()
 	home := t.TempDir()
 	writeTestFile(t, filepath.Join(home, ".claude.json"), `{"oauthAccount":{"emailAddress":"`+email+`"}}`)
 	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
 	return home
 }
 

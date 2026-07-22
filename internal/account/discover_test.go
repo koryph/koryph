@@ -43,9 +43,20 @@ func findCandidate(t *testing.T, cands []Candidate, name string) Candidate {
 	return Candidate{}
 }
 
+// clearAmbientCredentialEnv unsets the two ambient credential env vars
+// discover() now scans (koryph-i3b, design §8) so the .claude.json-only
+// scenarios below stay hermetic regardless of the host shell's actual
+// environment (t.Setenv restores the prior value, unset or not, on cleanup).
+func clearAmbientCredentialEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(ambientOAuthTokenEnvVar, "")
+	t.Setenv(ambientAPIKeyEnvVar, "")
+}
+
 // (a) Only the default ~/.claude.json exists, with an email: one verified
 // "personal" candidate.
 func TestDiscoverDefaultOnly(t *testing.T) {
+	clearAmbientCredentialEnv(t)
 	home := t.TempDir()
 	writeHomeConfig(t, home, "", `{"oauthAccount":{"emailAddress":"me@example.com","organizationName":"Acme"}}`)
 
@@ -74,6 +85,7 @@ func TestDiscoverDefaultOnly(t *testing.T) {
 // (b) Default + ~/.claude-work/.claude.json: two candidates, named
 // personal/work, both verified, with correct provenance strings.
 func TestDiscoverDefaultAndWork(t *testing.T) {
+	clearAmbientCredentialEnv(t)
 	home := t.TempDir()
 	writeHomeConfig(t, home, "", `{"oauthAccount":{"emailAddress":"personal@example.com"}}`)
 	writeHomeConfig(t, home, ".claude-work", `{"oauthAccount":{"emailAddress":"work@example.com","organizationName":"WorkCo"}}`)
@@ -110,6 +122,7 @@ func TestDiscoverDefaultAndWork(t *testing.T) {
 // (c) No .claude.json anywhere: one unverified default candidate, with auth
 // guidance in Err.
 func TestDiscoverNoConfigAnywhere(t *testing.T) {
+	clearAmbientCredentialEnv(t)
 	home := t.TempDir()
 
 	cands := discover(context.Background(), home)
@@ -134,6 +147,7 @@ func TestDiscoverNoConfigAnywhere(t *testing.T) {
 // (d) A .claude-foo directory WITHOUT a .claude.json is not a candidate at
 // all — it is skipped, not reported as unverified.
 func TestDiscoverSkipsProfileDirWithoutConfig(t *testing.T) {
+	clearAmbientCredentialEnv(t)
 	home := t.TempDir()
 	writeHomeConfig(t, home, "", `{"oauthAccount":{"emailAddress":"me@example.com"}}`)
 	if err := os.MkdirAll(filepath.Join(home, ".claude-foo"), 0o755); err != nil {
@@ -152,6 +166,7 @@ func TestDiscoverSkipsProfileDirWithoutConfig(t *testing.T) {
 // (e) An unparseable .claude.json yields an unverified candidate with a
 // reason in Err (not auth guidance — the file exists, it just doesn't parse).
 func TestDiscoverUnparseableConfig(t *testing.T) {
+	clearAmbientCredentialEnv(t)
 	home := t.TempDir()
 	writeHomeConfig(t, home, "", `{not json`)
 
@@ -178,6 +193,7 @@ func TestDiscoverUnparseableConfig(t *testing.T) {
 // same way discover's fixture-driven core does, so it stays exercised by the
 // same behavior the table above proves.
 func TestDiscoverPublicEntryPointUsesHOME(t *testing.T) {
+	clearAmbientCredentialEnv(t)
 	home := t.TempDir()
 	writeHomeConfig(t, home, "", `{"oauthAccount":{"emailAddress":"me@example.com"}}`)
 	t.Setenv("HOME", home)
@@ -188,5 +204,105 @@ func TestDiscoverPublicEntryPointUsesHOME(t *testing.T) {
 	}
 	if !cands[0].Verified || cands[0].Identity != "me@example.com" {
 		t.Errorf("Discover() candidate = %+v, want verified me@example.com", cands[0])
+	}
+}
+
+// (f) An OAuth-less machine with a bare ambient ANTHROPIC_API_KEY: the
+// .claude.json-derived personal candidate stays unverified as before, PLUS a
+// second, also-unverified "ambient-api-key" candidate reports the key and
+// names the exact flag needed — api-key mode is never entered without it
+// (koryph-i3b.6 acceptance criteria; design §8).
+func TestDiscoverAmbientAPIKeyReportedNotVerified(t *testing.T) {
+	clearAmbientCredentialEnv(t)
+	t.Setenv(ambientAPIKeyEnvVar, "sk-ant-fake-key")
+	home := t.TempDir()
+
+	cands := discover(context.Background(), home)
+	if len(cands) != 2 {
+		t.Fatalf("got %d candidates, want 2 (personal + ambient-api-key): %+v", len(cands), cands)
+	}
+
+	personal := findCandidate(t, cands, "personal")
+	if personal.Verified {
+		t.Errorf("personal Verified = true, want false (no .claude.json)")
+	}
+
+	key := findCandidate(t, cands, "ambient-api-key")
+	if key.Verified {
+		t.Errorf("ambient-api-key Verified = true, want false — api-key mode must never be entered without an explicit flag")
+	}
+	if key.AuthMode != AuthModeAPIKey {
+		t.Errorf("ambient-api-key AuthMode = %q, want %q", key.AuthMode, AuthModeAPIKey)
+	}
+	if key.Identity != "" {
+		t.Errorf("ambient-api-key Identity = %q, want empty (never auto-resolved)", key.Identity)
+	}
+	if !strings.Contains(key.Err, "no OAuth login found") {
+		t.Errorf("Err = %q, want it to note no OAuth login was found", key.Err)
+	}
+	if !strings.Contains(key.Err, "--auth-mode api-key") {
+		t.Errorf("Err = %q, want it to name --auth-mode api-key", key.Err)
+	}
+	if !strings.Contains(key.Err, "bills per token") {
+		t.Errorf("Err = %q, want it to warn about per-token billing", key.Err)
+	}
+}
+
+// (g) A machine WITH a verified OAuth login plus an ambient ANTHROPIC_API_KEY:
+// the api-key candidate's message drops the "no OAuth login found" preamble
+// (it isn't true) but is still never auto-verified.
+func TestDiscoverAmbientAPIKeyWithOAuthLoginPresent(t *testing.T) {
+	clearAmbientCredentialEnv(t)
+	t.Setenv(ambientAPIKeyEnvVar, "sk-ant-fake-key")
+	home := t.TempDir()
+	writeHomeConfig(t, home, "", `{"oauthAccount":{"emailAddress":"me@example.com"}}`)
+
+	cands := discover(context.Background(), home)
+	key := findCandidate(t, cands, "ambient-api-key")
+	if key.Verified {
+		t.Errorf("ambient-api-key Verified = true, want false")
+	}
+	if strings.Contains(key.Err, "no OAuth login found") {
+		t.Errorf("Err = %q, should not claim no OAuth login when personal verified", key.Err)
+	}
+	if !strings.Contains(key.Err, "--auth-mode api-key") {
+		t.Errorf("Err = %q, want it to name --auth-mode api-key", key.Err)
+	}
+}
+
+// (h) An ambient CLAUDE_CODE_OAUTH_TOKEN is offered freely: a verified
+// candidate under AuthModeOAuthToken, no explicit flag required (it bills
+// against the subscription, not per token).
+func TestDiscoverAmbientOAuthTokenVerifiedFreely(t *testing.T) {
+	clearAmbientCredentialEnv(t)
+	t.Setenv(ambientOAuthTokenEnvVar, "cot-fake-token")
+	home := t.TempDir()
+
+	cands := discover(context.Background(), home)
+	tok := findCandidate(t, cands, "ambient-oauth-token")
+	if !tok.Verified {
+		t.Errorf("ambient-oauth-token Verified = false, want true (Err: %q)", tok.Err)
+	}
+	if tok.AuthMode != AuthModeOAuthToken {
+		t.Errorf("ambient-oauth-token AuthMode = %q, want %q", tok.AuthMode, AuthModeOAuthToken)
+	}
+	if tok.Identity != Fingerprint("cot-fake-token") {
+		t.Errorf("ambient-oauth-token Identity = %q, want the credential fingerprint", tok.Identity)
+	}
+	if tok.Err != "" {
+		t.Errorf("ambient-oauth-token Err = %q, want empty for a verified candidate", tok.Err)
+	}
+}
+
+// (i) Neither ambient var set: discover() behaves exactly as before these
+// changes — no extra candidates appear.
+func TestDiscoverNoAmbientCredentials(t *testing.T) {
+	clearAmbientCredentialEnv(t)
+	home := t.TempDir()
+	writeHomeConfig(t, home, "", `{"oauthAccount":{"emailAddress":"me@example.com"}}`)
+
+	cands := discover(context.Background(), home)
+	if len(cands) != 1 {
+		t.Fatalf("got %d candidates, want 1 (no ambient credential vars set): %+v", len(cands), cands)
 	}
 }
