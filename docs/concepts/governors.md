@@ -22,10 +22,13 @@ Three ideas stack up:
   account under the explicit `api-key` [auth
   mode](../user-guide/authentication-modes.md). There is no accidental path
   from "run a wave" to "rack up an API bill."
-- **Per-provider governors.** Each provider gets its own concurrency cap that
-  *adapts*: a rate-limit response halves it immediately (with settle windows and
-  a circuit breaker to stop thrashing), and sustained success probes it back up.
-  The fleet finds the edge of what the provider allows and rides it.
+- **Per-account governors.** Each *account* — not just each provider — gets its
+  own concurrency cap that *adapts*: a rate-limit response halves it immediately
+  (with settle windows and a circuit breaker to stop thrashing), and sustained
+  success probes it back up. A larger subscription (a 20x Max seat) and a
+  smaller work seat on the same provider get independent pools and independent
+  caps — one account's rate limit never throttles another's. The fleet finds
+  the edge of what each account's provider allows and rides it.
 - **Quota tracking.** On top of raw concurrency, koryph calibrates observed
   spend against your plan's usage windows and throttles or pauses dispatch as a
   window fills.
@@ -85,3 +88,8 @@ running at the edge of what your plan allows and never past it.
 - The `/koryph-calibrate` skill walks the calibration interactively.
 - Governors pace [rolling dispatch](rolling-dispatch.md): they set how many
   worktree slots the loop is allowed to keep full.
+- Per-account concurrency caps: a live operator override
+  (`koryph governor set --account`) or a persisted default
+  (`koryph quota set-threads`) — see [Billing &
+  quota](../user-guide/billing-and-quota.md#per-account-concurrency-default-koryph-1o23)
+  and the [design doc](../developer-guide/global-governor.md#per-account-governor-pools-koryph-v8u11--koryph-1o21-l5c).
