@@ -92,6 +92,27 @@ func TestProgressFallsBackToSlogWhenHeadless(t *testing.T) {
 	}
 }
 
+// TestProgressRedactsConsoleSink guards the fix for the audit finding that
+// RedactRecord never scans the slog Message field while engine progress
+// logging formats raw errors (wrapping git/gh/gate stderr) into Message —
+// but that guard only covered the log.Info fallback (TestProgressFallsBack...
+// above): the console sink (opts.Out) path bypassed the slog handler, and
+// therefore RedactRecord, entirely. A secret-shaped string reaching
+// r.progress must not appear verbatim on either sink.
+func TestProgressRedactsConsoleSink(t *testing.T) {
+	var out bytes.Buffer
+	r := &runner{opts: Options{Out: &out}}
+	secret := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789" // split: dodge gitleaks on a fake token
+	r.progress("gate failed: %s", secret)
+
+	if strings.Contains(out.String(), secret) {
+		t.Errorf("console sink leaked an unredacted secret: %q", out.String())
+	}
+	if !strings.Contains(out.String(), obs.Redacted) {
+		t.Errorf("console sink missing the redaction marker: %q", out.String())
+	}
+}
+
 // TestLogRequeueEventCarriesRunAndProject pins koryph-x5d: engine.slot.
 // requeue_event must carry run_id + project so per-project cost rollups include
 // requeued-attempt spend. Before this, requeue cost records omitted both keys

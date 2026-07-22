@@ -144,6 +144,15 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 
 	tick := 0
 	for {
+		// A wave can sit inside this loop for many minutes while its slots run —
+		// waveLoop's own syncObsConfig() call only fires once, BEFORE this loop is
+		// entered, so without a call here a mid-wave `koryph obs level` change
+		// would silently wait out the whole wave instead of taking effect on the
+		// next poll tick as the "no restart needed" contract promises (design
+		// docs/designs/2026-07-observability.md §4). rollingLoop does not need
+		// this: its own for-loop IS the tick loop.
+		syncObsConfig()
+
 		// liveActiveCount, not activeCount: a resume backlog (SlotQueued) reserves
 		// width but has no agent to poll, so waiting on it here would deadlock —
 		// only the wave-loop boundary's drainResumeBacklog can promote it. When

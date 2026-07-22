@@ -30,11 +30,22 @@ var log = obs.For("engine")
 // without restarting the loop — the "no restart needed" contract the obs design
 // (docs/designs/2026-07-observability.md §4) promised but nothing honored
 // (obs.ReloadConfig had no caller). Called at the top of every wave/rolling
-// iteration. Best-effort: a transient read/parse error leaves the previously
+// iteration AND every pollUntilIdle tick (koryph-mes): a wave can sit inside
+// pollUntilIdle for many minutes while its slots run, so syncing only once
+// per wave (wave.go's call, before pollUntilIdle is entered) left a mid-wave
+// level change waiting out the whole wave instead of landing on the next
+// poll tick. Best-effort: a transient read/parse error leaves the previously
 // loaded config in place (obs.ReloadConfig retains it on error).
 func syncObsConfig() {
+	syncObsConfigCalls++ // test-only counter; see TestPollUntilIdleSyncsObsConfigEachTick
 	_, _ = obs.ReloadConfig()
 }
+
+// syncObsConfigCalls counts syncObsConfig invocations across the process
+// lifetime. It exists solely so a test can assert the per-tick reload
+// actually fires inside pollUntilIdle (not just once per wave/rolling
+// iteration); production code never reads it.
+var syncObsConfigCalls int
 
 // logRunStart emits an INFO record when an engine run starts.
 func logRunStart(runID, project, mode string) {

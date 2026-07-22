@@ -432,8 +432,17 @@ func (r *runner) quotaName() string {
 // emitting the same string to both doubled every progress line there, inflating
 // every tail/grep count (D8). Queryable telemetry comes from the dedicated,
 // single-emission engine.* records in obs.go, which are unaffected.
+//
+// The message is redacted before either sink (koryph-mes, finding #53): this
+// is the engine's dominant idiom for formatting raw errors (%v-wrapping
+// git/gh/gate stderr, which can carry PEM blocks or tokens) into a log
+// Message, and the opts.Out console path never passed through the slog
+// handler's RedactRecord wrapper (obs/handler.go) — only the log.Info
+// fallback did. RedactValue is a no-op on clean strings, so the common case
+// is unaffected; the log.Info fallback re-applies it via RedactRecord, which
+// is idempotent on already-redacted text.
 func (r *runner) progress(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
+	msg := obs.RedactValue(fmt.Sprintf(format, args...))
 	if r.opts.Out != nil {
 		fmt.Fprintln(r.opts.Out, msg)
 		return

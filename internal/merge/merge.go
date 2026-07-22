@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
@@ -104,7 +105,24 @@ func matchProtected(path, prefix string) bool {
 // Merge lands o.Branch on the default branch. Expected non-success outcomes
 // (protected, conflict, gate-failed) come back as a Result with that Status and
 // a nil error; infrastructure and ff-only failures return a non-nil error.
+//
+// Merge is a thin logging wrapper around mergeInner: it is the single choke
+// point every caller passes through — the engine's auto-merge loop
+// (internal/engine/poll.go), `koryph land` (internal/engine/land.go), and the
+// operator-invoked `koryph merge` CLI (cmd/koryph/ops.go) — so instrumenting
+// here, once, closes the "internal/merge has zero obs/slog calls" gap for all
+// three instead of duplicating logging at each call site. Before this, an
+// operator running `koryph merge`/`koryph land` directly left no structured
+// telemetry trail at all; only the engine's wave loop separately audited its
+// own merges (auditBlocked in poll.go).
 func Merge(ctx context.Context, o Opts) (Result, error) {
+	start := time.Now()
+	res, err := mergeInner(ctx, o)
+	logResult(o, res, err, time.Since(start))
+	return res, err
+}
+
+func mergeInner(ctx context.Context, o Opts) (Result, error) {
 	def := o.DefaultBranch
 	if def == "" {
 		def = "main"

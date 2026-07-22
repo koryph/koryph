@@ -154,6 +154,40 @@ func TestPollPassRefreshesDemand(t *testing.T) {
 	}
 }
 
+// TestPollUntilIdleSyncsObsConfigEachTick guards the fix for the audit finding
+// that obs.Sync/ReloadConfig was wired into the top of waveLoop/rollingLoop
+// but NOT into pollUntilIdle's own inner tick loop — so a wave that took
+// multiple poll ticks to settle would only pick up a mid-run `koryph obs
+// level` change once the WHOLE wave finished, not on the next tick as the
+// "no restart needed" contract promises (docs/designs/2026-07-observability.md
+// §4). waveLoop calls syncObsConfig exactly once per iteration (see wave.go),
+// and a --once run with one ready bead completes exactly one waveLoop
+// iteration (koryph-2im.3), so any count above 1 can only have come from
+// pollUntilIdle's own loop body — proving the per-tick reload is wired in
+// without depending on exact tick counts (which would make the test flaky).
+func TestPollUntilIdleSyncsObsConfigEachTick(t *testing.T) {
+	newFixture(t, fixOpts{})
+	var out bytes.Buffer
+	ctx := context.Background()
+
+	syncObsConfigCalls = 0
+	opts := baseOptions(&out)
+
+	got, err := Run(ctx, opts)
+	if err != nil {
+		t.Fatalf("Run: %v\noutput:\n%s", err, out.String())
+	}
+	if got.Merged != 1 {
+		t.Fatalf("want 1 merged bead, got %+v\noutput:\n%s", got, out.String())
+	}
+	if syncObsConfigCalls <= 1 {
+		t.Errorf("syncObsConfigCalls = %d, want > 1 — a single-wave --once run only calls "+
+			"syncObsConfig once from waveLoop's own top-of-loop; a count of 1 means "+
+			"pollUntilIdle's tick loop never re-synced the obs config while the wave's "+
+			"slot was running", syncObsConfigCalls)
+	}
+}
+
 // TestRunSIGCHLDFastPath asserts a dispatched fake agent's exit is detected
 // far sooner than a large poll interval, via the SIGCHLD wake in
 // pollUntilIdle (koryph-2im.2). Without the wake, completion would only be
