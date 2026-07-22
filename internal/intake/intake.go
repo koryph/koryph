@@ -162,7 +162,15 @@ func buildDescription(owner, repo string, iss SourceIssue) string {
 		"Source: github.com/%s/%s/issues/%d, author @%s, ingested by koryph intake",
 		owner, repo, iss.Number, iss.Author,
 	)
-	body := strings.TrimRight(iss.Body, "\n")
+	return withProvenanceFooter(iss.Body, footer)
+}
+
+// withProvenanceFooter assembles a bead description from an issue body and a
+// provider-specific provenance footer line: the trimmed body, a "---"
+// separator, and the footer. When body is empty (after trimming trailing
+// newlines) the footer is returned alone.
+func withProvenanceFooter(body, footer string) string {
+	body = strings.TrimRight(body, "\n")
 	if body == "" {
 		return footer
 	}

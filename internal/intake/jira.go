@@ -360,11 +360,7 @@ func buildJIRADescription(host, projectKey string, iss SourceIssue) string {
 		"Source: %s/browse/%s-%d, author %s, ingested by koryph intake",
 		"https://"+host, projectKey, iss.Number, iss.Author,
 	)
-	body := strings.TrimRight(iss.Body, "\n")
-	if body == "" {
-		return footer
-	}
-	return body + "\n\n---\n" + footer
+	return withProvenanceFooter(iss.Body, footer)
 }
 
 // jiraHost extracts the hostname from a JIRA base URL or bare hostname.

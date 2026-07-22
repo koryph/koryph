@@ -505,9 +505,5 @@ func buildLinearDescription(teamKey string, iss SourceIssue) string {
 		"Source: linear.app/team/%s/issue/%s, author %s, ingested by koryph intake",
 		teamKey, identifier, iss.Author,
 	)
-	body := strings.TrimRight(iss.Body, "\n")
-	if body == "" {
-		return footer
-	}
-	return body + "\n\n---\n" + footer
+	return withProvenanceFooter(iss.Body, footer)
 }
