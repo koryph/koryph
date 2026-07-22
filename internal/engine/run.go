@@ -316,6 +316,10 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	if r.quotaCfg, err = quota.LoadConfig(r.quotaName()); err != nil {
 		return Outcome{Code: ExitFatal}, err
 	}
+	// Wire the per-account seeded-default concurrency cap (koryph-1o2.3) into
+	// the global governor: govern must not import quota (layering), so the
+	// engine hands it a closure over its own already-loaded r.quotaCfg instead.
+	r.gov.SeedCap = r.seedCapForPool
 	// Dispatched agents sign via the koryph scoped signing socket, not the
 	// operator's ambient agent (koryph-3vp.2).
 	if r.requireSigned() && cfg.Signing.EffectiveMode() == signing.ModeSSH {

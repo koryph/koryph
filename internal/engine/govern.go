@@ -45,6 +45,24 @@ func (r *runner) poolKey() string {
 	return r.quotaName()
 }
 
+// seedCapForPool resolves the per-account seeded-default concurrency cap
+// (koryph-1o2.3) for pool: r.quotaCfg.MaxThreads when pool is THIS runner's
+// own pool, else 0 (no seed to offer). It is wired into r.gov.SeedCap at
+// startup so govern's fallbackCap can consult it without govern importing
+// package quota (layering) — govern calls this closure with an already
+// govern.NormalizeProvider-normalized pool key, so the comparison normalizes
+// r.poolKey() the same way before comparing (poolKey() returns "" for a
+// runner with no registry record).
+func (r *runner) seedCapForPool(pool string) int {
+	if r.quotaCfg == nil {
+		return 0
+	}
+	if pool != govern.NormalizeProvider(r.poolKey()) {
+		return 0
+	}
+	return r.quotaCfg.MaxThreads
+}
+
 // refreshDemand records this project's demand for slots (it has ready work).
 func (r *runner) refreshDemand() {
 	if r.gov == nil {

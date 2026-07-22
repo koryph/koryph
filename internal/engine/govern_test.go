@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/quota"
 )
 
 // TestGlobalGovernorDefersWhenCapFull proves the wave loop honors the machine
@@ -83,5 +84,66 @@ func TestGlobalGovernorDispatchesWhenSlotFree(t *testing.T) {
 		if l.Project == "proj" {
 			t.Errorf("global slot for proj not released after merge: %+v", l)
 		}
+	}
+}
+
+// TestGlobalGovernorDefersUsingQuotaSeededCap is the koryph-1o2.3 admission
+// regression: with NO explicit `governor set --account` cap for this
+// account, a persisted quota.Config.MaxThreads seed must still be the cap
+// admission enforces — not silently ignored in favor of
+// govern.DefaultMaxGlobalAgents (8). A foreign lease alone would never fill
+// the default cap of 8, so this only defers if the seed (1) actually won.
+func TestGlobalGovernorDefersUsingQuotaSeededCap(t *testing.T) {
+	newFixture(t, fixOpts{})
+	if _, err := quota.SetMaxThreads(fixtureAccount, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	gs := govern.NewStore()
+	if err := gs.Hold(govern.Lease{
+		Project: "other", Bead: "x1", PID: os.Getpid(), EnginePID: os.Getpid(),
+		Provider: fixtureAccount,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	got, err := Run(context.Background(), baseOptions(&out))
+	t.Logf("engine output:\n%s", out.String())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Dispatched != 0 {
+		t.Errorf("Dispatched = %d, want 0 (quota-seeded cap of 1 already held by another project)", got.Dispatched)
+	}
+}
+
+// TestGlobalGovernorExplicitCapWinsOverQuotaSeed proves precedence: an
+// explicit `governor set --account` cap always wins over the quota seed,
+// even when the seed is smaller (koryph-1o2.3, precedence level 1 vs 2).
+func TestGlobalGovernorExplicitCapWinsOverQuotaSeed(t *testing.T) {
+	newFixture(t, fixOpts{})
+	if _, err := quota.SetMaxThreads(fixtureAccount, 1); err != nil {
+		t.Fatal(err)
+	}
+	gs := govern.NewStore()
+	if err := gs.SetCap(fixtureAccount, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := gs.Hold(govern.Lease{
+		Project: "other", Bead: "x1", PID: os.Getpid(), EnginePID: os.Getpid(),
+		Provider: fixtureAccount,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	got, err := Run(context.Background(), baseOptions(&out))
+	t.Logf("engine output:\n%s", out.String())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Dispatched != 1 {
+		t.Errorf("Dispatched = %d, want 1 (explicit cap 5 > 1 active foreign lease; must win over the smaller quota seed)", got.Dispatched)
 	}
 }
