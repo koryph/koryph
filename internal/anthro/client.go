@@ -108,7 +108,13 @@ func NewClient(keyEnvVar string) (*Client, error) {
 	if key == "" {
 		return nil, fmt.Errorf("anthro: env var %s is unset or empty", keyEnvVar)
 	}
-	backend := sdkBackend{api: anthropic.NewClient(option.WithAPIKey(key))}
+	// WithoutEnvironmentDefaults skips the SDK's ambient credential autoload
+	// (client.go DefaultClientOptions: ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN)
+	// so an ambient ANTHROPIC_AUTH_TOKEN cannot ride along as an
+	// Authorization: Bearer header beside our explicit x-api-key — the
+	// explicitly-named key is the ONLY credential on the request (koryph-i3b
+	// review finding; same fix as ProbeLiveness in liveness.go).
+	backend := sdkBackend{api: anthropic.NewClient(option.WithoutEnvironmentDefaults(), option.WithAPIKey(key))}
 	return &Client{messages: backend, batches: backend}, nil
 }
 

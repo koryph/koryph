@@ -116,6 +116,65 @@ func TestProbeLivenessEmptyCredential(t *testing.T) {
 	}
 }
 
+// TestProbeLivenessIgnoresAmbientCredentials is the koryph-i3b review-finding
+// regression guard: an ambient ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in
+// the orchestrator's environment must NEVER reach the probe request. The SDK
+// autoloads both by default in different header schemes (x-api-key vs
+// Authorization: Bearer), so without WithoutEnvironmentDefaults an opposite-
+// scheme ambient credential rides along beside the credential under test —
+// letting the probe pass on the ambient credential (fail-OPEN) and bill the
+// wrong account. Each mode asserts the request carries ONLY its own
+// explicit credential in its own scheme, with the other scheme absent.
+func TestProbeLivenessIgnoresAmbientCredentials(t *testing.T) {
+	// Poison the environment with plausible ambient credentials in BOTH
+	// schemes. Neither must appear on any request.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ambient-orchestrator-key")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ambient-orchestrator-token")
+
+	cases := []struct {
+		name       string
+		useBearer  bool
+		credential string
+	}{
+		{"api-key mode ignores ambient bearer token", false, "sk-enrolled-api-key"},
+		{"oauth-token mode ignores ambient api-key", true, "enrolled-oauth-token"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				apiKey := r.Header.Get("x-api-key")
+				authz := r.Header.Get("Authorization")
+				if strings.Contains(apiKey, "ambient") || strings.Contains(authz, "ambient") {
+					t.Errorf("ambient credential leaked into request: x-api-key=%q Authorization=%q", apiKey, authz)
+				}
+				if tc.useBearer {
+					if authz != "Bearer "+tc.credential {
+						t.Errorf("Authorization = %q, want Bearer %s", authz, tc.credential)
+					}
+					if apiKey != "" {
+						t.Errorf("x-api-key present in oauth-token mode: %q", apiKey)
+					}
+				} else {
+					if apiKey != tc.credential {
+						t.Errorf("x-api-key = %q, want %s", apiKey, tc.credential)
+					}
+					if authz != "" {
+						t.Errorf("Authorization present in api-key mode: %q", authz)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "has_more": false})
+			}))
+			defer srv.Close()
+
+			if err := probeLiveness(context.Background(), tc.credential, tc.useBearer,
+				option.WithBaseURL(srv.URL), option.WithMaxRetries(0)); err != nil {
+				t.Fatalf("probeLiveness: %v", err)
+			}
+		})
+	}
+}
+
 // TestProbeLiveness is the exported entry point's smoke test — a thin
 // wrapper, so one passing case plus the unexported table above is enough.
 func TestProbeLiveness(t *testing.T) {

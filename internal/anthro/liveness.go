@@ -44,7 +44,19 @@ func probeLiveness(ctx context.Context, credential string, useBearer bool, extra
 	if credential == "" {
 		return fmt.Errorf("anthro: ProbeLiveness: empty credential")
 	}
-	var opts []option.RequestOption
+	// WithoutEnvironmentDefaults is load-bearing for correctness, not just
+	// hygiene: the SDK's default credential chain (client.go
+	// DefaultClientOptions) autoloads the orchestrator's ambient
+	// ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN. Because api-key and
+	// oauth-token authenticate with DIFFERENT headers (x-api-key vs
+	// Authorization: Bearer), an ambient credential in the OTHER scheme
+	// would be sent alongside the credential under test — so a probe could
+	// pass on the orchestrator's ambient key/token instead of the enrolled
+	// credential (fail-OPEN) and bill the wrong account. Skipping the env
+	// autoload makes the explicit WithAPIKey/WithAuthToken below the ONLY
+	// credential on the request (koryph-i3b review finding, design §2 I2:
+	// no ambient credential inheritance).
+	opts := []option.RequestOption{option.WithoutEnvironmentDefaults()}
 	params := anthropic.ModelListParams{Limit: anthropic.Int(1)}
 	if useBearer {
 		opts = append(opts, option.WithAuthToken(credential))
