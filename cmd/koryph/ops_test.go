@@ -6,15 +6,60 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
 )
+
+// fakeCloser is an in-memory beadCloser: Close records the call and flips the
+// bead to a status the test seeds via showStatus, so verifiedClose's re-read
+// path is exercised without a real bd binary.
+type fakeCloser struct {
+	closeErr   error
+	showErr    error
+	showStatus string // status Show reports after Close
+	closed     bool
+}
+
+func (f *fakeCloser) Close(context.Context, string, string) error {
+	f.closed = true
+	return f.closeErr
+}
+func (f *fakeCloser) Show(_ context.Context, id string) (beads.Issue, error) {
+	return beads.Issue{ID: id, Status: f.showStatus}, f.showErr
+}
+
+func TestVerifiedClose(t *testing.T) {
+	ctx := context.Background()
+
+	// Happy path: close succeeds and the bead reads closed.
+	if err := verifiedClose(ctx, &fakeCloser{showStatus: "closed"}, "b1", "done"); err != nil {
+		t.Errorf("closed bead: want nil, got %v", err)
+	}
+	// "done" also counts as terminal.
+	if err := verifiedClose(ctx, &fakeCloser{showStatus: "done"}, "b1", "done"); err != nil {
+		t.Errorf("done bead: want nil, got %v", err)
+	}
+	// bd exited 0 but the bead is still open (open dependents) — must error.
+	if err := verifiedClose(ctx, &fakeCloser{showStatus: "open"}, "b1", "done"); err == nil {
+		t.Error("ineffective close (still open): want an error, got nil")
+	}
+	// close itself failed — must error.
+	if err := verifiedClose(ctx, &fakeCloser{closeErr: errors.New("boom")}, "b1", "done"); err == nil {
+		t.Error("close error: want an error, got nil")
+	}
+	// A transient Show failure does not fail the merge (the close succeeded).
+	if err := verifiedClose(ctx, &fakeCloser{showErr: errors.New("transient"), showStatus: "open"}, "b1", "done"); err != nil {
+		t.Errorf("transient show error: want nil (best-effort verify), got %v", err)
+	}
+}
 
 // fakeBDNudge is a stand-in `bd` binary for cmdNudge tests: it always
 // succeeds and logs its argv (one line per invocation) to $BD_ARGS_LOG, so a

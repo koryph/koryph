@@ -200,6 +200,71 @@ func TestHooksWiringSettingsAbsent(t *testing.T) {
 	}
 }
 
+// TestHooksWiringDuplicatePrime is the koryph-14p.2 regression: `bd init`
+// run after `koryph project add` appends its own bare "bd prime --hook-json"
+// SessionStart entry alongside koryph's koryph-prime.sh wrapper entry,
+// producing double session priming. doctor must call this out distinctly
+// from the plain "present/missing" marker findings above.
+func TestHooksWiringDuplicatePrime(t *testing.T) {
+	root := fabricateProject(t)
+	settings := `{
+	  "hooks": {
+	    "SessionStart": [
+	      {"hooks":[{"type":"command","command":"\"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-prime.sh\"  # replaces: bd prime --hook-json"}]},
+	      {"hooks":[{"type":"command","command":"bd prime --hook-json"}]}
+	    ],
+	    "PreToolUse": [
+	      {"matcher":"Bash","hooks":[{"type":"command","command":"\"${CLAUDE_PROJECT_DIR}/hooks/agent-boundary-guard.sh\""}]},
+	      {"matcher":"Bash|Edit|Write","hooks":[{"type":"command","command":"\"${CLAUDE_PROJECT_DIR}/hooks/worktree-guard.sh\""}]}
+	    ]
+	  },
+	  "permissions": {"allow": ["Bash(*)", "Read(**)"]}
+	}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := RunProject(projectOpts(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dup *Finding
+	for i, f := range r.Findings {
+		if f.Check == checkNameHooksWiring && strings.Contains(f.Message, "duplicate session priming") {
+			dup = &r.Findings[i]
+		}
+	}
+	if dup == nil {
+		t.Fatalf("hooks-wiring: no duplicate-priming finding among: %+v", r.Findings)
+	}
+	if dup.Level != LevelWarn {
+		t.Errorf("duplicate-priming level=%s, want warn", dup.Level)
+	}
+	if !strings.Contains(dup.Message, "2 entries") {
+		t.Errorf("duplicate-priming message = %q, want it to name the count (2 entries)", dup.Message)
+	}
+	if !strings.Contains(dup.Message, `"bd prime"`) {
+		t.Errorf("duplicate-priming message = %q, want it to name the marker", dup.Message)
+	}
+}
+
+// TestHooksWiringNoDuplicatePrime proves a single (already-migrated) prime
+// entry never trips the duplicate-priming finding — fabricateProject's
+// baseline settings.json (one bare "bd prime --hook-json" entry) is the
+// steady state after `koryph project add` alone, before any `bd init`.
+func TestHooksWiringNoDuplicatePrime(t *testing.T) {
+	root := fabricateProject(t)
+	r, err := RunProject(projectOpts(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range r.Findings {
+		if f.Check == checkNameHooksWiring && strings.Contains(f.Message, "duplicate session priming") {
+			t.Errorf("unexpected duplicate-priming finding with a single entry: %q", f.Message)
+		}
+	}
+}
+
 // --- signing ---
 
 func TestSigningNotConfigured(t *testing.T) {

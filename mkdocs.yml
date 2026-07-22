@@ -36,8 +36,10 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
 nav:
   - Home: index.md
+  - Features: features.md
   - Concepts:
       - Overview: concepts/index.md
+      - "The lifecycle: from prompt to release": concepts/lifecycle.md
       - "Work: beads and the ready-graph": concepts/beads.md
       - "Parallelism: footprints": concepts/footprints.md
       - "Machine: resources": concepts/resources.md
@@ -49,32 +51,43 @@ nav:
       - "Shipping: the release train": concepts/release-train.md
       - "The fence: ejectability": concepts/ejectability.md
   - User guide:
-      - Installation: user-guide/installation.md
-      - Quickstart: user-guide/quickstart.md
-      - Zero to shipped: user-guide/zero-to-shipped.md
-      - Projects & accounts: user-guide/projects-and-accounts.md
-      - Choosing a forge: user-guide/forges.md
-      - Running waves: user-guide/running-waves.md
-      - Merge reconcilers: user-guide/merge-reconcilers.md
-      - Billing & quota: user-guide/billing-and-quota.md
-      - Context economy: user-guide/context-economy.md
-      - "Experimental: headroom-ai integration": user-guide/headroom-integration.md
-      - Signing: user-guide/signing.md
-      - Posture profiles: user-guide/postures.md
-      - Releasing projects: user-guide/releasing-projects.md
-      - Release pipeline setup: user-guide/release.md
-      - "Release bot: GitHub App provisioning": user-guide/release-bot.md
-      - Verifying a release: user-guide/supply-chain.md
-      - Collaboration: user-guide/collaboration.md
-      - Intake: user-guide/intake.md
-      - CI pipeline setup: user-guide/ci-setup.md
-      - Epic validation: user-guide/epic-validation.md
-      - Observability: user-guide/observability.md
-      - Doctor: user-guide/doctor.md
-      - Data retention & gc: user-guide/gc.md
-      - Terminal cockpit (TUI): user-guide/tui.md
-      - VS Code extension: user-guide/vscode-extension.md
-      - IDE integration: ide-integration.md
+      - Getting started:
+          - Installation: user-guide/installation.md
+          - Quickstart: user-guide/quickstart.md
+          - "koryph adopt: the onboarding wizard": user-guide/adopt.md
+          - Zero to shipped: user-guide/zero-to-shipped.md
+      - Planning work:
+          - "From prompt to beads: intent routing": user-guide/describing-work.md
+          - Intake: user-guide/intake.md
+      - Running the loop:
+          - Projects & accounts: user-guide/projects-and-accounts.md
+          - Choosing a forge: user-guide/forges.md
+          - Running waves: user-guide/running-waves.md
+          - Merge reconcilers: user-guide/merge-reconcilers.md
+          - Epic validation: user-guide/epic-validation.md
+          - Recovery & escalation: user-guide/recovery.md
+          - "AI runtimes: support status": user-guide/runtimes.md
+          - Billing & quota: user-guide/billing-and-quota.md
+          - Context economy: user-guide/context-economy.md
+          - "Experimental: headroom-ai integration": user-guide/headroom-integration.md
+      - Observing:
+          - Terminal cockpit (TUI): user-guide/tui.md
+          - VS Code extension: user-guide/vscode-extension.md
+          - IDE integration: ide-integration.md
+          - Observability: user-guide/observability.md
+          - Doctor: user-guide/doctor.md
+          - Data retention & gc: user-guide/gc.md
+      - Hardening:
+          - Signing: user-guide/signing.md
+          - Posture profiles: user-guide/postures.md
+          - CI pipeline setup: user-guide/ci-setup.md
+      - Shipping:
+          - Releasing projects: user-guide/releasing-projects.md
+          - Release pipeline setup: user-guide/release.md
+          - "Release bot: GitHub App provisioning": user-guide/release-bot.md
+          - Verifying a release: user-guide/supply-chain.md
+      - Collaborating:
+          - Collaboration: user-guide/collaboration.md
   - Developer guide:
       - Architecture: architecture.md
       - Packages: developer-guide/packages.md
@@ -85,4 +98,8 @@ nav:
       - "Developing koryph: editor setup": developer-guide/ide-setup.md
   - Reference:
       - CLI Reference: reference/cli.md
+  - Project:
+      - How koryph compares: compare.md
+      - Security: security.md
+      - Community & contributing: community.md
   - LLMs.txt: llms.txt

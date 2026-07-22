@@ -283,6 +283,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		}
 		syncObsConfig() // pick up `koryph obs level` changes without a restart
 		r.patrolIfDue(ctx)
+		r.applyOperatorOverrides()
 		r.run.Wave++
 		_ = r.store.SaveRun(r.run)
 
@@ -316,6 +317,10 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		if err != nil {
 			return r.outcome(ExitFatal, "bd ready failed", false), fmt.Errorf("engine: bd ready: %w", err)
 		}
+		// Operator-injected beads widen the frontier past the --parent scope
+		// without a restart (D10) — merged before --only narrows, so an explicit
+		// single-bead run is not overridden.
+		issues = r.applyInjections(ctx, issues)
 		// --only narrows the frontier to a single operator-chosen bead; once it
 		// closes it drops out of `bd ready` and the run drains.
 		if r.opts.Only != "" {
@@ -353,6 +358,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			if err != nil {
 				return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
 			}
+			r.captureFrontier(w)
 		}
 
 		eligible := 0
@@ -672,6 +678,40 @@ func onlyBead(issues []beads.Issue, id string) []beads.Issue {
 // (tier, size[, @proxyID]) bucket the corrected estimate replaces the raw
 // base, so systematic under/over-estimation self-corrects instead of
 // persisting.
+// captureFrontier records the wave's per-candidate dispatch verdict to the run
+// ledger so `koryph status --frontier` can explain the frontier (D7/D9). The
+// scheduler already separates the ready beads it selected (Items) from those it
+// deferred (footprint / resource / wave-full) and skipped (structurally
+// non-dispatchable), each with a reason — this persists the full set rather than
+// leaving it to truncate in the "deferred N beads, +26 more" progress line.
+// Overwrites the previous wave's snapshot; best-effort, a save error never
+// blocks the loop. bd-dependency-blocked beads are upstream of the ready
+// frontier and so are not part of the wave.
+func (r *runner) captureFrontier(w sched.Wave) {
+	if r.run == nil {
+		return
+	}
+	entries := make([]ledger.FrontierEntry, 0, len(w.Items)+len(w.Deferred)+len(w.Blocked)+len(w.Skipped))
+	for _, it := range w.Items {
+		entries = append(entries, ledger.FrontierEntry{BeadID: it.Issue.ID, Title: it.Issue.Title, Verdict: "dispatched"})
+	}
+	for _, d := range w.Deferred {
+		entries = append(entries, ledger.FrontierEntry{BeadID: d.ID, Title: d.Title, Verdict: "deferred", Reason: d.Reason})
+	}
+	for _, b := range w.Blocked {
+		entries = append(entries, ledger.FrontierEntry{BeadID: b.ID, Title: b.Title, Verdict: "blocked", Reason: b.Reason})
+	}
+	for _, s := range w.Skipped {
+		entries = append(entries, ledger.FrontierEntry{BeadID: s.ID, Title: s.Title, Verdict: "skipped", Reason: s.Reason})
+	}
+	r.run.Frontier = &ledger.FrontierSnapshot{
+		At:      time.Now().UTC().Format(time.RFC3339),
+		Wave:    r.run.Wave,
+		Entries: entries,
+	}
+	_ = r.store.SaveRun(r.run)
+}
+
 func (r *runner) waveEstimate(items []sched.Item) float64 {
 	var est float64
 	for _, it := range items {

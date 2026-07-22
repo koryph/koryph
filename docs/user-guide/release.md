@@ -1,5 +1,5 @@
-<!-- SPDX-FileCopyrightText: 2026 The Koryph Developers -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2026 The Koryph Developers -->
 
 # Release pipeline setup
 

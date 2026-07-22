@@ -458,8 +458,10 @@ func (m *eventsModel) renderEvent(ev cockpit.TUIEvent) string {
 		kindStyle = lipgloss.NewStyle().Foreground(m.theme.Done).Bold(true)
 	case "requeue":
 		kindStyle = lipgloss.NewStyle().Foreground(m.theme.Warning).Bold(true)
-	case "drain":
+	case "fail", "drain":
 		kindStyle = lipgloss.NewStyle().Foreground(m.theme.Error).Bold(true)
+	case "patrol":
+		kindStyle = lipgloss.NewStyle().Foreground(m.theme.Warning).Bold(true)
 	case "cap-change", "resize":
 		kindStyle = lipgloss.NewStyle().Foreground(m.theme.Accent).Bold(true)
 	default:

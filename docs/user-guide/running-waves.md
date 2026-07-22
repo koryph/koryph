@@ -319,6 +319,15 @@ refused and the phase is **blocked** — and the block reason now names the way 
 `--allow-protected` is operator-only (never available to a dispatched agent) and lifts
 *only* the routine CI/build subset; governance and project protections always refuse.
 
+When you land a bead by hand with `koryph merge --close-bead <id>` while a loop is
+running, the command also drops a **merged directive** into that run's operator-override
+sidecar (`overrides.json`, beside `ledger.json`). The engine reads the sidecar every
+cycle and folds the directive into its in-memory ledger, so the row it rewrites shows the
+bead merged — you no longer have to hand-edit `ledger.json` (which the engine's
+single-writer rewrite would immediately revert), and the manual land is not clobbered. The
+directive is idempotent and only ever marks a not-yet-terminal slot terminal, so it can
+never re-touch a slot that legitimately went back to work.
+
 ## Reviewing other people's PRs
 
 `koryph review-pr` is a **human-in-the-loop** tool for reviewing pull requests authored by
@@ -413,6 +422,11 @@ does not delay the merge.
 
 ## Recovery and resume
 
+*For the one-page overview of the whole failure story — detection,
+classified retries, escalation to stronger models, and the operator
+toolkit — see [Recovery & escalation](recovery.md). This section covers
+the run-level mechanics.*
+
 Interrupt a run (Ctrl-C, host sleep, etc.) and resume where it left off:
 
 ```sh
@@ -446,6 +460,40 @@ Every requeue also refreshes the worktree onto the current default branch first,
 retried agent never runs against a checkout that predates a main-side fix: a bead with
 no commits is rebuilt from a fresh checkout, and one carrying commits is rebased onto the
 advanced base before re-dispatch.
+
+### Keeping the engine running detached
+
+The engine runs in the foreground and shares its parent shell's lifetime — if
+that shell (or the terminal, or an SSH session, or a harness that spawned it) is
+reaped, the engine goes with it. For a long unattended run, detach it from the
+shell so it survives:
+
+```sh
+nohup koryph run --project myproject --auto-merge --review > run.log 2>&1 &
+disown
+```
+
+`nohup` decouples it from the controlling terminal (`disown` drops it from the
+shell's job table so a shell exit does not signal it); `> run.log 2>&1` captures
+both the human progress and the structured records for later `tail`/grep. It
+resumes cleanly after any interruption with `--resume` (above), so a killed
+detached run loses nothing.
+
+To **add one bead to a running loop** — even a bead outside the current
+`--parent` scope — inject it without a restart:
+
+```sh
+koryph inject --project myproject <bead-id>
+```
+
+The engine merges it into the frontier on its next wave and dispatches it once
+it is ready (the command tells you whether it is ready now or waiting on
+dependencies). An injection can only *widen* the frontier to a genuinely-ready
+bead — it never force-dispatches a bd-blocked bead. A newly-ready bead already
+inside the run's scope is picked up automatically anyway (the engine re-reads
+`bd ready` every wave). Injection does not change `--max`; to raise the width,
+stop and `--resume` at the new width. `koryph nudge` delivers a note to a
+specific running agent and does not change the frontier.
 
 ### Budget-killed agents
 

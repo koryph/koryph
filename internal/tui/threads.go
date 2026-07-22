@@ -65,10 +65,17 @@ func (f threadFilter) matches(sl cockpit.SlotSnapshot) bool {
 	}
 }
 
+// stallAfter is how old a running slot's status.json heartbeat may be before
+// the Threads tab flags the thread as stalled. Agents rewrite status.json at
+// every step boundary; 15 minutes of silence on a live thread is the
+// structured "needs a look" signal (work assigned + heartbeat stale +
+// process alive — never output scraping).
+const stallAfter = 15 * time.Minute
+
 // threadsModel is the Bubble Tea model for the Threads tab.
 // It renders the live slot table: bead, stage, model, retries, elapsed,
-// cost vs estimate, status line — with a state filter and per-thread retry and
-// model-escalation detail.
+// cost vs estimate, memory, status line — with a state filter, per-thread
+// retry and model-escalation detail, and a graceful per-thread stop ('s').
 type threadsModel struct {
 	table  table.Model
 	theme  Theme
@@ -83,6 +90,11 @@ type threadsModel struct {
 	// rows, so the cursor index maps back to a slot for the Enter→detail jump
 	// even when the filter hides some slots.
 	visible []cockpit.SlotSnapshot
+
+	// stopTarget is the slot awaiting stop confirmation; nil when no stop is
+	// pending. Keyed by value (PhaseID/PID captured at 's' press) so a
+	// snapshot refresh between 's' and 'y' cannot retarget the signal.
+	stopTarget *cockpit.SlotSnapshot
 }
 
 // newThreadsModel creates an empty threads table model.
@@ -111,6 +123,18 @@ func (m *threadsModel) IsCapturingInput() bool { return false }
 // Update implements TabModel.
 func (m *threadsModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 	if km, ok := msg.(tea.KeyMsg); ok {
+		// Stop-confirmation modal: y confirms, anything else cancels.
+		if m.stopTarget != nil {
+			target := *m.stopTarget
+			m.stopTarget = nil
+			if km.String() == "y" {
+				return m, func() tea.Msg {
+					return stopRequestMsg{PhaseID: target.PhaseID, PID: target.PID}
+				}
+			}
+			return m, nil
+		}
+
 		switch km.String() {
 		case "f":
 			// Cycle the state filter and rebuild.
@@ -118,6 +142,16 @@ func (m *threadsModel) Update(msg tea.Msg) (TabModel, tea.Cmd) {
 			m.rebuild()
 			if c := m.table.Cursor(); c >= len(m.visible) {
 				m.table.SetCursor(max(0, len(m.visible)-1))
+			}
+			return m, nil
+		case "s":
+			// Graceful stop of the selected thread (confirm first). Only
+			// meaningful for a live slot with a recorded pid.
+			if idx := m.table.Cursor(); idx >= 0 && idx < len(m.visible) {
+				sl := m.visible[idx]
+				if !sl.Terminal && sl.PID > 0 {
+					m.stopTarget = &sl
+				}
 			}
 			return m, nil
 		case "enter":
@@ -141,19 +175,55 @@ func (m *threadsModel) View() string {
 	return m.titleBar() + "\n" + m.table.View()
 }
 
-// titleBar renders the filter + counts line above the table.
+// titleBar renders the filter + counts line above the table — or the pending
+// stop-confirmation prompt, which needs the operator's full attention.
 func (m *threadsModel) titleBar() string {
+	if m.stopTarget != nil {
+		name := m.stopTarget.Title
+		if name == "" || name == m.stopTarget.BeadID {
+			name = m.stopTarget.PhaseID
+		}
+		prompt := fmt.Sprintf("Stop %s (pid %d)? SIGTERM — engine parks the bead.  [y=stop  any other key=cancel]",
+			truncate(name, 40), m.stopTarget.PID)
+		return lipgloss.NewStyle().Bold(true).Foreground(m.theme.Warning).Render(prompt)
+	}
+
 	total := len(m.snap.Slots)
 	shown := len(m.visible)
-	active := 0
+	active, stalled, failed := 0, 0, 0
 	for _, sl := range m.snap.Slots {
 		if !sl.Terminal {
 			active++
+			if slotStalled(sl) {
+				stalled++
+			}
+		} else if sl.Stage == "failed" || sl.Stage == "conflict" || sl.Stage == "blocked" {
+			failed++
 		}
 	}
-	title := fmt.Sprintf("Threads  filter:%s  showing %d/%d  (%d active)  [f=filter  enter=detail]",
+	title := fmt.Sprintf("Threads  filter:%s  showing %d/%d  (%d active)",
 		m.filter.label(), shown, total, active)
-	return lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(title)
+	extra := ""
+	if stalled > 0 {
+		extra += "  " + lipgloss.NewStyle().Foreground(m.theme.Warning).
+			Render(fmt.Sprintf("⚠ %d stalled", stalled))
+	}
+	if failed > 0 {
+		extra += "  " + lipgloss.NewStyle().Foreground(m.theme.Error).
+			Render(fmt.Sprintf("✗ %d failed", failed))
+	}
+	hints := "  [f=filter  enter=detail  s=stop]"
+	return lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(title) +
+		extra +
+		lipgloss.NewStyle().Foreground(m.theme.Gray).Render(hints)
+}
+
+// slotStalled reports whether a live slot's step heartbeat has gone quiet:
+// running stage, a status file that exists (StatusAge > 0), and no rewrite
+// for stallAfter.
+func slotStalled(sl cockpit.SlotSnapshot) bool {
+	return (sl.Stage == "running" || sl.Stage == "review") &&
+		sl.StatusAge > stallAfter
 }
 
 // SetSnapshot implements TabModel. It refreshes the table rows from a new snapshot.
@@ -167,6 +237,7 @@ func (m *threadsModel) rebuild() {
 	cols := threadColumns(m.width)
 	descW := cols[1].Width             // Description column
 	statusW := cols[len(cols)-1].Width // Status column
+	withMem := m.width >= thMemMinWidth
 
 	m.visible = m.visible[:0]
 	rows := make([]table.Row, 0, len(m.snap.Slots))
@@ -175,7 +246,7 @@ func (m *threadsModel) rebuild() {
 			continue
 		}
 		m.visible = append(m.visible, sl)
-		rows = append(rows, slotToRow(sl, descW, statusW))
+		rows = append(rows, slotToRow(sl, m.snap.ProjectID, descW, statusW, withMem))
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -217,31 +288,43 @@ const (
 	thRetryW   = 10
 	thElapsedW = 8
 	thCostW    = 12
+	thMemW     = 9
+
+	// thMemMinWidth is the terminal width at which the Mem column appears —
+	// narrower terminals keep the description/status space instead.
+	thMemMinWidth = 110
 )
 
 // threadColumns returns column definitions scaled to terminal width (minimum
-// 80). The Bead column stays a narrow id column; a compact Description column
-// carries the bead's short title so a row is legible without opening Detail; and
-// the leftover is split so the live Status step still gets the bulk of the
-// width (Description is capped to keep that intent).
+// 80). Description carries the bead's short title — the primary way an
+// operator recognizes a row (ids are secondary) — so it takes the larger
+// share of the leftover; the live Status step gets the rest. Wide terminals
+// (≥ thMemMinWidth) add a Mem column (avg/peak RSS of the agent's process
+// cohort) so per-thread memory pressure is visible without opening Detail.
 func threadColumns(width int) []table.Column {
 	if width < 80 {
 		width = 80
 	}
+	withMem := width >= thMemMinWidth
 	fixed := thBeadW + thStageW + thModelW + thRetryW + thElapsedW + thCostW
-	// Leftover (minus ~2 chars of padding per the 8 columns) split between the
-	// Description title and the live Status line.
-	remaining := width - fixed - 16
+	pad := 16
+	if withMem {
+		fixed += thMemW
+		pad += 2
+	}
+	remaining := width - fixed - pad
 	if remaining < 24 {
 		remaining = 24
 	}
-	descW := remaining * 2 / 5
-	descW = min(max(descW, 10), 32)
+	// Titles-first: the Description (bead title) is how an operator recognizes
+	// a row, so it takes the larger share; the live Status step gets the rest.
+	descW := remaining * 3 / 5
+	descW = min(max(descW, 10), 48)
 	statusW := remaining - descW
 	if statusW < 12 {
 		statusW = 12
 	}
-	return []table.Column{
+	cols := []table.Column{
 		{Title: "Bead", Width: thBeadW},
 		{Title: "Description", Width: descW},
 		{Title: "Stage", Width: thStageW},
@@ -249,19 +332,26 @@ func threadColumns(width int) []table.Column {
 		{Title: "Retries", Width: thRetryW},
 		{Title: "Elapsed", Width: thElapsedW},
 		{Title: "Cost/Est", Width: thCostW},
-		{Title: "Status", Width: statusW},
 	}
+	if withMem {
+		cols = append(cols, table.Column{Title: "Mem(MB)", Width: thMemW})
+	}
+	cols = append(cols, table.Column{Title: "Status", Width: statusW})
+	return cols
 }
 
 // slotToRow converts a cockpit.SlotSnapshot to a table.Row. descW/statusW bound
 // the two variable-width cells so long titles and agent-step strings get an
-// ellipsis rather than a hard cut.
-func slotToRow(sl cockpit.SlotSnapshot, descW, statusW int) table.Row {
+// ellipsis rather than a hard cut. withMem must match the threadColumns
+// column set for the same width. projectID lets the narrow Bead column drop
+// the redundant "<project>-" prefix instead of cutting into the id's
+// distinguishing suffix.
+func slotToRow(sl cockpit.SlotSnapshot, projectID string, descW, statusW int, withMem bool) table.Row {
 	id := sl.BeadID
 	if id == "" {
 		id = sl.PhaseID
 	}
-	bead := truncate(id, thBeadW)
+	bead := truncateBeadID(projectID, id, thBeadW)
 	// Description is the bead's short title; when the provider could not resolve
 	// a real title it falls back to the id, which we blank here rather than
 	// repeat the id already shown in the Bead column.
@@ -275,12 +365,30 @@ func slotToRow(sl cockpit.SlotSnapshot, descW, statusW int) table.Row {
 	retries := truncate(retrySummary(sl), thRetryW)
 	elapsed := formatElapsed(sl.Elapsed)
 	cost := formatCost(sl.CostUSD, sl.EstimateUSD)
+
+	// Status cell: stall and death classifications outrank the (stale) last
+	// step line — a thread that has gone quiet or died must SAY so.
 	status := sl.StatusLine
 	if status == "" {
 		status = sl.StatusJSON
 	}
+	switch {
+	case slotStalled(sl):
+		status = fmt.Sprintf("⚠ stalled %s · %s", formatElapsed(sl.StatusAge), status)
+	case sl.Terminal && sl.DeathReason != "":
+		status = fmt.Sprintf("✗ %s", sl.DeathReason)
+	}
 	status = truncate(status, statusW)
-	return table.Row{bead, desc, stage, model, retries, elapsed, cost, status}
+
+	row := table.Row{bead, desc, stage, model, retries, elapsed, cost}
+	if withMem {
+		mem := "—"
+		if sl.ResourceSamples > 0 {
+			mem = fmt.Sprintf("%d/%d", sl.AvgRSSMB, sl.PeakRSSMB)
+		}
+		row = append(row, truncate(mem, thMemW))
+	}
+	return append(row, status)
 }
 
 // modelWithEscalation renders the short model name, marked with an up-arrow when

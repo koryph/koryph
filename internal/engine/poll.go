@@ -50,6 +50,26 @@ const conflictRequeueNote = "rebase-conflict requeue"
 // subject or it won't, so a second bounce buys nothing.
 const commitStyleRequeueNote = "commit-style requeue"
 
+// resumeRequeueNote marks a slot re-dispatched by the resume backlog after an
+// engine restart or a width-gated deferral. This is NOT a bead fault — the
+// agent did not fail, the engine was interrupted — so requeueSlot must not
+// consume an attempt or drive the final-attempt escalation for it. Counting
+// resume re-dispatches as faults let a mid-run restart push otherwise-healthy
+// beads to "final attempt, escalated to the recovery tier" having genuinely
+// failed zero or one time, spending recovery-tier money on non-faults (D4:
+// faults ≠ dispatches). See requeueSlot's `fault` gate and drainResumeBacklog.
+const resumeRequeueNote = "resume: width-gated re-dispatch"
+
+// cleanNoCommitExitNote marks a slot whose agent exited cleanly (exit 0) but
+// produced no commits and no SUMMARY.md — the agent deliberately concluded it
+// could not or need not act (an environment-gated no-op: a resource it needs is
+// absent, the host is too contended, work is already done). Re-dispatching a
+// higher tier just reproduces the identical no-op, so this requeue is excluded
+// from the final-attempt model escalation: it is an environmental signal, not a
+// capability fault (D14). It still counts an attempt, so the bead parks with an
+// environment reason once the attempt budget is spent rather than looping.
+const cleanNoCommitExitNote = "agent exited cleanly with no new commits"
+
 // gateRequeueBudget and mergeRequeueBudget are the per-slot requeue budgets
 // for a post-rebase gate failure and a merge error, respectively — each
 // raised from a single-shot Note-marker dedup to 2 (koryph-2im.6). A rare
@@ -343,15 +363,31 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 	}
 
 	if alive {
+		// Derive the slot's most-recent activity ONCE and use it for both the
+		// status decision and the last_activity_at stamp (distinct from
+		// updated_at, which only means "we polled"). Re-derived every tick from
+		// ground truth so status is never latched.
+		last := r.slotActivityAt(ctx, sl)
+		if !last.IsZero() {
+			stamp := last.UTC().Format(time.RFC3339)
+			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.LastActivityAt = stamp })
+		}
 		status := ledger.SlotRunning
-		if r.isStuck(ctx, sl) {
+		if r.stuckFrom(sl, last) {
 			status = ledger.SlotStuck
 		}
 		if sl.Status != status {
+			prev := sl.Status
 			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = status })
-			if status == ledger.SlotStuck {
-				r.progress("bead %s: silent — no heartbeat, commit, or CPU activity for >%ds (process alive; still polling — koryph never interrupts a running agent)",
+			switch {
+			case status == ledger.SlotStuck:
+				r.progress("bead %s: silent — no heartbeat, commit, stream, or CPU activity for >%ds (process alive; still polling — koryph never interrupts a running agent)",
 					sl.PhaseID, int(r.stuckThreshold(sl).Seconds()))
+			case prev == ledger.SlotStuck:
+				// Re-derived from ground truth, not latched: the agent resumed
+				// producing work, so the transient stuck flag clears instead of
+				// staying on the board after recovery.
+				r.progress("bead %s: activity resumed — clearing stuck", sl.PhaseID)
 			}
 		}
 		r.checkpointSlot(sl, "running")
@@ -524,7 +560,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// unclean death (crashed / killed before producing a result line).
 	deathDesc := "agent died with no commits"
 	if sl.Stream != "" && dispatch.ParseCleanExit(sl.Stream) {
-		deathDesc = "agent exited cleanly with no new commits"
+		deathDesc = cleanNoCommitExitNote
 	}
 
 	if sl.Attempts >= ledger.MaxAttempts {
@@ -1581,7 +1617,15 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	if r.parkForRunBudget(sl) {
 		return
 	}
-	attempt := sl.Attempts + 1
+	// A resume re-dispatch is not a bead fault (the engine restarted, or a lower
+	// width deferred the bead), so it must neither consume an attempt nor drive
+	// the escalation ladder — track faults, not dispatches (D4). Every other
+	// requeue reason IS a fault and increments as before.
+	fault := why != resumeRequeueNote
+	attempt := sl.Attempts
+	if fault {
+		attempt = sl.Attempts + 1
+	}
 	r.progress("bead %s: requeueing, attempt %d (%s)", sl.PhaseID, attempt, why)
 	logSlotRequeue(sl.PhaseID, why, attempt)
 	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, why, attempt, sl.CostUSD)
@@ -1597,7 +1641,7 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	// change opus/fable/unknown models and enforces the project allowlist
 	// that the frozen-model path otherwise bypasses.
 	frozenModel, frozenWhy := sl.Model, sl.ModelWhy
-	if attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote {
+	if fault && attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote && why != cleanNoCommitExitNote {
 		if up := modelroute.EscalationTier(sl.Model, r.rec.AllowedModels); up != "" {
 			frozenModel = up
 			frozenWhy = fmt.Sprintf("escalated from %s after %d bead-fault attempts (%s)", sl.Model, sl.Attempts, why)
@@ -1856,40 +1900,72 @@ func (r *runner) stuckThreshold(sl *ledger.Slot) time.Duration {
 	return threshold
 }
 
-// isStuck reports whether an alive slot shows no sign of life — no
-// agent-written heartbeat, no commit, and no cohort CPU activity
-// (koryph-2rf) — within its silence threshold. Informational only — polling
-// continues; koryph never interrupts a running agent.
+// isStuck reports whether an alive slot shows no sign of life — no stream
+// event, agent-written heartbeat, commit, or cohort CPU activity — within its
+// silence threshold. Re-derived from ground truth every poll tick (never
+// latched), so a slot recovers from a transient stuck flag the moment it
+// produces work again. Informational only — polling continues; koryph never
+// interrupts a running agent.
 func (r *runner) isStuck(ctx context.Context, sl *ledger.Slot) bool {
-	threshold := r.stuckThreshold(sl)
+	// Stuck = no ground-truth activity within the slot's silence threshold,
+	// re-derived from scratch every poll tick so a past silence can never latch
+	// as a present-tense board label. slotActivityAt folds every signal into one
+	// "last did real work" instant.
+	return r.stuckFrom(sl, r.slotActivityAt(ctx, sl))
+}
 
-	// Implicit CPU heartbeat (koryph-2rf): an actively-computing cohort is
-	// never stuck, no matter how long the agent-authored heartbeat has been
-	// silent — it is blocked inside a long tool call, not wedged. Zero
-	// lastActiveAt (resmon disabled/unsupported) falls through to the
-	// pre-existing signals unchanged.
-	if u := r.resUsage[sl.PhaseID]; u != nil && u.pid == sl.PID &&
-		!u.lastActiveAt.IsZero() && time.Since(u.lastActiveAt) <= threshold {
-		return false
+// stuckFrom is the pure stuck decision given a slot's most-recent activity
+// instant (from slotActivityAt): silent past the threshold, or — when no signal
+// is known yet — dispatched longer ago than the threshold. Split out so the poll
+// tick derives activity ONCE and reuses it for both the status decision and the
+// last_activity_at stamp, rather than paying the git probe twice.
+func (r *runner) stuckFrom(sl *ledger.Slot, last time.Time) bool {
+	if last.IsZero() {
+		return r.sinceDispatched(sl) > r.stuckThreshold(sl)
 	}
+	return time.Since(last) > r.stuckThreshold(sl)
+}
 
+// slotActivityAt returns the most recent instant the slot showed real work —
+// the max of every ground-truth signal so the newest one wins:
+//
+//   - stream.jsonl mtime — the agent emits a thinking/tool/result event; the
+//     most direct and finest-grained sign of life, fresh through long operations
+//     that write no status heartbeat and burn little leader CPU;
+//   - status.json mtime — the agent-authored step heartbeat;
+//   - cohort CPU last-advance (koryph-2rf implicit heartbeat);
+//   - last commit time.
+//
+// Zero when none is known. Evaluated fresh each tick — nothing is remembered
+// between calls — which is what lets a slot recover from a transient stuck flag
+// the instant it produces work again, rather than staying "stuck" on the board
+// after it has demonstrably resumed.
+func (r *runner) slotActivityAt(ctx context.Context, sl *ledger.Slot) time.Time {
+	var latest time.Time
+	bump := func(t time.Time) {
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	if sl.Stream != "" {
+		if fi, err := os.Stat(sl.Stream); err == nil {
+			bump(fi.ModTime())
+		}
+	}
 	if fi, err := os.Stat(sl.StatusPath); err == nil {
-		if time.Since(fi.ModTime()) <= threshold {
-			return false
-		}
-	} else if r.sinceDispatched(sl) <= threshold {
-		return false
+		bump(fi.ModTime())
 	}
-
-	res, err := execx.Run(ctx, execx.Cmd{
+	if u := r.resUsage[sl.PhaseID]; u != nil && u.pid == sl.PID {
+		bump(u.lastActiveAt)
+	}
+	if res, err := execx.Run(ctx, execx.Cmd{
 		Dir: sl.Worktree, Name: "git", Args: []string{"log", "-1", "--format=%ct", "HEAD"},
-	})
-	if err == nil && res.ExitCode == 0 {
+	}); err == nil && res.ExitCode == 0 {
 		if sec, perr := strconv.ParseInt(strings.TrimSpace(res.Stdout), 10, 64); perr == nil {
-			return time.Since(time.Unix(sec, 0)) > threshold
+			bump(time.Unix(sec, 0))
 		}
 	}
-	return r.sinceDispatched(sl) > threshold
+	return latest
 }
 
 // sinceDispatched is the age of the slot's dispatch (zero when unparseable).

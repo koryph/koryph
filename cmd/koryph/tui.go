@@ -71,7 +71,11 @@ func cmdTUI(args []string, stdout, stderr io.Writer) int {
 
 	var providers []cockpit.Provider
 	for _, rec := range recs {
-		providers = append(providers, cockpit.NewLedgerProvider(rec.ProjectID, rec.Root, rec.AccountProfile))
+		p := cockpit.NewLedgerProvider(rec.ProjectID, rec.Root, rec.AccountProfile)
+		// The quota transcript scan needs the account's CLAUDE_CONFIG_DIR
+		// ("" = personal profile → ~/.claude).
+		p.SetAccountConfigDir(rec.AccountFor(resolvedRuntimeName).ConfigDir)
+		providers = append(providers, p)
 	}
 
 	app := tui.NewApp(providers, *readOnly)

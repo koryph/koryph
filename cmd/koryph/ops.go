@@ -52,6 +52,14 @@ func init() {
 		},
 	})
 	registerCmd(command{
+		name:    "inject",
+		summary: "add a bead to a running loop even if it is outside the run's scope",
+		run:     cmdInject,
+		DocLinks: []string{
+			"user-guide/running-waves.md",
+		},
+	})
+	registerCmd(command{
 		name:    "merge",
 		summary: "land a finished agent branch",
 		run:     cmdMerge,
@@ -595,13 +603,130 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 		if v := os.Getenv("KORYPH_BD_BIN"); v != "" {
 			bd.Bin = v
 		}
-		if cerr := bd.Close(ctx, *closeBead, *reason); cerr != nil {
-			fmt.Fprintln(stderr, "koryph: warning: close bead failed:", cerr)
-		} else {
-			fmt.Fprintf(stdout, "closed bead %s\n", *closeBead)
+		// The operator explicitly asked to close the bead on a successful merge,
+		// so a close that does not actually close must be surfaced non-zero — not
+		// buried as a warning that let merged beads sit open until a manual
+		// `bd close` (D5).
+		if cerr := verifiedClose(ctx, bd, *closeBead, *reason); cerr != nil {
+			fmt.Fprintf(stderr, "koryph merge: merged, but %v — close it manually (bd close %s)\n", cerr, *closeBead)
+			return engine.ExitFatal
 		}
+		// Tell a running engine the bead was landed by hand, so it adopts the
+		// merged state instead of reverting the ledger row on its next
+		// single-writer rewrite (D5). Best-effort: no running engine — or no
+		// latest run — is a harmless no-op.
+		recordManualMergeOverride(rec.Root, *closeBead, *reason)
+		fmt.Fprintf(stdout, "closed bead %s\n", *closeBead)
 	}
 	return 0
+}
+
+// cmdInject adds a bead to a running loop's frontier even when it is outside the
+// run's --parent scope — the in-place alternative to stopping and resuming with
+// a wider scope (D10). It writes the injection to the latest run's override
+// sidecar; the engine picks it up on its next wave once the bead is ready.
+func cmdInject(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("inject", stderr)
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
+	setUsage(fs, stdout,
+		"inject a bead into a running loop — dispatch it even if it is outside the run's --parent scope",
+		"[--project ID] <bead-id>")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if len(pos) < 1 {
+		return usageErr(stderr, "inject: <bead-id> is required")
+	}
+	beadID := pos[0]
+
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "inject")
+	if code != 0 {
+		return code
+	}
+
+	lstore := ledger.NewStore(rec.Root)
+	run, err := lstore.LoadLatest()
+	if err != nil {
+		return fail(stderr, fmt.Errorf("inject: no active run to inject into (start one with `koryph run`): %w", err))
+	}
+
+	bd := beads.New(rec.Root)
+	if v := os.Getenv("KORYPH_BD_BIN"); v != "" {
+		bd.Bin = v
+	}
+	if iss, serr := bd.Show(ctx, beadID); serr != nil || iss.ID == "" {
+		return fail(stderr, fmt.Errorf("inject: bead %s not found", beadID))
+	}
+	readyNow := false
+	if ready, rerr := bd.Ready(ctx, beads.ReadyOpts{}); rerr == nil {
+		for _, iss := range ready {
+			if iss.ID == beadID {
+				readyNow = true
+				break
+			}
+		}
+	}
+
+	if err := lstore.RecordInjection(run.RunID, beadID); err != nil {
+		return fail(stderr, fmt.Errorf("inject: recording injection: %w", err))
+	}
+	if readyNow {
+		fmt.Fprintf(stdout, "injected %s — the running loop will dispatch it on its next wave\n", beadID)
+	} else {
+		fmt.Fprintf(stdout, "injected %s — not ready yet (open dependencies); the loop will dispatch it once it becomes ready\n", beadID)
+	}
+	return 0
+}
+
+// recordManualMergeOverride writes a merged override for beadID into the latest
+// run's operator-override sidecar (D5). The running engine reads the sidecar
+// each cycle and folds the directive into its in-memory ledger.
+func recordManualMergeOverride(repoRoot, beadID, reason string) {
+	st := ledger.NewStore(repoRoot)
+	run, err := st.LoadLatest()
+	if err != nil {
+		return // no run to inform
+	}
+	note := "landed manually via koryph merge"
+	if reason != "" {
+		note += ": " + reason
+	}
+	_ = st.RecordOverride(run.RunID, ledger.SlotOverride{
+		BeadID: beadID, Status: ledger.SlotMerged, Note: note,
+	})
+}
+
+// beadCloser is the subset of the beads adapter verifiedClose needs; a small
+// interface so the close-and-confirm logic is unit-testable without a real bd.
+type beadCloser interface {
+	Close(ctx context.Context, id, reason string) error
+	Show(ctx context.Context, id string) (beads.Issue, error)
+}
+
+// verifiedClose closes id and confirms it actually reached a terminal status.
+// `bd close` can exit 0 without closing (e.g. the bead still has open
+// dependents), which silently left merged beads open (D5), so a zero exit is
+// not trusted on its own — the status is re-read and a non-terminal result is
+// an error. A transient Show failure is not treated as a close failure (the
+// close itself succeeded; verification is best-effort).
+func verifiedClose(ctx context.Context, bc beadCloser, id, reason string) error {
+	if err := bc.Close(ctx, id, reason); err != nil {
+		return fmt.Errorf("closing bead %s failed: %w", id, err)
+	}
+	iss, err := bc.Show(ctx, id)
+	if err != nil {
+		return nil
+	}
+	if iss.Status != "closed" && iss.Status != "done" {
+		return fmt.Errorf("bead %s is still %q after close (open dependents?)", id, iss.Status)
+	}
+	return nil
 }
 
 // cmdLand lands an engine-opened PR (a pr-opened bead) fast-forward-only.

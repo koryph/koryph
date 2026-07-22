@@ -393,29 +393,34 @@ func (m *queueModel) listView() string {
 		end = len(m.rows)
 	}
 
-	// Column widths.
+	// Column widths. Title leads (ids say nothing — the operator navigates by
+	// what a bead IS); the id is a narrow dim column at the end for cross-
+	// referencing with nudge/stop and logs.
 	stateW := 12 // widest badge is "res-deferred" (12)
-	idW := 16
-	reasonW := 24
-	titleW := m.width - stateW - idW - reasonW - 6 // 6 = three 2-space separators
-	if titleW < 10 {
-		titleW = 10
+	priW := 2
+	idW := 12
+	flex := m.width - stateW - priW - idW - 8 // 8 = four 2-space separators
+	if flex < 20 {
+		flex = 20
 	}
+	titleW := flex * 3 / 5
+	reasonW := flex - titleW
 
 	// Header row. No leading indent: the data rows start at column 0 with the
 	// State badge (the tree indentation lives inside the Title column), so the
 	// header must start there too to stay aligned.
-	header := fmt.Sprintf("%-*s  %-*s  %-*s  %s",
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %s",
 		stateW, "State",
-		idW, "ID",
 		titleW, "Title",
-		"Reason/Blockers")
+		priW, "P",
+		reasonW, "Reason/Blockers",
+		"ID")
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(header))
 	b.WriteRune('\n')
 
 	for i := start; i < end; i++ {
 		row := m.rows[i]
-		line := m.renderRow(row, i == m.cursor, stateW, idW, titleW, reasonW)
+		line := m.renderRow(row, i == m.cursor, stateW, priW, titleW, reasonW, idW)
 		b.WriteString(line)
 		b.WriteRune('\n')
 	}
@@ -436,21 +441,19 @@ func (m *queueModel) listView() string {
 
 // renderRow renders one queue row, highlighted when selected.
 //
-// Layout: the State and ID columns are fixed-width and stay aligned at every
-// depth; the hierarchy is drawn in the Title column via ├─ / └─ / │ tree
-// connectors plus the ▼ / ▶ expander. Column text is padded by VISUAL width
-// (padRight, rune-aware) rather than fmt's byte-based %-*s so styled/box-drawing
-// runes never skew alignment — the padding-vs-ANSI bug that made the old queue
-// read as an unaligned flat jumble.
-func (m *queueModel) renderRow(row flatRow, selected bool, stateW, idW, titleW, reasonW int) string {
+// Layout: State | Title (tree connectors + expander) | P | Reason | dim ID.
+// Fixed-width columns stay aligned at every depth; the hierarchy is drawn in
+// the Title column via ├─ / └─ / │ connectors plus the ▼ / ▶ expander. Column
+// text is padded by VISUAL width (padRight, rune-aware) rather than fmt's
+// byte-based %-*s so styled/box-drawing runes never skew alignment.
+func (m *queueModel) renderRow(row flatRow, selected bool, stateW, priW, titleW, reasonW, idW int) string {
 	node := row.node
 	iss := node.Issue
 
 	badge := padRight(stateBadgeText(node.State), stateW)
-	id := padRight(truncate(iss.ID, idW), idW)
 
-	// Tree connectors + expander live inside the Title column so State/ID stay
-	// column-aligned with the header across all depths.
+	// Tree connectors + expander live inside the Title column so the other
+	// columns stay aligned with the header across all depths.
 	prefix := treeConnector(row.ancestorsLast, row.isLast)
 	expander := "  "
 	if row.hasChildren {
@@ -470,17 +473,25 @@ func (m *queueModel) renderRow(row flatRow, selected bool, stateW, idW, titleW, 
 	}
 	title := padRight(prefix+expander+truncate(titleText, titleAvail), titleW)
 
-	reason := truncate(node.Reason, reasonW)
+	pri := padRight(fmt.Sprintf("%d", iss.Priority), priW)
+	reason := padRight(truncate(node.Reason, reasonW), reasonW)
+	// Drop the redundant "<project>-" prefix rather than cut into the id's
+	// distinguishing suffix when the narrow trailing ID column can't fit the
+	// full id.
+	id := truncateBeadID(m.snap.ProjectID, iss.ID, idW)
 
-	line := badge + "  " + id + "  " + title + "  " + reason
+	body := badge + "  " + title + "  " + pri + "  " + reason + "  "
 
 	if selected {
 		return lipgloss.NewStyle().
 			Background(m.theme.Blue).
 			Foreground(m.theme.White).
-			Render(line)
+			Render(body + id)
 	}
-	return m.stateStyle(node.State).Render(line)
+	// The id trails the row in gray regardless of state color; it is last, so
+	// its style reset cannot bleed into another column.
+	return m.stateStyle(node.State).Render(body) +
+		lipgloss.NewStyle().Foreground(m.theme.Gray).Render(id)
 }
 
 // treeConnector builds the ├─ / └─ / │ prefix for a queue row from its ancestor
@@ -545,6 +556,8 @@ func stateBadgeText(state cockpit.QueueNodeState) string {
 		return "parked"
 	case cockpit.QueueStateContainer:
 		return "epic"
+	case cockpit.QueueStateWaiting:
+		return "waiting"
 	default:
 		return string(state)
 	}
@@ -566,7 +579,8 @@ func (m *queueModel) stateStyle(state cockpit.QueueNodeState) lipgloss.Style {
 		return lipgloss.NewStyle().Foreground(m.theme.Warning)
 	case cockpit.QueueStateHuman:
 		return lipgloss.NewStyle().Foreground(m.theme.Purple)
-	case cockpit.QueueStateDeferredUntil, cockpit.QueueStateParked:
+	case cockpit.QueueStateDeferredUntil, cockpit.QueueStateParked,
+		cockpit.QueueStateWaiting:
 		return lipgloss.NewStyle().Foreground(m.theme.Inactive)
 	case cockpit.QueueStateContainer:
 		return lipgloss.NewStyle().Bold(true)
@@ -909,7 +923,8 @@ func (m *queueModel) stateVisible(state cockpit.QueueNodeState) bool {
 			state == cockpit.QueueStateResourceDeferred ||
 			state == cockpit.QueueStateDeferredUntil ||
 			state == cockpit.QueueStateHuman ||
-			state == cockpit.QueueStateParked
+			state == cockpit.QueueStateParked ||
+			state == cockpit.QueueStateWaiting
 	default:
 		return true
 	}

@@ -81,6 +81,12 @@
     "onboard": [
       "go:onboard"
     ],
+    "sysdeps": [
+      "go:sysdeps"
+    ],
+    "adopt": [
+      "go:adopt"
+    ],
     "ci": [
       "ci:github"
     ],

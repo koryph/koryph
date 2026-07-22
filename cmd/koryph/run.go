@@ -222,7 +222,8 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("status", stderr)
 	project := fs.String("project", "", "project id (default: the project containing the current directory)")
 	asJSON := fs.Bool("json", false, "emit the run as JSON")
-	setUsage(fs, stdout, "latest-run per-slot detail", "[--project ID] [--json]")
+	frontier := fs.Bool("frontier", false, "show the last wave's per-candidate dispatch verdict instead of the slot table")
+	setUsage(fs, stdout, "latest-run per-slot detail", "[--project ID] [--json] [--frontier]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -240,6 +241,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s: no runs yet\n", rec.ProjectID)
 		return 0
 	}
+	if *frontier {
+		return printFrontier(stdout, stderr, rec.ProjectID, run, *asJSON)
+	}
 	if *asJSON {
 		if err := printJSON(stdout, run); err != nil {
 			return fail(stderr, err)
@@ -256,6 +260,47 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t$%.2f\t%d\t%s\t%s\n",
 			sl.PhaseID, sl.Status, orDash(sl.Model), sl.CostUSD, sl.Attempts, orDash(sl.Branch), orDash(sl.Worktree))
+	}
+	tw.Flush()
+	return 0
+}
+
+// printFrontier renders the last wave's per-candidate dispatch verdict (D7/D9):
+// every ready bead the scheduler considered and why it was dispatched, deferred,
+// or skipped — the full set with full reasons, never the "+N more" truncation of
+// the live progress log. bd-dependency-blocked beads are upstream of the ready
+// frontier and are not part of a wave, so they do not appear here.
+func printFrontier(stdout, stderr io.Writer, projectID string, run *ledger.Run, asJSON bool) int {
+	fr := run.Frontier
+	if asJSON {
+		if err := printJSON(stdout, fr); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
+	}
+	if fr == nil || len(fr.Entries) == 0 {
+		fmt.Fprintf(stdout, "%s: no frontier recorded yet (no wave built this run, or the run predates frontier capture)\n", projectID)
+		return 0
+	}
+	var disp, def, blk, skp int
+	for _, e := range fr.Entries {
+		switch e.Verdict {
+		case "dispatched":
+			disp++
+		case "deferred":
+			def++
+		case "blocked":
+			blk++
+		case "skipped":
+			skp++
+		}
+	}
+	fmt.Fprintf(stdout, "project %s  run %s  wave %d  frontier @ %s\n", projectID, run.RunID, fr.Wave, fr.At)
+	fmt.Fprintf(stdout, "  %d dispatched · %d deferred · %d blocked · %d skipped\n\n", disp, def, blk, skp)
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "BEAD\tVERDICT\tREASON\tTITLE")
+	for _, e := range fr.Entries {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.BeadID, e.Verdict, orDash(e.Reason), e.Title)
 	}
 	tw.Flush()
 	return 0

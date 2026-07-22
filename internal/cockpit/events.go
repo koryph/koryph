@@ -40,6 +40,10 @@ type eventCollector struct {
 	// already read. Monotonically increasing; reset to zero only if the file
 	// shrinks (log rotation, which is not expected).
 	auditOffset int64
+
+	// lastPatrolAt is the newest patrol event already pushed to the ring, so
+	// each patrol run's warn findings are emitted exactly once.
+	lastPatrolAt time.Time
 }
 
 // newEventCollector returns an empty collector ready for use.
@@ -60,7 +64,36 @@ func (c *eventCollector) Snapshot() EventsSnapshot {
 // audit log for operator-level events. All new events are appended to the ring.
 func (c *eventCollector) Collect(snap Snapshot) {
 	c.collectSlotEvents(snap)
+	c.collectPatrolEvents(snap)
 	c.collectAuditEvents(snap.ProjectID)
+}
+
+// collectPatrolEvents pushes warn-level health-patrol findings (stuck claims,
+// stale worktrees, …) into the feed — the engine's own "something needs a
+// look" channel, previously written to the ledger but never surfaced.
+func (c *eventCollector) collectPatrolEvents(snap Snapshot) {
+	for _, pe := range snap.Patrol {
+		if !pe.At.After(c.lastPatrolAt) {
+			continue
+		}
+		for _, f := range pe.Findings {
+			if f.Level != "warn" {
+				continue
+			}
+			msg := fmt.Sprintf("patrol    %s: %s", f.Check, f.Message)
+			if f.Fixed {
+				msg += " (auto-fixed)"
+			}
+			level := "warn"
+			if f.Fixed {
+				level = "info"
+			}
+			c.push(TUIEvent{Time: pe.At, Kind: "patrol", Level: level, Message: msg})
+		}
+	}
+	if n := len(snap.Patrol); n > 0 && snap.Patrol[n-1].At.After(c.lastPatrolAt) {
+		c.lastPatrolAt = snap.Patrol[n-1].At
+	}
 }
 
 // push appends one event to the ring, dropping the oldest if the ring is full.
@@ -90,7 +123,7 @@ func (c *eventCollector) collectSlotEvents(snap Snapshot) {
 			if len(model) > 20 {
 				model = model[:20]
 			}
-			msg := fmt.Sprintf("dispatch  %s  model %s", sl.PhaseID, model)
+			msg := fmt.Sprintf("dispatch  %s  model %s", slotLabel(sl), model)
 			if sl.Attempt > 1 {
 				msg += fmt.Sprintf("  attempt %d", sl.Attempt)
 			}
@@ -106,7 +139,7 @@ func (c *eventCollector) collectSlotEvents(snap Snapshot) {
 				Kind:    "merge",
 				Level:   "info",
 				BeadID:  sl.PhaseID,
-				Message: fmt.Sprintf("merged    %s%s", sl.PhaseID, cost),
+				Message: fmt.Sprintf("merged    %s%s", slotLabel(sl), cost),
 			})
 
 		case hadPrev && prev != "running" && sl.Stage == "running" && sl.Attempt > 1:
@@ -116,16 +149,27 @@ func (c *eventCollector) collectSlotEvents(snap Snapshot) {
 				Kind:    "requeue",
 				Level:   "warn",
 				BeadID:  sl.PhaseID,
-				Message: fmt.Sprintf("requeued  %s  attempt %d", sl.PhaseID, sl.Attempt),
+				Message: fmt.Sprintf("requeued  %s  attempt %d", slotLabel(sl), sl.Attempt),
 			})
 
 		case hadPrev && prev == "running" && (sl.Stage == "failed" || sl.Stage == "conflict" || sl.Stage == "blocked"):
+			// A running slot dying is a FAILURE, not a "requeue" — the old
+			// kind/level buried exactly the events an escalation watcher (or a
+			// higher-tier model deciding whether to take over) needs. The
+			// engine's death classification and any block note travel with it.
+			msg := fmt.Sprintf("failed    %s  → %s", slotLabel(sl), sl.Stage)
+			if sl.DeathReason != "" {
+				msg += "  (" + sl.DeathReason + ")"
+			}
+			if sl.Note != "" {
+				msg += "  " + truncateStr(sl.Note, 60)
+			}
 			c.push(TUIEvent{
 				Time:    now,
-				Kind:    "requeue",
-				Level:   "warn",
+				Kind:    "fail",
+				Level:   "error",
 				BeadID:  sl.PhaseID,
-				Message: fmt.Sprintf("requeued  %s  → %s", sl.PhaseID, sl.Stage),
+				Message: msg,
 			})
 		}
 
@@ -138,6 +182,29 @@ func (c *eventCollector) collectSlotEvents(snap Snapshot) {
 			delete(c.prevSlotStatus, id)
 		}
 	}
+}
+
+// slotLabel is the display label for a slot in event messages: the bead's
+// short title when known (ids say nothing at a glance), with the id appended
+// for cross-referencing; bare id otherwise.
+func slotLabel(sl SlotSnapshot) string {
+	id := sl.BeadID
+	if id == "" {
+		id = sl.PhaseID
+	}
+	if sl.Title != "" && sl.Title != id {
+		return truncateStr(sl.Title, 44) + " [" + id + "]"
+	}
+	return id
+}
+
+// truncateStr limits s to maxLen runes, appending "…" when truncated.
+func truncateStr(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-1]) + "…"
 }
 
 // auditRecord is the minimal shape of a registry audit.jsonl record.

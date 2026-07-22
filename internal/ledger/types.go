@@ -76,6 +76,28 @@ type Run struct {
 	// patrol runs for this run. Appended by the engine's health patrol
 	// (koryph-gus); absent in older ledgers.
 	PatrolEvents []PatrolEvent `json:"patrol_events,omitempty"`
+
+	// Frontier is the most recent wave's per-candidate dispatch verdict — every
+	// ready bead the scheduler considered and why it was or was not dispatched —
+	// so `koryph status --frontier` can explain the frontier instead of an
+	// operator reverse-engineering it from a truncated "deferred N beads, +26
+	// more" log line (D7/D9). Overwritten each wave; absent in older ledgers.
+	Frontier *FrontierSnapshot `json:"frontier,omitempty"`
+}
+
+// FrontierSnapshot is the scheduler's per-candidate verdict for one wave.
+type FrontierSnapshot struct {
+	At      string          `json:"at"`
+	Wave    int             `json:"wave"`
+	Entries []FrontierEntry `json:"entries,omitempty"`
+}
+
+// FrontierEntry is one ready bead's dispatch verdict for the wave.
+type FrontierEntry struct {
+	BeadID  string `json:"bead_id"`
+	Title   string `json:"title,omitempty"`
+	Verdict string `json:"verdict"`          // "dispatched" | "deferred" | "skipped"
+	Reason  string `json:"reason,omitempty"` // why, for deferred/skipped
 }
 
 // Slot is one dispatched work item within a run.
@@ -199,6 +221,14 @@ type Slot struct {
 	MergedAt     string `json:"merged_at,omitempty"`
 	UpdatedAt    string `json:"updated_at,omitempty"`
 	Note         string `json:"note,omitempty"`
+
+	// LastActivityAt is the wall-clock instant the slot last showed real work —
+	// the freshest of stream growth, the agent heartbeat, cohort CPU, and
+	// commits — re-derived from ground truth on every poll tick (see
+	// slotActivityAt). Distinct from UpdatedAt, which only records that the
+	// engine polled: an operator (and the stuck check) can tell "we looked" from
+	// "it did something." RFC3339 UTC; additive, absent in old ledgers.
+	LastActivityAt string `json:"last_activity_at,omitempty"`
 
 	// FinishedAt is the wall-clock instant this slot's agent process stopped —
 	// stamped when the slot goes terminal (completeSlot), independent of

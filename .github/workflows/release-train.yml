@@ -294,6 +294,26 @@ jobs:
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ inputs.homebrew_tap }}
+      # The skip_upload guard in .goreleaser.yaml deliberately lets a release
+      # succeed without tap credentials — but silently, which is how koryph
+      # itself shipped four releases with an empty tap (users' `brew install`
+      # failed until v0.9.0 was backfilled by hand, 2026-07-21). Make the
+      # skip impossible to miss: a warning annotation on the run summary
+      # whenever a tap is configured but no credential resolved.
+      - name: Warn loudly when Homebrew tap publishing will be skipped
+        if: >-
+          steps.detect.outputs.release == 'true' &&
+          inputs.build_mode == 'goreleaser' &&
+          inputs.homebrew_tap != ''
+        env:
+          TAP_TOKEN: ${{ steps.tap-token.outputs.token || secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPO: ${{ inputs.homebrew_tap }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning title=Homebrew tap publishing SKIPPED::homebrew_tap='$TAP_REPO' is configured but no tap credential resolved (RELEASE_BOT_APP_ID/RELEASE_BOT_PRIVATE_KEY secrets absent, no HOMEBREW_TAP_TOKEN fallback). The release will succeed WITHOUT updating the tap — 'brew install' will serve a stale or missing cask. Fix: 'koryph bot attach --name <bot> --repo ${GITHUB_REPOSITORY}' or set HOMEBREW_TAP_TOKEN; see docs/user-guide/release-bot.md."
+          else
+            echo "tap credential resolved; goreleaser will publish the cask to $TAP_REPO"
+          fi
       - name: GoReleaser (creates the DRAFT release + uploads all assets)
         if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'goreleaser'
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3

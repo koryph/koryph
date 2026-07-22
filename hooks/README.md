@@ -7,6 +7,8 @@
 scoped to Koryph-dispatched agents (`KORYPH_PHASE_ID` set); interactive
 sessions are never restricted by them. `koryph-prime.sh` is a
 `SessionStart` hook and runs for every session, dispatched or not.
+`koryph-intent.sh` is a `UserPromptSubmit` hook with the opposite scope:
+interactive sessions only — it exits silently inside any dispatch.
 
 - **`worktree-guard.sh`** — keeps an agent inside its project tree. Denies
   `Edit`/`Write` outside `$CLAUDE_PROJECT_DIR` (or worktree/temp siblings),
@@ -30,6 +32,17 @@ sessions are never restricted by them. `koryph-prime.sh` is a
   gets the full `bd prime --hook-json` output, byte-identical to the bare
   command it replaces. Fails open: any missing/erroring/unparsable `bd`
   output is still relayed as-is with exit 0, never blocking session start.
+- **`koryph-intent.sh`** — the intent→beads router
+  (docs/designs/2026-07-intent-routing.md). An adopted repo's CLAUDE.md
+  predates koryph (or doesn't exist), so nothing repo-side tells a session
+  that implementation work must become beads. When an interactive prompt
+  reads like a description of something to build/change/fix (verb + length
+  heuristic; questions and `/`-, `!`-, `#`-prefixed prompts stay silent),
+  this hook injects a <1KB rubric mapping the ask to `/koryph-design`,
+  `/koryph-plan`, `/koryph-import`, or `/koryph-issue`. Advisory only —
+  never blocks or rewrites the prompt; skips dispatched and secondary-spawn
+  sessions (`KORYPH_PHASE_ID`/`KORYPH_SPAWN_KIND`); fails open without `jq`
+  or on unparsable input.
 
 ## settings.json wiring
 

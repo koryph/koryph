@@ -55,9 +55,12 @@ Do not edit files here by hand — use the koryph CLI.
 
 // --- path helpers (all derived from Home, never from the environment) ---
 
-func (s *Store) registryDir() string { return filepath.Join(s.Home, "registry.d") }
-func (s *Store) quotaDir() string    { return filepath.Join(s.Home, "quota") }
-func (s *Store) auditLog() string    { return filepath.Join(s.Home, "audit.jsonl") }
+func (s *Store) registryDir() string  { return filepath.Join(s.Home, "registry.d") }
+func (s *Store) quotaDir() string     { return filepath.Join(s.Home, "quota") }
+func (s *Store) slotsDir() string     { return filepath.Join(s.Home, "slots") }
+func (s *Store) demandDir() string    { return filepath.Join(s.slotsDir(), "demand") }
+func (s *Store) telemetryDir() string { return filepath.Join(s.Home, "telemetry") }
+func (s *Store) auditLog() string     { return filepath.Join(s.Home, "audit.jsonl") }
 func (s *Store) recordPath(id string) string {
 	return filepath.Join(s.registryDir(), id+".json")
 }
@@ -68,11 +71,15 @@ func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 // koryph identity), seeds a README, and lands the initial commit. It is
 // idempotent: re-running introduces no churn and no extra commits.
 func (s *Store) Init(ctx context.Context) error {
-	// KORYPH_HOME holds account identities, the audit trail, and quota state:
+	// KORYPH_HOME holds account identities, the audit trail, quota state, the
+	// concurrency governor's slot leases/demand heartbeats, and telemetry:
 	// private to the operator. 0700 on the tree keeps other local users out;
 	// this also protects state files created 0644 by shared helpers, since the
 	// parent dir blocks traversal. Chmod migrates a pre-existing 0755 home.
-	for _, d := range []string{s.Home, s.registryDir(), s.quotaDir()} {
+	// slots/, slots/demand/, and telemetry/ are created here (not lazily by
+	// their first writer) so `koryph doctor` is clean immediately after
+	// `koryph init` (design docs/designs/2026-07-adopt.md §7.1).
+	for _, d := range []string{s.Home, s.registryDir(), s.quotaDir(), s.slotsDir(), s.demandDir(), s.telemetryDir()} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("registry: mkdir %s: %w", d, err)
 		}

@@ -96,6 +96,65 @@ func TestPatrolIfDue_FiresAfterInterval(t *testing.T) {
 	}
 }
 
+// TestSeedPatrolThrottleFromLedgerHistory proves D11: a resumed engine seeds
+// its emit throttle from the run's persisted patrol history, so a warning the
+// prior generation already surfaced is not reprinted on restart. ok-level
+// findings are not throttle-tracked.
+func TestSeedPatrolThrottleFromLedgerHistory(t *testing.T) {
+	recent := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	old := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	r := &runner{run: &ledger.Run{
+		PatrolEvents: []ledger.PatrolEvent{
+			{At: old, Findings: []ledger.PatrolFinding{{Check: "stale-claims", Level: "warn", Message: "bead xdbk stale"}}},
+			{At: recent, Findings: []ledger.PatrolFinding{
+				{Check: "stale-claims", Level: "warn", Message: "bead xdbk stale"},
+				{Check: "governor-pool", Level: "ok", Message: "healthy"},
+			}},
+		},
+	}}
+	r.patrolSeen = make(map[string]time.Time)
+	r.seedPatrolThrottle()
+
+	seeded, ok := r.patrolSeen["stale-claims\x00bead xdbk stale"]
+	if !ok {
+		t.Fatal("warn finding not seeded from patrol history")
+	}
+	// Seeded with the NEWEST recorded time (recent, not old), so the throttle
+	// still suppresses right after a restart.
+	if time.Since(seeded) > patrolThrottleWindow {
+		t.Errorf("seeded time too old (%v); a recently-recorded warning must stay throttled after a restart", seeded)
+	}
+	if _, ok := r.patrolSeen["governor-pool\x00healthy"]; ok {
+		t.Error("ok-level finding must not seed the emit throttle")
+	}
+}
+
+// TestPatrolCheckDeadActiveAgents proves D1/D12: a slot the ledger still marks
+// running whose agent process is gone is surfaced as a warn, while a live agent
+// or a terminal slot is not.
+func TestPatrolCheckDeadActiveAgents(t *testing.T) {
+	dead := &runner{run: &ledger.Run{Slots: map[string]*ledger.Slot{
+		"b1": {PhaseID: "b1", Status: ledger.SlotRunning, PID: deadPID(t)},
+	}}}
+	if fs := dead.patrolCheckDeadActiveAgents(); len(fs) != 1 || fs[0].level != "warn" || !strings.Contains(fs[0].message, "b1") {
+		t.Fatalf("dead agent on a running slot: want one warn naming b1, got %+v", fs)
+	}
+
+	live := &runner{run: &ledger.Run{Slots: map[string]*ledger.Slot{
+		"b2": {PhaseID: "b2", Status: ledger.SlotRunning, PID: os.Getpid()},
+	}}}
+	if fs := live.patrolCheckDeadActiveAgents(); len(fs) != 1 || fs[0].level != "ok" {
+		t.Errorf("live agent: want a single ok finding, got %+v", fs)
+	}
+
+	terminal := &runner{run: &ledger.Run{Slots: map[string]*ledger.Slot{
+		"b3": {PhaseID: "b3", Status: ledger.SlotMerged, PID: deadPID(t)},
+	}}}
+	if fs := terminal.patrolCheckDeadActiveAgents(); len(fs) != 1 || fs[0].level != "ok" {
+		t.Errorf("terminal slot with a dead pid: want ok (not flagged), got %+v", fs)
+	}
+}
+
 // --- zombie lease detection ------------------------------------------------
 
 func TestPatrolCheckZombieLeases_NoSlotsDir(t *testing.T) {

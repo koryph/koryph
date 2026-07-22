@@ -88,6 +88,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph completion bash`](#koryph-completion-bash) | print the bash completion script |
 | ↳ [`koryph completion zsh`](#koryph-completion-zsh) | print the zsh completion script |
 | ↳ [`koryph completion install`](#koryph-completion-install) | install the completion script to the standard location |
+| [`koryph adopt`](#koryph-adopt) | wizard: take an existing repo to a green `koryph validate` in one run |
 | [`koryph ci`](#koryph-ci) | render and install forge-native CI pipeline assets |
 | ↳ [`koryph ci setup`](#koryph-ci-setup) | render and install CI assets into the project |
 | ↳ [`koryph ci check`](#koryph-ci-check) | report drift between installed CI assets and current Render output |
@@ -95,6 +96,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
 | ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
 | [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
+| [`koryph inject`](#koryph-inject) | add a bead to a running loop even if it is outside the run's scope |
 | [`koryph models`](#koryph-models) | model-routing insight: learn starting tiers from escalation history |
 | ↳ [`koryph models learn`](#koryph-models-learn) | recommend (and --apply) learned model labels from escalation history |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail, export, prune |
@@ -631,6 +633,7 @@ latest-run per-slot detail
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--frontier` | bool |  | show the last wave's per-candidate dispatch verdict instead of the slot table |
 | `--json` | bool |  | emit the run as JSON |
 | `--project` | string |  | project id (default: the project containing the current directory) |
 
@@ -1026,6 +1029,33 @@ install the completion script to the standard location
 
 ---
 
+## `koryph adopt` { #koryph-adopt }
+
+wizard: take an existing repo to a green `koryph validate` in one run
+
+**See also:** [Adopt](../user-guide/adopt) · [Quickstart](../user-guide/quickstart)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--account` | string |  | account profile (with --identity; overrides discovery) |
+| `--branch` | string |  | default branch (default: detected) |
+| `--config-dir` | string |  | CLAUDE_CONFIG_DIR for non-personal accounts |
+| `--dry-run` | bool |  | detect + print the adoption plan, write nothing |
+| `--force` | bool |  | override an .envrc account-disagreement refusal |
+| `--forge` | string |  | forge provider github\|gitlab (overrides inference) |
+| `--gate` | gate |  | gate command (repeatable, or one ";;"-separated list); overrides inference |
+| `--id` | string |  | project slug (default: repo dir name slugified) |
+| `--identity` | string |  | login email that must match at dispatch (with --account) |
+| `--json` | bool |  | emit the plan (and results) as JSON on stdout; implies non-interactive |
+| `--no-commit` | bool |  | skip the adoption commit offer |
+| `--no-posture` | bool |  | skip the posture profile offer |
+| `--no-remote` | bool |  | force a local-only beads init (no sync remote) |
+| `--remote` | string |  | beads sync remote URL (overrides the derived origin) |
+| `--yes` | bool |  | non-interactive: accept unambiguous derivations, fail closed on ambiguity |
+
+
+---
+
 ## `koryph ci` { #koryph-ci }
 
 render and install forge-native CI pipeline assets
@@ -1109,6 +1139,19 @@ apply data lifecycle policy: compress old run dirs, rotate audit logs
 | `--dry-run` | bool |  | report without making any changes |
 | `--json` | bool |  | emit the result as JSON |
 | `--project` | string |  | apply run-dirs gc for this project |
+
+
+---
+
+## `koryph inject` { #koryph-inject }
+
+add a bead to a running loop even if it is outside the run's scope
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---

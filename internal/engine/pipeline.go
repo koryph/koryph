@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/modelroute"
 	"github.com/koryph/koryph/internal/quota"
@@ -70,6 +71,18 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 				effort = metaEffort
 			}
 		}
+
+		// Pipeline stages run OUTSIDE the footprint system: a docs/changelog
+		// persona edits shared hub files the scheduler never accounted for, so in
+		// a high-merge-frequency wave nearly every bead's stage writes against a
+		// stale generation of the same file and the final merge rebases into a
+		// conflict. Rebasing the worktree onto the current default branch right
+		// before the stage runs makes the stage write against the latest tree, so
+		// those conflicts become rare and confined to the stage's own output.
+		// Best-effort: a rebase that hits a real source conflict is aborted and
+		// the stage runs on the un-rebased tree, exactly as before (the merge's
+		// own rebase still handles it).
+		r.rebaseWorktreeBestEffort(ctx, sl.Worktree)
 
 		r.progress("bead %s: stage %q running (persona %s, model %s)", sl.PhaseID, st.Name, persona, res.Model)
 		stageStart := time.Now()
@@ -152,7 +165,17 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 					r.progress("bead %s: optional stage %q timed out after %ds — continuing (raise its timeout_sec)", sl.PhaseID, st.Name, effTimeout)
 					continue
 				}
-				r.progress("bead %s: stage %q timed out after %ds — not a failure; raise its timeout_sec", sl.PhaseID, st.Name, effTimeout)
+				// Degrade-not-park (D6): a required stage running out of time must
+				// not strand a bead whose implementer work is already committed.
+				// Land the completed work and record a follow-up for the skipped
+				// stage instead of parking correct commits behind a slow
+				// enhancement stage (the operator can raise its timeout_sec).
+				if commits, _, cerr := r.branchProgress(ctx, sl.Worktree); cerr == nil && commits > 0 {
+					r.progress("bead %s: required stage %q timed out after %ds with %d commit(s) — degrading: landing the work and flagging a follow-up (raise its timeout_sec)", sl.PhaseID, st.Name, effTimeout, commits)
+					r.flagStageFollowUp(ctx, sl.PhaseID, st.Name, effTimeout)
+					continue
+				}
+				r.progress("bead %s: stage %q timed out after %ds with no commits — cannot degrade; raise its timeout_sec", sl.PhaseID, st.Name, effTimeout)
 				return false, fmt.Sprintf("%s timed out after %ds (raise its timeout_sec)", st.Name, effTimeout)
 			}
 			if st.Optional {
@@ -173,4 +196,37 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		}
 	}
 	return true, ""
+}
+
+// flagStageFollowUp records that a required pipeline stage was skipped because
+// it timed out on a bead whose implementer work was already complete, so the gap
+// is discoverable for a follow-up rather than silently lost. The engine has no
+// bead-create capability on the tracker interface, so it uses the comment +
+// label surface; best-effort, a tracker error never blocks the degraded merge.
+func (r *runner) flagStageFollowUp(ctx context.Context, beadID, stageName string, timeoutSec int) {
+	_ = r.adapter.AddLabel(ctx, beadID, "followup:"+stageName)
+	_ = r.adapter.Comment(ctx, beadID, fmt.Sprintf(
+		"engine: pipeline stage %q timed out after %ds and was skipped so the completed work could land; the stage still needs to run — follow up (raise its timeout_sec if it is legitimately slow). (run %s)",
+		stageName, timeoutSec, r.run.RunID))
+}
+
+// rebaseWorktreeBestEffort rebases the slot's worktree onto the current default
+// branch so a pipeline stage writes against the latest tree (see the call site).
+// It re-signs commits exactly as the merge's own rebase does — same worktree,
+// same git config — so the merge's signature preflight still verifies them. A
+// rebase that conflicts or otherwise fails is aborted, restoring the pre-rebase
+// commits so the stage runs on the tree as-is; returns true only on a clean
+// rebase. Best-effort by design: the worst case is a no-op and today's behavior.
+func (r *runner) rebaseWorktreeBestEffort(ctx context.Context, wtPath string) bool {
+	if wtPath == "" {
+		return false
+	}
+	res, err := execx.Run(ctx, execx.Cmd{
+		Dir: wtPath, Name: "git", Args: []string{"rebase", r.rec.DefaultBranch},
+	})
+	if err == nil && res.ExitCode == 0 {
+		return true
+	}
+	_, _ = execx.Run(ctx, execx.Cmd{Dir: wtPath, Name: "git", Args: []string{"rebase", "--abort"}})
+	return false
 }

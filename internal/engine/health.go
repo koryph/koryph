@@ -148,6 +148,17 @@ func (r *runner) patrolIfDue(ctx context.Context) {
 // throttled progress lines, and appends the full set to the run ledger.
 func (r *runner) runPatrol(ctx context.Context) {
 	now := time.Now()
+	// Seed the emit throttle from the run's persisted patrol history the first
+	// time a (possibly resumed) process patrols. patrolSeen is in-memory, so
+	// without this every engine restart re-emitted every still-persistent
+	// warning the prior generation had already surfaced — the same handful of
+	// stale-claim lines reprinted across every restart (D11). The ledger
+	// PatrolEvents survive resume and give us the last time each finding was
+	// recorded.
+	if r.patrolSeen == nil {
+		r.patrolSeen = make(map[string]time.Time)
+		r.seedPatrolThrottle()
+	}
 	findings := r.collectPatrolFindings(ctx, now)
 
 	// Surface WARN and INFO findings as progress lines, throttled to
@@ -162,9 +173,6 @@ func (r *runner) runPatrol(ctx context.Context) {
 		key := f.check + "\x00" + f.message
 		if last, seen := r.patrolSeen[key]; seen && now.Sub(last) < patrolThrottleWindow {
 			continue
-		}
-		if r.patrolSeen == nil {
-			r.patrolSeen = make(map[string]time.Time)
 		}
 		r.patrolSeen[key] = now
 		suffix := ""
@@ -205,6 +213,33 @@ func (r *runner) runPatrol(ctx context.Context) {
 	_ = r.store.SaveRun(r.run)
 }
 
+// seedPatrolThrottle pre-populates patrolSeen from the run's persisted patrol
+// history so the emit throttle survives an engine restart / resume (D11). Each
+// warn/info finding's key is stamped with the newest time it was recorded, so a
+// resumed engine treats a still-persistent warning as already-surfaced and does
+// not reprint it until patrolThrottleWindow elapses. Best-effort: unparseable
+// timestamps are skipped.
+func (r *runner) seedPatrolThrottle() {
+	if r.run == nil {
+		return
+	}
+	for _, ev := range r.run.PatrolEvents {
+		at, err := time.Parse(time.RFC3339, ev.At)
+		if err != nil {
+			continue
+		}
+		for _, f := range ev.Findings {
+			if f.Level != "warn" && f.Level != "info" {
+				continue
+			}
+			key := f.Check + "\x00" + f.Message
+			if prev, ok := r.patrolSeen[key]; !ok || at.After(prev) {
+				r.patrolSeen[key] = at
+			}
+		}
+	}
+}
+
 // collectPatrolFindings runs each curated check and returns the merged results.
 // Each check is cheap: no network calls, no subprocesses except the bd binary
 // lookup, all results from in-memory state or local file I/O.
@@ -223,6 +258,43 @@ func (r *runner) collectPatrolFindings(ctx context.Context, now time.Time) []pat
 	out = append(out, r.patrolCheckUnvalidatedEpics(ctx, now)...)
 	out = append(out, r.patrolCheckEpicValidations(ctx, now)...)
 	out = append(out, r.patrolCheckStaleClaims(ctx, now)...)
+	out = append(out, r.patrolCheckDeadActiveAgents()...)
+	return out
+}
+
+// --- check: dead active agents (mid-run liveness) -------------------------
+
+const patrolCheckDeadAgents = "dead-active-agent"
+
+// patrolCheckDeadActiveAgents flags a slot the ledger still marks running whose
+// agent process is gone — the mid-run counterpart to resume-time dead-agent
+// classification (D1/D12). The engine's SIGCHLD-driven exit handling normally
+// catches an agent exit within a tick, but a lost signal or a zombie parented to
+// the still-live engine can leave a slot "running" with no live process for many
+// minutes; a periodic sweep surfaces that within a patrol cycle instead of
+// leaving it stuck until the operator notices. Report-only (warn): the patrol
+// never touches the slot, so it cannot race the poll loop's own exit processing.
+func (r *runner) patrolCheckDeadActiveAgents() []patrolFinding {
+	if r.run == nil {
+		return []patrolFinding{{check: patrolCheckDeadAgents, level: "ok"}}
+	}
+	var out []patrolFinding
+	for _, sl := range r.run.Slots {
+		if sl == nil || sl.Status != ledger.SlotRunning || sl.PID <= 0 {
+			continue
+		}
+		if dispatch.Alive(sl.PID) {
+			continue
+		}
+		out = append(out, patrolFinding{
+			check:   patrolCheckDeadAgents,
+			level:   "warn",
+			message: fmt.Sprintf("slot %s marked running but agent pid %d is dead — its exit has not been processed (koryph stop then koryph merge if it stays stuck)", sl.PhaseID, sl.PID),
+		})
+	}
+	if len(out) == 0 {
+		return []patrolFinding{{check: patrolCheckDeadAgents, level: "ok"}}
+	}
 	return out
 }
 

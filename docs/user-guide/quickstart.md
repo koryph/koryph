@@ -4,19 +4,64 @@
 # Quickstart
 
 This walkthrough takes you from zero to a first dry-run wave in about ten
-minutes. You will register a project, pass the pre-dispatch gate, fire a
-single wave in dry-run mode, and read the board and slot status.
+minutes. The fastest path installs koryph and runs the adoption wizard end to
+end; an alternative section further down shows the equivalent flag-driven
+`project add` path for scripting or skipping the prompts. Either way you'll
+pass the pre-dispatch gate, fire a single wave in dry-run mode, and read the
+board and slot status.
 
 ## Prerequisites
 
-- `koryph` binary on your `PATH` (`koryph version` should print a version)
 - A git repository you want to manage (we call it `~/src/myproject` below)
-- `bd` (beads) initialised in that repo (`bd stats` should succeed)
-- A Claude account profile name and the email address tied to it
+- `git` on your `PATH`
+- A Claude account profile name and the email address tied to it — the
+  adoption wizard usually derives both from `~/.claude.json`, so you may not
+  need to know them up front
 
 ---
 
-## Step 1 — Register the project
+## Step 1 — Install koryph and adopt the project
+
+```sh
+brew install koryph/tap/koryph
+koryph adopt ~/src/myproject
+```
+
+`koryph adopt` is the wizard front door: it detects what your repo already
+has, prints a plan naming each step and why it's needed, asks for your
+consent in three scopes (the repo-wide plan, each system-level install, and
+the derived account/gate/forge values), then executes — installing missing
+prerequisites (`claude`, `bd`, `gh`), initializing `~/.koryph` and the beads
+issue DB, registering the project under a derived account, writing
+`koryph.project.json` with confirmed `gate`/`forge`/`area_map`, installing
+the koryph scaffolding, offering signing/posture, offering one signed
+`chore: adopt koryph` commit, and finally running `koryph validate`
+in-process. See [koryph adopt](adopt.md) for the full phase-by-phase
+walkthrough.
+
+Confirm the project was registered:
+
+```sh
+koryph project list
+```
+
+You should see one row with `STATUS` of `migrated` — `adopt` already ran
+`koryph validate` for you on the first green pass. If a beads database
+existed before you ran `adopt`, `bd stats` remains a quick way to sanity-check
+its health at any time.
+
+Skip ahead to [Step 2 — Fire a first dry-run wave](#step-2-fire-a-first-dry-run-wave).
+
+---
+
+## Alternative: register manually with `project add`
+
+Prefer to drive every step yourself, or scripting onboarding without
+prompts? `koryph project add` is the lower-level primitive `adopt` sequences:
+it registers the project and installs the agent scaffolding, but does
+**not** initialize or harden beads, install missing tools, or infer
+`gate`/`forge`/`area_map` for you — those are yours to handle first or by
+hand.
 
 ```sh
 koryph project add ~/src/myproject \
@@ -39,6 +84,9 @@ what it installs depends on the project's configured runtime (koryph-v8u.9):
 Copilot, opencode, and amp — it documents the koryph operating contract so every runtime
 follows the same rules. Runtimes without hook support rely on **worktree isolation** and
 **merge-time protected-path refusal** for containment instead of in-editor lifecycle guards.
+Note that reading the contract is not the same as being dispatched: **koryph dispatch
+supports Claude Code only today** — support for the other runtimes is alpha and dispatch to
+them is refused fail-closed. See [AI runtimes: support status](runtimes.md).
 
 The rules are what make koryph's boundaries hold in-editor (Claude Code only): the
 `agent-boundary-guard` and `worktree-guard` hooks and the `bd prime`
@@ -75,6 +123,7 @@ editor's command list):
 
 | Command | Does |
 |---|---|
+| `/koryph-design "<ask>"` | Turn a described ask into a reviewed design doc, then decompose it into beads |
 | `/koryph-issue "<desc>"` | File a well-formed beads issue (no work started) |
 | `/koryph-build [bead]` | Build one issue — picks from `bd ready` if none named |
 | `/koryph-import [path]` | Convert existing markdown plans/TODOs into a bead corpus (onboarding) |
@@ -99,9 +148,10 @@ koryph project list
 
 You should see one row with `STATUS` of `registered`.
 
----
-
-## Step 2 — Run the pre-dispatch gate
+This path leaves beads uninitialised and `koryph.project.json` unwritten —
+initialise beads yourself (`bd init`, confirm with `bd stats`) and write
+`gate`/`merge_policy` (at minimum) into `koryph.project.json` before
+continuing. Then run the pre-dispatch gate:
 
 ```sh
 koryph validate myproject
@@ -121,7 +171,7 @@ means at least one check did not pass — the output names the failing check.
 
 ---
 
-## Step 3 — Fire a first dry-run wave
+## Step 2 — Fire a first dry-run wave
 
 ```sh
 koryph run --project myproject --once --dry-run
@@ -145,7 +195,7 @@ Other useful flags for early exploration:
 
 ---
 
-## Step 4 — Read the board
+## Step 3 — Read the board
 
 ```sh
 koryph board
@@ -164,7 +214,7 @@ count. Add `--json` for the machine-readable payload.
 
 ---
 
-## Step 5 — Read slot status
+## Step 4 — Read slot status
 
 ```sh
 koryph status --project myproject
@@ -180,6 +230,29 @@ beads-a1b    planned  sonnet    $0.00  0         -       -
 ```
 
 Add `--json` to get the full ledger entry for scripting or post-processing.
+
+Add `--frontier` to see the **last wave's dispatch verdict** instead of the slot
+table — every ready bead the scheduler considered and why, with per-verdict
+counts and full reasons (no truncation):
+
+```sh
+koryph status --project myproject --frontier
+```
+
+```
+project myproject  run run-abc123  wave 4  frontier @ 2026-07-21T15:00:00Z
+  2 dispatched · 3 deferred · 1 skipped
+
+BEAD       VERDICT     REASON                                    TITLE
+beads-a1b  dispatched  -                                         add widget
+beads-c3d  deferred    footprint conflict with beads-a1b (in-flight)  widget tests
+beads-e5f  skipped     container bead                            widget epic
+```
+
+`deferred` = a ready bead the scheduler held back this wave (footprint/resource/
+wave-full); `skipped` = structurally non-dispatchable (wrong issue_type, gate
+bead). Beads that are not *ready* at all (blocked by an open bd dependency) are
+upstream of the wave and do not appear here — use `bd dep tree <id>` for those.
 
 ---
 

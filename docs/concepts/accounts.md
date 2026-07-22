@@ -47,7 +47,8 @@ which the runtime maps to its own concrete models (`opus`, `sonnet`, `haiku`
 for Claude Code today). Because the bead names a tier and not a model, the same
 plan runs unchanged when the model lineup shifts, and koryph stays
 runtime-neutral: Claude Code now, other agent CLIs through the same adapter seam
-later.
+later — today those others are [alpha, and dispatch to them is refused
+fail-closed](../user-guide/runtimes.md).
 
 ## The failure mode it prevents
 

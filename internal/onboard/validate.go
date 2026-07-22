@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/fsx"
@@ -97,11 +98,17 @@ func Validate(ctx context.Context, store *registry.Store, projectID string, out 
 	bd := newBD(rec.Root)
 	if source == "bd" {
 		if !bd.Available() {
-			add("bd available", LevelError, "bd binary not found ("+bdBin()+")")
+			add("bd available", LevelError, "bd binary not found ("+bdBin()+") — run `koryph adopt` to install and initialize beads")
 		} else {
 			add("bd available", LevelOK, bdBin())
 			if iss, rerr := bd.Ready(ctx, beads.ReadyOpts{Parent: ""}); rerr != nil {
-				add("bd ready parses", LevelError, rerr.Error())
+				// A missing DB is an onboarding gap, not a bd malfunction —
+				// point at the wizard instead of surfacing bd's raw stderr.
+				if strings.Contains(rerr.Error(), "no beads database") {
+					add("bd ready parses", LevelError, "no beads database — run `koryph adopt` (or `bd init`) to initialize issue tracking")
+				} else {
+					add("bd ready parses", LevelError, rerr.Error())
+				}
 			} else {
 				issues = iss
 				add("bd ready parses", LevelOK, fmt.Sprintf("%d ready", len(iss)))

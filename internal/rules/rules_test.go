@@ -60,8 +60,9 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	// PreToolUse/SessionStart hook) but rides along for free via
 	// scaffold.CopyEmbed's "every embedded file ships" contract — this
 	// assertion is the regression guard for that. koryph-prime.sh
-	// (koryph-77r.4) IS the SessionStart hook command.
-	for _, want := range []string{"agent-boundary-guard", "worktree-guard", "koryph-spill", "koryph-prime"} {
+	// (koryph-77r.4) IS the SessionStart hook command, and koryph-intent.sh
+	// is the UserPromptSubmit intent→beads router.
+	for _, want := range []string{"agent-boundary-guard", "worktree-guard", "koryph-spill", "koryph-prime", "koryph-intent"} {
 		found := false
 		for _, r := range hookResults {
 			if r.Name == want && r.Action == scaffold.ActionInstalled {
@@ -85,7 +86,7 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	// Settings carry the koryph wiring, referenced via KORYPH_HOME (not the
 	// agent-writable project dir).
 	blob := settingsBlob(t, root)
-	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "koryph-prime.sh", "bd prime", "Bash(git push --force*)", "${KORYPH_HOME:-$HOME/.koryph}/hooks/"} {
+	for _, want := range []string{"agent-boundary-guard.sh", "worktree-guard.sh", "koryph-prime.sh", "koryph-intent.sh", "UserPromptSubmit", "bd prime", "Bash(git push --force*)", "${KORYPH_HOME:-$HOME/.koryph}/hooks/"} {
 		if !strings.Contains(blob, want) {
 			t.Errorf("settings.json missing %q:\n%s", want, blob)
 		}
@@ -172,6 +173,159 @@ func TestMergeMigratesBarePrimeToWrapper(t *testing.T) {
 	// A second merge is now a no-op.
 	if action, _ := MergeSettings(root, false); action != SettingsUnchanged {
 		t.Errorf("second merge = %q, want unchanged", action)
+	}
+}
+
+// appendBDPrimeEntry simulates `bd init` running AFTER `koryph project add`:
+// bd wires its own bare SessionStart entry independent of koryph's merge,
+// appending it alongside whatever is already in settings.json.
+func appendBDPrimeEntry(t *testing.T, root string) {
+	t.Helper()
+	m := readSettings(t, root)
+	hks, _ := m["hooks"].(map[string]any)
+	if hks == nil {
+		hks = map[string]any{}
+	}
+	arr, _ := hks["SessionStart"].([]any)
+	arr = append(arr, map[string]any{
+		"hooks": []any{map[string]any{"type": "command", "command": "bd prime --hook-json"}},
+	})
+	hks["SessionStart"] = arr
+	m["hooks"] = hks
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "settings.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEnsureHookPrimeDedup is the koryph-14p.2 regression suite: `bd init`,
+// run after `koryph project add`, wires its own bare "bd prime --hook-json"
+// SessionStart entry — independent of and in addition to koryph's
+// koryph-prime.sh wrapper entry — producing double session priming. Every
+// case proves the merge leaves exactly the entries it should (no more, no
+// fewer) and that a second merge is a pure no-op.
+func TestEnsureHookPrimeDedup(t *testing.T) {
+	tests := []struct {
+		name string
+		// build seeds .claude/settings.json for the scenario.
+		build func(t *testing.T, root string)
+		// wantEntries is the SessionStart hook-entry count after one merge.
+		wantEntries int
+		// wantCommandSubstr must be present in the merged koryph entry.
+		wantCommandSubstr string
+		// wantSurviveSubstr, when set, is a hook command that must survive
+		// the merge untouched (proves non-prime hooks are never swept up).
+		wantSurviveSubstr string
+	}{
+		{
+			// (a) koryph installed first (real Install), then bd appends its
+			// own bare duplicate — the exact scenario from the sandbox repro.
+			name: "koryph_installed_then_bd_appends_duplicate",
+			build: func(t *testing.T, root string) {
+				if _, _, err := Install(root, false); err != nil {
+					t.Fatal(err)
+				}
+				appendBDPrimeEntry(t, root)
+			},
+			wantEntries:       1,
+			wantCommandSubstr: "koryph-prime.sh",
+		},
+		{
+			// (b) bd (or a pre-koryph-77r.4 koryph) got there first with the
+			// bare command — migrated in place, same as
+			// TestMergeMigratesBarePrimeToWrapper, kept here so the dedup
+			// table is self-contained.
+			name: "bd_first_bare_prime_migrated_in_place",
+			build: func(t *testing.T, root string) {
+				writeJSON(t, root, `{
+				  "hooks": {"SessionStart": [{"hooks":[{"type":"command","command":"bd prime --hook-json"}]}]},
+				  "permissions": {"allow": [], "deny": []}
+				}`)
+			},
+			wantEntries:       1,
+			wantCommandSubstr: "koryph-prime.sh",
+		},
+		{
+			// (d) a project's own unrelated SessionStart hook sits alongside
+			// the bare bd-prime entry — it must survive verbatim; only the
+			// all-marker entry is a removable duplicate.
+			name: "custom_session_hook_never_removed",
+			build: func(t *testing.T, root string) {
+				writeJSON(t, root, `{
+				  "hooks": {"SessionStart": [
+				    {"hooks":[{"type":"command","command":"bd prime --hook-json"}]},
+				    {"hooks":[{"type":"command","command":"./my-custom-hook.sh"}]}
+				  ]},
+				  "permissions": {"allow": [], "deny": []}
+				}`)
+			},
+			wantEntries:       2,
+			wantCommandSubstr: "koryph-prime.sh",
+			wantSurviveSubstr: "my-custom-hook.sh",
+		},
+		{
+			// (e) a MIXED later entry: a stale bare bd-prime hook sharing an
+			// entry with a project's own hook. The stale hook is stripped
+			// per-hook (double priming ends), the custom hook survives in its
+			// slimmed entry — the review finding on entry-granular dedupe,
+			// which left this shape double-priming forever while doctor kept
+			// recommending a re-run that never converged.
+			name: "mixed_entry_stale_prime_stripped_custom_kept",
+			build: func(t *testing.T, root string) {
+				writeJSON(t, root, `{
+				  "hooks": {"SessionStart": [
+				    {"hooks":[{"type":"command","command":"bd prime --hook-json"}]},
+				    {"hooks":[
+				      {"type":"command","command":"bd prime --hook-json"},
+				      {"type":"command","command":"./my-custom-hook.sh"}
+				    ]}
+				  ]},
+				  "permissions": {"allow": [], "deny": []}
+				}`)
+			},
+			wantEntries:       2,
+			wantCommandSubstr: "koryph-prime.sh",
+			wantSurviveSubstr: "my-custom-hook.sh",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			centralHooks(t)
+			root := t.TempDir()
+			tt.build(t, root)
+
+			action, err := MergeSettings(root, false)
+			if err != nil {
+				t.Fatalf("MergeSettings: %v", err)
+			}
+			if action != SettingsMerged {
+				t.Errorf("action = %q, want merged", action)
+			}
+			blob := settingsBlob(t, root)
+			if !strings.Contains(blob, tt.wantCommandSubstr) {
+				t.Errorf("missing %q in merged settings:\n%s", tt.wantCommandSubstr, blob)
+			}
+			if tt.wantSurviveSubstr != "" && !strings.Contains(blob, tt.wantSurviveSubstr) {
+				t.Errorf("hook %q removed, want preserved:\n%s", tt.wantSurviveSubstr, blob)
+			}
+			if n := countSessionStartHooks(t, root); n != tt.wantEntries {
+				t.Errorf("SessionStart hook entries = %d, want %d:\n%s", n, tt.wantEntries, blob)
+			}
+
+			// (c) idempotence: a second merge on the now-deduped state must
+			// be a pure no-op.
+			action2, err := MergeSettings(root, false)
+			if err != nil {
+				t.Fatalf("second MergeSettings: %v", err)
+			}
+			if action2 != SettingsUnchanged {
+				t.Errorf("second merge = %q, want unchanged", action2)
+			}
+		})
 	}
 }
 

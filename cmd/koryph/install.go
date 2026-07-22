@@ -303,49 +303,9 @@ func reportSettings(stdout, stderr io.Writer, action string) {
 	}
 }
 
-// onboardInstallAgentsMD installs AGENTS.md during `project add` (best-effort:
-// a warning, never a failure). AGENTS.md is always installed regardless of
-// runtime capability — it is the canonical cross-runtime instruction file
-// (koryph-v8u.9).
-func onboardInstallAgentsMD(stderr io.Writer, root string) {
-	action, err := agentsmd.Install(root, false)
-	if err != nil {
-		fmt.Fprintf(stderr, "koryph: warning: could not install AGENTS.md: %v\n", err)
-		return
-	}
-	switch action {
-	case scaffold.ActionInstalled:
-		fmt.Fprintln(stderr, "koryph: installed AGENTS.md (koryph operating contract)")
-	case scaffold.ActionSkipped:
-		fmt.Fprintln(stderr, "koryph: warning: AGENTS.md already exists with different content, left unchanged — run `koryph project install-assets <root> agentsmd --force` to update")
-	}
-	// Unchanged: silent no-op.
-}
-
-// onboardRules installs the enforcement rules during `project add` (best-effort:
-// warnings, never a failure).
-func onboardRules(stderr io.Writer, root string) {
-	hookResults, settings, err := rules.Install(root, false)
-	if err != nil {
-		fmt.Fprintf(stderr, "koryph: warning: could not install rules: %v\n", err)
-		return
-	}
-	if n := scaffold.Count(hookResults, scaffold.ActionInstalled); n > 0 {
-		fmt.Fprintf(stderr, "koryph: installed %d hook script(s) into hooks/\n", n)
-	}
-	if c := scaffold.Conflicts(hookResults); len(c) > 0 {
-		fmt.Fprintf(stderr, "koryph: warning: %d hook script(s) differ, left unchanged: %s — run `koryph rules install <root> --force`\n",
-			len(c), strings.Join(c, ", "))
-	}
-	switch settings {
-	case rules.SettingsCreated:
-		fmt.Fprintln(stderr, "koryph: wrote .claude/settings.json (koryph hooks + permissions)")
-	case rules.SettingsMerged:
-		fmt.Fprintln(stderr, "koryph: merged koryph hooks + permissions into .claude/settings.json")
-	case rules.SettingsSkipped:
-		fmt.Fprintln(stderr, "koryph: warning: .claude/settings.json unparseable/incompatible — left unchanged (fix it or `koryph rules install --force`)")
-	}
-}
+// The former onboardInstallAgentsMD/onboardRules/onboardInstall helpers moved
+// to internal/adopt (InstallAssets and friends) so `project add` and `koryph
+// adopt` share one install path.
 
 // cmdCommandsInstall writes the koryph-* Claude slash commands into
 // <root>/.claude/commands. Identical files are a no-op; content that differs is
@@ -431,26 +391,6 @@ func installAllProjects(stdout, stderr io.Writer, label string, force bool,
 		return 1
 	}
 	return 0
-}
-
-// onboardInstall runs one scaffolding install during `project add`. It never
-// fails onboarding (a warning at most), reports how many assets were newly
-// installed, and surfaces any differing files that were left untouched.
-func onboardInstall(stderr io.Writer, label string, install func() ([]scaffold.Result, error)) {
-	results, err := install()
-	if err != nil {
-		fmt.Fprintf(stderr, "koryph: warning: could not install %s: %v\n", label, err)
-		return
-	}
-	if n := scaffold.Count(results, scaffold.ActionInstalled); n > 0 {
-		fmt.Fprintf(stderr, "koryph: installed %d %s into .claude/%s\n", n, label, label)
-	}
-	if conflicts := scaffold.Conflicts(results); len(conflicts) > 0 {
-		fmt.Fprintf(stderr,
-			"koryph: warning: %d %s already exist with different content, left unchanged: %s\n",
-			len(conflicts), label, strings.Join(conflicts, ", "))
-		fmt.Fprintf(stderr, "koryph: run `koryph %s install <root> --force` to update them.\n", label)
-	}
 }
 
 // reportInstall prints one line per asset and a summary, then — when a

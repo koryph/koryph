@@ -4,11 +4,53 @@ name: Bug report
 description: Something koryph does is wrong
 labels: [bug, triage]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Two rules keep this fast:
+        **security vulnerabilities go to [private advisories](https://github.com/koryph/koryph/security/advisories/new), never here**,
+        and **redact identities, emails, tokens, and keys** from anything you paste.
   - type: input
     id: version
     attributes:
       label: koryph version
       description: Output of `koryph version`
+    validations: { required: true }
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of koryph misbehaves? Pick the closest — this routes the issue.
+      options:
+        - adopt / onboarding / project add
+        - planning skills / intent routing (/koryph-design, /koryph-plan, …)
+        - scheduler / footprints / dispatch
+        - governor / quota / billing / resources
+        - merge / review / green gate
+        - epic validation
+        - recovery / retries / escalation
+        - TUI / board / cockpit / VS Code
+        - signing / vaults
+        - posture / repo IaC
+        - release train / release bot / CI setup
+        - docs site
+        - other / not sure
+    validations: { required: true }
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Agent runtime
+      description: Claude Code is the supported runtime; all others are alpha (see docs → AI runtimes).
+      options:
+        - Claude Code (supported)
+        - Other runtime (alpha — name it in the reproduction)
+        - Not runtime-related
+    validations: { required: true }
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and architecture, e.g. `macOS 15.5 arm64`, `Ubuntu 24.04 amd64`
     validations: { required: true }
   - type: textarea
     id: repro
@@ -26,3 +68,8 @@ body:
     attributes:
       label: Relevant output
       description: Run output, ledger/manifest snippets, agent stderr — REDACT identities/keys.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: koryph doctor output
+      description: Optional but often decisive — `koryph doctor --project <id>` (redacted).

@@ -117,9 +117,9 @@ lint-ci: ## Enforced lint for CI (pins golangci-lint via go run, like make vuln)
 .PHONY: reuse
 reuse: ## REUSE/SPDX compliance (skipped with a notice if no runner; CI enforces it)
 	@if command -v reuse >/dev/null 2>&1; then reuse lint; \
-	elif command -v uvx >/dev/null 2>&1; then uvx reuse lint; \
-	elif command -v pipx >/dev/null 2>&1; then pipx run reuse lint; \
-	else echo "reuse not installed (try 'uvx reuse lint'); skipping — CI enforces it"; fi
+	elif command -v uvx >/dev/null 2>&1; then uvx --from 'reuse[charset-normalizer]' reuse lint; \
+	elif command -v pipx >/dev/null 2>&1; then pipx run --spec 'reuse[charset-normalizer]' reuse lint; \
+	else echo "reuse not installed (try 'uvx --from reuse[charset-normalizer] reuse lint'); skipping — CI enforces it"; fi
 
 .PHONY: gate
 gate: fmt-check build vet test lint reuse ## The green gate (mirrors koryph.project.json)

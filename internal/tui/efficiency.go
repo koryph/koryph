@@ -285,27 +285,53 @@ func (m *efficiencyModel) renderResourcesSection(gov cockpit.GovernorSnapshot) s
 	return title + "\n" + strings.Join(lines, "\n")
 }
 
-// renderQuotaSection renders the quota window burn bars.
+// renderQuotaSection renders the quota window burn bars, one labeled block
+// per AI provider/runtime with measurable usage. Different dispatched
+// threads may run under different runtimes (ledger.Slot.Runtime), each
+// billed against its own provider's rate limits — this loop is the display
+// side of that: it renders exactly one block today ("claude", the only
+// runtime that exists) and needs no further change once a second provider's
+// quota measurement lands.
 func (m *efficiencyModel) renderQuotaSection(eff cockpit.EfficiencySnapshot) string {
 	title := m.sectionTitle("Quota Windows")
 
-	if eff.QuotaSource == "uncalibrated" {
-		return title + "\n" + m.dimText("  uncalibrated — run: koryph quota calibrate")
+	if len(eff.ProviderQuotas) == 0 {
+		return title + "\n" + m.dimText("  no data yet")
 	}
 
 	barW := 24
+	var b strings.Builder
+	for i, pq := range eff.ProviderQuotas {
+		if i > 0 {
+			b.WriteRune('\n')
+		}
+		label := pq.Runtime
+		if label == "" {
+			label = pq.Provider
+		}
+		if label == "" {
+			label = "unknown provider"
+		}
+		fmt.Fprintf(&b, "  %s\n", lipgloss.NewStyle().Bold(true).Foreground(m.theme.Cyan).Render(label))
 
-	line5h := m.quotaBar("5-hour ", eff.QuotaWindow5hCeiling, eff.QuotaWindow5hSpent,
-		eff.QuotaWindow5hFrac, barW, eff.QuotaSource)
-	lineWeekly := m.quotaBar("weekly ", eff.QuotaWindowWeeklyCeiling, eff.QuotaWindowWeeklySpent,
-		eff.QuotaWindowWeeklyFrac, barW, eff.QuotaSource)
+		if pq.Source == "uncalibrated" {
+			b.WriteString(m.dimText("    uncalibrated — run: koryph quota calibrate") + "\n")
+			continue
+		}
 
-	srcNote := ""
-	if eff.QuotaSource == "unavailable" {
-		srcNote = "\n" + m.dimText("  live spend unavailable — run: koryph quota usage")
+		line5h := m.quotaBar("5-hour ", pq.Window5hCeiling, pq.Window5hSpent, pq.Window5hFrac, barW, pq.Source)
+		lineWeekly := m.quotaBar("weekly ", pq.WeeklyCeiling, pq.WeeklySpent, pq.WeeklyFrac, barW, pq.Source)
+		fmt.Fprintf(&b, "%s\n%s\n", line5h, lineWeekly)
+
+		switch pq.Source {
+		case "unavailable":
+			b.WriteString(m.dimText("    live spend unavailable — run: koryph quota usage") + "\n")
+		case "jsonl-scan":
+			b.WriteString(m.dimText("    spend ≈ transcript scan (refreshes every minute)") + "\n")
+		}
 	}
 
-	return title + "\n" + line5h + "\n" + lineWeekly + srcNote
+	return title + "\n" + strings.TrimRight(b.String(), "\n")
 }
 
 // renderEstimatorSection renders the per-bucket estimator calibration table.
@@ -541,25 +567,30 @@ func renderSparklineFromFloats(series []float64) string {
 	return sb.String()
 }
 
-// renderTokenSection renders the Token Economy section: per-bead token
-// composition table, fleet cache-hit ratio + I7 tripwire, and tokens-per-bead
-// trend sparkline. Added by koryph-77r.3 (design §3 L1).
+// renderTokenSection renders the Token Economy section: per-model rollup,
+// per-bead token composition table (titles, most-recent first), cache-hit
+// ratios + I7 tripwire, and the tokens-per-bead trend sparkline.
 func (m *efficiencyModel) renderTokenSection(eff cockpit.EfficiencySnapshot) string {
-	title := m.sectionTitle("Token Economy (koryph-77r.3 §L1)")
+	title := m.sectionTitle("Token Economy")
 
 	var b strings.Builder
 
-	// --- fleet cache-hit ratio + tripwire ------------------------------------
+	// --- cache-hit ratios + tripwire -----------------------------------------
 	if eff.FleetCacheHitRatio > 0 || len(eff.TokenRows) > 0 {
-		ratioStr := fmt.Sprintf("%.1f%%", eff.FleetCacheHitRatio*100)
-		ratioStyled := lipgloss.NewStyle().Foreground(m.cacheHitColor(eff.FleetCacheHitRatio)).Render(ratioStr)
+		allStr := lipgloss.NewStyle().Foreground(m.cacheHitColor(eff.FleetCacheHitRatio)).
+			Render(fmt.Sprintf("%.1f%%", eff.FleetCacheHitRatio*100))
+		recentStr := m.dimText("no dispatches in 24h")
+		if eff.FleetCacheHit24h >= 0 {
+			recentStr = lipgloss.NewStyle().Foreground(m.cacheHitColor(eff.FleetCacheHit24h)).
+				Render(fmt.Sprintf("%.1f%%", eff.FleetCacheHit24h*100))
+		}
 
 		tripwireStr := ""
 		if eff.CacheHitTripwire == "warn" {
-			tripwireStr = "  " + lipgloss.NewStyle().Foreground(m.theme.Warning).Render("⚠ I7 WARN: cache_read share collapsed — check prefix hygiene")
+			tripwireStr = "  " + lipgloss.NewStyle().Foreground(m.theme.Warning).Render("⚠ cache_read share collapsed — check prompt-prefix hygiene")
 		}
 
-		fmt.Fprintf(&b, "  fleet cache-hit ratio: %s%s\n", ratioStyled, tripwireStr)
+		fmt.Fprintf(&b, "  cache-hit: %s last 24h · %s all-time%s\n", recentStr, allStr, tripwireStr)
 	} else {
 		b.WriteString(m.dimText("  no token data yet (accumulates from dispatches)") + "\n")
 		return title + "\n" + b.String()
@@ -570,8 +601,37 @@ func (m *efficiencyModel) renderTokenSection(eff cockpit.EfficiencySnapshot) str
 		spk := renderSparklineFromFloats(eff.TokensPerBeadTrend)
 		// Find today's value.
 		today := eff.TokensPerBeadTrend[len(eff.TokensPerBeadTrend)-1]
-		fmt.Fprintf(&b, "  tokens/bead trend (%dd): %s  (%.0f today)\n",
-			cockpit.SparklineLen, spk, today)
+		fmt.Fprintf(&b, "  tokens/bead trend (%dd): %s  (%s today)\n",
+			cockpit.SparklineLen, spk, formatTokenCount(int64(today)))
+	}
+
+	// --- per-model rollup ----------------------------------------------------
+	// The "do I need to change models / serialize" table: token classes and
+	// accumulated cost per serving model.
+	numW := 8
+	if len(eff.ModelRows) > 0 {
+		modelW := 14
+		header := m.tableHeader(
+			modelW, "Model",
+			5, "Beads",
+			numW, "Total",
+			numW, "Fresh",
+			numW, "CacheR",
+			numW, "Output",
+			numW, "Cost",
+		)
+		b.WriteString(header + "\n")
+		for _, mr := range eff.ModelRows {
+			fmt.Fprintf(&b, "  %-*s  %-*d  %-*s  %-*s  %-*s  %-*s  $%.2f\n",
+				modelW, truncate(shortModel(mr.Model), modelW),
+				5, mr.Beads,
+				numW, formatTokenCount(mr.TotalTokens),
+				numW, formatTokenCount(mr.InputFresh),
+				numW, formatTokenCount(mr.CacheRead),
+				numW, formatTokenCount(mr.Output),
+				mr.CostUSD,
+			)
+		}
 	}
 
 	// --- per-bead token composition table ------------------------------------
@@ -580,26 +640,26 @@ func (m *efficiencyModel) renderTokenSection(eff cockpit.EfficiencySnapshot) str
 		return title + "\n" + b.String()
 	}
 
-	// Column widths: bead (flexible) | total | fresh | cache_r | cache_c | out | ratio
-	beadW := 20
-	numW := 8
-	ratioW := 7
-	if m.width > 100 {
-		beadW = 28
-	}
+	// Recent beads by TITLE (ids are in Detail); flexible title column.
+	titleW := m.width - 5*numW - 7 - 14
+	titleW = min(max(titleW, 16), 48)
 	header := m.tableHeader(
-		beadW, "Bead",
+		titleW, "Recent Bead",
 		numW, "Total",
 		numW, "Fresh",
 		numW, "CacheR",
 		numW, "CacheC",
 		numW, "Output",
-		ratioW, "Hit%",
+		7, "Hit%",
 	)
 	b.WriteString(header + "\n")
 
 	for _, row := range eff.TokenRows {
-		bead := truncate(row.BeadID, beadW)
+		label := row.Title
+		if label == "" {
+			label = row.BeadID
+		}
+		bead := truncate(label, titleW)
 		total := formatTokenCount(row.TotalTokens)
 		fresh := formatTokenCount(row.InputFresh)
 		cacheR := formatTokenCount(row.CacheRead)
@@ -609,7 +669,7 @@ func (m *efficiencyModel) renderTokenSection(eff cockpit.EfficiencySnapshot) str
 		hitStyled := lipgloss.NewStyle().Foreground(m.cacheHitColor(row.CacheHitRatio)).Render(hitPct)
 
 		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
-			beadW, bead,
+			titleW, bead,
 			numW, total,
 			numW, fresh,
 			numW, cacheR,

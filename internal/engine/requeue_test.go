@@ -263,6 +263,26 @@ func TestEscalationSkipsMergeErrors(t *testing.T) {
 	}
 }
 
+// TestEscalationSkipsCleanNoCommitExit proves D14: a bead whose agent exited
+// cleanly with no commits is environment-gated, not a capability fault, so the
+// final attempt is NOT escalated — a higher tier would just reproduce the
+// identical no-op at recovery-tier cost.
+func TestEscalationSkipsCleanNoCommitExit(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "esc-noop", ledger.MaxAttempts-1)
+
+	r.requeueSlot(t.Context(), sl, "", cleanNoCommitExitNote)
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	got := r.run.Slots["esc-noop"]
+	if got.Model != "sonnet" || strings.Contains(got.ModelWhy, "escalat") {
+		t.Errorf("clean no-commit final attempt model/why = %q/%q, want frozen sonnet (no escalation)", got.Model, got.ModelWhy)
+	}
+}
+
 // TestEscalationRespectsAllowlist proves the allowlist gate the frozen-model
 // path otherwise bypasses: a project that never allowed opus keeps its final
 // attempt on the frozen tier.

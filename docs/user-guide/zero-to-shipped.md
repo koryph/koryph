@@ -35,9 +35,30 @@ registers it, scaffolds its agent contract, and takes over from there.
 
 ---
 
-## Stage 1 — Register the project (Build)
+## Stage 1 — Adopt the project (Build)
 
-Point koryph at your repo and map it to the account its agents will run under:
+Point koryph at your repo and let the wizard take it to a green
+`koryph validate` in one run — installing prerequisites, initializing beads,
+deriving the account/gate/forge/area_map, installing the agent scaffolding,
+and validating:
+
+```sh
+koryph adopt ~/src/myproject
+```
+
+`adopt` detects what's already in place, prints a plan naming each step and
+why it's needed, asks for consent in three scopes (the repo-wide plan, each
+system-level install, and the derived account/gate/forge values), then
+executes and finishes by running `koryph validate` in-process — promoting
+the record `registered → migrated` on the first green pass. See
+[koryph adopt](adopt.md) for the full phase-by-phase walkthrough.
+
+**Alternative — drive it by hand:** `koryph project add` is the lower-level
+primitive `adopt` sequences. It writes a machine-local registry record under
+`~/.koryph` and installs the agent scaffolding — `AGENTS.md` (the
+runtime-neutral operating contract), fallback personas, and — for Claude
+Code — the `koryph-*` slash commands, hooks, and permission baseline — but
+does not initialize beads or infer `gate`/`forge`/`area_map` for you:
 
 ```sh
 koryph project add ~/src/myproject \
@@ -45,11 +66,7 @@ koryph project add ~/src/myproject \
   --identity you@example.com
 ```
 
-`project add` inspects the repo, writes a machine-local registry record under
-`~/.koryph`, and installs the agent scaffolding: `AGENTS.md` (the runtime-neutral
-operating contract), fallback personas, and — for Claude Code — the `koryph-*`
-slash commands, hooks, and permission baseline. Then confirm the pre-dispatch
-gate passes:
+Then confirm the pre-dispatch gate passes:
 
 ```sh
 koryph validate myproject
@@ -58,16 +75,22 @@ koryph validate myproject
 `validate` checks hooks, adapter config, beads initialisation, and account
 identity, promoting the record `registered → migrated` on the first green pass.
 
-See [Quickstart](quickstart.md) for the full asset table and validation output.
+See [Quickstart](quickstart.md) for the full asset table and both paths'
+validation output.
 
 ---
 
 ## Stage 2 — Turn intent into a bead graph (Build)
 
 Waves dispatch **beads** (issues in the project's local beads/Dolt database).
-`bd ready` must be non-empty or the loop has nothing to build. Two shipped
+`bd ready` must be non-empty or the loop has nothing to build. Three shipped
 paths get you there:
 
+- **From an idea in your head** — just describe what you want to build,
+  change, or fix in an agent session: the installed `koryph-intent.sh`
+  hook detects work-shaped prompts and routes the session to the right
+  planning command. Or run `/koryph-design "<ask>"` directly — it writes a
+  repo-grounded design doc, waits for your approval, then decomposes it.
 - **From a design doc** — run `/koryph-plan <doc>` in your editor (or the
   `koryph-plan` skill) to decompose a design into a filed, conflict-aware bead
   graph with footprints and dependencies wired.
@@ -78,6 +101,8 @@ paths get you there:
 You can also file a single well-formed issue with `/koryph-issue "<desc>"`.
 Footprint labels (`area:*`, `fp:read:*`) are what let the scheduler run
 conflict-free work in parallel — the planning commands assign them for you.
+The whole prompt-to-beads pipeline, including the design-approval stop and
+a worked example, is in [From prompt to beads](describing-work.md).
 
 ---
 
@@ -209,8 +234,8 @@ see [The release bot](release-bot.md) for the three replication models
 
 | Pillar | Stage | Command(s) |
 |---|---|---|
-| Build | Register | `koryph project add`, `koryph validate` |
-| Build | Plan | `/koryph-plan`, `/koryph-import`, `/koryph-issue` |
+| Build | Adopt | `koryph adopt` (or `koryph project add`, `koryph validate`) |
+| Build | Plan | `/koryph-design`, `/koryph-plan`, `/koryph-import`, `/koryph-issue` |
 | Build | Run | `koryph run --project … [--review --auto-merge]` |
 | Protect | Hygiene | `koryph repo check` / `apply`, `koryph posture apply`, `koryph doctor` |
 | Protect | Signing | `koryph signing setup / enable / status` |

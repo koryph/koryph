@@ -40,6 +40,11 @@ const (
 	// QueueStateContainer means the bead is an epic or container that is not
 	// directly dispatchable (it has open children or a non-dispatch issue type).
 	QueueStateContainer QueueNodeState = "container"
+	// QueueStateWaiting means the bead is open, has no open deps we can see,
+	// but bd's ready frontier withheld it — a claim held elsewhere, a stale
+	// in_progress, an unsynced dep close, or an eligibility filter. The old
+	// behavior labeled these "ready", which was wrong: they will NOT dispatch.
+	QueueStateWaiting QueueNodeState = "waiting"
 )
 
 // QueueNode is one row in the hierarchical queue view.
@@ -109,6 +114,9 @@ type queueInput struct {
 	// resource holder as "project/bead" (matching the engine's
 	// classifyAdmit) vs a same-project holder as just its bead id.
 	projectID string
+	// titleByID maps issue id → title for blocker-reason enrichment. Set by
+	// computeQueue itself from allIssues; zero value tolerated.
+	titleByID map[string]string
 	// now is the reference time for ComputedAt.
 	now time.Time
 }
@@ -124,8 +132,10 @@ func computeQueue(in queueInput) QueueSnapshot {
 
 	// Build lookup and parent→children index.
 	byID := make(map[string]*beads.Issue, len(in.allIssues))
+	in.titleByID = make(map[string]string, len(in.allIssues))
 	for i := range in.allIssues {
 		byID[in.allIssues[i].ID] = &in.allIssues[i]
+		in.titleByID[in.allIssues[i].ID] = in.allIssues[i].Title
 	}
 
 	childrenOf := make(map[string][]beads.Issue, 8)
@@ -288,15 +298,24 @@ func deriveQueueState(iss beads.Issue, hasChildren bool, in queueInput) (QueueNo
 	}
 
 	// 5. Dep-blocked: the dep graph lists open blockers for this issue.
+	// The reason names the blockers by TITLE (bead ids say nothing about
+	// what is actually in the way); the id remains reachable via Detail.
 	if blockers, ok := in.graph.Deps[iss.ID]; ok && len(blockers) > 0 {
-		// Limit to first 3 blockers for display.
 		shown := blockers
 		suffix := ""
-		if len(shown) > 3 {
-			shown = shown[:3]
-			suffix = fmt.Sprintf(" +%d", len(blockers)-3)
+		if len(shown) > 2 {
+			shown = shown[:2]
+			suffix = fmt.Sprintf(" +%d more", len(blockers)-2)
 		}
-		return QueueStateDepBlocked, "on " + strings.Join(shown, ", ") + suffix
+		names := make([]string, 0, len(shown))
+		for _, dep := range shown {
+			if t := in.titleByID[dep]; t != "" {
+				names = append(names, t)
+			} else {
+				names = append(names, dep)
+			}
+		}
+		return QueueStateDepBlocked, "needs: " + strings.Join(names, "; ") + suffix
 	}
 
 	// 6. Resource-deferred: in the ready frontier but a declared res:<kind>
@@ -324,7 +343,11 @@ func deriveQueueState(iss beads.Issue, hasChildren bool, in queueInput) (QueueNo
 		sort.Strings(conflictIDs)
 		for _, runID := range conflictIDs {
 			if sched.Conflicts(fp, in.runningFPs[runID]) {
-				return QueueStateFootprintDeferred, "conflict with " + runID
+				name := in.titleByID[runID]
+				if name == "" {
+					name = runID
+				}
+				return QueueStateFootprintDeferred, "waits on: " + name
 			}
 		}
 		// In the ready frontier, no conflict detected.
@@ -336,10 +359,14 @@ func deriveQueueState(iss beads.Issue, hasChildren bool, in queueInput) (QueueNo
 		return QueueStateReady, ""
 	}
 
-	// 9. Not in ready frontier, not dep-blocked by the dep graph — could be
-	//    a footprint conflict that bd ready didn't surface, or an eligibility
-	//    issue. Surface as ready for now; the engine's wave log has specifics.
-	return QueueStateReady, ""
+	// 9. Open, no open deps we can see, yet bd's ready frontier withheld it.
+	//    The old code labeled this "ready", which lied to the operator: these
+	//    beads will NOT dispatch. Classify as waiting with the best hint we
+	//    can derive.
+	if iss.Status == "in_progress" {
+		return QueueStateWaiting, "in_progress — claimed elsewhere or stale"
+	}
+	return QueueStateWaiting, "withheld by bd ready (sync lag or filter)"
 }
 
 // resourceCapacityBlocker reports whether iss's declared res:<kind> labels

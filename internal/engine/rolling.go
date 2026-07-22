@@ -50,6 +50,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		}
 		syncObsConfig() // pick up `koryph obs level` changes without a restart
 		r.patrolIfDue(ctx)
+		r.applyOperatorOverrides()
 		r.drainEpicResults(ctx)
 
 		gate := r.governorGate(ctx)
@@ -92,6 +93,9 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if err != nil {
 				return r.outcome(ExitFatal, "bd ready failed", false), fmt.Errorf("engine: bd ready: %w", err)
 			}
+			// Operator-injected beads widen the frontier past --parent without a
+			// restart (D10), merged before --only narrows.
+			issues = r.applyInjections(ctx, issues)
 			// --only narrows the frontier to a single operator-chosen bead;
 			// once it closes it drops out of `bd ready` and the run drains.
 			if r.opts.Only != "" {
@@ -112,6 +116,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if err != nil {
 				return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
 			}
+			r.captureFrontier(w)
 			for _, iss := range issues {
 				if ok, _ := sched.Eligible(iss, active); ok {
 					eligible++

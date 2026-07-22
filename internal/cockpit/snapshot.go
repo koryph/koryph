@@ -10,8 +10,9 @@
 //   - TopDeferralTokens: most-contended footprint write-tokens from active slots.
 //   - GovernorPools: per-pool cap/probe/settle/breaker detail.
 //   - EstimatorRows: per-(tier:size) bucket n/bias/MAPE/corrected.
-//   - QuotaWindow5h / QuotaWindowWeekly: quota burn bars (ceiling from config;
-//     live spent requires ccusage background — marked unavailable when absent).
+//   - ProviderQuotas: per-AI-provider 5h/weekly quota burn bars (ceiling from
+//     config; live spend requires ccusage/transcript-scan background — marked
+//     unavailable when absent).
 //
 // It provides typed snapshots and subscription interfaces over the koryph run
 // ledger, global governor, and quota store so that both the Bubble Tea TUI
@@ -30,7 +31,12 @@
 // 80×24 enforcement.
 package cockpit
 
-import "time"
+import (
+	"sort"
+	"time"
+
+	"github.com/koryph/koryph/internal/govern"
+)
 
 // AttemptRecord captures the outcome of one dispatch attempt for a bead,
 // assembled from the run ledger for the bead detail panel.
@@ -69,6 +75,11 @@ type BeadDetailSnapshot struct {
 	Worktree    string
 	CostUSD     float64
 	EstimateUSD float64
+	// DeathReason / SlotNote mirror the ledger slot's failure classification
+	// and free-form note (block hints, park reasons) — the "why did this
+	// thread die / why is it blocked" answer, for escalation decisions.
+	DeathReason string
+	SlotNote    string
 	LogPath     string // path to agent session log for 't' tail
 	// StreamPath is the agent's stream.jsonl (Slot.Stream) — the source for
 	// the 'T' thinking tail (koryph-xvk): extended-thinking deltas, with
@@ -153,6 +164,25 @@ type SlotSnapshot struct {
 
 	// StatusJSON is the raw "state" field from the agent's status.json.
 	StatusJSON string
+
+	// StatusAge is how long ago the agent last rewrote its status.json (the
+	// step-boundary heartbeat). Zero when the file is absent. A running slot
+	// whose heartbeat is old is stalled — structured stuck-detection from
+	// work-assignment + heartbeat + liveness, never output scraping.
+	StatusAge time.Duration
+
+	// DeathReason is the engine's classification of the most recent attempt's
+	// death ("budget-killed", "operator-stop", …). Empty while live or when
+	// the ledger predates the field.
+	DeathReason string
+
+	// Note is the slot's free-form ledger note (block hints, park reasons).
+	Note string
+
+	// ModelActual is the model that ACTUALLY served the most recent attempt
+	// (fallback downgrades make it diverge from the requested Model). Empty
+	// when unrecorded.
+	ModelActual string
 }
 
 // GovernorSnapshot is a point-in-time view of the machine-global governor
@@ -210,6 +240,41 @@ type PoolSnapshot struct {
 	Adaptive     bool
 	Leases       int    // active leases
 	BreakerState string // ""|"open"|"half-open"
+}
+
+// PrimaryPool returns the pool that is actually gating dispatch, for display:
+// the pool holding the most active leases (work runs there), falling back to
+// the default (anthropic) pool and then the alphabetically-first pool when
+// the machine is idle. Deterministic — ties break by name. ok is false when
+// no pools exist. Every consumer that shows "the" governor state (status bar,
+// concurrency gauge) MUST use this instead of ranging over the Pools map —
+// map iteration order is random per call, which made the status bar flicker
+// between pools on every render (a machine with anthropic/personal/work
+// pools rotated through all three).
+func (g GovernorSnapshot) PrimaryPool() (PoolSnapshot, bool) {
+	if len(g.Pools) == 0 {
+		return PoolSnapshot{}, false
+	}
+	names := make([]string, 0, len(g.Pools))
+	for name := range g.Pools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	best, bestName := PoolSnapshot{}, ""
+	for _, name := range names {
+		ps := g.Pools[name]
+		if bestName == "" || ps.Leases > best.Leases {
+			best, bestName = ps, name
+		}
+	}
+	if best.Leases > 0 {
+		return best, true
+	}
+	if ps, ok := g.Pools[govern.DefaultPool]; ok {
+		return ps, true
+	}
+	return g.Pools[names[0]], true
 }
 
 // GraphSnapshot is a point-in-time view of the beads dependency graph for one
@@ -278,8 +343,50 @@ type Snapshot struct {
 	// machine-wide audit log. The zero value (empty slice) is safe.
 	Events EventsSnapshot
 
+	// Patrol is the run ledger's health-patrol history (engine koryph-gus):
+	// stuck claims, stale worktrees, and other in-loop findings. Mirrored so
+	// the events feed can surface warn-level findings. Nil when the ledger
+	// predates patrols or none have run.
+	Patrol []PatrolEventSnapshot
+
 	// CapturedAt is when this snapshot was assembled.
 	CapturedAt time.Time
+}
+
+// ProviderQuotaSnapshot is one AI provider's usage-window burn state — the
+// 5-hour and weekly allocation an operator watches to decide whether to
+// change models or serialize dispatch to stay inside a subscription's
+// allowances. koryph measures usage per RUNTIME (each has its own
+// account/config-dir and its own usage source), so Runtime is the primary
+// display key; Provider is the runtime's billing/rate-limit identity
+// (runtime.Runtime.Provider() — the same string used as a governor pool key)
+// for cases where multiple runtimes share one provider's limits.
+type ProviderQuotaSnapshot struct {
+	// Runtime is the runtime this quota was measured for (runtime.Runtime.Name():
+	// "claude" today; "codex"/"gemini"/"grok" once those adapters exist).
+	Runtime string
+	// Provider is the billing/rate-limit identity Runtime bills against
+	// (runtime.Runtime.Provider(): "anthropic" for claude).
+	Provider string
+
+	// Window5hCeiling / WeeklyCeiling are the configured per-window USD
+	// ceilings. 0 means uncalibrated (run koryph quota calibrate).
+	Window5hCeiling float64
+	WeeklyCeiling   float64
+
+	// Window5hFrac / WeeklyFrac are the spent/ceiling fractions when live
+	// usage is available. Negative means unavailable.
+	Window5hFrac float64
+	WeeklyFrac   float64
+
+	// Window5hSpent / WeeklySpent are the raw spent-USD values. 0 when
+	// unavailable.
+	Window5hSpent float64
+	WeeklySpent   float64
+
+	// Source identifies the data source for the window values: "ccusage",
+	// "jsonl-scan", "unavailable", or "uncalibrated".
+	Source string
 }
 
 // EfficiencySnapshot is the efficiency + calibration dashboard data assembled
@@ -315,25 +422,18 @@ type EfficiencySnapshot struct {
 	// quota.Config.ErrorStats + quota.Config.Calibration (koryph-6bl).
 	EstimatorRows []EstimatorRow
 
-	// QuotaWindow5hCeiling / QuotaWindowWeeklyCeiling are the configured
-	// per-window USD ceilings. 0 means uncalibrated (run koryph quota calibrate).
-	QuotaWindow5hCeiling     float64
-	QuotaWindowWeeklyCeiling float64
-
-	// QuotaWindow5hFrac / QuotaWindowWeeklyFrac are the spent/ceiling fractions
-	// when live usage is available (from ccusage background refresh). NaN or
-	// negative means unavailable.
-	QuotaWindow5hFrac     float64
-	QuotaWindowWeeklyFrac float64
-
-	// QuotaWindow5hSpent / QuotaWindowWeeklySpent are the raw spent-USD values.
-	// 0 when unavailable.
-	QuotaWindow5hSpent     float64
-	QuotaWindowWeeklySpent float64
-
-	// QuotaSource identifies the data source for the quota window values:
-	// "ccusage", "jsonl-scan", "unavailable", or "uncalibrated".
-	QuotaSource string
+	// ProviderQuotas is the usage-window burn state, one entry per AI
+	// provider/runtime with a measurable quota. A koryph project can dispatch
+	// threads under different runtimes (ledger.Slot.Runtime — "claude" today,
+	// with codex/gemini/grok adapters on the roadmap per internal/runtime's
+	// Registry), and each runtime is billed against its OWN provider's rate
+	// limits with its own measurement source (runtime.Capabilities.UsageSource).
+	// A single flat pair of "the" 5h/weekly fields would silently mean "Claude"
+	// without saying so and would have nowhere to put a second provider's
+	// numbers once one exists — this is the per-provider join point instead.
+	// Exactly one entry ("claude") is populated today; nil when nothing is
+	// calibrated. See ProviderQuotaSnapshot for field meaning.
+	ProviderQuotas []ProviderQuotaSnapshot
 
 	// TokenRows is the per-bead token composition table (koryph-77r.3, design
 	// §3 L1). Assembled from historical ledger slots; most-recent beads first.
@@ -342,13 +442,24 @@ type EfficiencySnapshot struct {
 
 	// FleetCacheHitRatio is the fleet-wide cache_read share of total input
 	// tokens: cache_read / (input_fresh + cache_read + cache_creation).
-	// Range [0,1]; 0 when no token data available.
+	// Range [0,1]; 0 when no token data available. Spans all retained history.
 	FleetCacheHitRatio float64
 
+	// FleetCacheHit24h is the same ratio over slots dispatched in the last
+	// 24 h — the actionable "is caching working right NOW" number. Negative
+	// when no slot in that window carries token data.
+	FleetCacheHit24h float64
+
 	// CacheHitTripwire is the I7 tripwire state for the cache-hit ratio.
-	// "" = OK / insufficient data; "warn" = cache_read share has collapsed
-	// below threshold since last refresh (design §2 I7).
+	// "" = OK / insufficient data; "warn" = the recent-window cache_read
+	// share is below threshold (design §2 I7).
 	CacheHitTripwire string
+
+	// ModelRows is the per-model token/cost rollup (keyed on the model that
+	// actually served — ModelActual — with the requested model as fallback),
+	// sorted by total tokens descending. This is the "do I need to change
+	// models" table.
+	ModelRows []ModelTokenRow
 
 	// TokensPerBeadTrend is a sparkline series of mean tokens-per-bead over
 	// the last SparklineLen days (index 0 = oldest, last = today).
@@ -400,6 +511,26 @@ type EstimatorRow struct {
 	Base float64
 }
 
+// ModelTokenRow is one row of the per-model token/cost rollup: every token
+// class plus accumulated cost, aggregated across all retained ledger history
+// for slots served by Model.
+type ModelTokenRow struct {
+	// Model is the serving model (Slot.ModelActual, falling back to the
+	// requested Slot.Model; "unknown" when neither is recorded).
+	Model string
+	// Beads is the number of slots aggregated into this row.
+	Beads int
+	// TotalTokens is the sum of all token classes.
+	TotalTokens int64
+	// InputFresh / CacheRead / CacheCreation / Output break the total down.
+	InputFresh    int64
+	CacheRead     int64
+	CacheCreation int64
+	Output        int64
+	// CostUSD is the accumulated ledger cost across these slots.
+	CostUSD float64
+}
+
 // TokenCompositionRow is one row of the per-bead token composition table
 // (koryph-77r.3, design §3 L1). Derived from the ledger's accumulated slot
 // token fields (InputTokens, OutputTokens, CacheReadTokens, CacheCreationTokens).
@@ -423,6 +554,20 @@ type TokenCompositionRow struct {
 	CacheHitRatio float64
 	// CostUSD is the slot's accumulated cost.
 	CostUSD float64
+}
+
+// PatrolFindingSnapshot mirrors ledger.PatrolFinding for cockpit consumers.
+type PatrolFindingSnapshot struct {
+	Check   string
+	Level   string // "ok" | "warn"
+	Message string
+	Fixed   bool
+}
+
+// PatrolEventSnapshot is one health-patrol run's findings.
+type PatrolEventSnapshot struct {
+	At       time.Time
+	Findings []PatrolFindingSnapshot
 }
 
 // TUIEvent is one entry in the live events feed (Events tab, koryph-9af.5).

@@ -34,7 +34,7 @@ type helpSection struct {
 // grouped in `koryph -h`. A command name listed here that is not registered is
 // skipped; a registered command named in no section lands in MORE (below).
 var helpSections = []helpSection{
-	{title: "GETTING STARTED", cmds: []string{"init", "project", "validate", "run"}},
+	{title: "GETTING STARTED", cmds: []string{"init", "adopt", "project", "validate", "run"}},
 	{title: "OPERATE", desc: "drive and steer a live run", cmds: []string{"intake", "nudge", "stop", "drain", "resize"}},
 	{title: "LAND & REVIEW", cmds: []string{"merge", "land", "review-pr", "pr-sync"}},
 	{title: "SUPPLY CHAIN", desc: "signing, release, and the release bot", cmds: []string{"signing", "sign", "bot", "ci", "release"}},
@@ -63,7 +63,7 @@ func usage(w io.Writer) {
 USAGE
   koryph <command> [flags]         (run `+"`koryph <command> -h`"+` for a command's flags)
 
-Get one wave running:  init → project add → validate → run
+Get one wave running:  init → adopt → run   (adopt is the wizard: deps, beads, config, assets)
 Reach full autonomy:   koryph help getting-started   (repo posture, signing, ci, release)
 
 `)
@@ -152,10 +152,13 @@ autonomy (autonomous merge, push, and release prep — you approve only releases
 
 TRACK 1 — one wave
   1. koryph init                        create ~/.koryph, verify tools on PATH
-  2. koryph project add <root> \
-       --account <personal|work> \
-       --identity <email>               register + scaffold + install assets
-  3. koryph validate --project <id>     run the pre-dispatch gate (green → migrated)
+  2. koryph adopt <root>                the wizard: install missing deps, init/harden
+                                        the beads DB, derive account + gate/forge/
+                                        area_map (confirmed, never guessed silently),
+                                        install assets, validate green
+     (flag-driven alternative:
+      koryph project add <root> --account <personal|work> --identity <email>)
+  3. koryph validate --project <id>     re-run the pre-dispatch gate any time
   4. koryph run --project <id> --once   execute one wave
 
 TRACK 2 — full autonomy (per project)

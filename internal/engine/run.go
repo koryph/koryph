@@ -424,13 +424,19 @@ func (r *runner) quotaName() string {
 	return r.rec.AccountProfile
 }
 
-// progress writes one human-readable line to opts.Out (nil-safe) and emits
-// a structured INFO record via the engine logger for correlation in log
-// pipelines (Section O2: engine instrumentation).
+// progress writes one human-readable line to the console sink (opts.Out). When
+// no console sink is configured — a headless run — it falls back to the
+// structured engine logger so the line is still captured somewhere. It
+// deliberately does NOT emit to both: opts.Out (stdout) and the slog handler
+// (stderr) are routinely merged into a single run log via `> run.log 2>&1`, and
+// emitting the same string to both doubled every progress line there, inflating
+// every tail/grep count (D8). Queryable telemetry comes from the dedicated,
+// single-emission engine.* records in obs.go, which are unaffected.
 func (r *runner) progress(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if r.opts.Out != nil {
 		fmt.Fprintln(r.opts.Out, msg)
+		return
 	}
 	log.Info(msg, r.runLogAttrs()...)
 }

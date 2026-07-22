@@ -14,7 +14,8 @@ import (
 // TestBuildTokenEconomy_Empty verifies that an empty run list yields zero values
 // and no tripwire fire.
 func TestBuildTokenEconomy_Empty(t *testing.T) {
-	rows, ratio, tripwire, trend := buildTokenEconomy(nil, time.Now())
+	te := buildTokenEconomy(nil, nil, time.Now())
+	rows, ratio, tripwire, trend := te.rows, te.fleetRatio, te.tripwire, te.trend
 	if len(rows) != 0 {
 		t.Errorf("empty input: len(rows) = %d, want 0", len(rows))
 	}
@@ -53,7 +54,8 @@ func TestBuildTokenEconomy_ZeroTokenFields(t *testing.T) {
 			},
 		},
 	}
-	rows, ratio, tripwire, _ := buildTokenEconomy(runs, now)
+	te := buildTokenEconomy(runs, nil, now)
+	rows, ratio, tripwire := te.rows, te.fleetRatio, te.tripwire
 	if len(rows) != 0 {
 		t.Errorf("zero-token slot should be skipped; got %d rows", len(rows))
 	}
@@ -92,7 +94,8 @@ func TestBuildTokenEconomy_SingleSlotHealthy(t *testing.T) {
 			},
 		},
 	}
-	rows, ratio, tripwire, trend := buildTokenEconomy(runs, now)
+	te := buildTokenEconomy(runs, nil, now)
+	rows, ratio, tripwire, trend := te.rows, te.fleetRatio, te.tripwire, te.trend
 
 	if len(rows) != 1 {
 		t.Fatalf("want 1 row, got %d", len(rows))
@@ -146,9 +149,8 @@ func TestBuildTokenEconomy_TripwireFires(t *testing.T) {
 			},
 		},
 	}
-	_, _, tripwire, _ := buildTokenEconomy(runs, now)
-	if tripwire != "warn" {
-		t.Errorf("tripwire = %q, want \"warn\" for low cache-hit ratio", tripwire)
+	if te := buildTokenEconomy(runs, nil, now); te.tripwire != "warn" {
+		t.Errorf("tripwire = %q, want \"warn\" for low cache-hit ratio", te.tripwire)
 	}
 }
 
@@ -169,9 +171,8 @@ func TestBuildTokenEconomy_MaxRowsCap(t *testing.T) {
 		}
 	}
 	runs := []*ledger.Run{{RunID: "run1", Slots: slots}}
-	rows, _, _, _ := buildTokenEconomy(runs, now)
-	if len(rows) > maxTokenRows {
-		t.Errorf("rows capped at %d, got %d", maxTokenRows, len(rows))
+	if te := buildTokenEconomy(runs, nil, now); len(te.rows) > maxTokenRows {
+		t.Errorf("rows capped at %d, got %d", maxTokenRows, len(te.rows))
 	}
 }
 
@@ -203,7 +204,7 @@ func TestBuildTokenEconomy_TrendBuckets(t *testing.T) {
 			},
 		},
 	}
-	_, _, _, trend := buildTokenEconomy(runs, now)
+	trend := buildTokenEconomy(runs, nil, now).trend
 
 	if len(trend) != SparklineLen {
 		t.Fatalf("trend len = %d, want %d", len(trend), SparklineLen)

@@ -5,3 +5,9 @@ contact_links:
   - name: Security vulnerability
     url: https://github.com/koryph/koryph/security/advisories/new
     about: Report vulnerabilities privately — never in a public issue (see SECURITY.md).
+  - name: Documentation
+    url: https://koryph.build/
+    about: Concepts, quickstart, and the full guides — check here before filing.
+  - name: Contributing guide
+    url: https://github.com/koryph/koryph/blob/main/CONTRIBUTING.md
+    about: DCO, commit signing, the green gate, and the PR flow.
