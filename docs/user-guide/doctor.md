@@ -66,6 +66,24 @@ stale-lock warning into a one-command remedy.
 Parses every `*.json` file in `registry.d/`. A file that is not valid JSON
 is an **error**.
 
+### auth-mode
+Reports, for every registered account, its effective auth mode
+(`subscription`, `api-key`, or `oauth-token`), where its credential comes
+from, and its identity fingerprint prefix — never the credential value
+itself:
+
+- `subscription` (the default) needs no credential and is always **ok**.
+- `api-key`/`oauth-token` with a `vault` credential reports the vault
+  provider and key reference; with an `env` credential it reports the
+  environment variable **name** (never its value).
+- A non-subscription account with no credential configured is an
+  **error**. One with a credential but no identity fingerprint yet is a
+  **warning** — the fingerprint is captured at the account's next dispatch.
+- A per-runtime account override (`runtime_accounts`) is reported separately
+  only when its resolved auth mode, credential, or fingerprint diverges
+  from the record's own; a runtime that just mirrors the record is not
+  repeated.
+
 ### governor
 Validates `governor.json` when present. An absent file is fine — koryph
 falls back to the default cap. A corrupt or zero-value file is an
