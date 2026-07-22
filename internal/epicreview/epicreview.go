@@ -163,6 +163,15 @@ func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
 		return degradedReason("validator spawn error: " + err.Error())
 	}
 	if res.ExitCode != 0 {
+		// A signal kill from the context deadline surfaces as ExitCode -1 with
+		// empty stderr (execx.Run, koryph-a59) — indistinguishable from a crash
+		// unless TimedOut is consulted explicitly (koryph-hwlw). Name the
+		// timeout so the degraded reason is never an empty "-1".
+		if res.TimedOut {
+			return degradedReason(fmt.Sprintf(
+				"validator timed out after %ds (timeout_seconds=%d; large epics commonly need more)",
+				o.TimeoutSec, o.TimeoutSec))
+		}
 		return degradedReason(fmt.Sprintf("validator exit %d: %s", res.ExitCode, strings.TrimSpace(agentjson.Tail(res.Stderr, 300))))
 	}
 

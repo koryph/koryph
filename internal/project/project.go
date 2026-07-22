@@ -335,8 +335,14 @@ type EpicValidationConfig struct {
 	AutoClose *bool `json:"auto_close,omitempty"`
 
 	// TimeoutSeconds is the per-run wall-clock timeout for the validator agent
-	// (default 420 s). Exceeding it is treated as a Degraded verdict. Zero
-	// resolves to the default via Effective().
+	// (default 420 s). Exceeding it is treated as a Degraded verdict, and the
+	// reason names the timeout explicitly (never a bare exit code — koryph-hwlw).
+	// The default does not scale with epic size: it was sized for small epics,
+	// and 6+ child epics commonly need 900s+ at opus effort (observed on
+	// koryph-i3b, an 8-child epic, where 420s hard-killed the validator on 3
+	// consecutive attempts but 900s passed first try). Projects with epics that
+	// regularly exceed ~5 children should raise this explicitly rather than
+	// rely on the default. Zero resolves to the default via Effective().
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 
 	// StructuralParent, when non-empty, is the bead ID of the epic (or

@@ -129,7 +129,7 @@ default. The block is optional; all fields below show their defaults.
 | `persona` | `"koryph-epic-validator"` | Agent file used as the validator. |
 | `max_rounds` | `2` | Validation rounds before the epic is parked. Must be ≥ 1 when set. |
 | `auto_close` | `true` | Close the epic automatically after a passing validation (and after the docs bead merges, when `docs_update` is enabled). `false` leaves closure a manual act. |
-| `timeout_seconds` | `420` | Per-run wall-clock timeout. Exceeded → `validation:degraded`. |
+| `timeout_seconds` | `420` | Per-run wall-clock timeout. Exceeded → `validation:degraded` with a reason naming the timeout (e.g. `validator timed out after 420s (timeout_seconds=420; large epics commonly need more)`). The default does not scale with epic size — it was sized for small epics. 6+ child epics commonly need 900s+ at opus effort; projects whose epics regularly exceed ~5 children should raise this explicitly. |
 | `structural_parent` | _(absent)_ | Bead id of the epic or container under which structural findings are filed. Empty means standalone. |
 
 ### The docs update stage
@@ -229,6 +229,12 @@ failure. The run does not fail; subsequent waves continue. `koryph doctor`
 surfaces degraded epics in its health report. Retry by running
 `koryph epic <epic-id>` again after addressing the root cause (usually a
 timeout — raise `timeout_seconds` or check quota headroom).
+
+A timeout kill and an ordinary crash are distinguishable in the reason: a
+wall-clock timeout always names itself, e.g. `validator timed out after
+420s (timeout_seconds=420; large epics commonly need more)`. Only a genuine
+non-timeout non-zero exit falls back to `validator exit <code>: <stderr
+tail>`.
 
 ## Self-healing: stranded completed epics
 

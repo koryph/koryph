@@ -49,6 +49,22 @@ func fakeClaudeFlaky(t *testing.T, failN int, okBody string) string {
 	return path
 }
 
+// fakeClaudeSleep writes a script that sleeps for `sleep` seconds (fractional
+// ok, e.g. "1.3") after draining stdin, then prints okBody. Used to exercise
+// the wall-clock timeout path: a short spawn deadline kills it mid-sleep.
+func fakeClaudeSleep(t *testing.T, sleep, okBody string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-claude-sleep")
+	script := "#!/bin/sh\n" +
+		"cat > /dev/null\n" +
+		"sleep " + sleep + "\n" +
+		"cat <<'FAKE_EOF'\n" + okBody + "\nFAKE_EOF\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // baseOpts builds a minimal Opts for tests. outDir is placed in a temp dir so
 // tests do not write to the repo.
 func baseOpts(t *testing.T, claudeBin string) Opts {
@@ -284,6 +300,36 @@ func TestValidateDegradation(t *testing.T) {
 	}
 	if v.Reason == "" {
 		t.Errorf("degraded verdict must carry a Reason, got empty")
+	}
+}
+
+// TestValidateTimeoutNamesReason is the koryph-hwlw acceptance test: a
+// validator killed by the wall-clock deadline (res.TimedOut, execx.go:77)
+// must produce a degraded reason that NAMES the timeout, never the bare
+// "validator exit -1: " a signal kill leaves behind (empty stderr, no
+// distinguishing detail — BUG-3, .plan-logs/koryph-session-bugs-2026-07-22.md).
+func TestValidateTimeoutNamesReason(t *testing.T) {
+	old := backoffUnit
+	backoffUnit = time.Millisecond
+	t.Cleanup(func() { backoffUnit = old })
+
+	o := baseOpts(t, fakeClaudeSleep(t, "2", cleanEnvelope(`{"met":true}`)))
+	o.TimeoutSec = 1 // < 2s sleep -> every attempt is killed by the deadline
+	o.Attempts = 1
+
+	v := Validate(context.Background(), o)
+
+	if !v.Degraded {
+		t.Fatalf("Degraded = false, want true for a wall-clock timeout")
+	}
+	if !strings.Contains(v.Reason, "timed out") {
+		t.Errorf("Reason = %q, want it to name the timeout (not a bare exit code)", v.Reason)
+	}
+	if !strings.Contains(v.Reason, "timeout_seconds=1") {
+		t.Errorf("Reason = %q, want it to cite timeout_seconds so the operator knows what to raise", v.Reason)
+	}
+	if strings.Contains(v.Reason, "exit -1: \"") || strings.HasSuffix(strings.TrimSpace(v.Reason), "-1: ") {
+		t.Errorf("Reason = %q, must not regress to the empty bare exit-code message", v.Reason)
 	}
 }
 
