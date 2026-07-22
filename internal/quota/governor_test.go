@@ -302,6 +302,158 @@ func TestLadder(t *testing.T) {
 	}
 }
 
+// rollingCfg is a config with a rolling-$ ceiling configured (api-key mode)
+// but no subscription window ceilings.
+func rollingCfg(ceiling float64) *Config {
+	c := DefaultConfig("acct")
+	c.RollingCeilingUSD = ceiling
+	return c
+}
+
+// TestStateForAuthModeSubscriptionUnchanged asserts subscription/oauth-token
+// accounts get byte-for-byte the same verdict from StateForAuthMode as from
+// State — the design's "auth_mode: subscription behavior is byte-for-byte
+// unchanged" acceptance criterion (§11 AC5), and oauth-token bills/governs
+// identically to subscription (design §7 table).
+func TestStateForAuthModeSubscriptionUnchanged(t *testing.T) {
+	cal := calibratedCfg()
+	u := usage(win(5, 94, 100, "ccusage"), win(168, 0, 1000, "ccusage"))
+
+	wantLevel, wantCalibd := State(u, cal)
+
+	for _, mode := range []string{AuthModeSubscription, AuthModeOAuthToken, ""} {
+		lvl, calibd := StateForAuthMode(mode, u, 0 /* spentUSD ignored */, cal)
+		if lvl != wantLevel || calibd != wantCalibd {
+			t.Fatalf("StateForAuthMode(%q) = (%s, %v), want (%s, %v) matching State", mode, lvl, calibd, wantLevel, wantCalibd)
+		}
+	}
+}
+
+// TestStateForAuthModeAPIKeyNoCeilingIsAdvisory is design §11 AC6's first
+// half: an api-key account with no rolling-$ ceiling configured must read
+// advisory (LevelOK, false), NOT permanently-at-stop — the exact bug
+// Window.Fraction() would produce if reused unmodified for this mode.
+func TestStateForAuthModeAPIKeyNoCeilingIsAdvisory(t *testing.T) {
+	uncal := DefaultConfig("acct") // RollingCeilingUSD unset
+	// An empty Usage — api-key mode ignores the subscription windows entirely.
+	u := Usage{Account: "acct"}
+
+	lvl, calibd := StateForAuthMode(AuthModeAPIKey, u, 1000 /* huge spend */, uncal)
+	if calibd {
+		t.Fatalf("api-key with no ceiling should be uncalibrated (advisory), got calibrated=true")
+	}
+	if lvl != LevelOK {
+		t.Fatalf("api-key with no ceiling should read LevelOK (advisory), got %s", lvl)
+	}
+
+	// Also nil cfg must not panic and must be advisory.
+	lvl, calibd = StateForAuthMode(AuthModeAPIKey, u, 1000, nil)
+	if calibd || lvl != LevelOK {
+		t.Fatalf("api-key with nil cfg should be advisory LevelOK, got (%s, %v)", lvl, calibd)
+	}
+}
+
+// TestStateForAuthModeAPIKeyCeilingFiresLadder is design §11 AC6's second
+// half: with a ceiling configured, api-key accounts read the standard
+// warn/throttle/graceful_stop/hard_stop ladder off spentUSD/ceiling.
+func TestStateForAuthModeAPIKeyCeilingFiresLadder(t *testing.T) {
+	cfg := rollingCfg(100)
+	u := Usage{Account: "acct"} // irrelevant for api-key mode
+
+	cases := []struct {
+		name      string
+		spentUSD  float64
+		wantLevel Level
+	}{
+		{"healthy", 10, LevelOK},
+		{"warn at 0.90", 90, LevelWarn},
+		{"throttle at 0.94", 94, LevelThrottle},
+		{"drain at 0.97", 97, LevelDrain},
+		{"stop at 0.99", 99, LevelStop},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lvl, calibd := StateForAuthMode(AuthModeAPIKey, u, tc.spentUSD, cfg)
+			if !calibd {
+				t.Fatalf("configured ceiling should report calibrated=true")
+			}
+			if lvl != tc.wantLevel {
+				t.Fatalf("StateForAuthMode(spent=%.0f) = %s, want %s", tc.spentUSD, lvl, tc.wantLevel)
+			}
+		})
+	}
+}
+
+func TestScaleSlotsForAuthMode(t *testing.T) {
+	const max = 9
+	u := Usage{Account: "acct"}
+
+	// subscription/oauth-token: delegates to ScaleSlots verbatim.
+	subCfg := calibratedCfg()
+	subU := usage(win(5, 95.5, 100, "ccusage"), win(168, 0, 1000, "ccusage"))
+	want := ScaleSlots(subU, subCfg, max)
+	if got := ScaleSlotsForAuthMode(AuthModeSubscription, subU, 0, subCfg, max); got != want {
+		t.Fatalf("ScaleSlotsForAuthMode(subscription) = %d, want %d (== ScaleSlots)", got, want)
+	}
+
+	// api-key, no ceiling: advisory, never scales down.
+	uncal := DefaultConfig("acct")
+	if got := ScaleSlotsForAuthMode(AuthModeAPIKey, u, 1000, uncal, max); got != max {
+		t.Fatalf("ScaleSlotsForAuthMode(api-key, uncalibrated) = %d, want %d (advisory, no scaling)", got, max)
+	}
+
+	// api-key, with ceiling: scales down using the same curve as ScaleSlots.
+	cfg := rollingCfg(100)
+	cases := []struct {
+		spentUSD float64
+		want     int
+	}{
+		{93, max},
+		{94, max},
+		{95.5, 5},
+		{96.9, 1},
+		{97, 0},
+		{99, 0},
+	}
+	for _, tc := range cases {
+		if got := ScaleSlotsForAuthMode(AuthModeAPIKey, u, tc.spentUSD, cfg, max); got != tc.want {
+			t.Fatalf("ScaleSlotsForAuthMode(api-key, spent=%.1f) = %d, want %d", tc.spentUSD, got, tc.want)
+		}
+	}
+}
+
+func TestPreflightForAuthMode(t *testing.T) {
+	u := Usage{Account: "acct"}
+
+	// subscription: delegates to Preflight verbatim.
+	subCfg := calibratedCfg()
+	subU := usage(win(5, 50, 100, "ccusage"), win(168, 100, 1000, "ccusage"))
+	wantOK, wantReason := Preflight(subU, 45, subCfg)
+	if ok, reason := PreflightForAuthMode(AuthModeSubscription, subU, 0, 45, subCfg); ok != wantOK || reason != wantReason {
+		t.Fatalf("PreflightForAuthMode(subscription) = (%v,%q), want (%v,%q)", ok, reason, wantOK, wantReason)
+	}
+
+	// api-key, no ceiling: always allowed, advisory.
+	uncal := DefaultConfig("acct")
+	if ok, reason := PreflightForAuthMode(AuthModeAPIKey, u, 0, 999, uncal); !ok || !strings.Contains(reason, "uncalibrated") {
+		t.Fatalf("PreflightForAuthMode(api-key, uncalibrated) = (%v,%q), want ok + uncalibrated", ok, reason)
+	}
+
+	// api-key, with ceiling: (50+45)/100 = 0.95 < graceful_stop 0.97 → ok.
+	cfg := rollingCfg(100)
+	if ok, reason := PreflightForAuthMode(AuthModeAPIKey, u, 50, 45, cfg); !ok {
+		t.Fatalf("rolling-$ wave to 95%% should pass (graceful-stop is 97%%), got not-ok: %s", reason)
+	}
+	// (50+48)/100 = 0.98 >= graceful_stop=0.97 → refused.
+	ok, reason := PreflightForAuthMode(AuthModeAPIKey, u, 50, 48, cfg)
+	if ok {
+		t.Fatalf("rolling-$ wave crossing graceful-stop should not dispatch")
+	}
+	if !strings.Contains(reason, "graceful-stop") {
+		t.Fatalf("reason should mention graceful-stop, got %q", reason)
+	}
+}
+
 func TestWindowFraction(t *testing.T) {
 	if f := win(5, 10, 0, "ccusage").Fraction(); f != 1.0 {
 		t.Fatalf("zero ceiling should be 1.0, got %g", f)

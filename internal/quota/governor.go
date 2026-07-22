@@ -297,8 +297,14 @@ func ScaleSlots(u Usage, cfg *Config, max int) int {
 	if cfg != nil {
 		l = cfg.Ladder
 	}
+	return scaleByFraction(maxFraction(u), l, max)
+}
+
+// scaleByFraction is ScaleSlots' shared math, factored out so
+// ScaleSlotsForAuthMode's rolling-$ branch (koryph-i3b.3) computes the exact
+// same curve against a different fraction rather than a hand-rolled copy.
+func scaleByFraction(frac float64, l Ladder, max int) int {
 	el := l.Effective()
-	frac := maxFraction(u)
 	if frac >= el.GracefulStop {
 		return 0
 	}
@@ -313,6 +319,78 @@ func ScaleSlots(u Usage, cfg *Config, max int) int {
 		n = 1
 	}
 	return n
+}
+
+// RollingCalibrated reports whether the account's rolling-$ ceiling (koryph-
+// i3b.3, design §7) is configured — the api-key-mode analogue of
+// isCalibrated. A zero/absent ceiling means "not configured", not
+// "measurement failed": unlike a Window (whose ccusage/transcript source can
+// go unavailable), rolling-$ spend is always known — it is the caller's own
+// tracked run/agent cost, passed in directly — so there is no separate
+// fail-closed state to distinguish from "no ceiling set".
+func RollingCalibrated(cfg *Config) bool {
+	return cfg != nil && cfg.RollingCeilingUSD > 0
+}
+
+// rollingFraction is spent/ceiling for the rolling-$ ladder. Returns 0 when
+// unconfigured — never fail-closed like Window.Fraction — because callers
+// must pair this with RollingCalibrated: an unconfigured ceiling is
+// advisory, not "at stop" (see RollingCeilingUSD's doc).
+func rollingFraction(spentUSD float64, cfg *Config) float64 {
+	if cfg == nil || cfg.RollingCeilingUSD <= 0 {
+		return 0
+	}
+	return spentUSD / cfg.RollingCeilingUSD
+}
+
+// StateForAuthMode is the auth-mode-branched entry point for the governor
+// ladder (koryph-i3b.3, design §7). subscription and oauth-token accounts
+// delegate to State(u, cfg) verbatim — byte-for-byte unchanged behavior.
+// api-key accounts have no subscription plan window (Window.Fraction()
+// reads CeilingUSD<=0 as 1.0 — permanently "at stop", backwards), so they
+// read the ladder off spentUSD/Config.RollingCeilingUSD instead. spentUSD is
+// the caller's own tracked pay-per-token spend (e.g. total_cost_usd-derived
+// settled/projected run cost) — quota does not itself track it.
+//
+// An api-key account with no RollingCeilingUSD configured reports
+// (LevelOK, false) — advisory, the same "uncalibrated, don't deadlock"
+// contract an unconfigured subscription account gets from State, reusing
+// that existing escape hatch rather than inventing a second one.
+func StateForAuthMode(authMode string, u Usage, spentUSD float64, cfg *Config) (Level, bool) {
+	if authMode != AuthModeAPIKey {
+		return State(u, cfg)
+	}
+	if !RollingCalibrated(cfg) {
+		return LevelOK, false
+	}
+	var l Ladder
+	if cfg != nil {
+		l = cfg.Ladder
+	}
+	return levelFor(rollingFraction(spentUSD, cfg), l), true
+}
+
+// ScaleSlotsForAuthMode is ScaleSlots' auth-mode-branched counterpart
+// (koryph-i3b.3, design §7): subscription/oauth-token delegate to
+// ScaleSlots verbatim; api-key scales off spentUSD/RollingCeilingUSD using
+// the identical warn/throttle/graceful_stop curve (scaleByFraction). An
+// unconfigured ceiling never scales down (advisory — matches
+// StateForAuthMode's uncalibrated posture).
+func ScaleSlotsForAuthMode(authMode string, u Usage, spentUSD float64, cfg *Config, max int) int {
+	if authMode != AuthModeAPIKey {
+		return ScaleSlots(u, cfg, max)
+	}
+	if max <= 0 {
+		return 0
+	}
+	if !RollingCalibrated(cfg) {
+		return max
+	}
+	var l Ladder
+	if cfg != nil {
+		l = cfg.Ladder
+	}
+	return scaleByFraction(rollingFraction(spentUSD, cfg), l, max)
 }
 
 // Preflight decides whether a loop wave with an estimated cost may dispatch. It
@@ -349,5 +427,40 @@ func Preflight(u Usage, waveEstimateUSD float64, cfg *Config) (ok bool, reason s
 	}
 	return true, fmt.Sprintf(
 		"5h window projected %.0f%% after wave (graceful-stop at %.0f%%)",
+		projected*100, el.GracefulStop*100)
+}
+
+// PreflightForAuthMode is Preflight's auth-mode-branched counterpart
+// (koryph-i3b.3, design §7): subscription/oauth-token delegate to
+// Preflight(u, waveEstimateUSD, cfg) verbatim. api-key projects
+// (spentUSD+waveEstimateUSD)/RollingCeilingUSD instead of the 5h window —
+// spentUSD is the caller's own tracked pay-per-token spend, mirroring
+// Preflight's w.SpentUSD role. An unconfigured ceiling is always allowed
+// ("uncalibrated: governor advisory only"), matching
+// StateForAuthMode/Preflight's uncalibrated posture; unlike Preflight there
+// is no separate "unavailable source" fail-closed case, because rolling-$
+// spend is never itself an unmeasured usage source (see RollingCeilingUSD's
+// doc).
+func PreflightForAuthMode(authMode string, u Usage, spentUSD, waveEstimateUSD float64, cfg *Config) (ok bool, reason string) {
+	if authMode != AuthModeAPIKey {
+		return Preflight(u, waveEstimateUSD, cfg)
+	}
+	if !RollingCalibrated(cfg) {
+		return true, "uncalibrated: governor advisory only (no rolling-$ ceiling configured)"
+	}
+	var l Ladder
+	if cfg != nil {
+		l = cfg.Ladder
+	}
+	el := l.Effective()
+	ceiling := cfg.RollingCeilingUSD
+	projected := (spentUSD + waveEstimateUSD) / ceiling
+	if projected >= el.GracefulStop {
+		return false, fmt.Sprintf(
+			"wave ($%.2f est) would put rolling-$ spend at %.0f%% ($%.2f/$%.2f) — crosses graceful-stop (%.0f%%)",
+			waveEstimateUSD, projected*100, spentUSD+waveEstimateUSD, ceiling, el.GracefulStop*100)
+	}
+	return true, fmt.Sprintf(
+		"rolling-$ spend projected %.0f%% after wave (graceful-stop at %.0f%%)",
 		projected*100, el.GracefulStop*100)
 }

@@ -36,9 +36,38 @@
 //   - EstimateWave / EstimateItem — per-tier base cost x size multiplier x
 //     safety margin, EWMA-calibrated per tier from observed slot costs
 //     (Record(tier, size, actualUSD)).
+//
+// Rolling-$ accounting (koryph-i3b.3, design docs/designs/2026-07-api-key-auth.md
+// §7): the ladder above is shaped for subscription/oauth-token accounts, which
+// have a real plan window to measure a percentage against. A pay-per-token
+// (auth_mode=api-key) account has no such window — Window.Fraction() returns
+// 1.0 when CeilingUSD<=0, which would read a pure-API account as permanently
+// at stop, backwards. StateForAuthMode / PreflightForAuthMode /
+// ScaleSlotsForAuthMode branch on the caller's auth_mode string (mirrored as
+// AuthMode* below to avoid a quota->registry import cycle — registry already
+// imports quota): subscription and oauth-token delegate to State/Preflight/
+// ScaleSlots verbatim (byte-for-byte unchanged); api-key reads the same
+// warn/throttle/graceful_stop/hard_stop ladder off
+// spentUSD/Config.RollingCeilingUSD instead, where spentUSD is the caller's
+// own tracked pay-per-token spend (settled total_cost_usd, projected run
+// cost, etc — quota does not itself track it). RollingCeilingUSD==0 (not
+// configured) is advisory (LevelOK, false), reusing the existing
+// uncalibrated-is-advisory posture rather than a second escape hatch.
 package quota
 
 import "fmt"
+
+// Auth-mode string values, mirrored from registry.AuthMode* (koryph-i3b.3).
+// quota cannot import package registry (registry already imports quota, e.g.
+// for SetCalibrationStaleAt — importing back would cycle), so callers pass
+// registry.Record.EffectiveAuthMode()'s plain string return value directly;
+// these constants exist so quota's own call sites and tests don't hardcode
+// the literal strings a second time.
+const (
+	AuthModeSubscription = "subscription"
+	AuthModeAPIKey       = "api-key"
+	AuthModeOAuthToken   = "oauth-token"
+)
 
 // Level is the governor verdict.
 type Level string
@@ -228,6 +257,24 @@ type Config struct {
 	CalibrationStale bool `json:"calibration_stale,omitempty"`
 	// CalibrationStaleReason is the human-readable cause for CalibrationStale.
 	CalibrationStaleReason string `json:"calibration_stale_reason,omitempty"`
+
+	// RollingCeilingUSD is the per-account rolling-$ ceiling for pay-per-token
+	// (auth_mode=api-key) accounts (koryph-i3b.3, design
+	// docs/designs/2026-07-api-key-auth.md §7). See the package doc's
+	// "Rolling-$ accounting" section for why this exists alongside
+	// WindowCeilingUSD/WeeklyCeilingUSD instead of reusing them: an api-key
+	// account has no subscription plan window to calibrate a percentage
+	// against, so StateForAuthMode / PreflightForAuthMode /
+	// ScaleSlotsForAuthMode read the ladder off spent-USD/RollingCeilingUSD
+	// instead of Window.Fraction().
+	//
+	// 0 (the zero value) means "not configured": the api-key ladder is then
+	// advisory only (LevelOK, false) — the same "uncalibrated, don't
+	// deadlock" posture as an unconfigured subscription account. MVP scope
+	// enforces spend via the existing per-run --budget and PerAgentMaxUSD
+	// caps in the meantime (design §7 MVP note; a persisted rolling window
+	// is a fast follow, design Open Questions #2).
+	RollingCeilingUSD float64 `json:"rolling_ceiling_usd,omitempty"`
 
 	// MaxThreads is this account's persisted DEFAULT concurrency-pool seed
 	// (koryph-1o2.3): "koryph quota set-threads --account X N" writes it here,
