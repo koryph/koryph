@@ -149,6 +149,7 @@ func cmdQuotaShow(args []string, stdout, stderr io.Writer) int {
 		}
 		prof := account.Profile{Name: a, ConfigDir: configDir[a]}
 		u, _ := quota.Snapshot(ctx, prof, cfg)
+		quota.LogUsage(u, cfg)
 		level, calibrated := quota.State(u, cfg)
 		snaps = append(snaps, quotaSnapshot{Account: a, Level: level, Calibrated: calibrated, Usage: u})
 	}

@@ -551,6 +551,7 @@ func (r *runner) governor(ctx context.Context) (quota.Level, bool, quota.Usage) 
 		return quota.LevelOK, false, quota.Usage{Account: r.quotaCfg.Account}
 	}
 	u, _ := quota.Snapshot(ctx, r.profile, r.quotaCfg)
+	quota.LogUsage(u, r.quotaCfg)
 	level, calibrated := quota.State(u, r.quotaCfg)
 	return level, calibrated, u
 }
