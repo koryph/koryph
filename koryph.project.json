@@ -131,7 +131,7 @@
     "vault_name": "Cody McCain",
     "item_title": "GitHub Signing Key (McCodeman)"
   },
-  "max_concurrent_slots": 8,
+  "max_concurrent_slots": 6,
   "dispatch_stagger_seconds": 2,
   "posture": {
     "profile": "oss-solo-maintainer",
@@ -139,8 +139,13 @@
       "required_checks": "pre-commit,make gate"
     }
   },
+  "review": {
+    "timeout_seconds": 900,
+    "max_timeout_seconds": 1200
+  },
   "epic_validation": {
     "structural_parent": "koryph-qta",
+    "timeout_seconds": 900,
     "docs_update": {
       "labels": [
         "area:docs",
