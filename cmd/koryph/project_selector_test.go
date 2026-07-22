@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -35,60 +34,6 @@ func registerProject(t *testing.T, id string) string {
 		t.Fatal(err)
 	}
 	return id
-}
-
-// --- resolveProjectID unit tests ---
-
-func TestResolveProjectIDFlagWins(t *testing.T) {
-	var errb bytes.Buffer
-	id, code := resolveProjectID(&errb, "test", "", "from-flag")
-	if code != 0 {
-		t.Fatalf("code = %d, want 0; stderr=%s", code, errb.String())
-	}
-	if id != "from-flag" {
-		t.Errorf("id = %q, want from-flag", id)
-	}
-}
-
-func TestResolveProjectIDPositionalWins(t *testing.T) {
-	var errb bytes.Buffer
-	id, code := resolveProjectID(&errb, "test", "from-pos", "")
-	if code != 0 {
-		t.Fatalf("code = %d, want 0; stderr=%s", code, errb.String())
-	}
-	if id != "from-pos" {
-		t.Errorf("id = %q, want from-pos", id)
-	}
-}
-
-func TestResolveProjectIDSameValueBothAccepted(t *testing.T) {
-	var errb bytes.Buffer
-	id, code := resolveProjectID(&errb, "test", "myproj", "myproj")
-	if code != 0 {
-		t.Fatalf("code = %d, want 0 when both agree; stderr=%s", code, errb.String())
-	}
-	if id != "myproj" {
-		t.Errorf("id = %q, want myproj", id)
-	}
-}
-
-func TestResolveProjectIDConflictIsUsageError(t *testing.T) {
-	var errb bytes.Buffer
-	_, code := resolveProjectID(&errb, "cmd", "a", "b")
-	if code != engine.ExitUsage {
-		t.Errorf("code = %d, want usage exit on conflict", code)
-	}
-	if !strings.Contains(errb.String(), "conflict") {
-		t.Errorf("stderr = %q, want 'conflict' message", errb.String())
-	}
-}
-
-func TestResolveProjectIDNeitherIsUsageError(t *testing.T) {
-	var errb bytes.Buffer
-	_, code := resolveProjectID(&errb, "cmd", "", "")
-	if code != engine.ExitUsage {
-		t.Errorf("code = %d, want usage exit when neither provided", code)
-	}
 }
 
 // --- project show: --project flag form ---

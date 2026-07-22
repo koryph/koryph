@@ -335,27 +335,5 @@ func usageErr(stderr io.Writer, msg string) int {
 	return engine.ExitUsage
 }
 
-// resolveProjectID merges a positional project id with a --project flag value.
-// Rules:
-//   - --project wins when both sources agree on the same value (both accepted).
-//   - A conflict (both non-empty but different) is a usage error.
-//   - If neither is provided, a usage error is returned.
-//
-// The returned int is 0 on success, or engine.ExitUsage on error (the error
-// has already been printed to stderr).
-func resolveProjectID(stderr io.Writer, cmd, posVal, flagVal string) (string, int) {
-	if posVal != "" && flagVal != "" && posVal != flagVal {
-		return "", usageErr(stderr,
-			cmd+": positional <id> "+posVal+" and --project "+flagVal+" conflict; pass only one")
-	}
-	if flagVal != "" {
-		return flagVal, 0
-	}
-	if posVal != "" {
-		return posVal, 0
-	}
-	return "", usageErr(stderr, cmd+": <id> is required (positional or --project flag)")
-}
-
 // sortStrings sorts s in place (ascending) for stable table/summary output.
 func sortStrings(s []string) { sort.Strings(s) }
