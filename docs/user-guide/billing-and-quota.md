@@ -30,7 +30,7 @@ via `quota.Ladder`):
 | ≥ 90 %   | `warn`     | Log warning; full concurrency continues                             |
 | ≥ 94 %   | `throttle` | Concurrency linearly scaled toward 1 as 97 % nears                 |
 | ≥ 97 %   | `drain`    | No new dispatch; active agents finish their current turn            |
-| ≥ 99 %   | `stop`     | In-flight agents interrupted (SIGTERM); worktrees preserved for resume |
+| ≥ 99 %   | `stop`     | In-flight agents' process groups interrupted (SIGTERM); worktrees preserved for resume |
 
 **Concurrency scaling.** Between 94 % and 97 %, `ScaleSlots` linearly
 interpolates wave width from `max` down to 1. At 97 % the slot count is 0

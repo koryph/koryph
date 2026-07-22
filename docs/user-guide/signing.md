@@ -722,6 +722,17 @@ Before rebasing and merging, koryph runs
 `git log --format='%H %G?' base..branch`. Verification happens **before**
 the rebase so a bad-signature commit never touches the target branch.
 
+Verification runs a **second time** too, immediately before the branch
+actually lands (fast-forward merge or PR open) — after the rebase and any
+conflict-reconciler / `merge_prepare` step. The pre-rebase pass alone cannot
+vouch for what lands: rebase gives every commit a new SHA (and, with
+`commit.gpgsign` set for the merge runner, a fresh signature from the
+*runner's* key rather than the original author's), and a reconciler or
+`merge_prepare` step can add brand-new commits after the first check ran —
+neither is covered unless it is checked again on the range that is actually
+about to merge. Either pass failing blocks the merge; the branch and
+worktree are left intact for inspection.
+
 | `%G?` | Meaning |
 |-------|---------|
 | `G`   | Good — merge proceeds |

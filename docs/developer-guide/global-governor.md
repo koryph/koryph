@@ -289,6 +289,19 @@ governor.json:
   full back-compat); `koryph governor show` and `koryph doctor` iterate every
   pool with any live state (an explicit `governor.json` entry, a lease, or a
   demand heartbeat) — see CLI below.
+- **Corrupt `governor.json` fails open for reads, fails closed for writes.**
+  Admission reads (`Cap`, `MinFreeMemoryMB`, `Resources`, and every dispatch
+  path through them) still fall open to the package default the moment
+  `governor.json` is present but fails to parse — a stuck/corrupt file must
+  never block dispatch. But `koryph governor set`/`set-resource` (and their
+  `--unset` counterparts) now **refuse** to write in that state instead of
+  silently treating the corrupt file as empty and overwriting it wholesale —
+  the previous behavior was a machine-wide config wipe (every other pool's
+  cap and the resource ledger gone) plus a silent cap relaxation back to the
+  default, with no error. Either way, the first time corruption is observed
+  the original bytes are copied, once, to a sibling
+  `governor.json.corrupt-backup` so nothing is lost; repair or remove that
+  backup, then fix or delete `governor.json`, before retrying the write.
 
 ### Per-account seeded-default cap (koryph-1o2.3)
 
