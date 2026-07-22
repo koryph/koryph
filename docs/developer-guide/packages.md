@@ -355,7 +355,10 @@ Rolls up burn-rate and reliability baselines from the run ledger for
 reporting and quota decisions.
 
 - **`ModelStat`** / **`ProjectStat`** / **`Report`** — nested stats types
-- **`Collect(store, projectID)`** — read ledger, compute `*Report`
+- **`Collect(store, projectID)`** — read ledger, compute `*Report`; the
+  per-model breakdown is keyed on the model that actually served
+  (`Slot.ModelActual`, fallback `Model`) so a mid-flight `--fallback-model`
+  downgrade is charged to the tier that ran, matching cockpit's token rollup
 - **`Render(r, w)`** — pretty-print report to an `io.Writer`
 
 ## modellearn

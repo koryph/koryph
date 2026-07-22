@@ -115,7 +115,22 @@ func aggregateRun(stat *ProjectStat, run *ledger.Run) {
 			stat.Blocked++
 		}
 
-		ms := stat.ByModel[sl.Model]
+		// Key the per-model cost/outcome breakdown on the model that ACTUALLY
+		// served (ModelActual), not the model dispatch REQUESTED (Model). The
+		// two diverge when the CLI's hardcoded --fallback-model downgrades a
+		// session mid-flight (see ledger.Slot.ModelActual): a cost dataset keyed
+		// on Model alone mis-attributes those sessions — a bead requested on
+		// opus but served by sonnet would inflate the opus row it never spent.
+		// Fall back to Model when ModelActual is empty (crash before a result
+		// line, or a ledger predating the field). Matches the identical
+		// convention in internal/cockpit/efficiency.go's per-model token rollup,
+		// so the cost table and the token table agree on which row a slot lands
+		// in.
+		modelKey := sl.ModelActual
+		if modelKey == "" {
+			modelKey = sl.Model
+		}
+		ms := stat.ByModel[modelKey]
 		ms.Slots++
 		ms.CostUSD += sl.CostUSD
 		if retried {
@@ -127,7 +142,7 @@ func aggregateRun(stat *ProjectStat, run *ledger.Run) {
 		case ledger.SlotFailed:
 			ms.Failed++
 		}
-		stat.ByModel[sl.Model] = ms
+		stat.ByModel[modelKey] = ms
 	}
 }
 

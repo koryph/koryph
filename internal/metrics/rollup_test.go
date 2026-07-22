@@ -151,6 +151,52 @@ func TestCollectAndRender(t *testing.T) {
 	}
 }
 
+// TestCollectByModelActualAttribution locks in that the per-model cost/outcome
+// breakdown is keyed on the model that ACTUALLY served (ModelActual), not the
+// model dispatch requested (Model) — a mid-flight --fallback-model downgrade is
+// charged to the tier that ran. A slot with no ModelActual falls back to Model.
+func TestCollectByModelActualAttribution(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	root := gitRepo(t)
+
+	store := registry.NewStore()
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("store init: %v", err)
+	}
+	rec := &registry.Record{
+		ProjectID: "demo", Name: "demo", Root: root, DefaultBranch: "main",
+		AccountProfile: registry.ProfilePersonal, ExpectedIdentity: "me@example.com",
+	}
+	if err := store.Add(context.Background(), rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	writeRun(t, root, "20260101-000001", &ledger.Run{
+		SchemaVersion: 2, RunID: "20260101-000001", ProjectID: "demo", Status: ledger.RunDone,
+		Slots: map[string]*ledger.Slot{
+			// Requested opus, downgraded to sonnet mid-flight: cost belongs to sonnet.
+			"a": {PhaseID: "a", Model: "opus", ModelActual: "sonnet", Status: ledger.SlotMerged, Attempts: 1, CostUSD: 3.0},
+			// No ModelActual (crash/old ledger): falls back to requested Model.
+			"b": {PhaseID: "b", Model: "opus", Status: ledger.SlotFailed, Attempts: 1, CostUSD: 2.0},
+		},
+	})
+
+	rep, err := Collect(store, "demo")
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	p := rep.Projects[0]
+
+	sonnet := p.ByModel["sonnet"]
+	if sonnet.Slots != 1 || sonnet.Merged != 1 || sonnet.CostUSD != 3.0 {
+		t.Errorf("sonnet (served) = %+v, want slots=1 merged=1 cost=3.0", sonnet)
+	}
+	opus := p.ByModel["opus"]
+	if opus.Slots != 1 || opus.Failed != 1 || opus.CostUSD != 2.0 {
+		t.Errorf("opus (fallback) = %+v, want slots=1 failed=1 cost=2.0", opus)
+	}
+}
+
 func TestCollectFilterAndEmpty(t *testing.T) {
 	t.Setenv("KORYPH_HOME", t.TempDir())
 	store := registry.NewStore()

@@ -7,7 +7,10 @@
 // Implementation contract (rollup.go):
 //   - Collect(store *registry.Store, projectID string) (*Report, error) —
 //     walk each managed project's .plan-logs/koryph/<run>/ledger.json
-//     (projectID "" = all); aggregate per project and per model: slots,
+//     (projectID "" = all); aggregate per project and per model (keyed on the
+//     model that ACTUALLY served — ledger.Slot.ModelActual, with the requested
+//     Model as fallback — so a mid-flight --fallback-model downgrade is charged
+//     to the tier that ran, not the tier requested): slots,
 //     merged, failed, blocked, attempts>1 (retries), total + mean cost,
 //     review bounces; count stale agent worktrees (worktree.List where
 //     branch has prefix "agent/") and orphaned agent/* branches without
