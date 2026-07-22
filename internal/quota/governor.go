@@ -144,6 +144,22 @@ func SetGuardMode(account, mode string, until time.Time) (*Config, error) {
 	})
 }
 
+// SetMaxThreads writes this account's persisted concurrency-pool seed
+// (koryph-1o2.3, Config.MaxThreads) under the same exclusive per-account flock
+// as every other quota config mutation. n <= 0 CLEARS the seed (falls back to
+// the "anthropic" pool / package default at resolution time — see
+// Config.MaxThreads's doc); n > 0 sets it. Backs `koryph quota set-threads
+// --account X N`.
+func SetMaxThreads(account string, n int) (*Config, error) {
+	return UpdateConfig(account, func(c *Config) error {
+		if n < 0 {
+			n = 0
+		}
+		c.MaxThreads = n
+		return nil
+	})
+}
+
 // SetCalibrationStaleAt marks the quota config at quotaDir/<account>.json as
 // stale (koryph-3l1.2). quotaDir is passed explicitly so callers that manage
 // their own home directory (e.g. registry.Store in tests) bypass the global

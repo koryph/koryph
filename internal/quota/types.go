@@ -228,6 +228,30 @@ type Config struct {
 	CalibrationStale bool `json:"calibration_stale,omitempty"`
 	// CalibrationStaleReason is the human-readable cause for CalibrationStale.
 	CalibrationStaleReason string `json:"calibration_stale_reason,omitempty"`
+
+	// MaxThreads is this account's persisted DEFAULT concurrency-pool seed
+	// (koryph-1o2.3): "koryph quota set-threads --account X N" writes it here,
+	// alongside the rest of this account's already-per-account governor
+	// config, rather than in the registry (registry.Record is a project-scoped
+	// label shared across projects — a Record field would duplicate/conflict
+	// across every project using this account).
+	//
+	// This is the SEED half of a two-tier cap: internal/engine resolves the
+	// concurrency pool's effective cap with strict precedence — (1) an
+	// explicit `governor set --account X` operator override on the account's
+	// govern.Config.MaxGlobalAgents always wins; (2) else this MaxThreads seed;
+	// (3) else the "anthropic" default pool's own cap, for migration
+	// continuity from a pre-per-account-pools setup; (4) else
+	// govern.DefaultMaxGlobalAgents. The two halves are deliberately NOT
+	// collapsed into governor.json: a later change to this seed must not be
+	// silently shadowed by (nor silently overwrite) a stale operator override
+	// recorded there. govern must not import quota (layering) — the engine
+	// wires this value into govern.Store.SeedCap so govern itself never reads
+	// this field directly.
+	//
+	// 0 (the zero value, and every config predating koryph-1o2.3) means
+	// "unset" — no seed; precedence falls through to level 3.
+	MaxThreads int `json:"max_threads,omitempty"`
 }
 
 // DefaultConfig returns uncalibrated defaults for a new account profile.

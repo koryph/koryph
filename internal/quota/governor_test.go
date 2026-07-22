@@ -73,6 +73,47 @@ func TestConfigRoundtrip(t *testing.T) {
 	}
 }
 
+// TestSetMaxThreads covers koryph-1o2.3's per-account concurrency-pool seed
+// setter: setting, clearing (0), and negative-rejects-to-zero, all under the
+// exclusive per-account flock (via UpdateConfig), and that it persists.
+func TestSetMaxThreads(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+
+	got, err := SetMaxThreads("acct", 6)
+	if err != nil {
+		t.Fatalf("SetMaxThreads(6): %v", err)
+	}
+	if got.MaxThreads != 6 {
+		t.Fatalf("MaxThreads = %d, want 6", got.MaxThreads)
+	}
+
+	reloaded, err := LoadConfig("acct")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if reloaded.MaxThreads != 6 {
+		t.Fatalf("reloaded MaxThreads = %d, want 6", reloaded.MaxThreads)
+	}
+
+	// Clearing with 0 reverts to "unset".
+	got, err = SetMaxThreads("acct", 0)
+	if err != nil {
+		t.Fatalf("SetMaxThreads(0): %v", err)
+	}
+	if got.MaxThreads != 0 {
+		t.Fatalf("MaxThreads after clear = %d, want 0", got.MaxThreads)
+	}
+
+	// A negative value clamps to 0 rather than persisting garbage.
+	got, err = SetMaxThreads("acct", -5)
+	if err != nil {
+		t.Fatalf("SetMaxThreads(-5): %v", err)
+	}
+	if got.MaxThreads != 0 {
+		t.Fatalf("MaxThreads after negative set = %d, want clamped to 0", got.MaxThreads)
+	}
+}
+
 func TestState(t *testing.T) {
 	cal := calibratedCfg()
 	uncal := DefaultConfig("acct") // ceilings 0
