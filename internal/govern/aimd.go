@@ -478,10 +478,12 @@ func (s *Store) loadAndProbeLocked(pool string) (Config, File, error) {
 }
 
 // effectiveCapLocked is loadAndProbeLocked's result (for pool) reduced to the
-// effective cap; callers must already hold the store's flock.
+// effective cap, applying the koryph-1o2.3 seed/continuity fallback
+// (effectiveCapFor) when the pool has no explicit operator cap; callers must
+// already hold the store's flock.
 func (s *Store) effectiveCapLocked(pool string) (int, error) {
 	c, _, err := s.loadAndProbeLocked(pool)
-	return c.EffectiveCap(), err
+	return s.effectiveCapFor(pool, c), err
 }
 
 // EffectiveCap returns the cap Acquire admits against for provider's pool

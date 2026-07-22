@@ -52,6 +52,19 @@ type Store struct {
 	// a process-global math/rand source — jitter need only be unpredictable
 	// enough to avoid a thundering herd, not cryptographically random.
 	Jitter func() float64
+
+	// SeedCap optionally supplies a per-pool PERSISTED DEFAULT cap (koryph-1o2.3):
+	// when pool has no explicit operator cap (Cap/EffectiveCap's
+	// MaxGlobalAgents<=0 branch), fallbackCap consults SeedCap(pool) — a
+	// positive return wins over the package default — before falling through
+	// to the "anthropic" pool's own cap for migration continuity. This is how
+	// the engine's per-account quota.Config.MaxThreads seed reaches admission
+	// WITHOUT govern importing package quota (layering): the engine wires a
+	// closure here that reads its own already-loaded quota config. nil (the
+	// zero value — every NewStore() and every hand-built Store{} in existing
+	// tests) preserves today's behavior exactly: no seed, straight to the
+	// anthropic-pool/package-default fallback.
+	SeedCap func(pool string) int
 }
 
 // NewStore returns a Store rooted at the current KORYPH_HOME.
@@ -72,18 +85,57 @@ func NewStore() *Store {
 
 // Cap returns provider's pool cap, defaulting when governor.json (or the
 // pool's entry) is absent or unset. provider=="" is DefaultPool
-// (koryph-v8u.11).
+// (koryph-v8u.11). An unset explicit cap falls through the koryph-1o2.3
+// precedence chain — see fallbackCap — before reaching the package default.
 func (s *Store) Cap(provider string) int {
 	pool := NormalizeProvider(provider)
 	f, err := s.readFile()
 	if err != nil {
 		return DefaultMaxGlobalAgents
 	}
-	c, ok := f.Pools[pool]
-	if !ok || c.MaxGlobalAgents <= 0 {
-		return DefaultMaxGlobalAgents
+	c := f.Pools[pool] // zero Config (MaxGlobalAgents 0) if this pool has no entry
+	if c.MaxGlobalAgents > 0 {
+		return c.MaxGlobalAgents
 	}
-	return c.MaxGlobalAgents
+	return s.fallbackCap(pool)
+}
+
+// fallbackCap resolves the cap for pool when it carries no explicit operator
+// setting (koryph-1o2.3 precedence levels 2-4, level 1 — the explicit cap —
+// having already been checked by the caller): the engine-supplied per-account
+// seed (SeedCap; e.g. quota.Config.MaxThreads, wired by the engine so govern
+// itself never imports quota) when set and positive; else, for a NAMED
+// account pool, the "anthropic" default pool's own cap, for migration
+// continuity (an operator's pre-per-account-pools `governor set --max-global`
+// still governs a newly-onboarded named account that has configured neither
+// an explicit cap nor a quota seed); else the package default. Resolving the
+// anthropic pool itself skips the continuity hop — Cap(DefaultPool) would
+// just re-enter this same branch — terminating in the package default
+// directly.
+func (s *Store) fallbackCap(pool string) int {
+	if s.SeedCap != nil {
+		if seed := s.SeedCap(pool); seed > 0 {
+			return seed
+		}
+	}
+	if pool != DefaultPool {
+		return s.Cap(DefaultPool)
+	}
+	return DefaultMaxGlobalAgents
+}
+
+// effectiveCapFor mirrors Config.EffectiveCap for pool's config c, except its
+// non-adaptive "no explicit operator cap" branch consults fallbackCap
+// (koryph-1o2.3) instead of jumping straight to the package default, so an
+// account's seeded MaxThreads (or the anthropic pool's continuity cap) wins
+// over DefaultMaxGlobalAgents at admission. Adaptive pools are untouched:
+// SetAdaptiveCap always seeds a positive MaxGlobalAgents/DynamicCap, so
+// there is never an "unset adaptive pool" for the seed to apply to.
+func (s *Store) effectiveCapFor(pool string, c Config) int {
+	if !c.Adaptive && c.MaxGlobalAgents <= 0 {
+		return s.fallbackCap(pool)
+	}
+	return c.EffectiveCap()
 }
 
 // MinFreeMemoryMB returns provider's RAW configured memory admission floor
@@ -327,7 +379,7 @@ func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 					return err
 				}
 				result = AdmitResult{Granted: true, Outcome: AdmitGranted}
-				grantedCap = c.EffectiveCap()
+				grantedCap = s.effectiveCapFor(pool, c)
 				f.Pools[pool] = c
 				return fsx.WriteJSONAtomic(s.cfgPath, f) // persist the probe claim
 			}
@@ -343,7 +395,7 @@ func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 			}
 		}
 
-		cap := c.EffectiveCap()
+		cap := s.effectiveCapFor(pool, c)
 		leases, err := s.leasesForPool(pool)
 		if err != nil {
 			return err
@@ -379,7 +431,7 @@ func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 			return err
 		}
 		result = AdmitResult{Granted: true, Outcome: AdmitGranted}
-		grantedCap = c.EffectiveCap()
+		grantedCap = s.effectiveCapFor(pool, c)
 		grantedActive = len(leases) + 1 // +1: the lease just written
 
 		if c.Adaptive {

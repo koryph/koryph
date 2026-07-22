@@ -269,6 +269,122 @@ func TestCapDefaultAndSet(t *testing.T) {
 	}
 }
 
+// --- koryph-1o2.3: per-account seeded-default cap precedence --------------
+//
+// Precedence: (1) an explicit `governor set` cap for the pool always wins;
+// (2) else Store.SeedCap(pool) (the engine's quota.Config.MaxThreads, wired in
+// without govern importing quota); (3) else the "anthropic" pool's own cap,
+// for migration continuity; (4) else DefaultMaxGlobalAgents.
+
+func TestCapSeedWinsOverPackageDefault(t *testing.T) {
+	s := newTestStore(t)
+	s.SeedCap = func(pool string) int {
+		if pool == "work" {
+			return 12
+		}
+		return 0
+	}
+	if got := s.Cap("work"); got != 12 {
+		t.Errorf("Cap(work) = %d, want seed 12", got)
+	}
+	// A pool the seed doesn't cover still falls through to the package default.
+	if got := s.Cap("personal"); got != DefaultMaxGlobalAgents {
+		t.Errorf("Cap(personal) = %d, want package default %d", got, DefaultMaxGlobalAgents)
+	}
+}
+
+func TestCapExplicitOperatorCapWinsOverSeed(t *testing.T) {
+	s := newTestStore(t)
+	s.SeedCap = func(string) int { return 12 }
+	if err := s.SetCap("work", 3); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Cap("work"); got != 3 {
+		t.Errorf("Cap(work) = %d, want explicit operator cap 3 (seed must not win)", got)
+	}
+}
+
+func TestCapFallsBackToAnthropicPoolForMigrationContinuity(t *testing.T) {
+	s := newTestStore(t)
+	// No seed configured; the pre-per-account-pools operator cap on the
+	// anthropic pool must still govern a newly-named account.
+	if err := s.SetCap(DefaultPool, 9); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Cap("newly-onboarded"); got != 9 {
+		t.Errorf("Cap(newly-onboarded) = %d, want anthropic-pool continuity cap 9", got)
+	}
+	// The anthropic pool itself must never recurse into its own continuity
+	// hop — it falls straight through to the package default when unset.
+	s2 := newTestStore(t)
+	if got := s2.Cap(DefaultPool); got != DefaultMaxGlobalAgents {
+		t.Errorf("Cap(anthropic) with nothing configured = %d, want package default %d", got, DefaultMaxGlobalAgents)
+	}
+}
+
+func TestCapSeedWinsOverAnthropicContinuity(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetCap(DefaultPool, 9); err != nil {
+		t.Fatal(err)
+	}
+	s.SeedCap = func(pool string) int {
+		if pool == "work" {
+			return 4
+		}
+		return 0
+	}
+	if got := s.Cap("work"); got != 4 {
+		t.Errorf("Cap(work) = %d, want seed 4 (must win over anthropic continuity cap 9)", got)
+	}
+}
+
+func TestEffectiveCapAppliesSeedForNonAdaptivePool(t *testing.T) {
+	s := newTestStore(t)
+	s.SeedCap = func(pool string) int {
+		if pool == "work" {
+			return 6
+		}
+		return 0
+	}
+	if got := s.EffectiveCap("work"); got != 6 {
+		t.Errorf("EffectiveCap(work) = %d, want seed 6", got)
+	}
+}
+
+func TestEffectiveCapSeedNeverAppliesToAdaptivePool(t *testing.T) {
+	s := newTestStore(t)
+	s.SeedCap = func(string) int { return 99 } // would win if wrongly consulted
+	if err := s.SetAdaptiveCap("work", 3, 0, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.EffectiveCap("work"); got != 3 {
+		t.Errorf("EffectiveCap(work) = %d, want the adaptive seed (3), not the SeedCap hook (99)", got)
+	}
+}
+
+func TestAcquireAdmitsAgainstSeededCap(t *testing.T) {
+	s := newTestStore(t)
+	s.SeedCap = func(pool string) int {
+		if pool == "work" {
+			return 2
+		}
+		return 0
+	}
+	for i := 0; i < 2; i++ {
+		ok, err := s.Acquire(Lease{Project: "p", Bead: fmt.Sprintf("b%d", i), PID: 100 + i, EnginePID: 1, Provider: "work"})
+		if err != nil || !ok {
+			t.Fatalf("acquire %d: ok=%v err=%v (want granted, under seeded cap 2)", i, ok, err)
+		}
+	}
+	ok, err := s.Acquire(Lease{Project: "p", Bead: "b-over", PID: 200, EnginePID: 1, Provider: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("3rd acquire against a seeded cap of 2 should be denied")
+	}
+}
+
 // --- concurrency (independent acquirers must never exceed the cap) --------
 
 func TestConcurrentAcquireNeverExceedsCap(t *testing.T) {
