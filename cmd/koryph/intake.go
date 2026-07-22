@@ -20,7 +20,7 @@ import (
 func init() {
 	registerCmd(command{
 		name:    "intake",
-		summary: "poll labeled GitHub issues into planning beads",
+		summary: "poll external issue trackers into planning beads",
 		run:     cmdIntake,
 		DocLinks: []string{
 			"user-guide/intake.md",
@@ -29,12 +29,13 @@ func init() {
 	})
 }
 
-// cmdIntake polls a project's labeled GitHub issues and files one planning
-// bead per new issue. When the project's koryph.project.json carries an
-// "intake" list, all configured sources are iterated in one run and the
-// --label / --limit / --comment flags act as global overrides for that run.
-// When no intake list is configured, intake falls back to the project's
-// registry remote with the flag values applied directly.
+// cmdIntake polls a project's configured issue-tracker sources (GitHub, JIRA,
+// or Linear) and files one planning bead per new issue. When the project's
+// koryph.project.json carries an "intake" list, all configured sources are
+// iterated in one run and the --label / --limit / --comment flags act as
+// global overrides for that run. When no intake list is configured, intake
+// falls back to the project's registry remote (GitHub) with the flag values
+// applied directly.
 func cmdIntake(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("intake", stderr)
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
@@ -42,7 +43,7 @@ func cmdIntake(args []string, stdout, stderr io.Writer) int {
 	limit := fs.Int("limit", 0, "max open issues to poll (overrides per-source config; default 20)")
 	dryRun := fs.Bool("dry-run", false, "print what would be ingested; mutate nothing")
 	comment := fs.Bool("comment", false, "comment the bead id back on each ingested issue")
-	setUsage(fs, stdout, "poll a project's labeled GitHub issues into no-dispatch planning beads",
+	setUsage(fs, stdout, "poll a project's configured issue-tracker sources into no-dispatch planning beads",
 		"[--project ID] [--label triage] [--limit 20] [--dry-run] [--comment]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)

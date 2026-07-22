@@ -25,7 +25,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph project set-account`](#koryph-project-set-account) | change a project's account (audited; resets validation) |
 | [`koryph validate`](#koryph-validate) | run the pre-dispatch gate |
 | [`koryph run`](#koryph-run) | execute one engine run over a project |
-| [`koryph intake`](#koryph-intake) | poll labeled GitHub issues into planning beads |
+| [`koryph intake`](#koryph-intake) | poll external issue trackers into planning beads |
 | [`koryph nudge`](#koryph-nudge) | append an operator note to a phase INBOX |
 | [`koryph stop`](#koryph-stop) | stop an agent (or every agent with --all) |
 | [`koryph drain`](#koryph-drain) | gracefully wind down a run: finish active slots, dispatch nothing new |
@@ -247,7 +247,7 @@ execute one engine run over a project
 
 ## `koryph intake` { #koryph-intake }
 
-poll labeled GitHub issues into planning beads
+poll external issue trackers into planning beads
 
 **See also:** [Intake](../user-guide/intake) · [Beads](../concepts/beads)
 

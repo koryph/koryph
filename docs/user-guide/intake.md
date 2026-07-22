@@ -34,6 +34,12 @@ Add an `intake` list to your project's `koryph.project.json`:
       "source":      "acme.atlassian.net/ENG",
       "trigger":     "status = \"To Do\" AND labels = \"koryph\"",
       "comment_back": true
+    },
+    {
+      "provider":    "linear",
+      "source":      "ENG",
+      "trigger":     "label:triage",
+      "comment_back": true
     }
   ]
 }
@@ -45,7 +51,8 @@ Then run:
 koryph intake --project <project-id>
 ```
 
-Both sources are polled in one run. The output table groups results by source:
+All configured sources are polled in one run. The output table groups results
+by source:
 
 ```
 intake acme/widgets
@@ -61,7 +68,13 @@ ingested      #7     beads-0xyz  Crash on login                                 
 
 ingested 1, skipped 0
 
-total across 2 sources: ingested 2, skipped 1
+intake ENG
+ACTION        ISSUE  BEAD        TITLE                                             NOTE
+ingested      #12    beads-0def  Fix flaky retry in poller                         commented
+
+ingested 1, skipped 0
+
+total across 3 sources: ingested 3, skipped 1
 ```
 
 ---
@@ -88,9 +101,9 @@ Each entry in the `intake` list is an **IntakeSource**:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `provider` | string | `"github"` | Issue-tracker type: `"github"` or `"jira"`. |
-| `source` | string | *(required)* | Target within the provider. GitHub: `"owner/repo"`. JIRA: `"<host>/<project-key>"`. |
-| `trigger` | string | `"triage"` | Label (GitHub) or JQL predicate (JIRA) that filters open issues. |
+| `provider` | string | `"github"` | Issue-tracker type: `"github"`, `"jira"`, or `"linear"`. |
+| `source` | string | *(required)* | Target within the provider. GitHub: `"owner/repo"`. JIRA: `"<host>/<project-key>"`. Linear: the team key (e.g. `"ENG"`). |
+| `trigger` | string | `"triage"` | Label (GitHub), JQL predicate (JIRA), or `label:`/`state:`/bare-value filter (Linear) that filters open issues. |
 | `limit` | int | `20` | Maximum number of open issues fetched per run. |
 | `comment_back` | bool | `false` | Post the new bead ID back as a comment on each ingested issue. |
 | `mapping` | object | `{}` | Reserved for future provider-specific field remapping. Ignored in v1. |
@@ -191,6 +204,68 @@ configured key will receive incorrect provenance keys and may be re-ingested.
 
 ---
 
+### Linear
+
+**Prerequisites:**
+
+- A Linear API key (personal or workspace) with access to the target team.
+- The `bd` CLI must be on `PATH`.
+- One environment variable set before running `koryph intake`:
+  - `LINEAR_API_KEY` — the Linear API key.
+
+The value may be a 1Password vault reference (starts with `op://`). When
+detected, intake resolves it via `op read <ref>` before use:
+
+```sh
+export LINEAR_API_KEY="op://Personal/Linear API Key/credential"
+```
+
+**Source format:** the Linear team key — for example `"ENG"`. The workspace
+itself is implicit from the API key, so `source` names only the team within
+it.
+
+**Trigger:** a filter kind and value, case-insensitive on the prefix:
+
+| Trigger form | Meaning |
+|---|---|
+| *(empty)* | No extra filter; all open issues in the team. |
+| `label:<name>` | Issues that carry the named label. |
+| `state:<name>` | Issues whose workflow state matches the name. |
+| `<bare-value>` | Treated as a label name (backward-compatible default). |
+
+```json
+{
+  "provider":    "linear",
+  "source":      "ENG",
+  "trigger":     "label:triage",
+  "comment_back": true
+}
+```
+
+**Priority mapping:**
+
+| Linear priority | Bead priority |
+|---|---|
+| 1 (Urgent) | 0 (critical) |
+| 2 (High) | 1 (high) |
+| 3 (Medium) | 2 (medium) |
+| 4 (Low) | 3 (low) |
+| 0 (No priority) *(default)* | 2 (medium) |
+
+**Type mapping:** Issues carrying a label named `bug` (case-insensitive) set
+the bead type to `bug`. All other issues use the default bead type. Native
+Linear label names are carried through verbatim as additional bead labels.
+
+**Provenance key:** `linear-<team-key>#<number>` — for example `linear-ENG#42`
+for issue `ENG-42`. This key is stored as both the bead's `--external-ref`
+and a label, so it never collides with GitHub or JIRA provenance keys.
+
+**Comment-back:** When `comment_back: true`, intake posts a Markdown comment
+on each newly ingested Linear issue via the GraphQL `commentCreate` mutation.
+Non-fatal: if the comment mutation fails the bead is still created.
+
+---
+
 ## CLI flags
 
 | Flag | Default | Description |
@@ -236,11 +311,13 @@ In addition, a provenance label is applied to record the source issue:
 |---|---|
 | GitHub | `gh-acme/widgets#42` |
 | JIRA | `jira-acme.atlassian.net/ENG#42` |
+| Linear | `linear-ENG#42` |
 
-Including the owner/repo (or host/project-key for JIRA) in the key guarantees
-that issues sharing a number across different configured sources are never
-conflated. The same value is stored in the bead's `--external-ref` field for
-reliable deduplication across all configured sources.
+Including the owner/repo (or host/project-key for JIRA, or team key for
+Linear) in the key guarantees that issues sharing a number across different
+configured sources are never conflated. The same value is stored in the
+bead's `--external-ref` field for reliable deduplication across all
+configured sources.
 
 ---
 
@@ -278,6 +355,13 @@ JIRA priority names are mapped to bead priority (see [JIRA Cloud](#jira-cloud)
 section above for the full table). The issuetype `Bug` maps to bead type `bug`.
 Native JIRA labels are carried through verbatim as additional bead labels.
 
+### Linear
+
+Linear's numeric priority is mapped to bead priority (see [Linear](#linear)
+section above for the full table). A label named `bug` (case-insensitive)
+maps to bead type `bug`. Native Linear labels are carried through verbatim as
+additional bead labels.
+
 ---
 
 ## Provenance footer
@@ -296,6 +380,12 @@ Source: github.com/acme/widgets/issues/42, author @alice, ingested by koryph int
 Source: https://acme.atlassian.net/browse/ENG-42, author alice@acme.com, ingested by koryph intake
 ```
 
+**Linear:**
+```
+---
+Source: linear.app/team/ENG/issue/ENG-42, author alice@acme.com, ingested by koryph intake
+```
+
 ---
 
 ## What intake never does
@@ -304,5 +394,6 @@ Source: https://acme.atlassian.net/browse/ENG-42, author alice@acme.com, ingeste
 - Creates beads that are immediately dispatchable — `no-dispatch` is always
   applied and must be explicitly removed by a person or planner.
 - Uses a raw GitHub API token — all GitHub access goes through `gh`.
-- Stores credentials on disk — JIRA credentials are read from environment
-  variables only, resolved at runtime (or via `op read` for vault refs).
+- Stores credentials on disk — JIRA and Linear credentials are read from
+  environment variables only, resolved at runtime (or via `op read` for vault
+  refs).
