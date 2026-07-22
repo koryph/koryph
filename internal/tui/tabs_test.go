@@ -151,9 +151,10 @@ func TestHiddenTabExcludedFromBarAndCycle(t *testing.T) {
 	}
 
 	// Counts: 3 registered, 2 visible.
-	if RegisteredTabCount() != 3 || VisibleTabCount() != 2 {
-		t.Fatalf("counts: registered=%d visible=%d, want 3/2",
-			RegisteredTabCount(), VisibleTabCount())
+	registered := len(tabRegistry)
+	visible := visibleTabCount()
+	if registered != 3 || visible != 2 {
+		t.Fatalf("counts: registered=%d visible=%d, want 3/2", registered, visible)
 	}
 
 	// A full forward cycle from the first visible tab visits only visible tabs
@@ -164,7 +165,7 @@ func TestHiddenTabExcludedFromBarAndCycle(t *testing.T) {
 		t.Fatalf("firstVisibleTab = %d, want 0", cur)
 	}
 	visited := []int{}
-	for i := 0; i < VisibleTabCount(); i++ {
+	for i := 0; i < visible; i++ {
 		cur = nextVisibleTab(cur, +1, n)
 		if tabRegistry[cur].Hidden {
 			t.Fatalf("nextVisibleTab landed on hidden tab index %d", cur)
@@ -179,6 +180,35 @@ func TestHiddenTabExcludedFromBarAndCycle(t *testing.T) {
 	// Reverse cycling likewise skips the hidden tab.
 	if got := nextVisibleTab(0, -1, n); got != 1 {
 		t.Errorf("nextVisibleTab(0,-1) = %d, want 1 (Beta, skipping hidden Ghost)", got)
+	}
+}
+
+// visibleTabCount reports how many entries in tabRegistry are not Hidden.
+// Test-only helper: production code has no need to count tabs.
+func visibleTabCount() int {
+	n := 0
+	for _, def := range tabRegistry {
+		if !def.Hidden {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRealRegistryHasExactlyOneHiddenTab verifies the production tab
+// registry (populated by every tab source file's init(), not the synthetic
+// fixtures the other registry tests install) carries exactly one hidden
+// overlay — the Detail panel. detail_test.go's TestDetailNotTabReachable
+// relies on this invariant holding for the real app.
+func TestRealRegistryHasExactlyOneHiddenTab(t *testing.T) {
+	hidden := 0
+	for _, def := range tabRegistry {
+		if def.Hidden {
+			hidden++
+		}
+	}
+	if hidden != 1 {
+		t.Fatalf("hidden tabs in production registry = %d, want 1 (Detail)", hidden)
 	}
 }
 

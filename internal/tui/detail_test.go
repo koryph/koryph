@@ -102,11 +102,9 @@ func TestDetailShowsDepLinks(t *testing.T) {
 // selection, so its "No bead selected" placeholder must never surface from
 // Tab navigation alone) and cycling returns to the Threads tab.
 func TestDetailNotTabReachable(t *testing.T) {
-	// Deterministic registry invariant: exactly the Detail overlay is hidden, so
-	// the visible cycle is one shorter than the full registry.
-	if got := tui.RegisteredTabCount() - tui.VisibleTabCount(); got != 1 {
-		t.Fatalf("expected exactly 1 hidden tab (Detail), got %d", got)
-	}
+	// The registry invariant this test used to check inline — exactly one
+	// hidden tab (Detail) in the production registry — is now covered by
+	// TestRealRegistryHasExactlyOneHiddenTab in tabs_test.go.
 
 	// A snapshot with no Detail payload: were Detail Tab-reachable, it would
 	// render its "No bead selected" placeholder.

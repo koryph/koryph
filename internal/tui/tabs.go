@@ -68,25 +68,6 @@ type TabDef struct {
 	New func(theme Theme, readOnly bool) TabModel
 }
 
-// RegisteredTabCount reports how many tabs are registered — exported for
-// tests that navigate by Tab presses so they derive counts from the registry
-// instead of hardcoding today's sibling composition.
-func RegisteredTabCount() int { return len(tabRegistry) }
-
-// VisibleTabCount reports how many tabs appear in the tab bar and participate
-// in Tab/Shift-Tab cycling (i.e. registered minus hidden overlays like Detail).
-// Exported so navigation tests derive the cycle length from the registry rather
-// than hardcoding it.
-func VisibleTabCount() int {
-	n := 0
-	for _, def := range tabRegistry {
-		if !def.Hidden {
-			n++
-		}
-	}
-	return n
-}
-
 // tabRegistry is the ordered list of registered tab definitions.
 // Populated via registerTab; never written after init() completes.
 var tabRegistry []TabDef
