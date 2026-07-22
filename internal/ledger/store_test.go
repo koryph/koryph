@@ -406,6 +406,69 @@ func TestRunLockSecondAcquireFails(t *testing.T) {
 	}
 }
 
+func TestLockHolderNoLockFile(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+	if pid, alive, ok := st.LockHolder(); ok {
+		t.Errorf("LockHolder with no lock file: pid=%d alive=%v ok=%v, want ok=false", pid, alive, ok)
+	}
+}
+
+func TestLockHolderLiveAndStale(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+
+	l, err := st.RunLock("run-1")
+	if err != nil {
+		t.Fatalf("RunLock: %v", err)
+	}
+	defer l.Unlock()
+
+	pid, alive, ok := st.LockHolder()
+	if !ok || !alive || pid != os.Getpid() {
+		t.Errorf("LockHolder live = pid=%d alive=%v ok=%v, want pid=%d alive=true ok=true", pid, alive, ok, os.Getpid())
+	}
+
+	// LockHolder is read-only: it must not have removed or altered the lock
+	// file a second peek sees the same state.
+	if pid2, alive2, ok2 := st.LockHolder(); pid2 != pid || alive2 != alive || ok2 != ok {
+		t.Errorf("LockHolder not idempotent: first (%d,%v,%v) second (%d,%v,%v)", pid, alive, ok, pid2, alive2, ok2)
+	}
+
+	if err := l.Unlock(); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	if _, _, ok := st.LockHolder(); ok {
+		t.Error("LockHolder after Unlock: ok = true, want false (lock file removed)")
+	}
+}
+
+func TestLockHolderDeadPID(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+	if err := os.MkdirAll(st.KoryphRoot, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	deadPID := 2000000000
+	if processAlive(deadPID) {
+		t.Skipf("chosen dead pid %d is unexpectedly alive; skipping", deadPID)
+	}
+	lockPath := filepath.Join(st.KoryphRoot, "koryph.lock")
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d ghost-host\n", deadPID)), 0o644); err != nil {
+		t.Fatalf("seed stale lock: %v", err)
+	}
+
+	pid, alive, ok := st.LockHolder()
+	if !ok || alive || pid != deadPID {
+		t.Errorf("LockHolder dead = pid=%d alive=%v ok=%v, want pid=%d alive=false ok=true", pid, alive, ok, deadPID)
+	}
+	// A dead-pid peek must not have reclaimed/removed the lock file — that is
+	// RunLock's job, not LockHolder's.
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("lock file removed by a read-only LockHolder peek: %v", err)
+	}
+}
+
 func TestRunLockStaleRecovered(t *testing.T) {
 	repo := t.TempDir()
 	st := NewStore(repo)

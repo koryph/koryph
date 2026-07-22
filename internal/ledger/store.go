@@ -355,6 +355,23 @@ func acquireLock(path, runID string) (*Lock, error) {
 	return &Lock{path: path, runID: runID}, nil
 }
 
+// LockHolder is a read-only peek at this project's process-singleton lock
+// (koryph-1es): unlike RunLock it never creates, removes, or reclaims
+// koryph.lock — it only reports what is there right now. ok is false when no
+// lock file exists (no engine has ever run, or the last one shut down
+// cleanly and Unlock removed it). When ok is true, pid is the recorded
+// holder and alive reports whether that pid is currently live — the signal
+// `koryph ops reconcile` uses to refuse touching a run a live engine still
+// owns.
+func (s *Store) LockHolder() (pid int, alive bool, ok bool) {
+	path := filepath.Join(s.KoryphRoot, lockFile)
+	pid, ok = readLockPID(path)
+	if !ok {
+		return 0, false, false
+	}
+	return pid, processAlive(pid), true
+}
+
 // Unlock releases the lock by removing the lock file.
 func (l *Lock) Unlock() error {
 	if l == nil {
