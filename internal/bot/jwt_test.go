@@ -4,6 +4,7 @@
 package bot
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -37,7 +38,7 @@ func TestMintJWT_StructurallyValid(t *testing.T) {
 	}
 
 	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
-	tok, err := MintJWTAt(cfg, now)
+	tok, err := MintJWTCtxAt(context.Background(), cfg, now)
 	if err != nil {
 		t.Fatalf("MintJWT: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestMintJWT_StructurallyValid(t *testing.T) {
 
 func TestMintJWT_InvalidPEM(t *testing.T) {
 	cfg := &Config{Name: "bad-bot", AppID: 1, PEM: "not a pem"}
-	_, err := MintJWT(cfg)
+	_, err := MintJWTCtx(context.Background(), cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid PEM, got nil")
 	}

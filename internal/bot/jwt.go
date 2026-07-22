@@ -21,9 +21,10 @@ import (
 // MintJWTCtx resolves the private key for cfg via ResolveKey (vault fetch in
 // pointer mode, inline PEM in back-compat mode) and mints a GitHub App JWT.
 //
-// This is the production entry point: it handles vault-backed credentials
-// transparently.  Use MintJWT / MintJWTAt for tests that supply an inline PEM
-// directly in cfg.PEM.
+// This is the sole production entry point: it handles both vault-backed and
+// inline-PEM (cfg.Provider == "") credentials transparently, so tests that
+// only ever populate cfg.PEM can call it directly too — ResolveKey returns
+// cfg.PEM verbatim in that mode without touching a vault.
 func MintJWTCtx(ctx context.Context, cfg *Config) (string, error) {
 	return MintJWTCtxAt(ctx, cfg, time.Now())
 }
@@ -35,20 +36,6 @@ func MintJWTCtxAt(ctx context.Context, cfg *Config, now time.Time) (string, erro
 		return "", fmt.Errorf("bot jwt: resolve key: %w", err)
 	}
 	return mintJWTFrom(pemStr, cfg.AppID, now)
-}
-
-// MintJWT creates a GitHub App JWT from the inline PEM in cfg.PEM.
-//
-// Back-compat entry point for inline-mode configs and tests.  Production code
-// with vault-backed credentials should call MintJWTCtx instead.
-func MintJWT(cfg *Config) (string, error) {
-	return MintJWTAt(cfg, time.Now())
-}
-
-// MintJWTAt is the injectable-time variant of MintJWT (useful in tests).
-// It reads cfg.PEM directly; use MintJWTCtxAt when a vault may be involved.
-func MintJWTAt(cfg *Config, now time.Time) (string, error) {
-	return mintJWTFrom(cfg.PEM, cfg.AppID, now)
 }
 
 // mintJWTFrom mints a GitHub App JWT from an already-resolved PEM string.
