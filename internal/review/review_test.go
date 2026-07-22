@@ -5,6 +5,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -418,6 +419,39 @@ func TestReviewDegradesAfterExhaustingAttempts(t *testing.T) {
 	}
 	if v.Reason == "" {
 		t.Errorf("degraded verdict must carry a Reason, got empty")
+	}
+
+	// koryph-5a1 #55: a full degrade must still leave a durable artifact
+	// naming every attempt's own diagnosis, not just the last one.
+	degradedPath := filepath.Join(filepath.Dir(o.OutPath), "review-degraded.json")
+	data, err := os.ReadFile(degradedPath)
+	if err != nil {
+		t.Fatalf("review-degraded.json not persisted: %v", err)
+	}
+	var artifact struct {
+		Degraded bool `json:"degraded"`
+		Reason   string
+		Attempts []struct {
+			Attempt int
+			Reason  string
+		}
+	}
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("review-degraded.json unmarshal: %v", err)
+	}
+	if !artifact.Degraded {
+		t.Errorf("review-degraded.json degraded = false, want true")
+	}
+	if len(artifact.Attempts) != 3 {
+		t.Errorf("review-degraded.json has %d attempt(s), want 3 (one per exhausted attempt)", len(artifact.Attempts))
+	}
+	for i, a := range artifact.Attempts {
+		if a.Attempt != i+1 {
+			t.Errorf("attempt[%d].Attempt = %d, want %d", i, a.Attempt, i+1)
+		}
+		if a.Reason == "" {
+			t.Errorf("attempt[%d].Reason is empty, want a per-attempt diagnosis", i)
+		}
 	}
 }
 

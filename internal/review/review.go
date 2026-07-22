@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/koryph/koryph/internal/agentjson"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/obs"
 )
 
 // Defaults per the package contract.
@@ -164,6 +166,13 @@ func Review(ctx context.Context, o Opts) Verdict {
 
 	prompt := buildPrompt(o.Branch, base, tailLines(stat.Stdout, diffStatTailLines), names.Stdout)
 
+	// history accumulates every attempt's diagnosis (koryph-5a1 #55): before
+	// this, only the LAST attempt's Reason survived on the returned Verdict —
+	// an earlier attempt's distinct failure (a rate limit that then cleared,
+	// followed by a JSON-parse failure) was silently discarded, and a full
+	// degrade persisted no artifact at all, leaving the operator with nothing
+	// but a 300-char stderr tail baked into one string.
+	var history []attemptDiagnosis
 	var last Verdict
 	for i := 0; i < attempts; i++ {
 		if i > 0 {
@@ -174,6 +183,8 @@ func Review(ctx context.Context, o Opts) Verdict {
 			case <-ctx.Done():
 				last = degradedReason("context cancelled during review retry")
 				last.Attempts = i
+				history = append(history, attemptDiagnosis{Attempt: i, Reason: last.Reason})
+				persistDegraded(o, last, history)
 				return last
 			case <-time.After(backoffFor(i)):
 			}
@@ -191,11 +202,14 @@ func Review(ctx context.Context, o Opts) Verdict {
 				if err := fsx.WriteAtomic(o.OutPath, []byte(v.Raw+"\n"), 0o644); err != nil {
 					v = degradedReason("persist review.json failed: " + err.Error())
 					v.Attempts = i + 1
+					history = append(history, attemptDiagnosis{Attempt: i + 1, Reason: v.Reason})
+					persistDegraded(o, v, history)
 					return v
 				}
 			}
 			return v
 		}
+		history = append(history, attemptDiagnosis{Attempt: i + 1, Reason: v.Reason, TimedOut: v.TimedOut})
 		// Adaptive: when an attempt runs out of wall-clock, give the next one
 		// more room — double the timeout up to MaxTimeoutSec — before retrying.
 		// A rate/usage limit (the other dominant transient failure) leaves the
@@ -206,7 +220,45 @@ func Review(ctx context.Context, o Opts) Verdict {
 		}
 		last = v
 	}
+	persistDegraded(o, last, history)
 	return last
+}
+
+// attemptDiagnosis records one reviewer attempt's outcome for the degraded
+// artifact — see persistDegraded.
+type attemptDiagnosis struct {
+	Attempt  int    `json:"attempt"`
+	Reason   string `json:"reason"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+}
+
+// persistDegraded writes every attempt's diagnosis to review-degraded.json
+// beside o.OutPath (koryph-5a1 #55) — the degraded counterpart of the
+// success path's review.json/review-envelope.json, so a full-degrade run
+// leaves a durable, per-attempt-annotated artifact instead of nothing.
+// Best-effort (an already-degraded verdict must not itself fail harder) and
+// a no-op when OutPath is unset — `koryph review-pr`/review-queue call
+// Review outside any phase dir and have no directory to write beside.
+func persistDegraded(o Opts, v Verdict, history []attemptDiagnosis) {
+	if o.OutPath == "" {
+		return
+	}
+	data, err := json.MarshalIndent(struct {
+		Degraded bool               `json:"degraded"`
+		Reason   string             `json:"reason"`
+		Attempts []attemptDiagnosis `json:"attempts"`
+		At       string             `json:"at"`
+	}{
+		Degraded: true,
+		Reason:   v.Reason,
+		Attempts: history,
+		At:       time.Now().UTC().Format(time.RFC3339),
+	}, "", "  ")
+	if err != nil {
+		return
+	}
+	path := filepath.Join(filepath.Dir(o.OutPath), "review-degraded.json")
+	_ = fsx.WriteAtomic(path, data, 0o644)
 }
 
 // attemptReview runs one reviewer spawn + parse. On any failure it returns a
@@ -223,6 +275,12 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	if o.Effort != "" {
 		args = append(args, "--effort", o.Effort)
 	}
+	// obs.Span adoption (koryph-5a1 #59): the reviewer spawn is a genuine hot
+	// path — one blocking external call per attempt, up to defaultAttempts
+	// times per review — so it gets the same latency/status/error span shape
+	// as forge.api and vault.resolve, giving real correlation across an
+	// entire reviewer attempt instead of scattered log lines.
+	sp := obs.StartSpan(ctx, log, slog.LevelDebug, "review.reviewer_spawn", obs.ForgeAttrs("claude", o.Model, o.Persona)...)
 	res, err := execx.Run(ctx, execx.Cmd{
 		Dir:     o.Worktree,
 		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "review"}),
@@ -232,9 +290,11 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 		Timeout: time.Duration(o.TimeoutSec) * time.Second,
 	})
 	if err != nil {
+		sp.End(0, err)
 		return degradedReason("reviewer spawn error: " + err.Error())
 	}
 	if res.ExitCode != 0 {
+		sp.End(0, fmt.Errorf("exit %d (timed_out=%v)", res.ExitCode, res.TimedOut))
 		if res.TimedOut {
 			if o.TimeoutSec >= o.MaxTimeoutSec {
 				return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds — the %d-minute per-task ceiling (opus %s effort on this diff); split the change into smaller beads", o.TimeoutSec, o.MaxTimeoutSec/60, o.Effort))
@@ -243,6 +303,7 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 		}
 		return degradedReason(fmt.Sprintf("reviewer exit %d: %s", res.ExitCode, strings.TrimSpace(agentjson.Tail(res.Stderr, 300))))
 	}
+	sp.EndOK()
 
 	// The CLI emits a result envelope; its "result" field holds the model
 	// text, which should itself be strict JSON. Extract the verdict schema-aware
