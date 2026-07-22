@@ -547,8 +547,10 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	reason := fs.String("reason", "", "close reason for --close-bead")
 	allowProtected := fs.Bool("allow-protected", false,
 		"lift the routine CI/build protected paths (.github/, Makefile) for this merge; governance defaults and project protected_paths still refuse")
+	wait := fs.Bool("wait", false,
+		"wait (with periodic progress) for a live engine run on this project to release the project lock, instead of failing fast")
 	setUsage(fs, stdout, "merge a branch, named by branch name, onto the default branch (push/squash/keep-worktree/close-bead)",
-		"[--project ID] <branch> [--push] [--squash] [--keep-worktree] [--allow-protected] [--close-bead BEAD --reason R]")
+		"[--project ID] <branch> [--push] [--squash] [--keep-worktree] [--allow-protected] [--wait] [--close-bead BEAD --reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -567,6 +569,17 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
+
+	// A live `koryph run` engine holds this project's koryph.lock for its
+	// whole lifetime (ledger.Store.RunLock) and drives its own git activity in
+	// the same worktree — a manual merge racing it previously hung silently
+	// with no indication of what it was waiting on (koryph-2zc). Name the
+	// holder immediately and fail fast by default; --wait opts into polling
+	// with periodic progress instead.
+	if code := awaitProjectLock(ctx, rec, *wait, "koryph merge", stdout, stderr); code != 0 {
+		return code
+	}
+
 	cfg, err := project.Load(rec.Root)
 	if err != nil {
 		return fail(stderr, err)
@@ -705,6 +718,70 @@ func cmdInject(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// mergeLockPollInterval is how often awaitProjectLock re-checks the project
+// lock and prints progress while waiting. A package var so tests can shrink
+// it instead of sleeping real wall-clock time.
+var mergeLockPollInterval = 3 * time.Second
+
+// awaitProjectLock checks rec's koryph.lock (ledger.Store.RunLock, held for a
+// live `koryph run` engine's whole lifetime) before a manual merge/land
+// touches the same worktree. cmdName prefixes every message (e.g. "koryph
+// merge", "koryph land"). No lock, or a stale/dead holder: proceeds
+// immediately (return 0). A live holder: by default names the holder (pid,
+// and run id when known) and fails fast with a non-zero exit; with wait=true
+// it instead polls every mergeLockPollInterval, printing progress, until the
+// lock clears (koryph-2zc — previously a contended merge raced the live
+// engine's own git activity and hung silently with no indication of what it
+// was waiting on).
+func awaitProjectLock(ctx context.Context, rec *registry.Record, wait bool, cmdName string, out, errOut io.Writer) int {
+	lstore := ledger.NewStore(rec.Root)
+	pid, alive, ok := lstore.LockHolder()
+	if !ok || !alive {
+		return 0
+	}
+	holder := lockHolderDesc(lstore, pid)
+	if !wait {
+		fmt.Fprintf(errOut, "%s: %s owns %s — refusing to merge concurrently; pass --wait to wait for it to finish\n",
+			cmdName, holder, rec.ProjectID)
+		return engine.ExitFatal
+	}
+	fmt.Fprintf(out, "%s: waiting on %s to release %s...\n", cmdName, holder, rec.ProjectID)
+	waited := time.Duration(0)
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(errOut, "%s: %v while waiting on %s\n", cmdName, ctx.Err(), holder)
+			return engine.ExitFatal
+		case <-time.After(mergeLockPollInterval):
+		}
+		waited += mergeLockPollInterval
+		newPID, alive, ok := lstore.LockHolder()
+		if !ok || !alive {
+			fmt.Fprintf(out, "%s: project lock released after %s, continuing\n", cmdName, waited)
+			return 0
+		}
+		// A different pid may have picked up the lock while we waited (the
+		// prior engine exited and a new run started); refresh the holder
+		// description so a still-waiting message never names a stale pid.
+		if newPID != pid {
+			pid = newPID
+			holder = lockHolderDesc(lstore, pid)
+		}
+		fmt.Fprintf(out, "%s: still waiting on %s (%s elapsed)\n", cmdName, holder, waited)
+	}
+}
+
+// lockHolderDesc formats the koryph.lock holder for an operator-facing
+// message: the pid always, plus the latest run's id when the ledger has one
+// on file. Best-effort — a missing or unreadable run just omits the run id
+// rather than failing the check.
+func lockHolderDesc(lstore *ledger.Store, pid int) string {
+	if run, err := lstore.LoadLatest(); err == nil && run != nil {
+		return fmt.Sprintf("a live engine (pid %d, run %s)", pid, run.RunID)
+	}
+	return fmt.Sprintf("a live engine (pid %d)", pid)
+}
+
 // recordManualMergeOverride writes a merged override for beadID into the latest
 // run's operator-override sidecar (D5). The running engine reads the sidecar
 // each cycle and folds the directive into its in-memory ledger.
@@ -761,8 +838,10 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	reason := fs.String("reason", "", "bead close reason")
 	allowProtected := fs.Bool("allow-protected", false,
 		"lift the routine CI/build protected paths (.github/, Makefile) for this landing; governance defaults and project protected_paths still refuse")
+	wait := fs.Bool("wait", false,
+		"wait (with periodic progress) for a live engine run on this project to release the project lock, instead of failing fast")
 	setUsage(fs, stdout, "land an engine-opened PR, named by bead id, fast-forward-only; closes the bead on success",
-		"[--project ID] <bead> [--method ff|squash] [--allow-protected] [--reason R]")
+		"[--project ID] <bead> [--method ff|squash] [--allow-protected] [--wait] [--reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -781,6 +860,13 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
+
+	// See awaitProjectLock's doc (koryph-2zc): a live engine's own git activity
+	// in this same worktree previously raced a manual land silently.
+	if code := awaitProjectLock(ctx, rec, *wait, "koryph land", stdout, stderr); code != 0 {
+		return code
+	}
+
 	cfg, err := project.Load(rec.Root)
 	if err != nil {
 		return fail(stderr, err)

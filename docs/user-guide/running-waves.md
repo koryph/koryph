@@ -322,6 +322,22 @@ refused and the phase is **blocked** — and the block reason now names the way 
 `--allow-protected` is operator-only (never available to a dispatched agent) and lifts
 *only* the routine CI/build subset; governance and project protections always refuse.
 
+### Merging while a loop is running
+
+`koryph merge`/`koryph land` check the project's `koryph.lock` before touching the
+worktree: a live `koryph run` engine holds that lock for its whole lifetime, and racing
+its own git activity in the same worktree previously hung the manual command silently
+with no indication of what it was waiting on. Now, if a live engine owns the project, the
+merge names the holder (pid, and the run id when known) and **fails fast** by default:
+
+```
+koryph merge: a live engine (pid 12345, run 2026-07-22T19-09-50) owns myproject —
+refusing to merge concurrently; pass --wait to wait for it to finish
+```
+
+Pass `--wait` to poll instead of failing fast — it prints progress every few seconds
+until the engine's lock releases, then proceeds with the merge.
+
 When you land a bead by hand with `koryph merge --close-bead <id>` while a loop is
 running, the command also drops a **merged directive** into that run's operator-override
 sidecar (`overrides.json`, beside `ledger.json`). The engine reads the sidecar every

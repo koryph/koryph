@@ -336,6 +336,7 @@ merge a worktree branch by name (push/squash/keep-worktree)
 | `--push` | bool |  | push the default branch after merge |
 | `--reason` | string |  | close reason for --close-bead |
 | `--squash` | bool |  | squash-merge instead of ff-only |
+| `--wait` | bool |  | wait (with periodic progress) for a live engine run on this project to release the project lock, instead of failing fast |
 
 
 ---
@@ -352,6 +353,7 @@ land an engine-opened PR by bead id, fast-forward-only
 | `--method` | string |  | landing method override: ff\|squash (default: project merge_method, else ff) |
 | `--project` | string |  | project id (default: the project containing the current directory) |
 | `--reason` | string |  | bead close reason |
+| `--wait` | bool |  | wait (with periodic progress) for a live engine run on this project to release the project lock, instead of failing fast |
 
 
 ---
