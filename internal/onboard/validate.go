@@ -11,13 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
-	"github.com/koryph/koryph/internal/runtime"
-	"github.com/koryph/koryph/internal/runtime/claude"
 	"github.com/koryph/koryph/internal/sched"
 )
 
@@ -75,18 +74,27 @@ func Validate(ctx context.Context, store *registry.Store, projectID string, out 
 		add("git repo", LevelError, "no .git under "+rec.Root)
 	}
 
-	// Account identity (fail closed), through the resolved runtime adapter
-	// (koryph-v8u.5) rather than internal/account directly — see
-	// runtime.Runtime.VerifyIdentity's doc. ra.ConfigDir/ExpectedIdentity
-	// equal rec.ClaudeConfigDir/rec.ExpectedIdentity for every project today
-	// (AccountFor's flat-field fallback), so this check is unchanged
-	// end-to-end.
+	// Account identity (fail closed), via the branched account.VerifyAuth
+	// (koryph-i3b, design §5/§8): subscription mode verifies the OAuth
+	// email exactly as before; api-key/oauth-token modes resolve the
+	// credential, fingerprint-check it against the enrolled
+	// identity_fingerprint, and probe it live against Anthropic. ra carries
+	// AuthMode/Credential/IdentityFingerprint/ExpectedIdentity — equal to
+	// rec's flat fields for every project that has not opted into
+	// runtime_accounts (AccountFor's flat-field fallback), so subscription
+	// projects are unchanged end-to-end.
 	ra := rec.AccountFor(resolvedRuntimeName)
-	rtProf := runtime.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
-	if got, verr := claude.New("").VerifyIdentity(ctx, rtProf, ra.ExpectedIdentity); verr != nil {
+	spec := account.AuthSpec{
+		Mode:                account.AuthMode(ra.AuthMode),
+		ExpectedIdentity:    ra.ExpectedIdentity,
+		Credential:          toAccountCredential(ra.Credential),
+		IdentityFingerprint: ra.IdentityFingerprint,
+	}
+	acctProf := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
+	if id, verr := account.VerifyAuth(ctx, acctProf, spec); verr != nil {
 		add("account identity", LevelError, verr.Error())
 	} else {
-		add("account identity", LevelOK, "verified "+got)
+		add("account identity", LevelOK, "verified "+identityLabel(id))
 	}
 
 	// bd availability + ready parse (bd work source only).
@@ -180,6 +188,17 @@ func probeWritable(dir string) error {
 		return fmt.Errorf("cannot create %s: %w", dir, err)
 	}
 	return os.Remove(probe)
+}
+
+// identityLabel renders a verified account.Identity for the "account
+// identity" check's OK detail: the OAuth email for subscription mode, or
+// the credential fingerprint for api-key/oauth-token mode (which has no
+// email — see account.Identity's doc).
+func identityLabel(id account.Identity) string {
+	if id.Email != "" {
+		return id.Email
+	}
+	return id.Fingerprint
 }
 
 // detailSuffix renders a check detail as a trailing clause, or "" when empty.

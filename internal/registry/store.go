@@ -447,8 +447,16 @@ func validate(rec *Record) error {
 	if strings.TrimSpace(rec.AccountProfile) == "" {
 		return fmt.Errorf("registry: account_profile required")
 	}
-	if !emailRe.MatchString(rec.ExpectedIdentity) {
-		return fmt.Errorf("registry: expected_identity %q must be an email", rec.ExpectedIdentity)
+	// The email-shaped expected_identity requirement applies only to the
+	// default subscription auth mode (koryph-i3b, design §4/§8):
+	// api-key/oauth-token accounts verify via identity_fingerprint instead
+	// (see account.VerifyAuth) and have no login email to require — a
+	// non-email or empty expected_identity is a valid free-form display
+	// label for those modes.
+	if rec.EffectiveAuthMode() == AuthModeSubscription {
+		if !emailRe.MatchString(rec.ExpectedIdentity) {
+			return fmt.Errorf("registry: expected_identity %q must be an email", rec.ExpectedIdentity)
+		}
 	}
 	if err := validateAgentProxy(rec); err != nil {
 		return err

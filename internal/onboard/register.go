@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 )
@@ -30,12 +31,17 @@ func Register(ctx context.Context, store *registry.Store, inv *Inventory, opts R
 		return nil, err
 	}
 
+	fingerprint, err := resolveIdentityFingerprint(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
 	projectID := opts.ProjectID
 	if projectID == "" {
 		projectID = slugify(filepath.Base(inv.Root))
 	}
 
-	rec := buildRecord(projectID, inv, opts)
+	rec := buildRecord(projectID, inv, opts, fingerprint)
 
 	if err := store.Add(ctx, rec); err != nil {
 		return nil, err
@@ -52,7 +58,11 @@ func Register(ctx context.Context, store *registry.Store, inv *Inventory, opts R
 	return rec, nil
 }
 
-// validateRegisterOpts enforces the explicit-account contract.
+// validateRegisterOpts enforces the explicit-account contract. The
+// email-shaped ExpectedIdentity requirement applies only to the default
+// subscription auth mode; api-key/oauth-token accounts have no login email
+// to require and instead must carry a Credential to resolve (koryph-i3b,
+// design §4/§8).
 func validateRegisterOpts(opts RegisterOpts) error {
 	if strings.TrimSpace(opts.AccountProfile) == "" {
 		return fmt.Errorf("onboard: account profile is required (personal|work)")
@@ -60,10 +70,60 @@ func validateRegisterOpts(opts RegisterOpts) error {
 	if opts.AccountProfile != registry.ProfilePersonal && strings.TrimSpace(opts.ClaudeConfigDir) == "" {
 		return fmt.Errorf("onboard: config dir (CLAUDE_CONFIG_DIR) is required for the %q account", opts.AccountProfile)
 	}
-	if !strings.Contains(opts.ExpectedIdentity, "@") {
-		return fmt.Errorf("onboard: expected identity %q must be a login email (contains '@')", opts.ExpectedIdentity)
+	mode := opts.AuthMode
+	if mode == "" {
+		mode = registry.AuthModeSubscription
+	}
+	switch mode {
+	case registry.AuthModeSubscription:
+		if !strings.Contains(opts.ExpectedIdentity, "@") {
+			return fmt.Errorf("onboard: expected identity %q must be a login email (contains '@')", opts.ExpectedIdentity)
+		}
+	case registry.AuthModeAPIKey, registry.AuthModeOAuthToken:
+		if opts.Credential == nil {
+			return fmt.Errorf("onboard: auth mode %q requires a credential (source vault|env)", mode)
+		}
+	default:
+		return fmt.Errorf("onboard: unrecognized auth mode %q", mode)
 	}
 	return nil
+}
+
+// resolveIdentityFingerprint computes the identity_fingerprint to record at
+// registration for non-subscription auth modes (koryph-i3b, design §5/§8):
+// it resolves opts.Credential through the SAME account.ResolveCredential
+// seam dispatch-time verification uses, then fingerprints the resolved
+// value — the raw credential itself is discarded immediately after and
+// never persisted. Subscription mode (the default) has no credential and
+// returns "".
+func resolveIdentityFingerprint(ctx context.Context, opts RegisterOpts) (string, error) {
+	mode := opts.AuthMode
+	if mode == "" {
+		mode = registry.AuthModeSubscription
+	}
+	if mode == registry.AuthModeSubscription {
+		return "", nil
+	}
+	_, value, err := account.ResolveCredential(ctx, account.AuthMode(mode), toAccountCredential(opts.Credential))
+	if err != nil {
+		return "", fmt.Errorf("onboard: register: %w", err)
+	}
+	return account.Fingerprint(value), nil
+}
+
+// toAccountCredential mirrors registry.Credential -> account.Credential
+// field-for-field (see account.Credential's doc for why the two types are
+// duplicated rather than one importing the other).
+func toAccountCredential(c *registry.Credential) *account.Credential {
+	if c == nil {
+		return nil
+	}
+	return &account.Credential{
+		Source:   c.Source,
+		Provider: c.Provider,
+		KeyRef:   c.KeyRef,
+		EnvVar:   c.EnvVar,
+	}
 }
 
 // checkEnvrcAgreement refuses a request whose account class disagrees with the
@@ -100,8 +160,10 @@ func envrcClass(profile string) (string, bool) {
 	}
 }
 
-// buildRecord assembles the registry record with conservative policy defaults.
-func buildRecord(projectID string, inv *Inventory, opts RegisterOpts) *registry.Record {
+// buildRecord assembles the registry record with conservative policy
+// defaults. identityFingerprint is the value resolveIdentityFingerprint
+// computed for opts.AuthMode ("" for subscription mode).
+func buildRecord(projectID string, inv *Inventory, opts RegisterOpts, identityFingerprint string) *registry.Record {
 	beadsStatus := "none"
 	if inv.HasBeads {
 		beadsStatus = "initialized"
@@ -149,6 +211,10 @@ func buildRecord(projectID string, inv *Inventory, opts RegisterOpts) *registry.
 		ClaudeConfigDir:  opts.ClaudeConfigDir,
 		ExpectedIdentity: opts.ExpectedIdentity,
 		DirenvExpected:   direnvExpected,
+
+		AuthMode:            opts.AuthMode,
+		Credential:          opts.Credential,
+		IdentityFingerprint: identityFingerprint,
 
 		AllowedModels:       allowed,
 		PlannerModel:        "opus",

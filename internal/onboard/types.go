@@ -22,11 +22,15 @@
 //     list) + dirty flags; koryph.project.json presence; plans dir.
 //   - Register(ctx, store, inv, RegisterOpts) (*registry.Record, error) —
 //     build the Record from inventory + explicit opts (account NEVER
-//     inferred silently: RegisterOpts.AccountProfile and ExpectedIdentity
-//     are REQUIRED; error if the .envrc-declared profile disagrees unless
-//     Force). Write koryph.project.json scaffold (project.Default +
-//     detected gate hints) only when absent. store.Add. Never mutates
-//     beads, .envrc, or git state.
+//     inferred silently: RegisterOpts.AccountProfile is always REQUIRED;
+//     ExpectedIdentity is REQUIRED as a login email for the default
+//     subscription AuthMode, optional/free-form for AuthModeAPIKey /
+//     AuthModeOAuthToken, which instead REQUIRE Credential and have their
+//     identity_fingerprint resolved+recorded here; error if the
+//     .envrc-declared profile disagrees unless Force). Write
+//     koryph.project.json scaffold (project.Default + detected gate hints)
+//     only when absent. store.Add. Never mutates beads, .envrc, or git
+//     state.
 //   - Validate(ctx, store, projectID, out) (*Validation, error) — checks:
 //     record + adapter config load; root is a git repo on disk; account
 //     identity verifies against ExpectedIdentity (fail closed); bd
@@ -77,12 +81,27 @@ type WorktreeState struct {
 
 // RegisterOpts are the explicit (never inferred) registration inputs.
 type RegisterOpts struct {
-	ProjectID        string   // default: repo dir name slugified
-	AccountProfile   string   // REQUIRED: personal|work
-	ClaudeConfigDir  string   // "" for personal; e.g. ~/.claude-work for work
-	ExpectedIdentity string   // REQUIRED: login email that must match at dispatch
-	AllowedModels    []string // default ["haiku","sonnet","opus"]
-	Force            bool     // override .envrc-disagreement refusal
+	ProjectID       string // default: repo dir name slugified
+	AccountProfile  string // REQUIRED: personal|work
+	ClaudeConfigDir string // "" for personal; e.g. ~/.claude-work for work
+	// ExpectedIdentity is REQUIRED and must be a login email for
+	// AuthMode subscription (the default). For AuthModeAPIKey /
+	// AuthModeOAuthToken it is optional and free-form (a display label —
+	// there is no email to verify for a bare credential; see
+	// docs/designs/2026-07-api-key-auth.md §4-§5).
+	ExpectedIdentity string
+	// AuthMode selects how this account authenticates (koryph-i3b, design
+	// §4): "" (== registry.AuthModeSubscription, the default),
+	// registry.AuthModeAPIKey, or registry.AuthModeOAuthToken.
+	AuthMode string
+	// Credential resolves the long-lived credential for AuthModeAPIKey /
+	// AuthModeOAuthToken (design §6) — REQUIRED for those modes, ignored
+	// for subscription. Register resolves it once, at enrollment time, to
+	// compute the identity_fingerprint recorded on the Record; the
+	// resolved secret value itself is never persisted.
+	Credential    *registry.Credential
+	AllowedModels []string // default ["haiku","sonnet","opus"]
+	Force         bool     // override .envrc-disagreement refusal
 }
 
 // Check is one validation check result.

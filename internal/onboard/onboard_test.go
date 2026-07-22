@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -398,6 +399,81 @@ func TestRegisterValidatesOpts(t *testing.T) {
 	}
 }
 
+func TestRegisterNonSubscriptionModesRelaxIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode string
+	}{
+		{"api-key", registry.AuthModeAPIKey},
+		{"oauth-token", registry.AuthModeOAuthToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KORYPH_HOME", t.TempDir())
+			t.Setenv("KORYPH_TEST_CREDENTIAL", "sekrit-value-"+tc.name)
+			root := initRepo(t)
+			store := newStore(t)
+			inv, err := Inspect(context.Background(), root)
+			if err != nil {
+				t.Fatalf("Inspect: %v", err)
+			}
+
+			cred := &registry.Credential{Source: registry.CredentialSourceEnv, EnvVar: "KORYPH_TEST_CREDENTIAL"}
+			rec, err := Register(context.Background(), store, inv, RegisterOpts{
+				ProjectID:      "demo",
+				AccountProfile: registry.ProfilePersonal,
+				AuthMode:       tc.mode,
+				Credential:     cred,
+				// No '@' and no ExpectedIdentity at all — must not be refused
+				// for a non-subscription mode.
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			if rec.AuthMode != tc.mode {
+				t.Errorf("AuthMode = %q, want %q", rec.AuthMode, tc.mode)
+			}
+			if rec.Credential == nil || *rec.Credential != *cred {
+				t.Errorf("Credential = %+v, want %+v", rec.Credential, cred)
+			}
+			wantFP := account.Fingerprint("sekrit-value-" + tc.name)
+			if rec.IdentityFingerprint != wantFP {
+				t.Errorf("IdentityFingerprint = %q, want %q", rec.IdentityFingerprint, wantFP)
+			}
+		})
+	}
+}
+
+func TestRegisterNonSubscriptionModeRequiresCredential(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	root := initRepo(t)
+	store := newStore(t)
+	inv, _ := Inspect(context.Background(), root)
+
+	if _, err := Register(context.Background(), store, inv, RegisterOpts{
+		ProjectID:      "demo",
+		AccountProfile: registry.ProfilePersonal,
+		AuthMode:       registry.AuthModeAPIKey,
+	}); err == nil {
+		t.Fatal("expected refusal for api-key mode without a credential")
+	}
+}
+
+func TestRegisterSubscriptionModeStillRequiresEmail(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	root := initRepo(t)
+	store := newStore(t)
+	inv, _ := Inspect(context.Background(), root)
+
+	if _, err := Register(context.Background(), store, inv, RegisterOpts{
+		ProjectID:      "demo",
+		AccountProfile: registry.ProfilePersonal,
+		// AuthMode left empty ("" == subscription); no '@' in identity.
+		ExpectedIdentity: "not-an-email",
+	}); err == nil {
+		t.Fatal("expected refusal for subscription-mode identity without '@'")
+	}
+}
+
 // --- Validate --------------------------------------------------------------
 
 func TestValidateMinimalGreen(t *testing.T) {
@@ -469,6 +545,51 @@ func TestValidateFailsOnIdentityMismatch(t *testing.T) {
 	}
 	if !hasLevel(v, "account identity", LevelError) {
 		t.Errorf("expected an error-level account-identity check; checks=%+v", v.Checks)
+	}
+}
+
+// TestValidateAPIKeyModeUsesBranchedVerify proves the validate preflight's
+// "account identity" check routes api-key/oauth-token accounts through the
+// branched account.VerifyAuth (koryph-i3b, design §5/§8) rather than the
+// subscription-only email path: it must fail closed on a fingerprint
+// mismatch WITHOUT reaching the network liveness probe (so this stays a
+// fast, offline unit test — the mismatch is caught before ResolveCredential's
+// result is ever probed against Anthropic).
+func TestValidateAPIKeyModeUsesBranchedVerify(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	t.Setenv("KORYPH_TEST_CREDENTIAL", "sekrit-value")
+	fakeBD(t)
+	root := initRepo(t)
+	store := newStore(t)
+	inv, _ := Inspect(context.Background(), root)
+
+	rec, err := Register(context.Background(), store, inv, RegisterOpts{
+		ProjectID:      "demo",
+		AccountProfile: registry.ProfilePersonal,
+		AuthMode:       registry.AuthModeAPIKey,
+		Credential:     &registry.Credential{Source: registry.CredentialSourceEnv, EnvVar: "KORYPH_TEST_CREDENTIAL"},
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Tamper the enrolled fingerprint to simulate a swapped credential —
+	// Save permits mutating IdentityFingerprint (only AccountProfile/
+	// ClaudeConfigDir/ExpectedIdentity are immutable via Save).
+	rec.IdentityFingerprint = "sha256:0000000000000000"
+	if err := store.Save(context.Background(), rec); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+
+	v, err := Validate(context.Background(), store, "demo", nil)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if v.OK {
+		t.Fatal("Validate OK despite a fingerprint mismatch")
+	}
+	if !hasCheck(v, "account identity", LevelError, "mismatch") {
+		t.Errorf("expected an error-level fingerprint-mismatch account-identity check; checks=%+v", v.Checks)
 	}
 }
 
