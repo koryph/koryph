@@ -10,10 +10,21 @@
 // used only when the registry record has APIFallback=="explicit", the
 // caller passed --allow-api-spend, and the governor is at stop.
 //
+// A first-class api-key/oauth-token account (koryph-i3b, design
+// docs/designs/2026-07-api-key-auth.md §4-§9) is a DIFFERENT, independent
+// path: Spec.CredentialEnvVar/Credential carry a pre-resolved, pre-verified
+// credential (see Spec's doc) that Command injects under its canonical name,
+// entirely separate from the subscription-first Billing/APIKey fallback
+// above.
+//
 // Implementation contract (cli.go):
 //   - CLIBackend.Dispatch(ctx, Spec) (Handle, error):
-//     1. The resolved runtime.Runtime's VerifyIdentity (koryph-v8u.5; claude
+//     1. Spec.CredentialEnvVar == "" (subscription mode, the default): the
+//     resolved runtime.Runtime's VerifyIdentity (koryph-v8u.5; claude
 //     delegates to account.VerifyExpected) — FAIL CLOSED on mismatch/error.
+//     Non-empty CredentialEnvVar (api-key/oauth-token mode): identity was
+//     already verified fail-closed once at engine startup
+//     (account.VerifyAuth); Dispatch only confirms Credential is non-empty.
 //     2. Write prompt.md, seed status.json {state:queued,step:dispatched,
 //     pct:0}, write INBOX.md placeholder.
 //     3. Build launch.sh (inspectable artifact) exec'ing:
@@ -66,6 +77,25 @@ type Spec struct {
 	ExpectedIdentity string
 	Billing          account.BillingMode
 	APIKey           string // resolved key when Billing==api-key; never logged
+
+	// Credential and CredentialEnvVar carry the resolved long-lived
+	// credential for a first-class api-key/oauth-token account (koryph-i3b,
+	// design docs/designs/2026-07-api-key-auth.md §4/§6/§9), verified once
+	// at engine startup (account.VerifyAuth) — the caller resolves the
+	// credential and hands it here rather than Dispatch resolving it itself.
+	// CredentialEnvVar must be the CANONICAL name ("ANTHROPIC_API_KEY" /
+	// "CLAUDE_CODE_OAUTH_TOKEN"). Non-empty CredentialEnvVar signals a
+	// first-class non-subscription account: Dispatch skips the OAuth
+	// VerifyIdentity re-check (there is no .claude.json to read for a
+	// bare-credential account) and instead confirms Credential is
+	// non-empty — identity was already verified fail-closed once at engine
+	// setup. Both empty (the default) is byte-for-byte the pre-koryph-i3b
+	// behavior: Dispatch calls rt.VerifyIdentity exactly as before. This is
+	// independent of the legacy Billing/APIKey fields above, which remain
+	// the pre-existing api-key BILLING fallback under a still-subscription-
+	// verified account (design §3, unchanged).
+	Credential       string // never logged
+	CredentialEnvVar string
 
 	MaxBudgetUSD    float64
 	Prompt          string

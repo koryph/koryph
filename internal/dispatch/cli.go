@@ -65,23 +65,53 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 	rt := b.resolvedRuntime()
 
 	// 1. Identity + billing verification — before any filesystem effect.
-	// VerifyIdentity is the runtime-generic seam (koryph-v8u.5); the default
-	// claude adapter delegates to account.VerifyExpected, so this is the
-	// SAME fail-closed check and error text as before this bead.
-	identity, err := rt.VerifyIdentity(ctx, toRuntimeProfile(s.Profile), s.ExpectedIdentity)
-	if err != nil {
-		log.Warn("dispatch.identity.failed",
+	var identity string
+	if s.CredentialEnvVar != "" {
+		// First-class non-subscription account (koryph-i3b, design §5): there
+		// is no .claude.json to check (a bare-credential machine never ran
+		// `claude auth login`) — identity was already verified fail-closed
+		// once at engine startup (account.VerifyAuth: the credential
+		// resolves, fingerprint-matches the enrolled identity, and is live
+		// against Anthropic). Here we only confirm the resolved credential
+		// actually made it onto the Spec, the same defense-in-depth shape as
+		// the legacy `s.Billing == BillingAPIKey && s.APIKey == ""` check
+		// below.
+		if s.Credential == "" {
+			err := fmt.Errorf("dispatch %s: auth_mode credential env var %q set but no resolved credential — refusing dispatch", s.PhaseID, s.CredentialEnvVar)
+			log.Warn("dispatch.identity.failed",
+				slog.String(obs.KeyPhase, s.PhaseID),
+				slog.String(obs.KeyProject, s.ProjectID),
+				obs.Err(err),
+			)
+			return Handle{}, err
+		}
+		identity = s.CredentialEnvVar
+		log.Info("dispatch.identity.verified",
 			slog.String(obs.KeyPhase, s.PhaseID),
 			slog.String(obs.KeyProject, s.ProjectID),
-			obs.Err(err),
+			slog.String("result", "ok"),
+			slog.String("auth_mode", "credential"),
 		)
-		return Handle{}, err
+	} else {
+		// VerifyIdentity is the runtime-generic seam (koryph-v8u.5); the
+		// default claude adapter delegates to account.VerifyExpected, so this
+		// is the SAME fail-closed check and error text as before this bead.
+		var verr error
+		identity, verr = rt.VerifyIdentity(ctx, toRuntimeProfile(s.Profile), s.ExpectedIdentity)
+		if verr != nil {
+			log.Warn("dispatch.identity.failed",
+				slog.String(obs.KeyPhase, s.PhaseID),
+				slog.String(obs.KeyProject, s.ProjectID),
+				obs.Err(verr),
+			)
+			return Handle{}, verr
+		}
+		log.Info("dispatch.identity.verified",
+			slog.String(obs.KeyPhase, s.PhaseID),
+			slog.String(obs.KeyProject, s.ProjectID),
+			slog.String("result", "ok"),
+		)
 	}
-	log.Info("dispatch.identity.verified",
-		slog.String(obs.KeyPhase, s.PhaseID),
-		slog.String(obs.KeyProject, s.ProjectID),
-		slog.String("result", "ok"),
-	)
 	if !s.Billing.Valid() {
 		return Handle{}, fmt.Errorf("dispatch %s: invalid billing mode %q (want %q or %q)", s.PhaseID, s.Billing, account.BillingSubscription, account.BillingAPIKey)
 	}
@@ -275,6 +305,8 @@ func toRuntimeSpec(s Spec) runtime.DispatchSpec {
 		ExpectedIdentity: s.ExpectedIdentity,
 		Billing:          runtime.BillingMode(s.Billing),
 		APIKey:           s.APIKey,
+		Credential:       s.Credential,
+		CredentialEnvVar: s.CredentialEnvVar,
 		MaxBudgetUSD:     s.MaxBudgetUSD,
 		Prompt:           s.Prompt,
 		SessionID:        s.SessionID,

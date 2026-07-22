@@ -51,6 +51,8 @@
 //	Attempt                 Attempt                      verbatim
 //	SSHAuthSock             SSHAuthSock                  verbatim
 //	EnvPassthrough          EnvPassthrough               verbatim
+//	Credential              Credential                   verbatim; never logged, same invariant
+//	CredentialEnvVar        CredentialEnvVar             verbatim
 //
 // Fields NOT mirrored are the ones cli.go itself derives/hardcodes rather
 // than reading from Spec (e.g. --permission-mode dontAsk, --output-format

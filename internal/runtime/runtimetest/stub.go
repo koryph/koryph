@@ -164,7 +164,14 @@ func (s Stub) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 
 	env := append([]string{}, spec.EnvPassthrough...)
 	env = append(env, s.AccountEnv(spec.Profile)...)
-	if spec.Billing == runtime.BillingAPIKey && spec.APIKey != "" {
+	switch {
+	case spec.CredentialEnvVar != "":
+		// First-class api-key/oauth-token account (koryph-i3b): mirrors
+		// account.ChildEnv's precedence — CredentialEnvVar wins over the
+		// legacy Billing/APIKey fallback below, exactly one credential ever
+		// injected.
+		env = append(env, spec.CredentialEnvVar+"="+spec.Credential)
+	case spec.Billing == runtime.BillingAPIKey && spec.APIKey != "":
 		env = append(env, "STUB_API_KEY="+spec.APIKey)
 	}
 	return argv, env, nil

@@ -385,6 +385,83 @@ func TestDispatchInvalidBillingMode(t *testing.T) {
 	}
 }
 
+// TestDispatchCredentialEnvVarInjectsAndSkipsOAuthCheck is the koryph-i3b.4
+// coexistence test: a first-class non-subscription account (Spec.
+// CredentialEnvVar set) must (1) inject the resolved credential under its
+// canonical name and (2) dispatch successfully even though Profile.ConfigDir
+// has no .claude.json at all — proving the OAuth VerifyIdentity re-check is
+// genuinely skipped, not merely tolerant of a missing file (which is exactly
+// the "appears not logged in" symptom the design doc fixes).
+func TestDispatchCredentialEnvVarInjectsAndSkipsOAuthCheck(t *testing.T) {
+	spec := baseSpec(t)
+	spec.Profile.ConfigDir = t.TempDir() // no .claude.json here
+	spec.ExpectedIdentity = ""           // no email to compare, per design §4
+	spec.CredentialEnvVar = "CLAUDE_CODE_OAUTH_TOKEN"
+	spec.Credential = "oat-resolved-token"
+
+	b := CLIBackend{ClaudeBin: fakeClaude(t)}
+	handle, err := b.Dispatch(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if handle.VerifiedIdentity != spec.CredentialEnvVar {
+		t.Errorf("VerifiedIdentity = %q, want %q", handle.VerifiedIdentity, spec.CredentialEnvVar)
+	}
+
+	env := string(waitForFile(t, filepath.Join(spec.PhaseDir, "env.txt")))
+	if !strings.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=oat-resolved-token\n") {
+		t.Errorf("child env missing resolved credential under its canonical name:\n%s", env)
+	}
+}
+
+// TestDispatchCredentialEnvVarRequiresCredential mirrors
+// TestDispatchAPIKeyBillingRequiresKey's shape for the new credential path:
+// CredentialEnvVar set with no resolved Credential is a caller bug (the
+// engine should have failed closed at Run() setup before ever reaching
+// here) — Dispatch refuses rather than injecting an empty-valued env var.
+func TestDispatchCredentialEnvVarRequiresCredential(t *testing.T) {
+	spec := baseSpec(t)
+	spec.CredentialEnvVar = "ANTHROPIC_API_KEY"
+	spec.Credential = ""
+	b := CLIBackend{ClaudeBin: fakeClaude(t)}
+	if _, err := b.Dispatch(context.Background(), spec); err == nil {
+		t.Fatal("Dispatch succeeded with CredentialEnvVar set and no resolved credential; must fail closed")
+	}
+	if _, err := os.Stat(spec.PhaseDir); !os.IsNotExist(err) {
+		t.Errorf("PhaseDir created despite credential refusal: %v", err)
+	}
+}
+
+// TestDispatchCredentialEnvVarTakesPriorityOverLegacyAPIKey proves
+// ChildEnv's precedence (account.ChildEnv's doc: "CredentialEnvVar as
+// authoritative when both are set") holds through the full dispatch path:
+// setting BOTH the new credential fields and the legacy Billing/APIKey
+// fields (a belt-and-braces engine bug, or a first-class api-key account
+// whose billingFor happens to reuse the same resolved key on both fields)
+// must never double-inject ANTHROPIC_API_KEY.
+func TestDispatchCredentialEnvVarTakesPriorityOverLegacyAPIKey(t *testing.T) {
+	spec := baseSpec(t)
+	spec.Profile.ConfigDir = t.TempDir()
+	spec.ExpectedIdentity = ""
+	spec.CredentialEnvVar = "ANTHROPIC_API_KEY"
+	spec.Credential = "sk-first-class"
+	spec.Billing = account.BillingAPIKey
+	spec.APIKey = "sk-legacy-should-not-appear"
+
+	b := CLIBackend{ClaudeBin: fakeClaude(t)}
+	if _, err := b.Dispatch(context.Background(), spec); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	env := string(waitForFile(t, filepath.Join(spec.PhaseDir, "env.txt")))
+	if !strings.Contains(env, "ANTHROPIC_API_KEY=sk-first-class\n") {
+		t.Errorf("child env missing first-class credential:\n%s", env)
+	}
+	if strings.Contains(env, "sk-legacy-should-not-appear") {
+		t.Errorf("legacy APIKey value leaked despite CredentialEnvVar precedence:\n%s", env)
+	}
+}
+
 func TestDispatchRejectsSingleQuotePaths(t *testing.T) {
 	b := CLIBackend{ClaudeBin: fakeClaude(t)}
 

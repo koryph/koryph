@@ -396,6 +396,17 @@ type RuntimeAccount struct {
 	IdentityFingerprint string      `json:"identity_fingerprint,omitempty"`
 }
 
+// EffectiveAuthMode returns ra.AuthMode, defaulting empty to
+// AuthModeSubscription — the RuntimeAccount counterpart of
+// Record.EffectiveAuthMode (koryph-i3b, design §4), for a caller holding an
+// AccountFor result rather than a *Record directly.
+func (ra RuntimeAccount) EffectiveAuthMode() string {
+	if ra.AuthMode == "" {
+		return AuthModeSubscription
+	}
+	return ra.AuthMode
+}
+
 // AccountFor resolves the effective account profile for the named runtime
 // (koryph-v8u.5): an explicit RuntimeAccounts[name] entry wins; otherwise —
 // including for every record written before this bead, which has no

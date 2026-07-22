@@ -178,12 +178,14 @@ func (c Claude) ModelMap() runtime.ModelMap { return runtime.ClaudeModelMap }
 func (c Claude) Command(spec runtime.DispatchSpec) (argv []string, env []string, err error) {
 	argv = append([]string{c.bin()}, buildArgs(spec)...)
 	env = account.ChildEnv(account.ChildEnvSpec{
-		Profile:      toAccountProfile(spec.Profile),
-		Billing:      toAccountBilling(spec.Billing),
-		APIKey:       spec.APIKey,
-		SSHAuthSock:  spec.SSHAuthSock,
-		Passthrough:  spec.EnvPassthrough,
-		ProxyBaseURL: spec.ProxyBaseURL,
+		Profile:          toAccountProfile(spec.Profile),
+		Billing:          toAccountBilling(spec.Billing),
+		APIKey:           spec.APIKey,
+		SSHAuthSock:      spec.SSHAuthSock,
+		Passthrough:      spec.EnvPassthrough,
+		ProxyBaseURL:     spec.ProxyBaseURL,
+		Credential:       spec.Credential,
+		CredentialEnvVar: spec.CredentialEnvVar,
 	})
 	return argv, env, nil
 }

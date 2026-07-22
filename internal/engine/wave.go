@@ -99,13 +99,24 @@ func (r *runner) requireCalibration() bool {
 func (r *runner) governorGate(ctx context.Context) govGate {
 	level, calibrated, usage := r.governor(ctx)
 	advisory, advisoryWhy := r.guardMode(calibrated)
-	if advisory {
+	switch {
+	case r.authMode == registry.AuthModeAPIKey:
+		// First-class api-key account (koryph-i3b, design §3/§7): bills
+		// api-key from wave 1, independent of governor level/advisory — this
+		// is a declared pay-per-token account, not the legacy break-glass
+		// fallback under a still-subscription-verified account (which stays
+		// gated by level==stop, below, and only ever applies to a
+		// subscription account). billingFor's own first branch makes this
+		// choice; routing through it here (rather than duplicating the
+		// check) is what "billingFor coexists with the new mode" means.
+		r.billing, r.apiKey = r.billingFor(level)
+	case advisory:
 		// Advisory: measure + log, never block, never switch billing.
 		r.billing, r.apiKey = account.BillingSubscription, ""
 		if level != quota.LevelOK {
 			r.progress("billing guard ADVISORY (%s): governor level %s — not blocking", advisoryWhy, level)
 		}
-	} else {
+	default:
 		r.billing, r.apiKey = r.billingFor(level)
 	}
 
@@ -556,10 +567,6 @@ func (r *runner) governor(ctx context.Context) (quota.Level, bool, quota.Usage) 
 	return level, calibrated, u
 }
 
-// billingFor selects the billing mode for this wave. Subscription always,
-// EXCEPT at governor stop when the operator explicitly opted into api-key
-// fallback (flag + registry policy + resolvable key). Logged loudly: this is
-// the only path to per-token spend.
 // guardMode resolves whether the billing guard's throttling constraints are
 // advisory for this run, and why. Precedence: run flag > project registry
 // setting > runtime usage-source capability > baseline (uncalibrated
@@ -598,7 +605,28 @@ func (r *runner) guardMode(calibrated bool) (advisory bool, why string) {
 	return false, ""
 }
 
+// billingFor selects the billing mode for this wave (koryph-i3b, design
+// §3/§7). Two independent paths, checked in order:
+//
+//  1. First-class api-key account (r.authMode == AuthModeAPIKey): api-key
+//     billing unconditionally, level-independent, from wave 1.
+//  2. Legacy break-glass fallback, UNCHANGED: subscription always, EXCEPT
+//     at governor stop when the operator explicitly opted into api-key
+//     fallback (flag + registry policy + resolvable key). Logged loudly:
+//     for a subscription account this remains the only path to per-token
+//     spend.
 func (r *runner) billingFor(level quota.Level) (account.BillingMode, string) {
+	// First-class api-key account (koryph-i3b, design §3/§7): billing is
+	// ALWAYS api-key, from wave 1, level-independent — a declared
+	// pay-per-token account, not a break-glass fallback. r.credential was
+	// resolved and verified once at Run() setup (account.VerifyAuth +
+	// ResolveCredential); this coexists with, and is checked BEFORE, the
+	// legacy triple-AND fallback below, which remains reachable only for a
+	// subscription account (r.authMode == AuthModeSubscription, the
+	// default) and is otherwise byte-for-byte unchanged.
+	if r.authMode == registry.AuthModeAPIKey && r.credential != "" {
+		return account.BillingAPIKey, r.credential
+	}
 	if level == quota.LevelStop && r.opts.AllowAPISpend &&
 		r.rec.APIFallback == "explicit" && r.rec.APIKeyEnvVar != "" {
 		if key := os.Getenv(r.rec.APIKeyEnvVar); key != "" {
@@ -1223,6 +1251,8 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		ExpectedIdentity: r.expectedIdentity,
 		Billing:          r.billing,
 		APIKey:           r.apiKey,
+		Credential:       r.credential,
+		CredentialEnvVar: r.credentialEnvVar,
 		MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,
 		Prompt:           prompt,
 		SessionID:        sessionID,

@@ -79,6 +79,23 @@ type runner struct {
 	// site — identical value for every project today (AccountFor's flat-field
 	// fallback), but real once a project opts into runtime_accounts.
 	expectedIdentity string
+	// authMode is ra.EffectiveAuthMode() (koryph-i3b, design §4), resolved
+	// once at Run() setup alongside profile/expectedIdentity above:
+	// registry.AuthModeSubscription (default), AuthModeAPIKey, or
+	// AuthModeOAuthToken. billingFor reads this to decide whether THIS
+	// account bills api-key from wave 1, independent of the legacy
+	// --allow-api-spend governor-stop fallback (which stays keyed off
+	// r.rec.APIFallback/APIKeyEnvVar and applies only to subscription
+	// accounts).
+	authMode string
+	// credential/credentialEnvVar are the resolved, verified long-lived
+	// credential for a first-class api-key/oauth-token account (koryph-i3b,
+	// design §5/§6) — both empty for AuthModeSubscription. Resolved once at
+	// Run() setup (account.ResolveCredential, after account.VerifyAuth
+	// passes) and threaded onto every dispatch.Spec this run builds so
+	// Command injects it under its canonical name. Never logged.
+	credential       string
+	credentialEnvVar string
 	// rt is the resolved runtime.Runtime adapter for this run (koryph-v8u.5):
 	// identity verification and quota-governor capability gating both go
 	// through it. Always "claude" today — see resolvedRuntimeName's doc for
@@ -256,17 +273,58 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	ra := rec.AccountFor(resolvedRuntimeName)
 	profile := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
 	expectedIdentity := ra.ExpectedIdentity
+	authMode := ra.EffectiveAuthMode()
 
 	// rt is the resolved runtime adapter (see resolvedRuntimeName's doc).
 	rt := claude.New(os.Getenv(envClaudeBin))
 
-	// Run-level identity check, fail closed BEFORE any state is touched (no
-	// lock, no run dir, no worktrees). The dispatch backend re-verifies per
-	// dispatch as belt-and-braces. Reached through the runtime seam
-	// (koryph-v8u.5): claude's VerifyIdentity delegates to
-	// account.VerifyExpected, unchanged.
-	if _, err := rt.VerifyIdentity(ctx, runtime.Profile{Name: profile.Name, ConfigDir: profile.ConfigDir}, expectedIdentity); err != nil {
-		return Outcome{Code: ExitFatal}, err
+	// Run-level identity/credential check, fail closed BEFORE any state is
+	// touched (no lock, no run dir, no worktrees). The dispatch backend
+	// re-verifies per dispatch as belt-and-braces (koryph-i3b: for a
+	// first-class non-subscription account, that re-check is cheap — it
+	// only confirms the credential resolved below made it onto the Spec,
+	// not a second live probe; see dispatch.CLIBackend.Dispatch's doc).
+	//
+	// credential/credentialEnvVar are threaded onto every dispatch.Spec this
+	// run builds (wave.go/pipeline.go) so Command can inject them under
+	// their canonical name — empty for AuthModeSubscription, which never
+	// touches this path (see below).
+	var credential, credentialEnvVar string
+	switch authMode {
+	case registry.AuthModeSubscription:
+		// Reached through the runtime seam (koryph-v8u.5): claude's
+		// VerifyIdentity delegates to account.VerifyExpected, unchanged —
+		// BYTE FOR BYTE the pre-koryph-i3b check (design §5, §11 AC5).
+		if _, err := rt.VerifyIdentity(ctx, runtime.Profile{Name: profile.Name, ConfigDir: profile.ConfigDir}, expectedIdentity); err != nil {
+			return Outcome{Code: ExitFatal}, err
+		}
+	case registry.AuthModeAPIKey, registry.AuthModeOAuthToken:
+		// First-class non-subscription account (koryph-i3b, design §5/§6):
+		// there is no .claude.json to read — "verified" means the
+		// credential resolves, fingerprint-matches the enrolled identity
+		// (fail closed on a swap), and is live against Anthropic
+		// (account.VerifyAuth). VerifyAuth never returns the raw secret (it
+		// is not safe to carry on Identity), so the credential itself is
+		// resolved a second time via ResolveCredential — cheap relative to
+		// the liveness probe, and both run once per Run(), not per wave/slot.
+		cred := toAccountCredential(ra.Credential)
+		authSpec := account.AuthSpec{
+			Mode:                account.AuthMode(authMode),
+			ExpectedIdentity:    expectedIdentity,
+			Credential:          cred,
+			IdentityFingerprint: ra.IdentityFingerprint,
+		}
+		if _, err := account.VerifyAuth(ctx, profile, authSpec); err != nil {
+			return Outcome{Code: ExitFatal}, err
+		}
+		envVar, value, err := account.ResolveCredential(ctx, account.AuthMode(authMode), cred)
+		if err != nil {
+			return Outcome{Code: ExitFatal}, err
+		}
+		credentialEnvVar, credential = envVar, value
+	default:
+		return Outcome{Code: ExitFatal}, fmt.Errorf(
+			"engine: project %s has unrecognized auth_mode %q", opts.ProjectID, authMode)
 	}
 
 	// Signing preflight, fail closed BEFORE any dispatch. The engine only
@@ -305,6 +363,9 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		store:            store,
 		profile:          profile,
 		expectedIdentity: expectedIdentity,
+		authMode:         authMode,
+		credential:       credential,
+		credentialEnvVar: credentialEnvVar,
 		rt:               rt,
 		backend:          &dispatch.CLIBackend{ClaudeBin: os.Getenv(envClaudeBin), Runtime: rt},
 		gov:              govern.NewStore(),
@@ -395,6 +456,25 @@ func signingPreflight(ctx context.Context, projectID, repoRoot string, sc *signi
 			projectID)
 	}
 	return nil
+}
+
+// toAccountCredential mirrors registry.Credential -> account.Credential
+// field-for-field (koryph-i3b, design §4/§6): internal/account cannot import
+// internal/registry (import cycle — see account.AuthMode's doc), so a caller
+// holding a *registry.Record's Credential converts it explicitly, the same
+// pattern internal/runtime/claude uses for account.Profile/BillingMode. A nil
+// input (subscription mode, or a non-subscription record with no credential
+// configured) returns nil.
+func toAccountCredential(c *registry.Credential) *account.Credential {
+	if c == nil {
+		return nil
+	}
+	return &account.Credential{
+		Source:   c.Source,
+		Provider: c.Provider,
+		KeyRef:   c.KeyRef,
+		EnvVar:   c.EnvVar,
+	}
 }
 
 // requireSigned reports whether merges for this project must verify commit

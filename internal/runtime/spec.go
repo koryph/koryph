@@ -35,6 +35,21 @@ type DispatchSpec struct {
 	Billing          BillingMode
 	APIKey           string // resolved key when Billing==BillingAPIKey; never logged
 
+	// Credential and CredentialEnvVar carry the resolved long-lived
+	// credential for a first-class api-key/oauth-token account (koryph-i3b,
+	// design docs/designs/2026-07-api-key-auth.md §4/§6/§9) — the
+	// (envVar, value) pair account.ResolveCredential returns, verified once
+	// at engine startup (account.VerifyAuth). CredentialEnvVar must be the
+	// CANONICAL name: "ANTHROPIC_API_KEY" for api-key mode,
+	// "CLAUDE_CODE_OAUTH_TOKEN" for oauth-token mode. Both empty (the
+	// default, and the only shape subscription-mode dispatch uses) omits
+	// this injection entirely and leaves the legacy Billing/APIKey
+	// break-glass fallback above as the sole api-key-billing path — the two
+	// are independent (mirrors account.ChildEnvSpec.Credential/
+	// CredentialEnvVar, which Command passes these straight through to).
+	Credential       string // never logged
+	CredentialEnvVar string
+
 	// MaxBudgetUSD is gated by Capabilities.BudgetFlag.
 	MaxBudgetUSD float64
 	Prompt       string
