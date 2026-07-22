@@ -46,7 +46,10 @@ Task→doc map; keep this file small and stable (prompt-cache warmth).
   `fp:read:<token>` (readers co-run; writers exclude). Mechanics:
   `internal/sched/footprint.go`, `internal/sched/wave.go`.
 - `refactor-core`-labeled beads are NEVER loop-dispatched — the orchestrating
-  session authors them on main (self-hosting safety rule).
+  session authors them on main. Policy narrowed 2026-07-22: the installed
+  release binary decouples the running engine from source, so engine/design
+  beads are now delegated to the loop with a `model:opus` label instead;
+  reserve `refactor-core` for work that truly must be hand-authored.
 - **Footprints protect the merge; resources protect the machine.** Beads
   needing a running cluster/compose/dev-server/database/browser suite get
   `res:<kind>`; see docs/designs/2026-07-resource-governor.md.
