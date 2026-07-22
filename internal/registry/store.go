@@ -92,17 +92,22 @@ func (s *Store) Init(ctx context.Context) error {
 		if _, err := execx.MustSucceed(ctx, s.git("init", "-b", "main")); err != nil {
 			return err
 		}
-	}
 
-	// Repo-local identity + hardening so commits never depend on machine git
-	// config, global hooks, or GPG signing.
-	for _, kv := range [][2]string{
-		{"user.name", "koryph"},
-		{"user.email", "koryph@local"},
-		{"commit.gpgsign", "false"},
-	} {
-		if _, err := execx.MustSucceed(ctx, s.git("config", kv[0], kv[1])); err != nil {
-			return err
+		// Repo-local identity + hardening so commits never depend on machine
+		// git config, global hooks, or GPG signing. Set once, right after
+		// init: Init runs on every koryph command (via openStore), and
+		// re-running three `git config` subprocesses on an already-hardened
+		// repo bought nothing but extra fork/exec load — the exact kind of
+		// avoidable subprocess churn that turns transient resource pressure
+		// (e.g. a concurrent `make gate`) into flaky failures (koryph-2ts).
+		for _, kv := range [][2]string{
+			{"user.name", "koryph"},
+			{"user.email", "koryph@local"},
+			{"commit.gpgsign", "false"},
+		} {
+			if _, err := execx.MustSucceed(ctx, s.git("config", kv[0], kv[1])); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -390,8 +395,17 @@ func (s *Store) put(rec *Record) error {
 	return fsx.WriteJSONAtomicPerm(s.recordPath(rec.ProjectID), rec, 0o600)
 }
 
+// gitTimeout bounds every registry git subprocess. These are always local,
+// repo-private operations (init/config/status/add/commit/rev-parse against
+// KORYPH_HOME) that normally complete in milliseconds; the timeout exists so
+// a hung or pathologically slow git invocation (e.g. under heavy concurrent
+// system load) fails fast with a clear error instead of stalling the calling
+// command — and, in tests, instead of silently ballooning wall-clock time
+// until an unrelated overall timeout fires (koryph-2ts).
+const gitTimeout = 15 * time.Second
+
 func (s *Store) git(args ...string) execx.Cmd {
-	return execx.Cmd{Dir: s.Home, Name: "git", Args: args}
+	return execx.Cmd{Dir: s.Home, Name: "git", Args: args, Timeout: gitTimeout}
 }
 
 func (s *Store) hasCommits(ctx context.Context) bool {
