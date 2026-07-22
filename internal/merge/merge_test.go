@@ -324,6 +324,64 @@ func TestMergeAllowProtected(t *testing.T) {
 	})
 }
 
+// TestMergeAllowProtectedLiftsEachHelpTextPath is a koryph-aep golden/
+// regression test: it pins --allow-protected's --help text ("lift the
+// routine CI/build protected paths (.github/, Makefile)") to the actual
+// behavior for EACH path named there individually, not just the .github/
+// case TestMergeAllowProtected already covered. A bare, single-file
+// Makefile-only diff was reported refused under --allow-protected in a
+// v0.10.0 build (koryph-aep); this pins that exact shape (and the .github/
+// shape) so docs and code cannot silently drift apart again.
+func TestMergeAllowProtectedLiftsEachHelpTextPath(t *testing.T) {
+	isolateGit(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"github-workflow", ".github/workflows/x.yml"},
+		{"bare-makefile", "Makefile"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// With --allow-protected: lifted, merges clean.
+			repo := initRepo(t)
+			branch := "agent/lift-" + c.name
+			wt := worktreeOn(t, repo, branch)
+			commitIn(t, wt.Path, c.path, "content\n", "chore: touch "+c.path)
+
+			res, err := Merge(ctx, Opts{
+				RepoRoot: repo, Branch: branch, DefaultBranch: "main",
+				Gate: []string{"true"}, AllowProtected: true,
+			})
+			if err != nil {
+				t.Fatalf("Merge: %v", err)
+			}
+			if res.Status != StatusMerged {
+				t.Fatalf("Status=%q, want merged (--allow-protected must lift %s per its own --help text)", res.Status, c.path)
+			}
+
+			// The identical diff without the flag is still refused.
+			repo2 := initRepo(t)
+			branch2 := "agent/noflag-" + c.name
+			wt2 := worktreeOn(t, repo2, branch2)
+			commitIn(t, wt2.Path, c.path, "content\n", "chore: touch "+c.path)
+
+			res2, err2 := Merge(ctx, Opts{
+				RepoRoot: repo2, Branch: branch2, DefaultBranch: "main",
+				Gate: []string{"true"},
+			})
+			if err2 != nil {
+				t.Fatalf("Merge (no flag): %v", err2)
+			}
+			if res2.Status != StatusProtected {
+				t.Fatalf("Status=%q, want protected without --allow-protected", res2.Status)
+			}
+		})
+	}
+}
+
 func TestMergeConflictAbortsCleanly(t *testing.T) {
 	isolateGit(t)
 	repo := initRepo(t)
