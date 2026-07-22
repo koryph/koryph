@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/execx"
+	"github.com/koryph/koryph/internal/obs"
 )
 
 const ccusageTimeout = 40 * time.Second
@@ -92,11 +94,28 @@ func runCcusage(ctx context.Context, env []string, args ...string) (string, bool
 	default:
 		return "", false
 	}
-	res, err := execx.Run(ctx, c)
-	if err != nil || res.ExitCode != 0 {
-		return "", false
+
+	// obs.Span adoption (koryph-5a1 #59): every governor tick spawns this —
+	// ccusage/npx is as much a "hot path" external call as a forge.api or
+	// vault.resolve, but had no latency/status/error trace at all.
+	endpointClass := ""
+	if len(args) > 0 {
+		endpointClass = args[0] // "blocks" or "daily"
 	}
-	return res.Stdout, true
+	sp := obs.StartSpan(ctx, log, slog.LevelDebug, "quota.ccusage_spawn",
+		slog.String(obs.KeyEndpointClass, endpointClass))
+	res, err := execx.Run(ctx, c)
+	switch {
+	case err != nil:
+		sp.End(0, err)
+		return "", false
+	case res.ExitCode != 0:
+		sp.End(0, fmt.Errorf("exit %d", res.ExitCode))
+		return "", false
+	default:
+		sp.EndOK()
+		return res.Stdout, true
+	}
 }
 
 // ccusageActiveBlock parses `.blocks[0].costUSD` from `ccusage blocks --json
