@@ -101,26 +101,6 @@ func Run(opts Options) (*Result, error) {
 	return res, nil
 }
 
-// Footprint returns the total size in bytes of all GC-eligible content
-// (compressed archives + files past their retention window) without
-// actually deleting anything. Used by the health patrol.
-func Footprint(repoRoot string) (int64, error) {
-	cfg, err := LoadConfig(repoRoot)
-	if err != nil {
-		return 0, err
-	}
-	opts := Options{RepoRoot: repoRoot, DryRun: true, Config: &cfg}
-	res, err := Run(opts)
-	if err != nil {
-		return 0, err
-	}
-	var total float64
-	for _, c := range res.Classes {
-		total += c.ReclaimedMB
-	}
-	return int64(total * 1024 * 1024), nil
-}
-
 // --- run-dirs gc -----------------------------------------------------------
 
 // gcRunDirs compresses and deletes old run phase-directories.
