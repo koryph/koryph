@@ -42,13 +42,13 @@ func init() {
 			},
 			{
 				name:     "check",
-				summary:  "diff live GitHub state against a profile (exit 1 on drift)",
+				summary:  "diff live GitHub state against a profile (exit 1 on drift, or 0 with --no-fail)",
 				run:      cmdPostureCheck,
 				DocLinks: []string{"concepts/postures.md", "user-guide/postures.md"},
 			},
 			{
 				name:     "diff",
-				summary:  "show drift between live state and a profile (always exit 0)",
+				summary:  "deprecated alias for `check --no-fail` (always exit 0)",
 				run:      cmdPostureDiff,
 				DocLinks: []string{"concepts/postures.md", "user-guide/postures.md"},
 			},
@@ -57,6 +57,12 @@ func init() {
 				summary:  "show diff then apply a profile to the live GitHub repo",
 				run:      cmdPostureApply,
 				DocLinks: []string{"concepts/postures.md", "user-guide/postures.md"},
+			},
+			{
+				name:     "rollback",
+				summary:  "roll back to a pre-apply snapshot (alias for `repo rollback`)",
+				run:      cmdPostureRollback,
+				DocLinks: []string{"user-guide/postures.md"},
 			},
 		},
 	})
@@ -69,9 +75,10 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 			{"list", "list built-in and user-defined profiles"},
 			{"list --fragments", "list built-in security-scanner fragments"},
 			{"describe <profile> [--repo owner/name] [--param k=v]...", "explain every setting a profile enforces and why"},
-			{"check <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "diff live GitHub state against profile (exit 1 on drift)"},
-			{"diff <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "show drift between live state and profile (always exit 0)"},
+			{"check <profile> [--repo owner/name] [--org ORG] [--param k=v]... [--no-fail]", "diff live GitHub state against profile (exit 1 on drift, or 0 with --no-fail)"},
+			{"diff <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "deprecated alias for `check --no-fail` (always exit 0)"},
 			{"apply <profile> [--repo owner/name] [--org ORG] [--param k=v]...", "show diff then apply profile to live GitHub repo"},
+			{"rollback [--repo owner/name] [--to <timestamp>|latest]", "roll back to a pre-apply snapshot (alias for `repo rollback`)"},
 		})
 		return 0
 	}
@@ -87,6 +94,8 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 		return cmdPostureDiff(rest, stdout, stderr)
 	case "apply":
 		return cmdPostureApply(rest, stdout, stderr)
+	case "rollback":
+		return cmdPostureRollback(rest, stdout, stderr)
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown posture subcommand %q", sub))
 	}
@@ -162,14 +171,17 @@ func cmdPostureListFragments(stdout, stderr io.Writer) int {
 }
 
 // cmdPostureCheck implements `koryph posture check <profile> [--repo owner/name] [--param k=v]...`
-// Exits 1 on drift, 0 when everything matches, 2 on usage error.
+// Exits 1 on drift, 0 when everything matches (or --no-fail was passed), 2 on
+// usage error.
 func cmdPostureCheck(args []string, stdout, stderr io.Writer) int {
 	return runPostureVerb(args, "posture check", stdout, stderr, false, false)
 }
 
 // cmdPostureDiff implements `koryph posture diff <profile> [--repo owner/name] [--param k=v]...`
-// Always exits 0 (drift is informational, not a failure).
+// Deprecated alias for `posture check --no-fail` (koryph-b8g #22: check and
+// diff differed only by exit code) — always exits 0, drift is informational.
 func cmdPostureDiff(args []string, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stderr, "koryph: warning: `posture diff` is deprecated; use `posture check --no-fail` instead")
 	return runPostureVerb(args, "posture diff", stdout, stderr, false, true)
 }
 
@@ -179,15 +191,32 @@ func cmdPostureApply(args []string, stdout, stderr io.Writer) int {
 	return runPostureVerb(args, "posture apply", stdout, stderr, true, false)
 }
 
+// cmdPostureRollback implements `koryph posture rollback` — a posture-side
+// alias for `repo rollback` (koryph-b8g #21), sharing its implementation so
+// the two spellings can never drift.
+func cmdPostureRollback(args []string, stdout, stderr io.Writer) int {
+	return runRepoRollback("posture rollback", args, stdout, stderr)
+}
+
 // runPostureVerb is the shared implementation for check/diff/apply.
 //
 //   - apply=true: print diff, then apply changes.
-//   - alwaysExit0=true: never return exit-1 on drift (diff mode).
+//   - alwaysExit0=true: never return exit-1 on drift (diff mode); this is
+//     also the --no-fail flag's default, so `posture diff` keeps behaving
+//     exactly like `posture check --no-fail` without the operator having to
+//     pass the flag explicitly (koryph-b8g #22).
 func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, apply, alwaysExit0 bool) int {
 	fs := newFlagSet(cmdName, stderr)
 	repo := fs.String("repo", "", "repository in owner/name form (default: detected from git remote via gh)")
 	org := fs.String("org", "", "GitHub organisation for org-level ruleset check/apply (requires org owner/admin)")
 	force := fs.Bool("force", false, "with apply: overwrite stale fragment files (default: only install missing fragments)")
+	// --no-fail only means something for check/diff (apply's exit code never
+	// reflects drift); registering it just for those two keeps `posture apply
+	// -h` free of a flag that would silently do nothing.
+	var noFail *bool
+	if !apply {
+		noFail = fs.Bool("no-fail", alwaysExit0, "always exit 0, even when drift is found (informational; same as `posture diff`)")
+	}
 	var rawParams multiFlag
 	fs.Var(&rawParams, "param", "profile parameter as key=value (repeatable, e.g. --param required_checks=\"pre-commit,make gate\")")
 	setUsage(fs, stdout,
@@ -196,6 +225,9 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
+	}
+	if noFail != nil {
+		alwaysExit0 = alwaysExit0 || *noFail
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, cmdName+": <profile> is required")
@@ -257,7 +289,7 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 			fmt.Fprintf(stderr, "warning: could not capture pre-change snapshot: %v\n", serr)
 			return
 		}
-		fmt.Fprintf(stdout, "captured pre-change state → %s; rollback with koryph repo rollback\n", snapPath)
+		fmt.Fprintf(stdout, "captured pre-change state → %s; rollback with koryph posture rollback\n", snapPath)
 	}
 
 	// ---- rulesets -------------------------------------------------------

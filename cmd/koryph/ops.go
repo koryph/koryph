@@ -61,7 +61,7 @@ func init() {
 	})
 	registerCmd(command{
 		name:    "merge",
-		summary: "land a finished agent branch",
+		summary: "merge a worktree branch by name (push/squash/keep-worktree)",
 		run:     cmdMerge,
 		DocLinks: []string{
 			"user-guide/running-waves.md",
@@ -70,7 +70,7 @@ func init() {
 	})
 	registerCmd(command{
 		name:    "land",
-		summary: "land an engine-opened PR fast-forward-only",
+		summary: "land an engine-opened PR by bead id, fast-forward-only",
 		run:     cmdLand,
 		DocLinks: []string{
 			"user-guide/running-waves.md",
@@ -533,7 +533,10 @@ func stopAll(ctx context.Context, store *registry.Store, records []*registry.Rec
 	return 0
 }
 
-// cmdMerge lands a finished agent branch on the default branch.
+// cmdMerge merges a worktree branch — named explicitly, by branch name — onto
+// the default branch. Distinct from `land` (koryph-b8g #20): merge takes an
+// arbitrary <branch> and offers --push/--squash/--keep-worktree/--close-bead;
+// land takes a bead id and is fast-forward-only.
 func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("merge", stderr)
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
@@ -544,7 +547,7 @@ func cmdMerge(args []string, stdout, stderr io.Writer) int {
 	reason := fs.String("reason", "", "close reason for --close-bead")
 	allowProtected := fs.Bool("allow-protected", false,
 		"lift the routine CI/build protected paths (.github/, Makefile) for this merge; governance defaults and project protected_paths still refuse")
-	setUsage(fs, stdout, "land a finished agent branch on the default branch",
+	setUsage(fs, stdout, "merge a branch, named by branch name, onto the default branch (push/squash/keep-worktree/close-bead)",
 		"[--project ID] <branch> [--push] [--squash] [--keep-worktree] [--allow-protected] [--close-bead BEAD --reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -747,7 +750,10 @@ func verifiedClose(ctx context.Context, bc beadCloser, id, reason string) error 
 	return nil
 }
 
-// cmdLand lands an engine-opened PR (a pr-opened bead) fast-forward-only.
+// cmdLand lands an engine-opened PR — named by bead id, fast-forward-only.
+// Distinct from `merge` (koryph-b8g #20): land takes a bead id and closes it
+// on success; merge takes an arbitrary branch name and offers
+// push/squash/keep-worktree.
 func cmdLand(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("land", stderr)
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
@@ -755,7 +761,7 @@ func cmdLand(args []string, stdout, stderr io.Writer) int {
 	reason := fs.String("reason", "", "bead close reason")
 	allowProtected := fs.Bool("allow-protected", false,
 		"lift the routine CI/build protected paths (.github/, Makefile) for this landing; governance defaults and project protected_paths still refuse")
-	setUsage(fs, stdout, "land an engine-opened PR (a pr-opened bead) fast-forward-only; closes the bead on success",
+	setUsage(fs, stdout, "land an engine-opened PR, named by bead id, fast-forward-only; closes the bead on success",
 		"[--project ID] <bead> [--method ff|squash] [--allow-protected] [--reason R]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {

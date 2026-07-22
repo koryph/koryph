@@ -281,7 +281,15 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 // the diff between the chosen snapshot and the current live state, then applies
 // the snapshot through the standard apply machinery.
 func cmdRepoRollback(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("repo rollback", stderr)
+	return runRepoRollback("repo rollback", args, stdout, stderr)
+}
+
+// runRepoRollback is the shared implementation for `repo rollback` and its
+// `posture rollback` alias (koryph-b8g #21: `posture apply` prints "rollback
+// with koryph repo rollback" but had no posture-side spelling). cmdName names
+// the invoking command for -h/usage-error text.
+func runRepoRollback(cmdName string, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet(cmdName, stderr)
 	repo := fs.String("repo", "", "repository in owner/name form (default: detected from git remote via gh)")
 	to := fs.String("to", "latest", `snapshot selector: "latest" or a RFC3339 timestamp (or prefix, e.g. "2026-07-04T16")`)
 	setUsage(fs, stdout,
