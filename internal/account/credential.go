@@ -11,59 +11,49 @@ import (
 	"os"
 	"strings"
 
+	"github.com/koryph/koryph/internal/authmode"
 	"github.com/koryph/koryph/internal/signing"
 )
 
 // AuthMode selects how an account authenticates (koryph-i3b, design
-// docs/designs/2026-07-api-key-auth.md §4-§5). Mirrors
-// registry.AuthMode*'s string values byte-for-byte but is declared locally
-// rather than imported: internal/registry already imports internal/quota,
-// which imports internal/account, so account importing registry would be a
-// cycle. Callers holding a *registry.Record pass rec.EffectiveAuthMode()
-// (cast to AuthMode) through verbatim — see AuthSpec.
+// docs/designs/2026-07-api-key-auth.md §4-§5). Its values alias
+// internal/authmode's constants byte-for-byte — the dependency-free leaf
+// package shared with registry and quota, which lets account avoid
+// importing registry directly: internal/registry already imports
+// internal/quota, which imports internal/account, so account importing
+// registry would be a cycle. Callers holding a *registry.Record pass
+// rec.EffectiveAuthMode() (cast to AuthMode) through verbatim — see
+// AuthSpec.
 type AuthMode string
 
 const (
 	// AuthModeSubscription is the default: OAuth login billed against a
 	// Claude subscription, identity verified via the .claude.json email
 	// (VerifyExpected, unchanged).
-	AuthModeSubscription AuthMode = "subscription"
+	AuthModeSubscription AuthMode = authmode.Subscription
 	// AuthModeAPIKey is a long-lived ANTHROPIC_API_KEY credential, billed
 	// per token.
-	AuthModeAPIKey AuthMode = "api-key"
+	AuthModeAPIKey AuthMode = authmode.APIKey
 	// AuthModeOAuthToken is a long-lived CLAUDE_CODE_OAUTH_TOKEN credential
 	// (`claude setup-token`), billed against the subscription like
 	// AuthModeSubscription.
-	AuthModeOAuthToken AuthMode = "oauth-token"
+	AuthModeOAuthToken AuthMode = authmode.OAuthToken
 )
 
-// Credential source kinds — mirrors registry.CredentialSource* (see
-// AuthMode's doc for why these are duplicated rather than imported).
+// Credential source kinds — aliased from internal/authmode (see AuthMode's
+// doc for why these are shared via that leaf package rather than imported
+// from registry directly).
 const (
-	CredentialSourceVault = "vault"
-	CredentialSourceEnv   = "env"
+	CredentialSourceVault = authmode.CredentialSourceVault
+	CredentialSourceEnv   = authmode.CredentialSourceEnv
 )
 
-// Credential is account's registry-independent view of a
-// registry.Credential's fields — pure data, mirroring its JSON shape one
-// field at a time so callers holding a *registry.Record can construct one
-// by copying rec.Credential's fields verbatim (see AuthMode's doc for why
-// this package cannot import registry directly).
-type Credential struct {
-	// Source is CredentialSourceVault (fetch via signing.FetchSecret using
-	// Provider+KeyRef) or CredentialSourceEnv (read the named EnvVar).
-	Source string
-	// Provider is the vault provider name when Source == CredentialSourceVault.
-	Provider string
-	// KeyRef is the vault item reference when Source == CredentialSourceVault.
-	KeyRef string
-	// EnvVar names the environment variable holding the credential when
-	// Source == CredentialSourceEnv. MUST NOT be "ANTHROPIC_API_KEY" or
-	// "CLAUDE_CODE_OAUTH_TOKEN" (the canonical INJECTED names) — enforced
-	// here in ResolveCredential and, for the registry-backed path, again at
-	// registry load/save time (registry.validateCredential).
-	EnvVar string
-}
+// Credential is account's view of a credential reference — aliased from
+// internal/authmode so callers holding a *registry.Record's Credential
+// (also an authmode.Credential alias) can pass it through directly with no
+// conversion (see AuthMode's doc for why this package cannot import
+// registry directly). See authmode.Credential for field docs.
+type Credential = authmode.Credential
 
 // fingerprintPrefixHexLen is how many hex characters (8 bytes / 64 bits) of
 // the credential's sha256 digest are persisted/compared as the non-secret

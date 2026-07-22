@@ -20,6 +20,8 @@ package registry
 import (
 	"hash/fnv"
 	"math"
+
+	"github.com/koryph/koryph/internal/authmode"
 )
 
 // Account profiles. PROFILE names are user-facing; resolution to a
@@ -43,17 +45,19 @@ const (
 // ExpectedIdentity's email. AuthModeAPIKey and AuthModeOAuthToken are
 // long-lived-credential modes: identity is verified via
 // IdentityFingerprint instead of an email (§5), and the credential itself
-// is resolved via Credential (§6).
+// is resolved via Credential (§6). Aliased from internal/authmode, the
+// dependency-free leaf package shared with internal/quota and
+// internal/account (see authmode's package doc for why it exists).
 const (
-	AuthModeSubscription = "subscription"
-	AuthModeAPIKey       = "api-key"
-	AuthModeOAuthToken   = "oauth-token"
+	AuthModeSubscription = authmode.Subscription
+	AuthModeAPIKey       = authmode.APIKey
+	AuthModeOAuthToken   = authmode.OAuthToken
 )
 
-// Credential source kinds (§6).
+// Credential source kinds (§6). Aliased from internal/authmode.
 const (
-	CredentialSourceVault = "vault"
-	CredentialSourceEnv   = "env"
+	CredentialSourceVault = authmode.CredentialSourceVault
+	CredentialSourceEnv   = authmode.CredentialSourceEnv
 )
 
 // Record is one managed project.
@@ -180,28 +184,10 @@ type Record struct {
 // Credential is a long-lived credential reference for AuthModeAPIKey /
 // AuthModeOAuthToken accounts (koryph-i3b, design §6) — never the secret
 // itself, only where to find it. Resolution happens elsewhere
-// (internal/account.ResolveCredential); this type is pure data.
-type Credential struct {
-	// Source is CredentialSourceVault (fetch via signing.FetchSecret using
-	// Provider+KeyRef) or CredentialSourceEnv (read the named EnvVar).
-	Source string `json:"source"`
-	// Provider is the vault provider name (any signing.VaultProviders
-	// value) when Source == CredentialSourceVault; ignored otherwise.
-	Provider string `json:"provider,omitempty"`
-	// KeyRef is the vault item reference passed to FetchSecret when
-	// Source == CredentialSourceVault; ignored otherwise.
-	KeyRef string `json:"key_ref,omitempty"`
-	// EnvVar names the environment variable holding the credential when
-	// Source == CredentialSourceEnv; ignored otherwise. MUST NOT be
-	// "ANTHROPIC_API_KEY" or "CLAUDE_CODE_OAUTH_TOKEN" — those are the
-	// CANONICAL names ChildEnv injects the resolved value under, so reusing
-	// one as the SOURCE var would let a dispatched agent's own ambient env
-	// satisfy its own credential lookup, defeating the vault/named-var
-	// indirection (mirrors the batch client's refusal,
-	// internal/anthro/client.go:104-105). Machine-checked at load, not just
-	// documented — see validateCredential in store.go.
-	EnvVar string `json:"env_var,omitempty"`
-}
+// (internal/account.ResolveCredential); this type is pure data. Aliased from
+// internal/authmode so registry, quota, and account all share one
+// definition; see authmode.Credential for field docs.
+type Credential = authmode.Credential
 
 // AgentProxy is one project's local interception-proxy configuration
 // (koryph-3l1.1). BaseURL is validated at LOAD time (Store.Get/List, and at

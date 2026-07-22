@@ -307,7 +307,10 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		// is not safe to carry on Identity), so the credential itself is
 		// resolved a second time via ResolveCredential — cheap relative to
 		// the liveness probe, and both run once per Run(), not per wave/slot.
-		cred := toAccountCredential(ra.Credential)
+		// ra.Credential is *registry.Credential, which account.Credential
+		// aliases (both alias internal/authmode.Credential), so it passes
+		// through with no conversion.
+		cred := ra.Credential
 		authSpec := account.AuthSpec{
 			Mode:                account.AuthMode(authMode),
 			ExpectedIdentity:    expectedIdentity,
@@ -456,25 +459,6 @@ func signingPreflight(ctx context.Context, projectID, repoRoot string, sc *signi
 			projectID)
 	}
 	return nil
-}
-
-// toAccountCredential mirrors registry.Credential -> account.Credential
-// field-for-field (koryph-i3b, design §4/§6): internal/account cannot import
-// internal/registry (import cycle — see account.AuthMode's doc), so a caller
-// holding a *registry.Record's Credential converts it explicitly, the same
-// pattern internal/runtime/claude uses for account.Profile/BillingMode. A nil
-// input (subscription mode, or a non-subscription record with no credential
-// configured) returns nil.
-func toAccountCredential(c *registry.Credential) *account.Credential {
-	if c == nil {
-		return nil
-	}
-	return &account.Credential{
-		Source:   c.Source,
-		Provider: c.Provider,
-		KeyRef:   c.KeyRef,
-		EnvVar:   c.EnvVar,
-	}
 }
 
 // requireSigned reports whether merges for this project must verify commit

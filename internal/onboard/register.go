@@ -104,26 +104,14 @@ func resolveIdentityFingerprint(ctx context.Context, opts RegisterOpts) (string,
 	if mode == registry.AuthModeSubscription {
 		return "", nil
 	}
-	_, value, err := account.ResolveCredential(ctx, account.AuthMode(mode), toAccountCredential(opts.Credential))
+	// opts.Credential is *registry.Credential, which account.Credential
+	// aliases (both alias internal/authmode.Credential), so it passes
+	// through to ResolveCredential with no conversion.
+	_, value, err := account.ResolveCredential(ctx, account.AuthMode(mode), opts.Credential)
 	if err != nil {
 		return "", fmt.Errorf("onboard: register: %w", err)
 	}
 	return account.Fingerprint(value), nil
-}
-
-// toAccountCredential mirrors registry.Credential -> account.Credential
-// field-for-field (see account.Credential's doc for why the two types are
-// duplicated rather than one importing the other).
-func toAccountCredential(c *registry.Credential) *account.Credential {
-	if c == nil {
-		return nil
-	}
-	return &account.Credential{
-		Source:   c.Source,
-		Provider: c.Provider,
-		KeyRef:   c.KeyRef,
-		EnvVar:   c.EnvVar,
-	}
 }
 
 // checkEnvrcAgreement refuses a request whose account class disagrees with the

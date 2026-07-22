@@ -17,7 +17,7 @@ billing modes.
 - **`BillingMode`** — `"subscription"` | `"api-key"` (legacy billing-only fallback; see `AuthMode` for the auth-mode-keyed identity path)
 - **`ChildEnv(spec)`** — full `[]string` child env; scrubs/re-injects credentials, including the resolved `AuthMode` credential under its canonical name
 - **`Verify(ctx, p)`** / **`VerifyExpected(ctx, p, email)`** — read and compare `subscription`-mode identity (OAuth email), unchanged
-- **`AuthMode`** — `"subscription"` (default) | `"api-key"` | `"oauth-token"` (koryph-i3b, design docs/designs/2026-07-api-key-auth.md); local mirror of `registry.AuthMode*` to avoid an import cycle
+- **`AuthMode`** — `"subscription"` (default) | `"api-key"` | `"oauth-token"` (koryph-i3b, design docs/designs/2026-07-api-key-auth.md); aliased from `authmode`'s constants to avoid an import cycle
 - **`VerifyAuth(ctx, p, AuthSpec)`** — auth-mode-keyed identity verification: delegates to `VerifyExpected` for `subscription`; for `api-key`/`oauth-token`, resolves the credential, fingerprint-matches it against the enrolled `identity_fingerprint` (fail closed on swap), then confirms liveness via `anthro.ProbeLiveness`
 - **`ResolveCredential(ctx, mode, cred)`** — resolves a long-lived credential from a vault reference (`signing.FetchSecret`) or a purpose-named env var (never the canonical `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` name); returns the canonical env var name to inject under plus the resolved value
 - **`Fingerprint(credential)`** — non-secret `"sha256:<prefix>"` identity signal for `api-key`/`oauth-token` accounts
@@ -72,6 +72,21 @@ directly: single-message inference and pre-flight cost estimation.
 - **`Usage`** — input/output token counts; **`BatchResult`** — aggregate batch outcome
 - **`EstimateUSD(reqs)`** — cost estimate for a slice of `MsgReq`
 - **`ProbeLiveness(ctx, credential, useBearer)`** — free `GET /v1/models` liveness check for a resolved long-lived credential (koryph-i3b): `x-api-key` when `useBearer` is false (api-key mode), `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20` when true (oauth-token mode); never logs the credential
+
+## authmode
+
+Dependency-free leaf package holding the auth-mode/credential data shared by
+`registry`, `quota`, and `account` (koryph-i3b, design
+docs/designs/2026-07-api-key-auth.md §4-§6): `registry` imports `quota`
+(`registry/store.go`) and `quota` imports `account` (`quota/usage.go`), so
+`account` importing `registry` directly would cycle. Before this package
+existed, the constants and `Credential` struct were hand-mirrored in all
+three packages; each now re-exports these via a local alias so existing
+call sites are unaffected.
+
+- **`Subscription`** / **`APIKey`** / **`OAuthToken`** — auth-mode string constants
+- **`CredentialSourceVault`** / **`CredentialSourceEnv`** — credential source kinds
+- **`Credential`** — long-lived credential reference (`Source`, `Provider`, `KeyRef`, `EnvVar`); never the secret itself
 
 ## beads
 

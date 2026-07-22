@@ -85,9 +85,11 @@ func Validate(ctx context.Context, store *registry.Store, projectID string, out 
 	// projects are unchanged end-to-end.
 	ra := rec.AccountFor(resolvedRuntimeName)
 	spec := account.AuthSpec{
-		Mode:                account.AuthMode(ra.AuthMode),
-		ExpectedIdentity:    ra.ExpectedIdentity,
-		Credential:          toAccountCredential(ra.Credential),
+		Mode:             account.AuthMode(ra.AuthMode),
+		ExpectedIdentity: ra.ExpectedIdentity,
+		// ra.Credential is *registry.Credential, which account.Credential
+		// aliases (both alias internal/authmode.Credential) — no conversion.
+		Credential:          ra.Credential,
 		IdentityFingerprint: ra.IdentityFingerprint,
 	}
 	acctProf := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}

@@ -55,18 +55,23 @@
 // uncalibrated-is-advisory posture rather than a second escape hatch.
 package quota
 
-import "fmt"
+import (
+	"fmt"
 
-// Auth-mode string values, mirrored from registry.AuthMode* (koryph-i3b.3).
-// quota cannot import package registry (registry already imports quota, e.g.
-// for SetCalibrationStaleAt — importing back would cycle), so callers pass
+	"github.com/koryph/koryph/internal/authmode"
+)
+
+// Auth-mode string values, aliased from internal/authmode (koryph-i3b.3),
+// the dependency-free leaf package shared with registry and account. quota
+// cannot import package registry (registry already imports quota, e.g. for
+// SetCalibrationStaleAt — importing back would cycle), so callers pass
 // registry.Record.EffectiveAuthMode()'s plain string return value directly;
 // these constants exist so quota's own call sites and tests don't hardcode
 // the literal strings a second time.
 const (
-	AuthModeSubscription = "subscription"
-	AuthModeAPIKey       = "api-key"
-	AuthModeOAuthToken   = "oauth-token"
+	AuthModeSubscription = authmode.Subscription
+	AuthModeAPIKey       = authmode.APIKey
+	AuthModeOAuthToken   = authmode.OAuthToken
 )
 
 // Level is the governor verdict.
