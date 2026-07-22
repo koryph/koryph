@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"text/tabwriter"
 	"time"
 
@@ -38,6 +39,15 @@ func init() {
 				name:    "guard",
 				summary: "live billing-guard toggle — on|advisory|off [--until <duration>]; re-read each wave without a restart",
 				run:     cmdQuotaGuard,
+				DocLinks: []string{
+					"user-guide/billing-and-quota.md",
+					"concepts/governors.md",
+				},
+			},
+			{
+				name:    "set-threads",
+				summary: "set (or clear with 0) this account's persisted default concurrency-pool seed",
+				run:     cmdQuotaSetThreads,
 				DocLinks: []string{
 					"user-guide/billing-and-quota.md",
 					"concepts/governors.md",
@@ -88,6 +98,8 @@ func cmdQuota(args []string, stdout, stderr io.Writer) int {
 			return cmdQuotaCalibrate(args[1:], stdout, stderr)
 		case "guard":
 			return cmdQuotaGuard(args[1:], stdout, stderr)
+		case "set-threads":
+			return cmdQuotaSetThreads(args[1:], stdout, stderr)
 		}
 	}
 	return cmdQuotaShow(args, stdout, stderr)
@@ -311,6 +323,82 @@ func cmdQuotaGuard(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, msg)
 	}
 	return 0
+}
+
+// cmdQuotaSetThreads sets (or, with N=0, clears) this account's persisted
+// default concurrency-pool seed (koryph-1o2.3, quota.Config.MaxThreads).
+// This is the SEED half of a two-tier per-account cap: an explicit
+// `koryph governor set --account X --max-global N` operator override always
+// wins over it, and it in turn wins over the "anthropic" pool's own cap
+// (migration continuity) and the package default. The engine re-reads it via
+// quota.LoadConfig at every run start (like every other quota config field),
+// so a change here takes effect on the next `koryph run`, no restart of any
+// already-running engine required — though a run already in flight keeps the
+// cap it started with, exactly like every other engine-startup-resolved
+// setting.
+//
+// Usage: koryph quota set-threads --account A N
+func cmdQuotaSetThreads(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("quota set-threads", stderr)
+	acct := fs.String("account", "", "account to configure (required)")
+	setUsage(fs, stdout,
+		"set (or clear with 0) this account's persisted default concurrency-pool seed — the fallback used when no explicit `governor set --account` cap is configured",
+		"--account A N")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if *acct == "" {
+		return usageErr(stderr, "quota set-threads: --account is required")
+	}
+	if len(pos) != 1 {
+		return usageErr(stderr, "quota set-threads: exactly one positional argument required: N (0 clears the seed)")
+	}
+	n, perr := parsePositiveOrZeroInt(pos[0])
+	if perr != nil {
+		return usageErr(stderr, fmt.Sprintf("quota set-threads: %q is not a valid non-negative integer: %v", pos[0], perr))
+	}
+
+	cfg, serr := quota.SetMaxThreads(*acct, n)
+	if serr != nil {
+		return fail(stderr, serr)
+	}
+
+	// Audit: emit to the registry audit log so the change is traceable,
+	// mirroring cmdQuotaGuard.
+	ctx := context.Background()
+	store, aerr := openStore(ctx)
+	if aerr == nil {
+		_ = store.Audit(registry.Event{
+			Kind:  "quota-set-threads",
+			Actor: cliActor(),
+			Detail: map[string]any{
+				"account":     *acct,
+				"max_threads": cfg.MaxThreads,
+			},
+		})
+	}
+
+	if cfg.MaxThreads > 0 {
+		fmt.Fprintf(stdout, "quota %s: default concurrency-pool seed set to %d\n", *acct, cfg.MaxThreads)
+	} else {
+		fmt.Fprintf(stdout, "quota %s: default concurrency-pool seed cleared\n", *acct)
+	}
+	return 0
+}
+
+// parsePositiveOrZeroInt parses s as a base-10 integer and rejects negatives —
+// the shared validation for CLI flags whose "0" is a meaningful clear/reset
+// sentinel rather than an error.
+func parsePositiveOrZeroInt(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("must be >= 0")
+	}
+	return n, nil
 }
 
 // cmdMetricsDispatch dispatches the metrics sub-verbs.

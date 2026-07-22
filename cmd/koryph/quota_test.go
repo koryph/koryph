@@ -48,6 +48,52 @@ func TestQuotaCalibrateClearsStaleFlag(t *testing.T) {
 	}
 }
 
+// TestQuotaSetThreads covers `koryph quota set-threads` (koryph-1o2.3): set,
+// clear (0), and the required --account / positional-arg validation.
+func TestQuotaSetThreads(t *testing.T) {
+	isolate(t)
+
+	code, out, errb := runCmd("quota", "set-threads", "--account", "personal", "6")
+	if code != 0 {
+		t.Fatalf("quota set-threads: code=%d stderr=%s", code, errb)
+	}
+	if !strings.Contains(out, "set to 6") {
+		t.Errorf("expected confirmation mentioning 6, got: %s", out)
+	}
+	cfg, err := quota.LoadConfig("personal")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaxThreads != 6 {
+		t.Fatalf("MaxThreads = %d, want 6", cfg.MaxThreads)
+	}
+
+	code, out, errb = runCmd("quota", "set-threads", "--account", "personal", "0")
+	if code != 0 {
+		t.Fatalf("quota set-threads (clear): code=%d stderr=%s", code, errb)
+	}
+	if !strings.Contains(out, "cleared") {
+		t.Errorf("expected confirmation mentioning cleared, got: %s", out)
+	}
+	cfg, err = quota.LoadConfig("personal")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaxThreads != 0 {
+		t.Fatalf("MaxThreads after clear = %d, want 0", cfg.MaxThreads)
+	}
+
+	if code, _, _ := runCmd("quota", "set-threads", "6"); code == 0 {
+		t.Error("quota set-threads without --account should fail")
+	}
+	if code, _, _ := runCmd("quota", "set-threads", "--account", "personal"); code == 0 {
+		t.Error("quota set-threads without a positional N should fail")
+	}
+	if code, _, _ := runCmd("quota", "set-threads", "--account", "personal", "-1"); code == 0 {
+		t.Error("quota set-threads with a negative N should fail")
+	}
+}
+
 // TestMetricsEstimatorDisplaysProxySegmentedKeys is the koryph-3l1.3 carried-
 // contract regression test for cmdMetricsEstimator: a Calibration/ErrorStats
 // key segmented by a proxyID built from a base_url with its own colons (e.g.
