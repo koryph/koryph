@@ -252,6 +252,33 @@ export PATH="$(go env GOPATH)/bin:$PATH"      # go install
 Add the matching line to your shell's profile file (`.zshrc`, `.bashrc`,
 etc.) so it persists across sessions.
 
+### `brew install` fails with "Could not resolve HEAD" / "Not a valid ref: refs/remotes/origin/main"
+
+```
+error: Not a valid ref: refs/remotes/origin/main
+fatal: ambiguous argument 'refs/remotes/origin/main': unknown revision or path not in the working tree.
+fatal: Could not resolve HEAD to a commit
+Warning: No available formula or cask with the name "koryph/tap/koryph".
+```
+
+This means Homebrew has a **stale local copy of the tap** from a time when
+`koryph/homebrew-tap` was still empty (it carried no cask until the first
+successful release). Your machine cached that empty clone — which has no
+`HEAD` — and now every `brew` command trips over it. The remote tap is
+healthy; only your local copy is stale. Drop it and reinstall:
+
+```sh
+brew untap koryph/tap
+brew install koryph/tap/koryph
+```
+
+If `brew untap` also errors, remove the directory directly, then reinstall:
+
+```sh
+rm -rf "$(brew --repository)/Library/Taps/koryph"
+brew install koryph/tap/koryph
+```
+
 ### Wrong `koryph` binary is picked up
 
 If `which koryph` points to an unexpected location, you may have an older
