@@ -11,8 +11,35 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/sysmem"
 )
+
+// seedCapFromQuota wires a govern.Store's SeedCap hook (koryph-1o2.3) to this
+// CLI's own quota package: a pool key IS the account name for every named
+// account (see `governor set --account`'s doc), so the same
+// quota.Config.MaxThreads seed the engine resolves at dispatch is available
+// here too, purely for accurate `governor show`/`governor set` cap display —
+// a store with SeedCap unset (e.g. any hand-built test Store{}) simply skips
+// this fallback level, matching the pre-koryph-1o2.3 behavior. A LoadConfig
+// error (missing/corrupt account file) yields 0 — no seed — the fail-open
+// posture every other govern helper already uses.
+func seedCapFromQuota(pool string) int {
+	cfg, err := quota.LoadConfig(pool)
+	if err != nil {
+		return 0
+	}
+	return cfg.MaxThreads
+}
+
+// newGovernStore returns a govern.Store with the koryph-1o2.3 per-account
+// quota seed wired in, for every governor CLI entry point that displays or
+// resolves a cap.
+func newGovernStore() *govern.Store {
+	gs := govern.NewStore()
+	gs.SeedCap = seedCapFromQuota
+	return gs
+}
 
 func init() {
 	registerCmd(command{
@@ -101,7 +128,7 @@ func cmdGovernorShow(args []string, stdout, stderr io.Writer) int {
 		return flagExit(err)
 	}
 
-	gs := govern.NewStore()
+	gs := newGovernStore()
 	pools, err := gs.Pools()
 	if err != nil {
 		return fail(stderr, err)
@@ -114,7 +141,10 @@ func cmdGovernorShow(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return fail(stderr, err)
 			}
-			eff := ps.AIMD.EffectiveCap()
+			// gs.EffectiveCap (not the bare ps.AIMD.EffectiveCap() value method)
+			// so a non-adaptive pool with no explicit operator cap reflects the
+			// koryph-1o2.3 seed/continuity fallback the same way admission does.
+			eff := gs.EffectiveCap(pool)
 			leases := ps.Leases
 			if leases == nil {
 				leases = []govern.Lease{}
@@ -161,12 +191,21 @@ func printPoolStatus(stdout io.Writer, gs *govern.Store, pool string) error {
 	}
 	fmt.Fprintf(stdout, "pool %s:\n", pool)
 	fmt.Fprintf(stdout, "  global concurrency cap: %d\n", gs.Cap(pool))
+	if ps.AIMD.MaxGlobalAgents <= 0 {
+		// No explicit `governor set` cap for this pool (koryph-1o2.3): the
+		// number above came from the per-account quota seed, the anthropic
+		// pool's own cap (migration continuity), or the package default.
+		fmt.Fprintln(stdout, "  (no explicit operator cap — using per-account seed / anthropic-pool continuity / package default)")
+	}
 	printMemoryFloor(stdout, gs.MinFreeMemoryMB(pool))
 
 	// AIMD overlay (koryph-2im.4): show adaptive status and, when on, the
 	// dynamic cap that Acquire actually admits against — for THIS pool only.
+	// gs.EffectiveCap (not the bare aimd.EffectiveCap() value method) so a
+	// non-adaptive pool with no explicit operator cap reflects the
+	// koryph-1o2.3 seed/continuity fallback the same way admission does.
 	aimd := ps.AIMD
-	eff := aimd.EffectiveCap()
+	eff := gs.EffectiveCap(pool)
 	if aimd.Adaptive {
 		lastDecrease := aimd.LastDecreaseAt
 		if lastDecrease == "" {
@@ -311,7 +350,7 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 		poolArg = *account
 	}
 	pool := govern.NormalizeProvider(poolArg)
-	gs := govern.NewStore()
+	gs := newGovernStore()
 
 	// Floor-only invocation: adjust the memory gate without resetting the pool's
 	// cap or AIMD state (SetMinFreeMemoryMB preserves every other field).
@@ -419,7 +458,7 @@ func cmdGovernorSetResource(args []string, stdout, stderr io.Writer) int {
 	rampGiven := flagPassed(fs, "ramp-seconds")
 	probeGiven := flagPassed(fs, "probe")
 
-	gs := govern.NewStore()
+	gs := newGovernStore()
 
 	if *unset {
 		if capacityGiven || memGiven || rampGiven || probeGiven {
