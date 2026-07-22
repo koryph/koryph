@@ -83,6 +83,8 @@ func RegisterAndConfigure(ctx context.Context, store *registry.Store, snap *Snap
 			AccountProfile:   acct.Profile,
 			ClaudeConfigDir:  acct.ConfigDir,
 			ExpectedIdentity: acct.Identity,
+			AuthMode:         acct.AuthMode,
+			Credential:       acct.Credential,
 			Force:            force,
 		})
 		if err != nil {

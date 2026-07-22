@@ -125,6 +125,8 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 	name := fs.String("name", "", "display name (default: project id)")
 	branch := fs.String("branch", "", "default branch (default: detected)")
 	force := fs.Bool("force", false, "override an .envrc account-disagreement refusal")
+	authMode := fs.String("auth-mode", "", authModeUsage)
+	cred := registerCredentialFlags(fs)
 	postureProfile := fs.String("posture", "", "posture profile to apply non-interactively (e.g. oss-solo-maintainer); skips the interactive prompt")
 	noPosture := fs.Bool("no-posture", false, "skip the posture profile offer entirely")
 	setUsage(fs, stdout, "register a project (inspect + register + scaffold adapter + install agents, commands & rules)",
@@ -159,6 +161,8 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 		AccountProfile:   *account,
 		ClaudeConfigDir:  *configDir,
 		ExpectedIdentity: *identity,
+		AuthMode:         *authMode,
+		Credential:       cred.build(),
 		Force:            *force,
 	})
 	if err != nil {

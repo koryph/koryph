@@ -140,8 +140,13 @@ register a project (inspect + register + scaffold adapter + install assets)
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--account` | string |  | account profile: personal\|work (required) |
+| `--auth-mode` | string |  | auth mode: subscription (default; OAuth login) \| api-key (long-lived ANTHROPIC_API_KEY; bills PAY-PER-TOKEN, not the subscription; requires --credential-*) \| oauth-token (long-lived CLAUDE_CODE_OAUTH_TOKEN; subscription-billed; requires --credential-*) |
 | `--branch` | string |  | default branch (default: detected) |
 | `--config-dir` | string |  | CLAUDE_CONFIG_DIR for non-personal accounts |
+| `--credential-env` | string |  | purpose-named env var holding the credential (with --credential-source env; must not be ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) |
+| `--credential-provider` | string |  | vault provider name (with --credential-source vault) |
+| `--credential-ref` | string |  | vault item reference/name (with --credential-source vault) |
+| `--credential-source` | string |  | credential source for --auth-mode api-key\|oauth-token: vault\|env |
 | `--force` | bool |  | override an .envrc account-disagreement refusal |
 | `--id` | string |  | project slug (default: repo dir name slugified) |
 | `--identity` | string |  | login email that must match at dispatch (required) |
@@ -1049,8 +1054,13 @@ wizard: take an existing repo to a green `koryph validate` in one run
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--account` | string |  | account profile (with --identity; overrides discovery) |
+| `--auth-mode` | string |  | auth mode: subscription (default; OAuth login) \| api-key (long-lived ANTHROPIC_API_KEY; bills PAY-PER-TOKEN, not the subscription; requires --credential-*) \| oauth-token (long-lived CLAUDE_CODE_OAUTH_TOKEN; subscription-billed; requires --credential-*) |
 | `--branch` | string |  | default branch (default: detected) |
 | `--config-dir` | string |  | CLAUDE_CONFIG_DIR for non-personal accounts |
+| `--credential-env` | string |  | purpose-named env var holding the credential (with --credential-source env; must not be ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) |
+| `--credential-provider` | string |  | vault provider name (with --credential-source vault) |
+| `--credential-ref` | string |  | vault item reference/name (with --credential-source vault) |
+| `--credential-source` | string |  | credential source for --auth-mode api-key\|oauth-token: vault\|env |
 | `--dry-run` | bool |  | detect + print the adoption plan, write nothing |
 | `--force` | bool |  | override an .envrc account-disagreement refusal |
 | `--forge` | string |  | forge provider github\|gitlab (overrides inference) |

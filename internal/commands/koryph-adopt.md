@@ -31,6 +31,13 @@ Do this:
      derivation succeeded; a wrong gate green-lights broken merges,
    - forge: `--forge github|gitlab` (needed when the remote matches no
      known host).
+   - auth mode: default is `subscription` (OAuth login) and is never
+     switched automatically. If the machine has no OAuth login but a
+     resolvable long-lived credential, ask the user before opting in —
+     `--auth-mode api-key` bills **pay-per-token**, not the subscription;
+     `--auth-mode oauth-token` stays subscription-billed. Either needs
+     `--credential-source vault|env` plus `--credential-provider`/
+     `--credential-ref` (vault) or `--credential-env` (env).
 4. **Execute.** Run `koryph adopt <root> --yes --json` plus the flags from
    step 3. Installs that need `sudo` are never run by the wizard — relay
    the exact command to the user to run themselves, then re-run adopt.

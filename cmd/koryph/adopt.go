@@ -59,6 +59,8 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 	accountFlag := fs.String("account", "", "account profile (with --identity; overrides discovery)")
 	identityFlag := fs.String("identity", "", "login email that must match at dispatch (with --account)")
 	configDir := fs.String("config-dir", "", "CLAUDE_CONFIG_DIR for non-personal accounts")
+	authMode := fs.String("auth-mode", "", authModeUsage)
+	cred := registerCredentialFlags(fs)
 	id := fs.String("id", "", "project slug (default: repo dir name slugified)")
 	branch := fs.String("branch", "", "default branch (default: detected)")
 	var gates gateFlag
@@ -127,6 +129,8 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
+		acct.AuthMode = *authMode
+		acct.Credential = cred.build()
 	}
 
 	var gate []string

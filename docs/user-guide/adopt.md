@@ -153,6 +153,11 @@ it and writing nothing for that value.
 | `--account <profile>` | Account profile (with `--identity`; overrides discovery) |
 | `--identity <email>` | Login email that must match at dispatch (with `--account`) |
 | `--config-dir <dir>` | `CLAUDE_CONFIG_DIR` for a non-personal account |
+| `--auth-mode subscription\|api-key\|oauth-token` | How this account authenticates (default `subscription`); `api-key` bills **pay-per-token**, not the subscription — never inferred, always explicit |
+| `--credential-source vault\|env` | Where to resolve the `api-key`/`oauth-token` credential from |
+| `--credential-provider <name>` | Vault provider (with `--credential-source vault`) |
+| `--credential-ref <ref>` | Vault item reference (with `--credential-source vault`) |
+| `--credential-env <VAR>` | Purpose-named env var holding the credential (with `--credential-source env`; must not be `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`) |
 | `--id <slug>` | Project slug (default: repo dir name slugified) |
 | `--branch <name>` | Default branch (default: detected) |
 | `--gate "cmd1;;cmd2"` | Gate command (repeatable, or one `;;`-separated list); overrides inference |
@@ -173,6 +178,11 @@ What fails closed, and how to resolve it without a prompt:
 - **A git remote that matches no known forge host** → pass `--forge
   github|gitlab`. A repo with **no** remote at all is not ambiguous — forge
   simply resolves empty, nothing to be wrong about.
+
+`adopt` never silently switches billing: a machine with no OAuth login but a
+resolvable long-lived credential is reported, never auto-adopted — pass
+`--auth-mode api-key --credential-source vault|env ...` (or `oauth-token`)
+explicitly to register that account with credential-based auth.
 
 `koryph adopt <root> --yes --json` is the whole [llms.txt](../llms.txt)
 agent runbook collapsed into one command; that file keeps the manual

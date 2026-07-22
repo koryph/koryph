@@ -9,6 +9,7 @@ import (
 
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/onboard"
+	"github.com/koryph/koryph/internal/registry"
 )
 
 // This file holds the CONFIRM phase's pure, non-interactive resolvers (design
@@ -27,6 +28,16 @@ type AccountChoice struct {
 	ConfigDir  string
 	Identity   string
 	Provenance string
+	// AuthMode and Credential carry the CLI's --auth-mode/--credential-*
+	// flags through to registration (koryph-i3b, design
+	// docs/designs/2026-07-api-key-auth.md §8). Empty AuthMode is the
+	// default subscription mode, with Credential ignored. Neither field is
+	// set by this file's resolvers (ResolveAccountNonInteractive,
+	// promptAccount pick Profile/Identity/ConfigDir/Provenance only) — the
+	// CLI layer sets them directly from the parsed flags before calling
+	// RegisterAndConfigure, so adopt never infers a billing mode itself.
+	AuthMode   string
+	Credential *registry.Credential
 }
 
 // ResolveAccountNonInteractive resolves the account decision for --yes /
