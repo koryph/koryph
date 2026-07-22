@@ -176,6 +176,9 @@ func (s *Store) Get(id string) (*Record, error) {
 	if err := validateAgentProxy(&rec); err != nil {
 		return nil, err
 	}
+	if err := validatePromptCachePolicy(&rec); err != nil {
+		return nil, err
+	}
 	if err := validateCredential(&rec); err != nil {
 		return nil, err
 	}
@@ -205,6 +208,9 @@ func (s *Store) List() ([]*Record, error) {
 			return nil, err
 		}
 		if err := validateAgentProxy(&rec); err != nil {
+			return nil, err
+		}
+		if err := validatePromptCachePolicy(&rec); err != nil {
 			return nil, err
 		}
 		if err := validateCredential(&rec); err != nil {
@@ -461,7 +467,25 @@ func validate(rec *Record) error {
 	if err := validateAgentProxy(rec); err != nil {
 		return err
 	}
+	if err := validatePromptCachePolicy(rec); err != nil {
+		return err
+	}
 	return validateCredential(rec)
+}
+
+// validatePromptCachePolicy refuses a prompt_cache_policy that is neither
+// unset (=on) nor one of the two known values (koryph-6au). Machine-checked
+// at load — mirroring validateAgentProxy/validateCredential — so a typo'd
+// policy fails loudly at Store.Add/Get/List rather than silently resolving to
+// the "on" default and surprising the operator.
+func validatePromptCachePolicy(rec *Record) error {
+	switch rec.PromptCachePolicy {
+	case "", PromptCacheOn, PromptCacheOff:
+		return nil
+	default:
+		return fmt.Errorf("registry: prompt_cache_policy %q must be %q or %q (empty means %q)",
+			rec.PromptCachePolicy, PromptCacheOn, PromptCacheOff, PromptCacheOn)
+	}
 }
 
 // forbiddenEnvVars are the canonical env var names ChildEnv injects a

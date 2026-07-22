@@ -20,10 +20,25 @@ const sectionSep = "\n---\n"
 // is deterministic: the same Input always produces byte-identical bytes (no
 // maps are iterated), and no timestamps appear in sections [1] or [2].
 func Compile(in Input) string {
+	return SharedPrefix(in) + sectionSep + volatileTail(in)
+}
+
+// SharedPrefix returns the byte-identical cacheable prefix — sections
+// [1]preamble + [2]project-block joined by sectionSep — that is stable across
+// every bead in a project: it depends only on in.EngineVersion and the
+// project-block fields (name, conventions, gate, bootstrap), never on in.Bead
+// or any per-dispatch field. By construction Compile(in) ==
+// SharedPrefix(in) + sectionSep + <volatile tail>, so the shared prefix is
+// exactly the span koryph places a prompt-cache breakpoint after (registry
+// prompt_cache_policy): a cached SharedPrefix is a warm read for the first
+// turn of every bead's dispatch that shares it (koryph-6au). It is the API
+// that lets koryph OWN the breakpoint on the request paths it controls (the
+// Batch path); the wave-loop `claude -p` dispatch manages its own cache TTL
+// and does not consume this.
+func SharedPrefix(in Input) string {
 	return strings.Join([]string{
 		Preamble(in.EngineVersion),
 		projectBlock(in),
-		volatileTail(in),
 	}, sectionSep)
 }
 

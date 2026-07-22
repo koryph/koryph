@@ -80,6 +80,52 @@ func TestCompileThreeSectionsInOrder(t *testing.T) {
 	}
 }
 
+// TestSharedPrefixIsCacheBreakpoint is the koryph-6au acceptance test for the
+// prompt-cache breakpoint boundary: SharedPrefix returns sections [1]+[2], and
+// Compile is exactly SharedPrefix + sectionSep + volatile tail — so the prefix
+// koryph caches is precisely the span that precedes the per-bead tail.
+func TestSharedPrefixIsCacheBreakpoint(t *testing.T) {
+	in := baseInput()
+	prefix := SharedPrefix(in)
+	full := Compile(in)
+
+	if !strings.HasPrefix(full, prefix+sectionSep) {
+		t.Fatalf("Compile is not SharedPrefix + sep + tail\n--- prefix ---\n%s\n--- full ---\n%s", prefix, full)
+	}
+	// The prefix carries [1]preamble + [2]project-block and stops before the tail.
+	if !strings.Contains(prefix, "# Koryph dispatch (engine v9.9.9-test)") ||
+		!strings.Contains(prefix, "## Project: demo-project") {
+		t.Errorf("SharedPrefix missing preamble/project block:\n%s", prefix)
+	}
+	if strings.Contains(prefix, "## Task bd-42") {
+		t.Errorf("SharedPrefix leaked the volatile task tail:\n%s", prefix)
+	}
+	// Exactly one separator inside the shared prefix (between [1] and [2]).
+	if n := strings.Count(prefix, sectionSep); n != 1 {
+		t.Errorf("SharedPrefix separator count = %d, want 1", n)
+	}
+}
+
+// TestSharedPrefixByteIdenticalAcrossBeads proves the cache-warmth premise:
+// two different beads in the same project produce a byte-identical
+// SharedPrefix, so a single cached prefix is a warm read for every bead's
+// first turn (koryph-6au). Only per-dispatch (tail) fields differ.
+func TestSharedPrefixByteIdenticalAcrossBeads(t *testing.T) {
+	a := baseInput()
+	b := baseInput()
+	b.Bead = beads.Issue{ID: "bd-99", Title: "A wholly different task", Description: "Different body."}
+	b.PlanYAML = "steps:\n  - other"
+	b.ResumeSHA = "deadbeef"
+
+	if pa, pb := SharedPrefix(a), SharedPrefix(b); pa != pb {
+		t.Fatalf("SharedPrefix differs across beads (must be byte-identical)\n--- a ---\n%s\n--- b ---\n%s", pa, pb)
+	}
+	// Sanity: the full compiled prompts DO differ (the tail changed).
+	if Compile(a) == Compile(b) {
+		t.Fatal("Compile identical across different beads; test setup is wrong")
+	}
+}
+
 func TestCompileDeterministic(t *testing.T) {
 	in := baseInput()
 	in.PlanYAML = "steps:\n  - build\n  - test"

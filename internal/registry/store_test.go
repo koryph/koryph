@@ -481,6 +481,45 @@ func TestAgentProxyValidatedIndependentlyAtLoad(t *testing.T) {
 	}
 }
 
+// TestPromptCachePolicyValidatedAtLoad is the koryph-6au acceptance test that
+// an unknown prompt_cache_policy is refused at every load path (Get and List),
+// mirroring the agent_proxy/credential load-path checks — a hand-edited typo
+// fails loudly instead of silently resolving to the "on" default. The two
+// known values and the unset (=on) default all load cleanly.
+func TestPromptCachePolicyValidatedAtLoad(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	rec := sampleRecord("hand-edited", root)
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Known-good values (including unset) must load cleanly.
+	for _, good := range []string{"", PromptCacheOn, PromptCacheOff} {
+		rec.PromptCachePolicy = good
+		if err := s.put(rec); err != nil {
+			t.Fatalf("put %q: %v", good, err)
+		}
+		if _, err := s.Get("hand-edited"); err != nil {
+			t.Fatalf("Get with prompt_cache_policy %q = %v, want nil", good, err)
+		}
+	}
+
+	// Bypass Add's validation via put() to simulate a hand-edited garbage value.
+	rec.PromptCachePolicy = "aggressive"
+	if err := s.put(rec); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if _, err := s.Get("hand-edited"); err == nil {
+		t.Fatal("Get succeeded loading an unknown prompt_cache_policy; want refusal at load")
+	}
+	if _, err := s.List(); err == nil {
+		t.Fatal("List succeeded loading an unknown prompt_cache_policy; want refusal at load")
+	}
+}
+
 // TestAgentProxyIDAndProxyBaseURL covers AgentProxy.ID() (the ledger.Slot.
 // ProxyID / future quota proxyID value) and Record.ProxyBaseURL() (the
 // single accessor every spawn site threads into its ChildEnvSpec).

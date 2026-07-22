@@ -165,6 +165,34 @@ func TestEffectiveAuthModeDefaultsToSubscription(t *testing.T) {
 	}
 }
 
+// TestEffectivePromptCachePolicyDefaultsToOn is the koryph-6au acceptance
+// test for the re-introduced field's tri-state resolution: an unset field
+// (every record written before the field existed) resolves to "on" and reports
+// enabled; an explicit "off" is honored and disables; an explicit "on" stays
+// enabled. Callers must read the accessor, never the raw field.
+func TestEffectivePromptCachePolicyDefaultsToOn(t *testing.T) {
+	legacy := &Record{ProjectID: "p"}
+	if got := legacy.EffectivePromptCachePolicy(); got != PromptCacheOn {
+		t.Errorf("EffectivePromptCachePolicy() on legacy record = %q, want %q", got, PromptCacheOn)
+	}
+	if !legacy.PromptCacheEnabled() {
+		t.Errorf("PromptCacheEnabled() on legacy record = false, want true (default on)")
+	}
+
+	off := &Record{ProjectID: "p", PromptCachePolicy: PromptCacheOff}
+	if off.PromptCacheEnabled() {
+		t.Errorf("PromptCacheEnabled() with explicit off = true, want false")
+	}
+	if got := off.EffectivePromptCachePolicy(); got != PromptCacheOff {
+		t.Errorf("EffectivePromptCachePolicy() with explicit off = %q, want %q", got, PromptCacheOff)
+	}
+
+	on := &Record{ProjectID: "p", PromptCachePolicy: PromptCacheOn}
+	if !on.PromptCacheEnabled() {
+		t.Errorf("PromptCacheEnabled() with explicit on = false, want true")
+	}
+}
+
 // TestAccountForCarriesAuthFields proves AccountFor's flat-field fallback
 // (koryph-v8u.5's pattern) extends to the new auth fields: a record with no
 // runtime_accounts block synthesizes AuthMode/Credential/IdentityFingerprint

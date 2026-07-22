@@ -60,6 +60,20 @@ const (
 	CredentialSourceEnv   = authmode.CredentialSourceEnv
 )
 
+// Prompt-cache policy values (koryph-6au). PromptCacheOn (the default; ""
+// resolves to it via EffectivePromptCachePolicy) authorizes koryph to place
+// a 1h extended-TTL cache breakpoint after the byte-identical shared prompt
+// prefix (promptc.SharedPrefix) on the request paths koryph owns — today the
+// Batch API path (internal/anthro, koryph batch run --project). PromptCacheOff
+// opts a project out. Re-introduced with a live consumer after ea640aa deleted
+// it as a dead knob — the design's own rationale is that a policy field with
+// no reader is worse than none, so this field ships together with the batch
+// consumer that reads it (EffectivePromptCachePolicy / PromptCacheEnabled).
+const (
+	PromptCacheOn  = "on"
+	PromptCacheOff = "off"
+)
+
 // Record is one managed project.
 type Record struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -130,6 +144,19 @@ type Record struct {
 	BatchPolicy  string `json:"batch_policy"`              // "deny" | "explicit"
 	APIFallback  string `json:"api_fallback"`              // "off" | "explicit"
 	APIKeyEnvVar string `json:"api_key_env_var,omitempty"` // env var NAME holding the key (never the key itself)
+
+	// PromptCachePolicy controls whether koryph places a shared prompt-cache
+	// breakpoint after the byte-identical promptc.SharedPrefix ([1]preamble +
+	// [2]project-block) on the request paths koryph owns — today the Batch
+	// API path (internal/anthro, koryph batch run --project). "" / PromptCacheOn
+	// (default) writes a 1h extended-TTL cache entry over the shared prefix so
+	// every bead's first turn reads it warm instead of minting a cold prefix;
+	// PromptCacheOff opts out. Read via PromptCacheEnabled /
+	// EffectivePromptCachePolicy, never the field directly, so records written
+	// before this field existed default to "on" (koryph-6au). The wave-loop
+	// `claude -p` dispatch owns its own cache TTL and is unaffected by this
+	// field — see the package doc in internal/engine on the anthro firewall.
+	PromptCachePolicy string `json:"prompt_cache_policy,omitempty"` // "" (=on) | "on" | "off"
 
 	// BillingGuard controls the quota governor's THROTTLING constraints
 	// (preflight, drain/stop dispatch blocking, slot scaling) for this
@@ -347,6 +374,25 @@ func (r *Record) EffectiveAuthMode() string {
 		return AuthModeSubscription
 	}
 	return r.AuthMode
+}
+
+// EffectivePromptCachePolicy returns r.PromptCachePolicy, defaulting empty
+// (every record written before this field existed, and any record that never
+// opted out) to PromptCacheOn — the single accessor callers should use
+// instead of reading PromptCachePolicy directly (koryph-6au).
+func (r *Record) EffectivePromptCachePolicy() string {
+	if r.PromptCachePolicy == "" {
+		return PromptCacheOn
+	}
+	return r.PromptCachePolicy
+}
+
+// PromptCacheEnabled reports whether koryph should place the shared
+// prompt-cache breakpoint for this project (true unless PromptCachePolicy is
+// explicitly PromptCacheOff). It is the boolean form of
+// EffectivePromptCachePolicy the Batch consumer reads (koryph-6au).
+func (r *Record) PromptCacheEnabled() bool {
+	return r.EffectivePromptCachePolicy() == PromptCacheOn
 }
 
 // RuntimeAccount is one runtime's account-scoped identity/env configuration

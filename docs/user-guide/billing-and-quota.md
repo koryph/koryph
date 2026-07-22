@@ -341,6 +341,16 @@ only to CLI subcommands that explicitly build a `[]MsgReq` slice, surface
 the cost estimate via `EstimateUSD`, and pass the user's confirmation to
 `BatchSubmit`.
 
+**Shared-prefix cache breakpoint.** `koryph batch run` can place a 1h
+extended-TTL cache breakpoint over the shared system prefix so a fleet of
+requests that share a preamble read it warm instead of each writing a cold
+prefix. Pass `--cache-prefix` to force it on, or `--project <id>` to default
+it from that project's [`prompt_cache_policy`](projects-and-accounts.md)
+(`on` by default). An explicit `--cache-prefix` always overrides the
+project default. This is the request path where koryph **owns** the cache
+breakpoint — the wave-loop `claude -p` dispatch manages its own cache TTL
+and cannot be steered this way.
+
 ---
 
 ## Usage measurement sources

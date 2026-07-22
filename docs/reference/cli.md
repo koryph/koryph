@@ -992,12 +992,13 @@ submit a batch from a JSONL file
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--cache-prefix` | bool |  | apply a 1h cache breakpoint to the shared system prefix |
+| `--cache-prefix` | bool |  | apply a 1h cache breakpoint to the shared system prefix (default from --project's prompt_cache_policy) |
 | `--input` | string |  | JSONL input file with {id,system,user} lines (required) |
 | `--key-env` | string |  | env var NAME holding the API key (required; never ANTHROPIC_API_KEY) |
 | `--max-tokens` | int |  | max output tokens per request (default 4096) |
 | `--model` | string |  | model tier: haiku\|sonnet\|opus\|fable (required) |
 | `--out` | string |  | results JSONL destination (default stdout) |
+| `--project` | string |  | registered project ID whose prompt_cache_policy defaults --cache-prefix |
 | `--yes` | bool |  | confirm the estimated spend and submit |
 
 

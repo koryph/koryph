@@ -15,6 +15,7 @@ import (
 
 	"github.com/koryph/koryph/internal/anthro"
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/registry"
 )
 
 func init() {
@@ -63,7 +64,8 @@ func cmdBatchRun(args []string, stdout, stderr io.Writer) int {
 	model := fs.String("model", "", "model tier: haiku|sonnet|opus|fable (required)")
 	input := fs.String("input", "", "JSONL input file with {id,system,user} lines (required)")
 	maxTokens := fs.Int("max-tokens", 0, "max output tokens per request (default 4096)")
-	cachePrefix := fs.Bool("cache-prefix", false, "apply a 1h cache breakpoint to the shared system prefix")
+	cachePrefix := fs.Bool("cache-prefix", false, "apply a 1h cache breakpoint to the shared system prefix (default from --project's prompt_cache_policy)")
+	project := fs.String("project", "", "registered project ID whose prompt_cache_policy defaults --cache-prefix")
 	out := fs.String("out", "", "results JSONL destination (default stdout)")
 	yes := fs.Bool("yes", false, "confirm the estimated spend and submit")
 	setUsage(fs, stdout, "submit a Message Batch (explicit per-token spend)",
@@ -75,7 +77,12 @@ func cmdBatchRun(args []string, stdout, stderr io.Writer) int {
 		return usageErr(stderr, "batch run: --key-env, --model and --input are required")
 	}
 
-	reqs, err := readBatchInput(*input, *model, *maxTokens, *cachePrefix)
+	cache, err := resolveBatchCachePrefix(*cachePrefix, flagPassed(fs, "cache-prefix"), *project)
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	reqs, err := readBatchInput(*input, *model, *maxTokens, cache)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -128,6 +135,24 @@ func cmdBatchRun(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "wrote %d result(s)\n", len(results))
 	return 0
+}
+
+// resolveBatchCachePrefix decides the shared-prefix cache breakpoint for a
+// batch run (koryph-6au). An explicit --cache-prefix (explicitPassed) always
+// wins so an operator can force the breakpoint on or off per batch. Otherwise,
+// when --project names a registered project, that project's
+// prompt_cache_policy decides via PromptCacheEnabled (default on) — the live
+// consumer that makes the re-introduced registry field earn its keep. With no
+// project and no explicit flag, the plain flag default (off) stands.
+func resolveBatchCachePrefix(explicitCache, explicitPassed bool, project string) (bool, error) {
+	if project == "" || explicitPassed {
+		return explicitCache, nil
+	}
+	rec, err := registry.NewStore().Get(project)
+	if err != nil {
+		return false, err
+	}
+	return rec.PromptCacheEnabled(), nil
 }
 
 // readBatchInput parses the JSONL input into anthro requests.

@@ -293,6 +293,9 @@ func TestRegisterHappyPath(t *testing.T) {
 	if rec.PlannerModel != "opus" || rec.ImplModel != "sonnet" || rec.RecoveryModelPolicy != "upgrade-opus" {
 		t.Errorf("model defaults = %q/%q/%q", rec.PlannerModel, rec.ImplModel, rec.RecoveryModelPolicy)
 	}
+	if rec.PromptCachePolicy != registry.PromptCacheOn || !rec.PromptCacheEnabled() {
+		t.Errorf("prompt-cache defaults = %q (enabled=%v)", rec.PromptCachePolicy, rec.PromptCacheEnabled())
+	}
 	if rec.BatchPolicy != "explicit" || rec.APIFallback != "off" || rec.VisibilitySync != "off" {
 		t.Errorf("billing/policy defaults = %+v", rec)
 	}

@@ -209,9 +209,10 @@ func buildRecord(projectID string, inv *Inventory, opts RegisterOpts, identityFi
 		ImplModel:           "sonnet",
 		RecoveryModelPolicy: "upgrade-opus",
 
-		BatchPolicy:  "explicit",
-		APIFallback:  "off",
-		BillingGuard: "enforce",
+		BatchPolicy:       "explicit",
+		APIFallback:       "off",
+		PromptCachePolicy: registry.PromptCacheOn,
+		BillingGuard:      "enforce",
 
 		WorktreeRoot:   worktreeRoot,
 		QuotaProfile:   opts.AccountProfile,

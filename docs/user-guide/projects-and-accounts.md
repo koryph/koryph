@@ -218,6 +218,7 @@ history is `git log ~/.koryph`.
 | `agent_mcp` | `"inherit"` (default, also when empty) \| `"strict"` — MCP loading for dispatched implementer agents. `"strict"` passes `--strict-mcp-config` so the agent loads **no** ambient MCP servers, trimming the re-read-every-turn prompt prefix; koryph implementer personas use only file/bash tools, so this is a pure context-economy win. Leave unset unless a project's agents genuinely call an MCP. See [Context economy](context-economy.md). |
 | `api_fallback` | `"off"` \| `"explicit"` — whether direct API key use is allowed. |
 | `api_key_env_var` | Env-var **name** holding the key (never the key value itself). |
+| `prompt_cache_policy` | `"on"` (default, also when empty) \| `"off"` — whether koryph places a 1h extended-TTL prompt-cache breakpoint after the byte-identical shared prompt prefix (engine preamble + project block) on the request paths it owns. Consumed today by `koryph batch run --project <id>`, which defaults `--cache-prefix` from this field. The wave-loop `claude -p` dispatch manages its own cache TTL and is unaffected. |
 | `billing_guard` | `"enforce"` (default) or `"advisory"` — whether the quota governor blocks or only warns. Automatically advisory while the account is uncalibrated. |
 | `quota_profile` | Quota governor bucket (defaults to `account_profile`). |
 | `visibility_sync` | `"off"` (GitHub/Linear sync is a later phase). |
