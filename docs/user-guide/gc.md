@@ -126,3 +126,10 @@ koryph gc --dry-run --project <ID>
 
 All the safety exemptions still apply — auto-gc can never touch the active
 run, a run with non-terminal slots, or posture snapshots.
+
+`gc_auto` also gates a second, independent mechanism: on every patrol tick
+(regardless of whether the run-dir footprint has crossed `footprint_warn_gb`)
+the patrol runs the same retention pass as `koryph obs prune` against
+`~/.koryph/telemetry/`, so telemetry volume no longer grows unbounded on a
+long-lived project between manual prunes. Its outcome is appended to the
+`gc-footprint` finding, e.g. `... [telemetry: pruned 3 stale file(s)]`.

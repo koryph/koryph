@@ -80,6 +80,7 @@ import (
 	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/quota"
 
@@ -790,11 +791,25 @@ func (r *runner) patrolCheckGCFootprint() []patrolFinding {
 			message: fmt.Sprintf("gc-footprint: cannot load retention config: %v", err)}}
 	}
 
+	// Telemetry retention (koryph-5a1 #58) is a wholly separate mechanism from
+	// run-dirs/audit-log/runs-index (internal/obs.PruneFromConfig, its own
+	// obs config) that — before this — only ran via the manual `koryph obs
+	// prune` command: nothing ever called it automatically, so
+	// ~/.koryph/telemetry/ grew unbounded on any long-lived project. Reuse the
+	// same gc_auto opt-in gate rather than adding a second config knob, and
+	// run it on every patrol tick — independent of whether the run-dir
+	// footprint below has crossed its own warn threshold, since telemetry
+	// volume has nothing to do with run-dir disk usage.
+	var telemetryNote string
+	if cfg.GCAuto {
+		telemetryNote = pruneTelemetryAuto()
+	}
+
 	dryOpts := gcpkg.Options{RepoRoot: repoRoot, DryRun: true, Config: &cfg}
 	res, err := gcpkg.Run(dryOpts)
 	if err != nil {
 		return []patrolFinding{{check: patrolCheckGCFootprint, level: "warn",
-			message: fmt.Sprintf("gc-footprint: scan failed: %v", err)}}
+			message: fmt.Sprintf("gc-footprint: scan failed: %v", err) + telemetryNote}}
 	}
 
 	totalMB := res.TotalReclaimedMB()
@@ -803,7 +818,7 @@ func (r *runner) patrolCheckGCFootprint() []patrolFinding {
 
 	if totalGB < warnGB {
 		return []patrolFinding{{check: patrolCheckGCFootprint, level: "ok",
-			message: fmt.Sprintf("gc-footprint: reclaimable=%.1f MB (threshold %.1f GB)", totalMB, warnGB)}}
+			message: fmt.Sprintf("gc-footprint: reclaimable=%.1f MB (threshold %.1f GB)", totalMB, warnGB) + telemetryNote}}
 	}
 
 	// Threshold exceeded.
@@ -826,8 +841,29 @@ func (r *runner) patrolCheckGCFootprint() []patrolFinding {
 			f.fixed = true
 		}
 	}
+	f.message += telemetryNote
 
 	return []patrolFinding{f}
+}
+
+// pruneTelemetryAuto runs the telemetry retention pass (internal/obs) and
+// returns a short " [telemetry: ...]" suffix describing the outcome, or ""
+// when there is nothing worth reporting (no files pruned, and no error).
+// Errors are surfaced in the suffix, not returned, so a telemetry-prune
+// failure only annotates the gc-footprint finding rather than replacing it.
+func pruneTelemetryAuto() string {
+	obsCfg, err := obs.LoadConfig()
+	if err != nil {
+		return fmt.Sprintf(" [telemetry prune: load config failed: %v]", err)
+	}
+	pruned, err := obs.PruneFromConfig(obsCfg)
+	if err != nil {
+		return fmt.Sprintf(" [telemetry prune failed: %v]", err)
+	}
+	if pruned > 0 {
+		return fmt.Sprintf(" [telemetry: pruned %d stale file(s)]", pruned)
+	}
+	return ""
 }
 
 // --- check: stale/orphaned agent worktrees ---------------------------------

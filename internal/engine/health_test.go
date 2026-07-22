@@ -1446,6 +1446,84 @@ func writeGovernorFile(t *testing.T, home string, f govern.File) {
 	}
 }
 
+// --- gc-footprint / telemetry retention (koryph-5a1 #58) -------------------
+
+// TestPruneTelemetryAuto_RemovesStaleFiles verifies pruneTelemetryAuto (the
+// helper patrolCheckGCFootprint calls when gc_auto is set) actually removes a
+// telemetry JSONL file past the retention window and reports the count.
+// Before koryph-5a1 #58 this pass never ran outside the manual `koryph obs
+// prune` command, so nothing in the automatic health patrol ever bounded
+// ~/.koryph/telemetry/.
+func TestPruneTelemetryAuto_RemovesStaleFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KORYPH_HOME", home)
+
+	telDir := filepath.Join(home, "telemetry")
+	must(t, os.MkdirAll(telDir, 0o755))
+	stale := filepath.Join(telDir, "engine.jsonl")
+	must(t, os.WriteFile(stale, []byte(`{"msg":"old"}`+"\n"), 0o644))
+	old := time.Now().Add(-40 * 24 * time.Hour) // default retention is 30 days
+	must(t, os.Chtimes(stale, old, old))
+
+	fresh := filepath.Join(telDir, "quota.jsonl")
+	must(t, os.WriteFile(fresh, []byte(`{"msg":"new"}`+"\n"), 0o644))
+
+	note := pruneTelemetryAuto()
+	if !strings.Contains(note, "pruned 1 stale file") {
+		t.Errorf("note = %q, want it to report exactly 1 pruned file", note)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale telemetry file still present after pruneTelemetryAuto")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("fresh telemetry file was removed: %v", err)
+	}
+}
+
+// TestPruneTelemetryAuto_NothingToPruneIsQuiet verifies the helper returns ""
+// (no finding annotation) when there is nothing stale — a noisy "[telemetry:
+// pruned 0 ...]" on every patrol tick would defeat the throttle that keeps
+// all-OK patrols quiet.
+func TestPruneTelemetryAuto_NothingToPruneIsQuiet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KORYPH_HOME", home)
+
+	if note := pruneTelemetryAuto(); note != "" {
+		t.Errorf("note = %q, want empty when there is nothing to prune", note)
+	}
+}
+
+// TestPatrolCheckGCFootprint_AutoPrunesTelemetry is the acceptance test for
+// wiring telemetry retention into the health patrol: with gc_auto enabled in
+// the global retention config, a stale telemetry file is pruned and named in
+// the gc-footprint finding even when the run-dir footprint itself is well
+// under FootprintWarnGB (i.e. the two mechanisms are independently gated, not
+// nested inside the run-dir warn-threshold branch).
+func TestPatrolCheckGCFootprint_AutoPrunesTelemetry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KORYPH_HOME", home)
+	must(t, os.WriteFile(filepath.Join(home, "retention.json"), []byte(`{"gc_auto":true}`), 0o644))
+
+	telDir := filepath.Join(home, "telemetry")
+	must(t, os.MkdirAll(telDir, 0o755))
+	stale := filepath.Join(telDir, "engine.jsonl")
+	must(t, os.WriteFile(stale, []byte(`{"msg":"old"}`+"\n"), 0o644))
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	must(t, os.Chtimes(stale, old, old))
+
+	r := &runner{}
+	findings := r.patrolCheckGCFootprint()
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly 1", findings)
+	}
+	if !strings.Contains(findings[0].message, "telemetry: pruned 1 stale file") {
+		t.Errorf("message = %q, want it to mention the telemetry prune", findings[0].message)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale telemetry file still present after the patrol check")
+	}
+}
+
 func countLevel(findings []patrolFinding, level string) int {
 	n := 0
 	for _, f := range findings {
