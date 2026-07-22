@@ -22,7 +22,7 @@ import (
 func init() {
 	registerCmd(command{
 		name:    "epic",
-		summary: "epic lifecycle management (validate, …)",
+		summary: "on-demand epic validation: completeness + structural health review",
 		run:     cmdEpic,
 		DocLinks: []string{
 			"user-guide/epic-validation.md",
@@ -30,36 +30,22 @@ func init() {
 		},
 		subs: []command{
 			{
-				name:     "validate",
-				summary:  "on-demand epic validation: completeness + structural health review",
-				run:      cmdEpicValidate,
+				name:    "validate",
+				summary: "on-demand epic validation: completeness + structural health review",
+				run:     cmdEpic,
+				// koryph-b8g #24: 'epic' is a single-child noun group;
+				// flattened so 'epic <epic-id> ...' is the primary form. The
+				// two-word 'epic validate <epic-id> ...' still works —
+				// hidden so it doesn't clutter help/completion/docgen.
+				hidden:   true,
 				DocLinks: []string{"user-guide/epic-validation.md"},
 			},
 		},
 	})
 }
 
-// cmdEpic dispatches the epic sub-verbs.
-func cmdEpic(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "epic", "epic lifecycle management", []subVerb{
-			{
-				"validate <epic-id> --project ID [--round N] [--json]",
-				"on-demand epic validation (completeness + structural health); backfill or recovery path",
-			},
-		})
-		return 0
-	}
-	sub, rest := args[0], args[1:]
-	switch sub {
-	case "validate":
-		return cmdEpicValidate(rest, stdout, stderr)
-	default:
-		return usageErr(stderr, fmt.Sprintf("unknown epic subcommand %q", sub))
-	}
-}
-
-// cmdEpicValidate implements `koryph epic validate <epic-id>`.
+// cmdEpic implements `koryph epic <epic-id> --project ID [--round N]
+// [--json]`.
 //
 // It loads the project epic_validation config block for defaults, verifies the
 // target is an epic whose children are all closed, runs internal/epicreview.Validate,
@@ -71,9 +57,16 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 //   - degraded → note + validation:degraded label + nonzero exit
 //
 // The --json flag emits the raw verdict JSON instead of human-readable output.
-// Works with the loop stopped; the enabled flag does not gate the explicit command.
-func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("epic validate", stderr)
+// Works with the loop stopped; the enabled flag does not gate the explicit
+// command. koryph-b8g #24: 'epic' was a single-child noun group ('epic
+// validate <epic-id> ...'); flattened so the epic id is a direct argument.
+// The two-word 'epic validate <epic-id> ...' form still works as a hidden
+// alias.
+func cmdEpic(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "validate" {
+		args = args[1:]
+	}
+	fs := newFlagSet("epic", stderr)
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	round := fs.Int("round", 0, "validation round override (0 = auto-detect from prior verdict files)")
 	asJSON := fs.Bool("json", false, "emit the raw verdict JSON; actions still apply")
@@ -86,7 +79,7 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 		return flagExit(err)
 	}
 	if len(pos) < 1 {
-		return usageErr(stderr, "epic validate: <epic-id> is required")
+		return usageErr(stderr, "epic: <epic-id> is required")
 	}
 	epicID := pos[0]
 
@@ -95,7 +88,7 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "epic validate")
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "epic")
 	if code != 0 {
 		return code
 	}
@@ -114,18 +107,18 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 	// Verify the target is an epic.
 	epic, err := bd.Show(ctx, epicID)
 	if err != nil {
-		fmt.Fprintf(stderr, "epic validate: cannot show %s: %v\n", epicID, err)
+		fmt.Fprintf(stderr, "epic: cannot show %s: %v\n", epicID, err)
 		return engine.ExitFatal
 	}
 	if epic.IssueType != "epic" {
-		fmt.Fprintf(stderr, "epic validate: %s is type %q, not epic\n", epicID, epic.IssueType)
+		fmt.Fprintf(stderr, "epic: %s is type %q, not epic\n", epicID, epic.IssueType)
 		return engine.ExitFatal
 	}
 
 	// Require all children to be closed.
 	children, err := bd.ListChildrenAll(ctx, epicID)
 	if err != nil {
-		fmt.Fprintf(stderr, "epic validate: cannot list children of %s: %v\n", epicID, err)
+		fmt.Fprintf(stderr, "epic: cannot list children of %s: %v\n", epicID, err)
 		return engine.ExitFatal
 	}
 	var openKids []string
@@ -135,7 +128,7 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if len(openKids) > 0 {
-		fmt.Fprintf(stderr, "epic validate: epic %s has unclosed children: %s\n",
+		fmt.Fprintf(stderr, "epic: epic %s has unclosed children: %s\n",
 			epicID, strings.Join(openKids, ", "))
 		return engine.ExitFatal
 	}
@@ -234,11 +227,11 @@ func cmdEpicValidate(args []string, stdout, stderr io.Writer) int {
 		EpicID:   epicID,
 		Round:    validationRound,
 		Config:   evcfg,
-		Actor:    "koryph epic validate",
+		Actor:    "koryph epic",
 		Progress: progress,
 	}, verdict)
 	if actErr != nil {
-		fmt.Fprintf(stderr, "epic validate: %v\n", actErr)
+		fmt.Fprintf(stderr, "epic: %v\n", actErr)
 		return engine.ExitFatal
 	}
 	if res.Outcome == "degraded" {

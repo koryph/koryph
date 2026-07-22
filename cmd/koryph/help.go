@@ -128,13 +128,18 @@ HELP
 }
 
 // writeCommandRows renders one section's command rows (name + summary, subs
-// indented) through a tabwriter so summaries align in a column.
+// indented) through a tabwriter so summaries align in a column. A hidden sub
+// (a back-compat two-word alias for a now-flattened single-verb command,
+// koryph-b8g #24) is still dispatchable but omitted from the listing.
 func writeCommandRows(w io.Writer, cmds []*command) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, c := range cmds {
 		fmt.Fprintf(tw, "  %s\t%s\n", c.name, c.summary)
 		for i := range c.subs {
 			sub := &c.subs[i]
+			if sub.hidden {
+				continue
+			}
 			fmt.Fprintf(tw, "  %s %s\t%s\n", c.name, sub.name, sub.summary)
 		}
 	}

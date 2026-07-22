@@ -61,7 +61,7 @@ func init() {
 	})
 	registerCmd(command{
 		name:    "sign",
-		summary: "cosign sign-blob an artifact",
+		summary: "cosign sign-blob an artifact via the vault key",
 		run:     cmdSign,
 		DocLinks: []string{
 			"user-guide/signing.md",
@@ -69,9 +69,15 @@ func init() {
 		},
 		subs: []command{
 			{
-				name:     "blob",
-				summary:  "sign a file via the vault key",
-				run:      cmdSignBlob,
+				name:    "blob",
+				summary: "sign a file via the vault key",
+				run:     cmdSign,
+				// koryph-b8g #24: 'sign' is a single-child noun group;
+				// flattened so 'sign <path>' is the primary form. The
+				// two-word 'sign blob <path>' still works — hidden so it
+				// doesn't clutter help/completion/docgen alongside the
+				// primary spelling.
+				hidden:   true,
 				DocLinks: []string{"user-guide/signing.md", "user-guide/supply-chain.md"},
 			},
 		},
@@ -110,18 +116,44 @@ func cmdSigning(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// cmdSign dispatches artifact-signing sub-verbs.
+// cmdSign implements `koryph sign <path>` — cosign sign-blob an artifact via
+// the project's vault key (writes <path>.sig). koryph-b8g #24: 'sign' was a
+// single-child noun group ('sign blob <path>'); flattened so the path is a
+// direct argument. The two-word 'sign blob <path>' form still works as a
+// hidden alias.
 func cmdSign(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "sign", "sign artifacts with the project's vault key", []subVerb{
-			{"blob --project ID <path>", "cosign sign-blob an artifact (writes <path>.sig)"},
-		})
-		return 0
+	if len(args) > 0 && args[0] == "blob" {
+		args = args[1:]
 	}
-	if args[0] != "blob" {
-		return usageErr(stderr, fmt.Sprintf("unknown sign subcommand %q (want blob)", args[0]))
+	fs := newFlagSet("sign", stderr)
+	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
+	setUsage(fs, stdout, "cosign sign-blob an artifact via the vault key (writes <path>.sig)", "<path> [--project ID]")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
 	}
-	return cmdSignBlob(args[1:], stdout, stderr)
+	if len(pos) < 1 {
+		return usageErr(stderr, "sign: <path> is required")
+	}
+
+	ctx := context.Background()
+	_, rec, cfg, code := signingProject(ctx, stderr, *projectID, "sign")
+	if code != 0 {
+		return code
+	}
+	if cfg.Signing == nil || !cfg.Signing.Artifacts {
+		return fail(stderr, fmt.Errorf("project %s does not enable artifact signing (signing.artifacts) — run `koryph signing setup ... --artifacts`", rec.ProjectID))
+	}
+	vault, err := signing.LoadVault()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	sig, err := signing.SignBlob(ctx, vault, cfg.Signing, pos[0])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "signed: %s\n", sig)
+	return 0
 }
 
 // signingProject loads the registry record + project config for a signing
@@ -603,39 +635,6 @@ func printVerifyHints(ctx context.Context, w io.Writer, projectID, repoRoot stri
 		fmt.Fprintf(w, "hint: gpg.ssh.allowedSignersFile is not configured for this repo\n")
 		fmt.Fprintf(w, "      configure: koryph signing enable --project %s\n", projectID)
 	}
-}
-
-// cmdSignBlob cosign-signs an artifact (requires signing.artifacts).
-func cmdSignBlob(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("sign blob", stderr)
-	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
-	setUsage(fs, stdout, "cosign sign-blob an artifact via the vault key (writes <path>.sig)", "[--project ID] <path>")
-	pos, err := parseFlags(fs, args)
-	if err != nil {
-		return flagExit(err)
-	}
-	if len(pos) < 1 {
-		return usageErr(stderr, "sign blob: <path> is required")
-	}
-
-	ctx := context.Background()
-	_, rec, cfg, code := signingProject(ctx, stderr, *projectID, "sign blob")
-	if code != 0 {
-		return code
-	}
-	if cfg.Signing == nil || !cfg.Signing.Artifacts {
-		return fail(stderr, fmt.Errorf("project %s does not enable artifact signing (signing.artifacts) — run `koryph signing setup ... --artifacts`", rec.ProjectID))
-	}
-	vault, err := signing.LoadVault()
-	if err != nil {
-		return fail(stderr, err)
-	}
-	sig, err := signing.SignBlob(ctx, vault, cfg.Signing, pos[0])
-	if err != nil {
-		return fail(stderr, err)
-	}
-	fmt.Fprintf(stdout, "signed: %s\n", sig)
-	return 0
 }
 
 // cliActor identifies this CLI invocation for audit events.

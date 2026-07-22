@@ -155,24 +155,46 @@ func TestEpicValidateUnknownProject(t *testing.T) {
 	}
 }
 
+// TestEpicSubcommandHelp confirms 'epic -h' is leaf-style help (koryph-b8g
+// #24 flattened 'epic validate <epic-id>' to 'epic <epic-id>') rather than a
+// SUBCOMMANDS listing.
 func TestEpicSubcommandHelp(t *testing.T) {
 	code, out, _ := runCmd("epic", "-h")
 	if code != 0 {
 		t.Errorf("code = %d, want 0 for help", code)
 	}
-	if !strings.Contains(out, "validate") {
-		t.Errorf("epic help should list 'validate'; got: %s", out)
+	if !strings.Contains(out, "<epic-id>") {
+		t.Errorf("epic help should show the <epic-id> synopsis; got: %s", out)
+	}
+	if strings.Contains(out, "SUBCOMMANDS") {
+		t.Errorf("epic -h should be leaf-style help, not a subcommand listing:\n%s", out)
 	}
 }
 
-func TestEpicUnknownSubcommand(t *testing.T) {
+// TestEpicValidateAliasStillWorks confirms the two-word 'epic validate
+// <epic-id>' form (koryph-b8g #24's back-compat alias) is still dispatchable
+// even though it is hidden from help/completion — it must behave exactly like
+// 'epic <epic-id>'.
+func TestEpicValidateAliasStillWorks(t *testing.T) {
 	isolate(t)
-	code, _, errb := runCmd("epic", "frobnicate")
-	if code != engine.ExitUsage {
-		t.Errorf("code = %d, want usage exit", code)
+	code, _, errb := runCmd("epic", "validate", "--project", "no-such-project", "my-epic-1")
+	if code != engine.ExitFatal {
+		t.Errorf("code = %d, want fatal for unknown project (same as the flattened form)", code)
 	}
-	if !strings.Contains(errb, "unknown epic subcommand") {
-		t.Errorf("stderr should mention unknown subcommand; got: %s", errb)
+	_ = errb
+}
+
+// TestEpicFlattenedFormTreatsFirstArgAsEpicID confirms that with the
+// subcommand layer gone (koryph-b8g #24), any non-"validate" first argument
+// is treated as the epic id rather than rejected as an unknown subcommand.
+func TestEpicFlattenedFormTreatsFirstArgAsEpicID(t *testing.T) {
+	isolate(t)
+	code, _, errb := runCmd("epic", "frobnicate", "--project", "no-such-project")
+	if code != engine.ExitFatal {
+		t.Errorf("code = %d, want fatal (bd show on a nonexistent project), got stderr=%s", code, errb)
+	}
+	if strings.Contains(errb, "unknown epic subcommand") {
+		t.Errorf("epic no longer has subcommands to reject; got: %s", errb)
 	}
 }
 

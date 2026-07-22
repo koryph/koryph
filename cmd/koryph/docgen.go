@@ -138,16 +138,18 @@ func renderCLIDoc(w io.Writer, warnOut io.Writer) {
 	p("|---------|----------|\n")
 	for _, c := range ordered {
 		anchor := anchorFor(c.name)
-		if len(c.subs) > 0 {
-			p("| [`koryph %s`](#%s) | %s |\n", c.name, anchor, escape(c.summary))
-			for i := range c.subs {
-				sub := &c.subs[i]
-				subAnchor := anchorFor(c.name + "-" + sub.name)
-				p("| ↳ [`koryph %s %s`](#%s) | %s |\n",
-					c.name, sub.name, subAnchor, escape(sub.summary))
+		p("| [`koryph %s`](#%s) | %s |\n", c.name, anchor, escape(c.summary))
+		for i := range c.subs {
+			sub := &c.subs[i]
+			if sub.hidden {
+				// Back-compat two-word alias for a flattened single-verb
+				// command (koryph-b8g #24) — still dispatchable, omitted
+				// from the reference.
+				continue
 			}
-		} else {
-			p("| [`koryph %s`](#%s) | %s |\n", c.name, anchor, escape(c.summary))
+			subAnchor := anchorFor(c.name + "-" + sub.name)
+			p("| ↳ [`koryph %s %s`](#%s) | %s |\n",
+				c.name, sub.name, subAnchor, escape(sub.summary))
 		}
 	}
 	p("\n")
@@ -159,6 +161,13 @@ func renderCLIDoc(w io.Writer, warnOut io.Writer) {
 		renderCommandSection(w, warnOut, c, "")
 		for i := range c.subs {
 			sub := &c.subs[i]
+			if sub.hidden {
+				// Back-compat two-word alias for a flattened single-verb
+				// command (koryph-b8g #24) — still dispatchable, omitted
+				// from the reference (its flags are identical to the
+				// parent's, already documented above).
+				continue
+			}
 			renderCommandSection(w, warnOut, sub, c.name)
 		}
 		p("\n---\n\n")

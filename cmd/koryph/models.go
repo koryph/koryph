@@ -20,47 +20,41 @@ import (
 func init() {
 	registerCmd(command{
 		name:    "models",
-		summary: "model-routing insight: learn starting tiers from escalation history",
+		summary: "recommend (and --apply) learned model tiers from escalation history",
 		run:     cmdModels,
 		DocLinks: []string{
 			"user-guide/running-waves.md",
 		},
 		subs: []command{
 			{
-				name:     "learn",
-				summary:  "recommend (and --apply) learned model labels from escalation history",
-				run:      cmdModelsLearn,
+				name:    "learn",
+				summary: "recommend (and --apply) learned model labels from escalation history",
+				run:     cmdModels,
+				// koryph-b8g #24: 'models' is a single-child noun group;
+				// flattened so 'models [--apply]' is the primary form (bare
+				// 'models' already ran learn). The two-word 'models learn
+				// ...' still works — hidden so it doesn't clutter
+				// help/completion/docgen.
+				hidden:   true,
 				DocLinks: []string{"user-guide/running-waves.md"},
 			},
 		},
 	})
 }
 
-// cmdModels dispatches the models sub-verbs.
+// cmdModels implements `koryph models [--project ID] [--min-evidence N]
+// [--apply]` — the manual entry point to the koryph-qf6.6 learner: the same
+// Collect → Recommend → Apply pass the engine runs at wave boundaries when
+// adaptive_escalation.enabled, minus the gate, so an operator can always
+// inspect (and, with --apply, act on) the evidence by hand. koryph-b8g #24:
+// 'models' was a single-child noun group ('models learn ...'); flattened so
+// bare 'models [flags]' is the primary form. The two-word 'models learn ...'
+// form still works as a hidden alias.
 func cmdModels(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		return cmdModelsLearn(nil, stdout, stderr)
+	if len(args) > 0 && args[0] == "learn" {
+		args = args[1:]
 	}
-	switch args[0] {
-	case "learn":
-		return cmdModelsLearn(args[1:], stdout, stderr)
-	case "-h", "--help", "help":
-		parentHelp(stdout, "models", "model-routing insight from run-ledger escalation history", []subVerb{
-			{"learn [--project ID] [--min-evidence N] [--apply]",
-				"aggregate escalated-then-merged beads by (area, size) and recommend starting tiers; --apply stamps model:<tier> + model-learned:<date> labels onto matching ready beads (default when no verb given)"},
-		})
-		return 0
-	default:
-		return usageErr(stderr, "models: unknown subcommand "+args[0])
-	}
-}
-
-// cmdModelsLearn is the manual entry point to the koryph-qf6.6 learner — the
-// same Collect → Recommend → Apply pass the engine runs at wave boundaries
-// when adaptive_escalation.enabled, minus the gate: an operator can always
-// inspect (and, with --apply, act on) the evidence by hand.
-func cmdModelsLearn(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("models learn", flag.ContinueOnError)
+	fs := flag.NewFlagSet("models", flag.ContinueOnError)
 	projectID := fs.String("project", "", "project id (defaults to the project owning the current directory)")
 	minEvidence := fs.Int("min-evidence", 0, "escalated-then-merged beads required per (area,size) bucket (0 = default 2)")
 	apply := fs.Bool("apply", false, "write model:<tier> + model-learned:<date> labels onto matching ready beads")
@@ -75,7 +69,7 @@ func cmdModelsLearn(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "models learn")
+	rec, code := resolveProjectRecordCwd(stderr, store, *projectID, "models")
 	if code != 0 {
 		return code
 	}

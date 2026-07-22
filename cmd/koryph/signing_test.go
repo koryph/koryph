@@ -213,6 +213,61 @@ done
 	}
 }
 
+// TestSignFlattenedFormMatchesTwoWordAlias confirms 'sign <path>' (the
+// koryph-b8g #24 flattened primary form) signs identically to the legacy
+// 'sign blob <path>' two-word form exercised above.
+func TestSignFlattenedFormMatchesTwoWordAlias(t *testing.T) {
+	root := setupProject(t)
+	dir := t.TempDir()
+	keyRef := filepath.Join(dir, "cosign.key")
+	if err := os.WriteFile(keyRef, []byte("COSIGN-PRIV"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := runCmd("signing", "setup", "--project", "demo", "--provider", "file",
+		"--key-ref", keyRef, "--identity", "dev@example.com", "--public-key", testPubKey, "--artifacts"); code != 0 {
+		t.Fatalf("setup: code %d stderr=%s", code, errb)
+	}
+
+	fake := filepath.Join(dir, "fake-cosign")
+	script := `#!/bin/sh
+[ -n "$KORYPH_COSIGN_KEY" ] || exit 9
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-signature" ]; then printf 'sig' > "$a"; fi
+  prev="$a"
+done
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KORYPH_COSIGN_BIN", fake)
+
+	blob := filepath.Join(root, "artifact.bin")
+	if err := os.WriteFile(blob, []byte("bits"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := runCmd("sign", "--project", "demo", blob)
+	if code != 0 {
+		t.Fatalf("sign: code %d stderr=%s", code, errb)
+	}
+	if !strings.Contains(out, blob+".sig") {
+		t.Errorf("sign output = %q", out)
+	}
+}
+
+// TestSignBlobAliasHiddenFromHelp confirms the two-word 'sign blob' form
+// stays dispatchable (see TestSignBlobWithFakeCosign) but is not advertised
+// in 'sign -h' — 'sign <path>' is the one documented spelling.
+func TestSignBlobAliasHiddenFromHelp(t *testing.T) {
+	_, out, _ := runCmd("sign", "-h")
+	if strings.Contains(out, "SUBCOMMANDS") {
+		t.Errorf("sign -h should be leaf-style help, not a subcommand listing:\n%s", out)
+	}
+	if strings.Contains(out, "sign blob") {
+		t.Errorf("sign -h should not advertise the deprecated two-word 'sign blob' form:\n%s", out)
+	}
+}
+
 // mustRunGit runs git in dir, failing the test on error.
 func mustRunGit(t *testing.T, dir string, args ...string) {
 	t.Helper()

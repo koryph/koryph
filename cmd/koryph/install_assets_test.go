@@ -204,6 +204,13 @@ func TestUsageCoversRegistry(t *testing.T) {
 			t.Errorf("top-level command %q missing from `koryph -h`", c.name)
 		}
 		for j := range c.subs {
+			if c.subs[j].hidden {
+				// Back-compat two-word alias for a flattened single-verb
+				// command (koryph-b8g #24) — deliberately omitted from the
+				// listing; still dispatchable (see e.g.
+				// TestEpicValidateAliasStillWorks).
+				continue
+			}
 			pair := c.name + " " + c.subs[j].name
 			if !strings.Contains(out, pair) {
 				t.Errorf("subcommand %q missing from `koryph -h`", pair)

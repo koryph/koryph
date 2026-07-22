@@ -511,7 +511,6 @@ func TestParentHelpListsSubverbs(t *testing.T) {
 		{"agents", "install"},
 		{"commands", "install"},
 		{"rules", "install"},
-		{"sign", "blob"},
 		{"batch", "run"},
 	}
 	for _, c := range cases {
@@ -555,7 +554,7 @@ func TestLeafDashHShowsPurposeAndSynopsis(t *testing.T) {
 	}{
 		{[]string{"init", "-h"}, "create ~/.koryph", "koryph init"},
 		{[]string{"validate", "-h"}, "pre-dispatch gate", "koryph validate [<project-id>"},
-		{[]string{"sign", "blob", "-h"}, "cosign sign-blob", "koryph sign blob [--project ID] <path>"},
+		{[]string{"sign", "-h"}, "cosign sign-blob", "koryph sign <path> [--project ID]"},
 		{[]string{"run", "-h"}, "execute one engine run", "koryph run [--project ID]"},
 		{[]string{"doctor", "-h"}, "health check", "koryph doctor"},
 	}
@@ -593,9 +592,11 @@ func TestHelpCommandRoutesToDashH(t *testing.T) {
 	}
 }
 
-// sign/batch -h used to emit usage ERRORS; they must now print a clean listing.
+// batch -h used to emit usage ERRORS; it must now print a clean listing.
+// (sign used to be in this group too, but koryph-b8g #24 flattened it to a
+// leaf command — TestLeafDashHShowsPurposeAndSynopsis covers its -h now.)
 func TestSignBatchDashHNotUsageError(t *testing.T) {
-	for _, parent := range []string{"sign", "batch"} {
+	for _, parent := range []string{"batch"} {
 		code, out, errb := runCmd(parent, "-h")
 		if code != 0 {
 			t.Errorf("%s -h: code = %d, want 0 (stderr=%s)", parent, code, errb)

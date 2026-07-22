@@ -19,7 +19,7 @@ import (
 func init() {
 	registerCmd(command{
 		name:    "plan",
-		summary: "plan and analyze the project bead corpus",
+		summary: "deterministic corpus conflict analysis (read-only)",
 		run:     cmdPlan,
 		DocLinks: []string{
 			"concepts/beads.md",
@@ -27,35 +27,30 @@ func init() {
 		},
 		subs: []command{
 			{
-				name:     "audit",
-				summary:  "read-only corpus conflict analysis: footprint gaps, non-dispatchable beads, parallel width",
-				run:      cmdPlanAudit,
+				name:    "audit",
+				summary: "read-only corpus conflict analysis: footprint gaps, non-dispatchable beads, parallel width",
+				run:     cmdPlan,
+				// koryph-b8g #24: 'plan' is a single-child noun group;
+				// flattened so 'plan [<id>] [--json]' is the primary form.
+				// The two-word 'plan audit ...' still works — hidden so it
+				// doesn't clutter help/completion/docgen.
+				hidden:   true,
 				DocLinks: []string{"concepts/beads.md", "concepts/footprints.md"},
 			},
 		},
 	})
 }
 
-// cmdPlan dispatches the plan sub-verbs.
+// cmdPlan implements `koryph plan [<id> | --project ID] [--json]` — the
+// read-only corpus conflict analysis. koryph-b8g #24: 'plan' was a
+// single-child noun group ('plan audit ...'); flattened so the project id is
+// a direct argument. The two-word 'plan audit ...' form still works as a
+// hidden alias.
 func cmdPlan(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "plan", "plan and analyze the project bead corpus", []subVerb{
-			{"audit --project ID [--json]", "deterministic corpus conflict analysis (read-only)"},
-		})
-		return 0
+	if len(args) > 0 && args[0] == "audit" {
+		args = args[1:]
 	}
-	sub, rest := args[0], args[1:]
-	switch sub {
-	case "audit":
-		return cmdPlanAudit(rest, stdout, stderr)
-	default:
-		return usageErr(stderr, fmt.Sprintf("unknown plan subcommand %q", sub))
-	}
-}
-
-// cmdPlanAudit runs the read-only corpus conflict analysis and prints a report.
-func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("plan audit", stderr)
+	fs := newFlagSet("plan", stderr)
 	projectFlag := fs.String("project", "", "project id (default: the project containing the current directory)")
 	asJSON := fs.Bool("json", false, "emit the audit report as JSON (for agent consumption)")
 	setUsage(fs, stdout,
@@ -69,7 +64,7 @@ func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
 	if len(pos) > 0 {
 		posVal = pos[0]
 	}
-	projectID, code := mergeProjectID(stderr, "plan audit", posVal, *projectFlag)
+	projectID, code := mergeProjectID(stderr, "plan", posVal, *projectFlag)
 	if code != 0 {
 		return code
 	}
@@ -79,7 +74,7 @@ func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	rec, code := resolveProjectRecordCwd(stderr, store, projectID, "plan audit")
+	rec, code := resolveProjectRecordCwd(stderr, store, projectID, "plan")
 	if code != 0 {
 		return code
 	}
@@ -94,7 +89,7 @@ func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
 		bd.Bin = v
 	}
 	if !bd.Available() {
-		return fail(stderr, fmt.Errorf("bd is not available on PATH; plan audit requires the bd binary"))
+		return fail(stderr, fmt.Errorf("bd is not available on PATH; plan requires the bd binary"))
 	}
 
 	// Load all open issues (full corpus, not just the ready frontier).
@@ -124,7 +119,7 @@ func cmdPlanAudit(args []string, stdout, stderr io.Writer) int {
 
 // printAuditReport renders a human-readable corpus audit to w.
 func printAuditReport(w io.Writer, r *plan.AuditReport) {
-	fmt.Fprintf(w, "koryph plan audit — project %s\n", r.ProjectID)
+	fmt.Fprintf(w, "koryph plan — project %s\n", r.ProjectID)
 	fmt.Fprintf(w, "open issues: %d\n\n", r.TotalOpen)
 
 	// --- Unlabeled -----------------------------------------------------------
