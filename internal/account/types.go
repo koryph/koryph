@@ -44,9 +44,21 @@ type Profile struct {
 	ConfigDir string // "" = unset (personal default profile)
 }
 
-// Identity is what the Claude config reports as logged in.
+// Identity is what verification established for the account: the OAuth
+// email for AuthModeSubscription, or a credential fingerprint for
+// AuthModeAPIKey/AuthModeOAuthToken (koryph-i3b, design §5 — there is no
+// derivable human identity for a bare key/token, so the fingerprint IS the
+// identity for those modes).
 type Identity struct {
-	Email        string `json:"email"`
+	Email        string `json:"email,omitempty"`
 	Organization string `json:"organization,omitempty"`
-	ConfigPath   string `json:"config_path"`
+	ConfigPath   string `json:"config_path,omitempty"`
+	// Fingerprint is the non-secret "sha256:<prefix>" identity signal for
+	// AuthModeAPIKey/AuthModeOAuthToken (see Fingerprint); empty for
+	// AuthModeSubscription, which has no credential to fingerprint.
+	Fingerprint string `json:"fingerprint,omitempty"`
+	// Label is the registry's free-form ExpectedIdentity string for
+	// AuthModeAPIKey/AuthModeOAuthToken, display-only (never verified
+	// against anything, unlike Email) — empty for AuthModeSubscription.
+	Label string `json:"label,omitempty"`
 }

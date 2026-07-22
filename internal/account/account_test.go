@@ -406,3 +406,248 @@ func TestVerifyExpected(t *testing.T) {
 		}
 	})
 }
+
+// withFakeLiveness substitutes probeLiveness for the duration of the test so
+// VerifyAuth's api-key/oauth-token branch never touches the network; it
+// restores the real anthro.ProbeLiveness on cleanup.
+func withFakeLiveness(t *testing.T, fn func(ctx context.Context, credential string, useBearer bool) error) {
+	t.Helper()
+	orig := probeLiveness
+	probeLiveness = fn
+	t.Cleanup(func() { probeLiveness = orig })
+}
+
+// TestVerifyAuthSubscriptionUnchanged is the AC #5 regression guard: an
+// AuthSpec with Mode "" or AuthModeSubscription must behave byte-for-byte
+// like a direct VerifyExpected call — same success shape, same failure
+// message on mismatch — and must never call ResolveCredential or the
+// liveness probe (proven by never installing a fake and still succeeding).
+func TestVerifyAuthSubscriptionUnchanged(t *testing.T) {
+	ctx := context.Background()
+	p := writeConfig(t, `{"oauthAccount":{"emailAddress":"owner@example.com","organizationName":"Example Org"}}`)
+
+	for _, mode := range []AuthMode{"", AuthModeSubscription} {
+		t.Run(string(mode), func(t *testing.T) {
+			want, wantErr := VerifyExpected(ctx, p, "owner@example.com")
+			got, gotErr := VerifyAuth(ctx, p, AuthSpec{Mode: mode, ExpectedIdentity: "owner@example.com"})
+			if wantErr != nil || gotErr != nil {
+				t.Fatalf("VerifyExpected err=%v, VerifyAuth err=%v", wantErr, gotErr)
+			}
+			if got != want {
+				t.Errorf("VerifyAuth = %+v, want byte-identical %+v", got, want)
+			}
+		})
+	}
+
+	t.Run("mismatch still fails closed with the same message", func(t *testing.T) {
+		_, wantErr := VerifyExpected(ctx, p, "other@example.com")
+		_, gotErr := VerifyAuth(ctx, p, AuthSpec{ExpectedIdentity: "other@example.com"})
+		if wantErr == nil || gotErr == nil || wantErr.Error() != gotErr.Error() {
+			t.Errorf("VerifyAuth error = %v, want %v", gotErr, wantErr)
+		}
+	})
+}
+
+// TestVerifyAuthCredentialModes covers the AuthModeAPIKey/AuthModeOAuthToken
+// happy path: a resolvable, fingerprint-matching, live credential verifies
+// and Identity carries the fingerprint + label, never an email.
+func TestVerifyAuthCredentialModes(t *testing.T) {
+	ctx := context.Background()
+	p := Profile{Name: "personal"}
+
+	for _, tc := range []struct {
+		mode       AuthMode
+		wantBearer bool
+	}{
+		{AuthModeAPIKey, false},
+		{AuthModeOAuthToken, true},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			t.Setenv("KORYPH_TEST_VERIFY_CRED", "sk-live-credential-value")
+			var gotBearer bool
+			var probed string
+			withFakeLiveness(t, func(_ context.Context, credential string, useBearer bool) error {
+				probed, gotBearer = credential, useBearer
+				return nil
+			})
+
+			cred := &Credential{Source: CredentialSourceEnv, EnvVar: "KORYPH_TEST_VERIFY_CRED"}
+			fp := Fingerprint("sk-live-credential-value")
+
+			id, err := VerifyAuth(ctx, p, AuthSpec{
+				Mode:                tc.mode,
+				ExpectedIdentity:    "my-key-label",
+				Credential:          cred,
+				IdentityFingerprint: fp,
+			})
+			if err != nil {
+				t.Fatalf("VerifyAuth: %v", err)
+			}
+			if id.Fingerprint != fp {
+				t.Errorf("Identity.Fingerprint = %q, want %q", id.Fingerprint, fp)
+			}
+			if id.Label != "my-key-label" {
+				t.Errorf("Identity.Label = %q, want my-key-label", id.Label)
+			}
+			if id.Email != "" {
+				t.Errorf("Identity.Email = %q, want empty (no email for credential modes)", id.Email)
+			}
+			if probed != "sk-live-credential-value" {
+				t.Errorf("liveness probed %q, want the resolved credential value", probed)
+			}
+			if gotBearer != tc.wantBearer {
+				t.Errorf("liveness useBearer = %v, want %v", gotBearer, tc.wantBearer)
+			}
+		})
+	}
+}
+
+// TestVerifyAuthFingerprintMismatchFailsClosed proves a swapped credential
+// (AC #4) is refused BEFORE any liveness probe — a live-but-wrong credential
+// must not verify just because it happens to be a valid Anthropic key.
+func TestVerifyAuthFingerprintMismatchFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("KORYPH_TEST_VERIFY_SWAPPED", "sk-a-different-live-key")
+
+	probed := false
+	withFakeLiveness(t, func(context.Context, string, bool) error {
+		probed = true
+		return nil
+	})
+
+	_, err := VerifyAuth(ctx, Profile{Name: "personal"}, AuthSpec{
+		Mode:                AuthModeAPIKey,
+		Credential:          &Credential{Source: CredentialSourceEnv, EnvVar: "KORYPH_TEST_VERIFY_SWAPPED"},
+		IdentityFingerprint: Fingerprint("sk-the-originally-enrolled-key"),
+	})
+	if err == nil {
+		t.Fatal("VerifyAuth succeeded despite a fingerprint mismatch; must fail closed")
+	}
+	if probed {
+		t.Error("liveness probe ran despite a fingerprint mismatch; must fail closed before spending a network call")
+	}
+}
+
+// TestVerifyAuthLivenessFailureFailsClosed proves an expired/revoked
+// credential (fingerprint matches, but the API rejects it) still refuses
+// dispatch.
+func TestVerifyAuthLivenessFailureFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("KORYPH_TEST_VERIFY_DEAD", "sk-expired-key")
+	withFakeLiveness(t, func(context.Context, string, bool) error {
+		return fmt.Errorf("anthro: liveness probe failed: 401")
+	})
+
+	_, err := VerifyAuth(ctx, Profile{Name: "personal"}, AuthSpec{
+		Mode:                AuthModeAPIKey,
+		Credential:          &Credential{Source: CredentialSourceEnv, EnvVar: "KORYPH_TEST_VERIFY_DEAD"},
+		IdentityFingerprint: Fingerprint("sk-expired-key"),
+	})
+	if err == nil {
+		t.Fatal("VerifyAuth succeeded despite a failed liveness probe; must fail closed")
+	}
+}
+
+// TestVerifyAuthMissingFingerprintFailsClosed proves an unenrolled record
+// (no identity_fingerprint recorded yet) refuses rather than treating a
+// blank fingerprint as "anything matches".
+func TestVerifyAuthMissingFingerprintFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("KORYPH_TEST_VERIFY_UNENROLLED", "sk-some-key")
+	withFakeLiveness(t, func(context.Context, string, bool) error { return nil })
+
+	_, err := VerifyAuth(ctx, Profile{Name: "personal"}, AuthSpec{
+		Mode:       AuthModeAPIKey,
+		Credential: &Credential{Source: CredentialSourceEnv, EnvVar: "KORYPH_TEST_VERIFY_UNENROLLED"},
+		// IdentityFingerprint intentionally left empty.
+	})
+	if err == nil {
+		t.Fatal("VerifyAuth succeeded with no enrolled identity_fingerprint; must fail closed")
+	}
+}
+
+// TestVerifyAuthUnresolvableCredentialFailsClosed proves an unset/empty
+// credential source refuses before ever reaching the fingerprint check.
+func TestVerifyAuthUnresolvableCredentialFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	_, err := VerifyAuth(ctx, Profile{Name: "personal"}, AuthSpec{
+		Mode:                AuthModeAPIKey,
+		Credential:          nil,
+		IdentityFingerprint: "sha256:doesnotmatter",
+	})
+	if err == nil {
+		t.Fatal("VerifyAuth succeeded with no credential configured; must fail closed")
+	}
+}
+
+func TestVerifyAuthUnrecognizedModeFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	if _, err := VerifyAuth(ctx, Profile{Name: "personal"}, AuthSpec{Mode: "quantum-entanglement"}); err == nil {
+		t.Fatal("VerifyAuth succeeded with an unrecognized auth_mode; must fail closed")
+	}
+}
+
+// TestChildEnvCredentialSeam is the koryph-i3b acceptance test (§6/I4): the
+// resolved auth-mode credential is injected under exactly its canonical
+// name, the unset case is a byte-identical zero-residue default (mirroring
+// TestChildEnvProxySeam's pattern), and CredentialEnvVar never coexists with
+// a second ANTHROPIC_API_KEY= entry from the legacy Billing/APIKey fallback.
+func TestChildEnvCredentialSeam(t *testing.T) {
+	base := ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription}
+
+	t.Run("unset is byte-identical to the pre-koryph-i3b shape", func(t *testing.T) {
+		before := ChildEnv(base)
+		withZero := base
+		withZero.Credential, withZero.CredentialEnvVar = "", ""
+		after := ChildEnv(withZero)
+		if len(before) != len(after) {
+			t.Fatalf("env length differs: %d vs %d", len(before), len(after))
+		}
+		for i := range before {
+			if before[i] != after[i] {
+				t.Errorf("env[%d] = %q, want %q", i, after[i], before[i])
+			}
+		}
+	})
+
+	t.Run("api-key mode injects ANTHROPIC_API_KEY exactly once", func(t *testing.T) {
+		spec := base
+		spec.CredentialEnvVar = "ANTHROPIC_API_KEY"
+		spec.Credential = "sk-resolved-api-key"
+		env := ChildEnv(spec)
+		if got, count := envLookup(env, "ANTHROPIC_API_KEY"); count != 1 || got != "sk-resolved-api-key" {
+			t.Errorf("ANTHROPIC_API_KEY = %q x%d, want sk-resolved-api-key exactly once", got, count)
+		}
+	})
+
+	t.Run("oauth-token mode injects CLAUDE_CODE_OAUTH_TOKEN and never ANTHROPIC_API_KEY", func(t *testing.T) {
+		spec := base
+		spec.CredentialEnvVar = "CLAUDE_CODE_OAUTH_TOKEN"
+		spec.Credential = "oauth-resolved-token"
+		env := ChildEnv(spec)
+		if got, count := envLookup(env, "CLAUDE_CODE_OAUTH_TOKEN"); count != 1 || got != "oauth-resolved-token" {
+			t.Errorf("CLAUDE_CODE_OAUTH_TOKEN = %q x%d, want oauth-resolved-token exactly once", got, count)
+		}
+		if _, count := envLookup(env, "ANTHROPIC_API_KEY"); count != 0 {
+			t.Error("ANTHROPIC_API_KEY present for oauth-token mode; I4 forbids setting both")
+		}
+	})
+
+	t.Run("CredentialEnvVar wins over the legacy Billing/APIKey fallback — never double-injected", func(t *testing.T) {
+		spec := ChildEnvSpec{
+			Profile:          Profile{Name: "personal"},
+			Billing:          BillingAPIKey,
+			APIKey:           "sk-legacy-billing-key",
+			CredentialEnvVar: "ANTHROPIC_API_KEY",
+			Credential:       "sk-auth-mode-credential",
+		}
+		env := ChildEnv(spec)
+		got, count := envLookup(env, "ANTHROPIC_API_KEY")
+		if count != 1 {
+			t.Fatalf("ANTHROPIC_API_KEY present x%d, want exactly once (I4: one injected credential)", count)
+		}
+		if got != "sk-auth-mode-credential" {
+			t.Errorf("ANTHROPIC_API_KEY = %q, want the auth-mode credential to win, not the legacy billing key", got)
+		}
+	})
+}

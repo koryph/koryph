@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/koryph/koryph/internal/anthro"
 	"github.com/koryph/koryph/internal/execx"
 )
 
@@ -112,6 +113,24 @@ type ChildEnvSpec struct {
 	// parallel bead's SessionStart wrapper (koryph-77r.4) to slim
 	// per-session context injection — this field only stamps the marker.
 	SpawnKind string
+
+	// Credential and CredentialEnvVar carry the resolved long-lived
+	// credential for AuthModeAPIKey/AuthModeOAuthToken accounts (koryph-i3b,
+	// design §6) — the (envVar, value) pair returned by ResolveCredential.
+	// CredentialEnvVar must be the CANONICAL name: "ANTHROPIC_API_KEY" for
+	// api-key mode, "CLAUDE_CODE_OAUTH_TOKEN" for oauth-token mode (design
+	// I4 — one injected credential, canonical name, never both). Both empty
+	// (the default, and the only shape every caller uses today) omits this
+	// injection entirely — a zero-residue default, like ProxyBaseURL/
+	// SpawnKind above.
+	//
+	// This is independent of the legacy Billing/APIKey fields, which remain
+	// the pre-existing api-key BILLING fallback under a still-subscription-
+	// verified account (design §3, unchanged). ChildEnv treats
+	// CredentialEnvVar as authoritative when both are set, so a caller can
+	// never end up with two ANTHROPIC_API_KEY= entries in the child env.
+	Credential       string
+	CredentialEnvVar string
 }
 
 // ChildEnv builds the complete child environment for a dispatched agent from an
@@ -131,6 +150,9 @@ type ChildEnvSpec struct {
 //     to a spec built before this field existed.
 //   - SpawnKind != "" → KORYPH_SPAWN_KIND=<kind> (koryph-3l1.1). Empty (main
 //     dispatch) leaves it unset.
+//   - CredentialEnvVar != "" → <CredentialEnvVar>=<Credential> (koryph-i3b,
+//     design §6) — takes precedence over Billing==BillingAPIKey so exactly
+//     one credential is ever injected (I4).
 func ChildEnv(spec ChildEnvSpec) []string {
 	allow := baseAllow
 	if len(spec.Passthrough) > 0 {
@@ -140,7 +162,12 @@ func ChildEnv(spec ChildEnvSpec) []string {
 	if spec.Profile.ConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+spec.Profile.ConfigDir)
 	}
-	if spec.Billing == BillingAPIKey {
+	switch {
+	case spec.CredentialEnvVar != "":
+		// Auth-mode credential (koryph-i3b) is authoritative; never
+		// double-inject alongside the legacy Billing/APIKey fallback below.
+		env = append(env, spec.CredentialEnvVar+"="+spec.Credential)
+	case spec.Billing == BillingAPIKey:
 		env = append(env, "ANTHROPIC_API_KEY="+spec.APIKey)
 	}
 	if spec.SSHAuthSock != "" {
@@ -242,4 +269,89 @@ func VerifyExpected(ctx context.Context, p Profile, expected string) (Identity, 
 		return Identity{}, fmt.Errorf("account mismatch: logged in as %s, registry expects %s (config: %s) — refusing dispatch", id.Email, expected, id.ConfigPath)
 	}
 	return id, nil
+}
+
+// AuthSpec bundles the auth-mode-relevant fields VerifyAuth needs — the
+// same four fields a *registry.Record carries (Record.EffectiveAuthMode(),
+// Record.Credential, Record.IdentityFingerprint, Record.ExpectedIdentity),
+// passed as plain data rather than the record itself (see AuthMode's doc
+// for the import-cycle reason). A caller holding a *registry.Record builds
+// one by copying those four fields verbatim.
+type AuthSpec struct {
+	// Mode selects the branch (design §5). Empty behaves as
+	// AuthModeSubscription, mirroring registry.Record.EffectiveAuthMode's
+	// default.
+	Mode AuthMode
+	// ExpectedIdentity is the OAuth email to match for AuthModeSubscription
+	// (passed straight to VerifyExpected); for AuthModeAPIKey/
+	// AuthModeOAuthToken it is a free-form display label, never verified
+	// against anything, and becomes Identity.Label.
+	ExpectedIdentity string
+	// Credential resolves the long-lived credential for AuthModeAPIKey/
+	// AuthModeOAuthToken; ignored (and may be nil) for AuthModeSubscription.
+	Credential *Credential
+	// IdentityFingerprint is the fingerprint recorded at enrollment
+	// (registry.Record.IdentityFingerprint) that the freshly-resolved
+	// credential's fingerprint must match; ignored for
+	// AuthModeSubscription.
+	IdentityFingerprint string
+}
+
+// VerifyAuth verifies identity per spec.Mode (koryph-i3b, design §5):
+//
+//   - AuthModeSubscription (default, empty Mode): delegates to
+//     VerifyExpected(ctx, p, spec.ExpectedIdentity) — the current OAuth-
+//     email path, byte-for-byte unchanged (regression-guarded by
+//     TestVerify/TestVerifyExpected; this branch calls neither
+//     ResolveCredential nor a network probe).
+//   - AuthModeAPIKey / AuthModeOAuthToken: there is no email to check, so
+//     "verified" means the credential (1) resolves (ResolveCredential),
+//     (2) fingerprint-matches spec.IdentityFingerprint — a mismatch means
+//     the key/token was swapped and fails closed before any network call,
+//     and (3) is live against Anthropic (anthro.ProbeLiveness: GET
+//     /v1/models, free). p is unused in this branch — there is no
+//     .claude.json check for a bare credential.
+//
+// Any error — an unresolvable credential, a fingerprint mismatch, a failed
+// liveness probe, or an unrecognized Mode — refuses dispatch (fail closed).
+func VerifyAuth(ctx context.Context, p Profile, spec AuthSpec) (Identity, error) {
+	if err := ctx.Err(); err != nil {
+		return Identity{}, err
+	}
+	switch spec.Mode {
+	case "", AuthModeSubscription:
+		return VerifyExpected(ctx, p, spec.ExpectedIdentity)
+	case AuthModeAPIKey, AuthModeOAuthToken:
+		return verifyCredential(ctx, spec)
+	default:
+		return Identity{}, fmt.Errorf("account verify (profile %q): unrecognized auth_mode %q — refusing dispatch", p.Name, spec.Mode)
+	}
+}
+
+// probeLiveness is anthro.ProbeLiveness, indirected through a package
+// variable so tests can substitute a fake and never touch the network (the
+// real implementation makes a live GET /v1/models call against Anthropic).
+var probeLiveness = anthro.ProbeLiveness
+
+// verifyCredential is VerifyAuth's AuthModeAPIKey/AuthModeOAuthToken branch.
+func verifyCredential(ctx context.Context, spec AuthSpec) (Identity, error) {
+	_, value, err := ResolveCredential(ctx, spec.Mode, spec.Credential)
+	if err != nil {
+		return Identity{}, fmt.Errorf("account verify (auth_mode %q): %w — refusing dispatch", spec.Mode, err)
+	}
+
+	fp := Fingerprint(value)
+	if spec.IdentityFingerprint == "" {
+		return Identity{}, fmt.Errorf("account verify (auth_mode %q): registry has no identity_fingerprint recorded — enroll this credential first — refusing dispatch", spec.Mode)
+	}
+	if fp != spec.IdentityFingerprint {
+		return Identity{}, fmt.Errorf("account credential mismatch (auth_mode %q): resolved credential's fingerprint does not match the enrolled identity_fingerprint — the key/token was swapped — refusing dispatch", spec.Mode)
+	}
+
+	useBearer := spec.Mode == AuthModeOAuthToken
+	if err := probeLiveness(ctx, value, useBearer); err != nil {
+		return Identity{}, fmt.Errorf("account verify (auth_mode %q): %w — refusing dispatch", spec.Mode, err)
+	}
+
+	return Identity{Fingerprint: fp, Label: spec.ExpectedIdentity}, nil
 }
