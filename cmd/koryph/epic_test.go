@@ -23,6 +23,9 @@ import (
 //   - logs its argv to $BD_ARGS_LOG (one invocation per line)
 //   - returns a canned epic for `show`
 //   - returns $BD_SHOW_TYPE as issue_type when set (for "not an epic" tests)
+//   - returns $BD_SHOW_LABELS (a single extra label) appended to the epic's
+//     labels when set (for the validation:passed close-after-docs shortcut
+//     test — koryph-4b50)
 //   - returns open children for `list` when $BD_OPEN_CHILDREN=1
 //   - emits a unique bead id for `create` (base id + monotonic counter in file)
 //   - succeeds silently for `update`, `close`, `comment`
@@ -33,7 +36,11 @@ fi
 case "$1" in
   show)
     TYPE="${BD_SHOW_TYPE:-epic}"
-    printf '{"id":"%s","title":"The Epic","status":"open","priority":0,"issue_type":"%s","labels":["area:engine"],"description":"Make things better."}' "$2" "$TYPE"
+    LABELS='"area:engine"'
+    if [ -n "$BD_SHOW_LABELS" ]; then
+      LABELS="$LABELS,\"$BD_SHOW_LABELS\""
+    fi
+    printf '{"id":"%s","title":"The Epic","status":"open","priority":0,"issue_type":"%s","labels":[%s],"description":"Make things better."}' "$2" "$TYPE" "$LABELS"
     ;;
   list)
     if [ "${BD_OPEN_CHILDREN}" = "1" ]; then
@@ -227,6 +234,73 @@ func TestEpicValidateOpenChildrenBlocked(t *testing.T) {
 	}
 	if !strings.Contains(errb, "unclosed children") {
 		t.Errorf("stderr should mention unclosed children; got: %s", errb)
+	}
+}
+
+// TestEpicValidateClosedAfterDocsSkipsValidator covers koryph-4b50 BUG-1: an
+// epic that already carries validation:passed with every child (including
+// the docs bead) closed must close directly, WITHOUT spawning a validator
+// round. This is exactly the state doctor's unvalidated-epics check and the
+// engine's health patrol tell an operator to recover with `koryph epic
+// validate <id>` — before this fix that command unconditionally re-ran a
+// full opus validator round instead.
+//
+// KORYPH_CLAUDE_BIN points at a nonexistent binary: if the shortcut fails to
+// fire and a validator round is spawned anyway, the run degrades loudly
+// (nonzero exit, validation:degraded label) instead of silently passing for
+// the wrong reason.
+func TestEpicValidateClosedAfterDocsSkipsValidator(t *testing.T) {
+	isolate(t)
+	argsLog := installEpicFakeBD(t)
+	t.Setenv("BD_SHOW_LABELS", "validation:passed")
+	t.Setenv("KORYPH_CLAUDE_BIN", filepath.Join(t.TempDir(), "no-such-claude"))
+
+	rec := registerEpicProject(t, "proj-closed-after-docs")
+
+	code, out, errb := runCmd("epic", "validate", "my-epic-1", "--project", rec.ProjectID)
+	if code != 0 {
+		t.Errorf("code = %d, want 0 (close-after-docs shortcut); stderr=%s", code, errb)
+	}
+	if !strings.Contains(out, "docs update merged") {
+		t.Errorf("stdout should confirm close-after-docs; got: %s", out)
+	}
+
+	argv, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := string(argv)
+	if !strings.Contains(calls, "close my-epic-1") {
+		t.Errorf("bd close not called; argv log: %s", calls)
+	}
+	if strings.Contains(calls, "validation:degraded") {
+		t.Errorf("validator must never be spawned on an already-passed epic; argv log: %s", calls)
+	}
+}
+
+// TestEpicValidateClosedAfterDocsJSON mirrors the shortcut in --json mode:
+// stdout stays parseable JSON, progress goes to stderr, same as the
+// validator path.
+func TestEpicValidateClosedAfterDocsJSON(t *testing.T) {
+	isolate(t)
+	installEpicFakeBD(t)
+	t.Setenv("BD_SHOW_LABELS", "validation:passed")
+	t.Setenv("KORYPH_CLAUDE_BIN", filepath.Join(t.TempDir(), "no-such-claude"))
+
+	rec := registerEpicProject(t, "proj-closed-after-docs-json")
+
+	code, out, errb := runCmd("epic", "validate", "my-epic-1", "--project", rec.ProjectID, "--json")
+	if code != 0 {
+		t.Errorf("code = %d, want 0; stderr=%s", code, errb)
+	}
+	if !strings.Contains(out, `"met":true`) {
+		t.Errorf("--json output missing met=true; got: %s", out)
+	}
+	if strings.Contains(out, "epic closed") {
+		t.Errorf("--json: close-after-docs progress leaked to stdout; stdout=%s", out)
+	}
+	if !strings.Contains(errb, "epic closed") {
+		t.Errorf("close-after-docs progress should go to stderr in --json mode; stderr=%s", errb)
 	}
 }
 

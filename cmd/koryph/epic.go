@@ -133,6 +133,29 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 		return engine.ExitFatal
 	}
 
+	// Validation already passed → the docs bead was the last child: close
+	// WITHOUT spawning another validator round (§4b). Shares the exact check
+	// the engine's in-loop hook applies (internal/engine/epicvalidate.go's
+	// maybeStartEpicValidation) via internal/epicreview.ClosedAfterDocs, so
+	// the two callers can never drift. Without this, doctor/health-patrol's
+	// documented recovery command for a stalled close-after-docs epic —
+	// `koryph epic validate <id>` — would instead burn a full validator round
+	// on an epic that has nothing left to validate (koryph-4b50 BUG-1).
+	if epicreview.ClosedAfterDocs(epic, children) {
+		if err := bd.Close(ctx, epicID, "validated; docs update merged"); err != nil {
+			fmt.Fprintf(stderr, "epic: close after docs merge: %v\n", err)
+			return engine.ExitFatal
+		}
+		msg := fmt.Sprintf("epic %s: docs update merged — epic closed\n", epicID)
+		if *asJSON {
+			fmt.Fprintln(stdout, `{"met":true,"degraded":false,"reason":"validation already passed; docs update merged"}`)
+			fmt.Fprint(stderr, msg)
+		} else {
+			fmt.Fprint(stdout, msg)
+		}
+		return 0
+	}
+
 	// Determine round number (auto-detect from existing verdict files).
 	outDir := filepath.Join(rec.Root, ".koryph", "epic-reviews")
 	validationRound := *round

@@ -157,6 +157,12 @@ update all documentation the epic's changes touch. After the docs bead
 closes, the completion check fires again, sees `validation:passed`, and
 closes the epic — no re-validation round.
 
+A `met` verdict never files a second docs bead once one has already closed
+for this epic — the dedup check matches the canonical title or
+`validation:docs` label against **every** child, open or closed, not just
+open ones. A round that reaches `met` again after the docs bead already
+merged closes the epic on the spot instead.
+
 A parked or failed docs bead holds the epic open and surfaces through the
 normal park and health-patrol channels.
 
@@ -189,6 +195,16 @@ All children must be closed before the command will proceed. Use
 `--round N` to override the round number (default: auto-detected from
 existing verdict files under `.koryph/epic-reviews/`). Use `--json` to
 emit the raw verdict JSON; the engine still acts on the verdict.
+
+If the epic already carries `validation:passed` and every child — including
+the docs-update bead — is now closed, the command closes the epic directly
+and does **not** spawn a validator round: nothing is left to validate, and
+the docs bead's closure is proof the prior round's verdict already applied.
+This is the same close-after-docs shortcut the in-loop engine hook applies
+(see [Self-healing](#self-healing-stranded-completed-epics) below), so
+running the recovery command doctor/the health patrol name for a stalled
+close-after-docs epic is always safe to re-run — it never re-validates work
+that already passed.
 
 ```sh
 # Backfill an epic that completed before epic validation existed:

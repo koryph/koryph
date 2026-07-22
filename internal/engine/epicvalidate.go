@@ -127,8 +127,10 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 		}
 
 		// Validation already passed → the docs bead was the last child: close
-		// WITHOUT re-validating (§4b).
-		if epic.HasLabel(epicreview.LabelPassed) {
+		// WITHOUT re-validating (§4b). Shared shortcut with `koryph epic
+		// validate` (internal/epicreview.ClosedAfterDocs) so the two callers
+		// can never drift (koryph-4b50 BUG-1).
+		if epicreview.ClosedAfterDocs(epic, children) {
 			if err := r.adapter.Close(ctx, epicID, "validated; docs update merged"); err != nil {
 				r.progress("epic %s: close after docs merge: %v", epicID, err)
 				continue

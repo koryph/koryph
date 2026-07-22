@@ -49,6 +49,34 @@ func RoundLabel(nextRound int) string {
 	return fmt.Sprintf("validation:round-%d", nextRound)
 }
 
+// AllChildrenClosed reports whether every child is terminal (closed or
+// done). Deferred counts as open — deliberate operator state, not
+// completion.
+func AllChildrenClosed(children []beads.Issue) bool {
+	for _, c := range children {
+		if c.Status != "closed" && c.Status != "done" {
+			return false
+		}
+	}
+	return true
+}
+
+// ClosedAfterDocs reports whether epic already passed validation
+// (LabelPassed) and every child — including the docs-update bead a prior Met
+// round filed — is now closed. When true, the caller should close the epic
+// directly WITHOUT spawning another validator round (design §4b): the docs
+// bead was the last piece of pending work, and its closure is proof the
+// round already applied.
+//
+// This is the exact shortcut internal/engine/epicvalidate.go's
+// maybeStartEpicValidation has always applied in-loop; factored out here so
+// `koryph epic validate` (cmd/koryph/epic.go) shares the identical check
+// instead of unconditionally re-running a full validator round on an
+// already-passed epic (koryph-4b50 BUG-1 — the two callers can never drift).
+func ClosedAfterDocs(epic beads.Issue, children []beads.Issue) bool {
+	return epic.HasLabel(LabelPassed) && len(children) > 0 && AllChildrenClosed(children)
+}
+
 // DocsBeadTitle is the canonical title of the auto-filed docs-update bead —
 // also the dedup key for "an open docs bead already exists".
 func DocsBeadTitle(epicID string) string {
@@ -121,24 +149,50 @@ func Act(ctx context.Context, bd BeadStore, o ActOpts, v Verdict) (ActResult, er
 			if err := bd.AddLabel(ctx, o.EpicID, LabelPassed); err != nil {
 				progress("epic %s: add %s label: %v", o.EpicID, LabelPassed, err)
 			}
-			id, filed, err := fileDocsBead(ctx, bd, o, docs.Labels)
+			id, status, err := fileDocsBead(ctx, bd, o, docs.Labels)
 			if err != nil {
 				return res, fmt.Errorf("file docs bead for %s: %w", o.EpicID, err)
 			}
 			res.DocsBeadID = id
 			note := buildMetNote(o.Round, v.Summary, len(v.Structural))
-			if filed {
+			switch status {
+			case docsBeadFiled:
 				note += fmt.Sprintf("\n\nDocs update bead filed: %s — epic closes when it merges.", id)
 				progress("epic %s: validated (round %d) — docs bead %s filed; closing on its merge", o.EpicID, o.Round, id)
-			} else {
+				if err := bd.AppendNotes(ctx, o.EpicID, note); err != nil {
+					progress("epic %s: append met note: %v", o.EpicID, err)
+				}
+				res.Outcome = "met-pending-docs"
+				return res, nil
+			case docsBeadOpen:
 				note += fmt.Sprintf("\n\nDocs update bead already open: %s.", id)
 				progress("epic %s: validated (round %d) — docs bead %s already open", o.EpicID, o.Round, id)
+				if err := bd.AppendNotes(ctx, o.EpicID, note); err != nil {
+					progress("epic %s: append met note: %v", o.EpicID, err)
+				}
+				res.Outcome = "met-pending-docs"
+				return res, nil
+			default: // docsBeadSatisfied: a prior round's docs bead already merged —
+				// nothing new to file (koryph-4b50 BUG-2). Close now, the same as
+				// the docs-disabled path below, instead of leaving the epic
+				// hanging on validation:passed for a later `koryph epic validate`
+				// (ClosedAfterDocs) to notice.
+				note += fmt.Sprintf("\n\nDocs update bead already merged: %s — no new bead needed.", id)
+				if err := bd.AppendNotes(ctx, o.EpicID, note); err != nil {
+					progress("epic %s: append met note: %v", o.EpicID, err)
+				}
+				if *o.Config.AutoClose {
+					if err := bd.Close(ctx, o.EpicID, fmt.Sprintf("validated round %d; docs already merged", o.Round)); err != nil {
+						return res, fmt.Errorf("close epic %s: %w", o.EpicID, err)
+					}
+					progress("epic %s: validated (round %d) — docs bead %s already merged; closed", o.EpicID, o.Round, id)
+					res.Outcome = "met-closed"
+				} else {
+					progress("epic %s: validated (round %d) — docs bead %s already merged; auto_close=false", o.EpicID, o.Round, id)
+					res.Outcome = "met-pending-docs"
+				}
+				return res, nil
 			}
-			if err := bd.AppendNotes(ctx, o.EpicID, note); err != nil {
-				progress("epic %s: append met note: %v", o.EpicID, err)
-			}
-			res.Outcome = "met-pending-docs"
-			return res, nil
 		}
 
 		// Docs stage disabled: close immediately per auto_close.
@@ -194,22 +248,36 @@ func clearDegraded(ctx context.Context, bd BeadStore, o ActOpts, progress func(s
 	}
 }
 
-// fileDocsBead files the §4b docs-update child unless an open one already
-// exists (dedup by canonical title OR the validation:docs label). Returns the
-// bead id and whether this call created it.
-func fileDocsBead(ctx context.Context, bd BeadStore, o ActOpts, labels []string) (string, bool, error) {
+// docsBeadStatus reports what fileDocsBead found (or did) relative to any
+// existing docs-update child.
+type docsBeadStatus int
+
+const (
+	docsBeadFiled     docsBeadStatus = iota // no matching child existed; a new one was created
+	docsBeadOpen                            // a matching child already exists and is still open
+	docsBeadSatisfied                       // a matching child already exists and is closed/done
+)
+
+// fileDocsBead files the §4b docs-update child unless one already exists —
+// open OR closed (dedup by canonical title OR the validation:docs label).
+// Checking closed/done children too matters: without it, a "met" verdict on
+// a later round whose docs bead already merged would file a verbatim
+// duplicate every time (koryph-4b50 BUG-2 — koryph-c6j.8 was filed this
+// way). Returns the matched/created bead id and what happened.
+func fileDocsBead(ctx context.Context, bd BeadStore, o ActOpts, labels []string) (string, docsBeadStatus, error) {
 	children, err := bd.ListChildrenAll(ctx, o.EpicID)
 	if err != nil {
-		return "", false, err
+		return "", docsBeadFiled, err
 	}
 	title := DocsBeadTitle(o.EpicID)
 	for _, c := range children {
-		if c.Status == "closed" || c.Status == "done" {
+		if c.Title != title && !c.HasLabel(LabelDocs) {
 			continue
 		}
-		if c.Title == title || c.HasLabel(LabelDocs) {
-			return c.ID, false, nil
+		if c.Status == "closed" || c.Status == "done" {
+			return c.ID, docsBeadSatisfied, nil
 		}
+		return c.ID, docsBeadOpen, nil
 	}
 	desc := fmt.Sprintf(
 		"Auto-filed by %s after epic %s passed validation (round %d).\n\n"+
@@ -232,9 +300,9 @@ func fileDocsBead(ctx context.Context, bd BeadStore, o ActOpts, labels []string)
 	}
 	id, err := bd.Create(ctx, in)
 	if err != nil {
-		return "", false, err
+		return "", docsBeadFiled, err
 	}
-	return id, true, nil
+	return id, docsBeadFiled, nil
 }
 
 // fileGaps creates a follow-up child per gap in two passes — create all, then
