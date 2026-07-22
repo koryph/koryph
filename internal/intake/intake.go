@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/koryph/koryph/internal/beads"
@@ -175,6 +176,22 @@ func withProvenanceFooter(body, footer string) string {
 		return footer
 	}
 	return body + "\n\n---\n" + footer
+}
+
+// parseNumericSuffix parses the numeric suffix of a "<KEY>-<n>"-shaped
+// tracker identifier (a JIRA key or Linear identifier), e.g. "ENG-42" → 42.
+// It errors when there is no dash, the dash is the final character, or the
+// suffix is non-numeric.
+func parseNumericSuffix(s string) (int, error) {
+	idx := strings.LastIndex(s, "-")
+	if idx < 0 || idx == len(s)-1 {
+		return 0, fmt.Errorf("cannot parse numeric suffix from %q", s)
+	}
+	n, err := strconv.Atoi(s[idx+1:])
+	if err != nil {
+		return 0, fmt.Errorf("non-numeric suffix in %q: %w", s, err)
+	}
+	return n, nil
 }
 
 // --- remote parsing --------------------------------------------------------

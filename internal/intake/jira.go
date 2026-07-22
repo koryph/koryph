@@ -383,15 +383,7 @@ func jiraHost(baseURL string) (string, error) {
 // issueNumberFromKey parses the numeric suffix from a JIRA issue key.
 // "ENG-42" → 42.
 func issueNumberFromKey(key string) (int, error) {
-	idx := strings.LastIndex(key, "-")
-	if idx < 0 || idx == len(key)-1 {
-		return 0, fmt.Errorf("cannot parse numeric suffix")
-	}
-	n, err := strconv.Atoi(key[idx+1:])
-	if err != nil {
-		return 0, fmt.Errorf("non-numeric suffix: %w", err)
-	}
-	return n, nil
+	return parseNumericSuffix(key)
 }
 
 // jiraLabels synthesises a label slice from a JIRA issue's metadata. JIRA

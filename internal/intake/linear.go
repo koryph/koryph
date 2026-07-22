@@ -48,7 +48,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -453,15 +452,7 @@ func parseTrigger(trigger string) (triggerKind, string) {
 // linearIssueNumber extracts the numeric suffix from a Linear identifier.
 // "ENG-42" → 42.
 func linearIssueNumber(identifier string) (int, error) {
-	idx := strings.LastIndex(identifier, "-")
-	if idx < 0 || idx == len(identifier)-1 {
-		return 0, fmt.Errorf("cannot parse numeric suffix from %q", identifier)
-	}
-	n, err := strconv.Atoi(identifier[idx+1:])
-	if err != nil {
-		return 0, fmt.Errorf("non-numeric suffix in %q: %w", identifier, err)
-	}
-	return n, nil
+	return parseNumericSuffix(identifier)
 }
 
 // linearLabels synthesises a label slice from a Linear issue, mapping the
