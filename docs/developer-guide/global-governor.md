@@ -290,6 +290,50 @@ governor.json:
   pool with any live state (an explicit `governor.json` entry, a lease, or a
   demand heartbeat) — see CLI below.
 
+### Per-account seeded-default cap (koryph-1o2.3)
+
+`koryph governor set --account` is a live operator override — someone has to
+run it, per account, before that account's pool caps at anything other than
+the package default (`DefaultMaxGlobalAgents`, 8). koryph-1o2.3 adds a
+**persisted default** that seeds the pool cap automatically, without an
+operator override: `koryph quota set-threads --account NAME N` writes `N` to
+that account's already-per-account quota config
+(`~/.koryph/quota/<account>.json`'s `max_threads` field) — the same file
+`koryph quota calibrate`/`koryph quota guard` already manage — rather than
+into `governor.json`, and rather than into the cross-project registry record
+(an account is a label shared across projects, so a registry field would
+duplicate/conflict across every project on that account).
+
+The two are deliberately kept as **separate, distinguishable** cap sources —
+never collapsed into one `governor.json` field — because a later
+`quota set-threads` change must not be silently shadowed by (nor silently
+overwrite) a stale `governor set --account` override left over from a
+previous decision. Resolution, applied by `internal/engine` at every
+admission (`Store.Cap`/`Store.EffectiveCap`, via `Store.SeedCap`) with strict
+precedence:
+
+1. An explicit `governor set --account NAME --max-global N` operator override
+   for the account's pool — always wins.
+2. Else the account's persisted `quota set-threads` seed (`quota.Config.MaxThreads`).
+3. Else the `anthropic` default pool's own cap — migration continuity: an
+   operator's pre-per-account-pools `governor set --max-global` still governs
+   a newly-onboarded named account that has configured neither of the above.
+4. Else `DefaultMaxGlobalAgents`.
+
+`internal/govern` must not import `internal/quota` (layering: quota is
+account/billing policy, govern is machine-wide concurrency plumbing shared by
+every provider). The engine bridges the two with a plain function value —
+`Store.SeedCap func(pool string) int` — that it sets once at startup to a
+closure over its own already-loaded `quota.Config`
+(`internal/engine/run.go`/`govern.go`'s `seedCapForPool`); `govern` itself
+only ever calls the hook, never imports the package that produces its value.
+A `Store` with `SeedCap` unset (`nil` — every `NewStore()` call site that
+doesn't wire it, and every hand-built `Store{}` in existing tests) simply
+skips level 2, which is exactly the pre-koryph-1o2.3 precedence (1 → 3 → 4).
+`koryph governor show`/`set` (`cmd/koryph/governor.go`) wire the same hook
+against `internal/quota` directly (a pool key IS the account name for a named
+account), so displayed caps match what admission actually enforces.
+
 ### Machine resource ledger: capacity + reservation admission (koryph-4ql)
 
 Concurrency pools bound *how many agents* run; they say nothing about what an

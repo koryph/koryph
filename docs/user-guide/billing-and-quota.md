@@ -183,6 +183,35 @@ pass to reset the ceiling.
 
 ---
 
+## Per-account concurrency default (koryph-1o2.3)
+
+The billing ladder above governs *spend*; a separate, smaller lever governs
+*how many agents run at once* for this account — the global concurrency
+governor's pool cap (see [Governors](../concepts/governors.md) and
+[the global governor](../developer-guide/global-governor.md)). Two ways to
+set it:
+
+- **Live operator override:** `koryph governor set --account NAME --max-global N`
+  — takes effect immediately, wins over everything below.
+- **Persisted default:** `koryph quota set-threads --account NAME N` — seeds
+  the pool's cap for every future run of that account that hasn't had an
+  explicit override set. Pass `0` to clear it.
+
+```sh
+koryph quota set-threads --account personal 6
+koryph quota set-threads --account personal 0   # clear — falls back further
+```
+
+The two are independent knobs stored in different places (the override in
+`governor.json`, the seed in this account's quota config alongside its
+ceilings and ladder) so a later seed change is never silently shadowed by (or
+silently clobbers) a stale override, or vice versa. Full precedence — an
+explicit override, then this seed, then the `anthropic` pool's own cap for
+migration continuity, then the package default — is in
+[the global governor doc](../developer-guide/global-governor.md#per-account-seeded-default-cap-koryph-1o23).
+
+---
+
 ## The billing guard
 
 The billing guard controls whether the governor's throttling constraints
