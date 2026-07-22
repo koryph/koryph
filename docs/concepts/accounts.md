@@ -40,6 +40,18 @@ mismatch — refuses dispatch immediately with no fallback. The fix is to log in
 as the right account (`claude auth login`) or to change the binding
 deliberately.
 
+That email check is the default (`subscription`) **auth mode** — the one
+every project has always used. A machine authenticated only by a long-lived
+credential (`ANTHROPIC_API_KEY`, or a `CLAUDE_CODE_OAUTH_TOKEN` from `claude
+setup-token`) has no `oauthAccount.emailAddress` to check, so it registers
+under `api-key` or `oauth-token` auth mode instead: identity becomes the
+credential's fingerprint, verified fail-closed by a fingerprint comparison
+plus a live check against Anthropic rather than an email match.
+`api-key` mode also switches billing to pay-per-token — the only path into
+that billing shape is an explicit opt-in; koryph never infers it from an
+ambient key. See [Authentication
+modes](../user-guide/authentication-modes.md) for the full mode reference.
+
 Personas live as markdown files under `.claude/agents/` (e.g.
 `koryph-implementer`, `koryph-feature-docs-author`). Each stage resolves to a
 persona, and each persona carries a **tier** — frontier / standard / light —
@@ -66,5 +78,7 @@ first agent starts.
 
 - [Projects & accounts](../user-guide/projects-and-accounts.md) — the account
   model, the registry record, and identity binding.
+- [Authentication modes](../user-guide/authentication-modes.md) — registering
+  an `api-key` or `oauth-token` account instead of a subscription login.
 - Identity gates [rolling dispatch](rolling-dispatch.md); tiers feed the
   [governors](governors.md), since model choice drives spend.

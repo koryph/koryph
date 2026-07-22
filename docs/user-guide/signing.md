@@ -32,6 +32,16 @@ built from a credential-free allowlist (see
 tokens like `GH_TOKEN`, `VAULT_TOKEN`, `AWS_*` and the ambient socket are
 dropped. The agent can sign its commits with the signing key and nothing else.
 
+**One deliberate exception.** A project registered under the `api-key` or
+`oauth-token` [auth mode](authentication-modes.md) does inject exactly one
+credential into the child environment — the resolved `ANTHROPIC_API_KEY` or
+`CLAUDE_CODE_OAUTH_TOKEN` — because that credential *is* how the agent talks
+to Claude at all under those modes. It is never sourced from the operator's
+ambient environment (it comes only from a vault fetch or a purpose-named env
+var, resolved fresh at dispatch time), never logged, and is the one and only
+credential the allowlist admits; every other secret rule on this page still
+applies unchanged.
+
 The engine only **verifies** the scoped agent holds the key at run start (it
 never touches the vault itself); if it does not, the run fails closed with a
 `koryph signing enable` hint. If your vault provider ignores `SSH_AUTH_SOCK`

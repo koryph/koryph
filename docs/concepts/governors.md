@@ -17,8 +17,11 @@ system must bound *structurally*, not something you remember to check.
 Three ideas stack up:
 
 - **Subscription-first.** Dispatch rides your flat-rate Claude subscription by
-  default. Per-token API billing is never used unless you explicitly opt in.
-  There is no accidental path from "run a wave" to "rack up an API bill."
+  default. Per-token API billing is never used unless you explicitly opt in —
+  either as a break-glass fallback at governor stop, or by registering an
+  account under the explicit `api-key` [auth
+  mode](../user-guide/authentication-modes.md). There is no accidental path
+  from "run a wave" to "rack up an API bill."
 - **Per-provider governors.** Each provider gets its own concurrency cap that
   *adapts*: a rate-limit response halves it immediately (with settle windows and
   a circuit breaker to stop thrashing), and sustained success probes it back up.
@@ -47,11 +50,23 @@ response:
 - **≥ 95% — `stop`:** pause the run entirely.
 
 Subscription-first is enforced by config, not convention. API-key billing
-requires an explicit opt-in — an `api_fallback: explicit` setting plus a named
-env var (never the ambient `ANTHROPIC_API_KEY`) — and every dispatched slot is
-stamped with its `billing_mode` so the ledger records exactly how each agent was
-paid for. Fail-closed is the rule throughout: if a usage source is unreadable,
-it reports "full" and the governor drains rather than gambling.
+requires an explicit opt-in — either an `api_fallback: explicit` setting plus a
+named env var (never the ambient `ANTHROPIC_API_KEY`) as a break-glass fallback
+once a subscription account hits governor stop, or a project registered with
+`auth_mode: api-key` up front, which bills per token from wave one instead of
+riding the subscription at all. Either way every dispatched slot is stamped
+with its `billing_mode` so the ledger records exactly how each agent was paid
+for. Fail-closed is the rule throughout: if a usage source is unreadable, it
+reports "full" and the governor drains rather than gambling.
+
+An `api-key` account has no subscription usage window to calibrate against,
+so the 5h/weekly percentage ladder above does not apply to it. It is governed
+by spend instead — a rolling-$ ceiling compared against actual dollars spent
+— though today that ladder is advisory only: the enforced caps are the
+per-run `--budget` flag and the per-agent cost cap. See [Billing &
+quota](../user-guide/billing-and-quota.md#billing-and-quota-by-auth-mode) and
+[Authentication modes](../user-guide/authentication-modes.md) for the full
+picture.
 
 ## The failure mode it prevents
 

@@ -247,7 +247,10 @@ dispatched agents run under.
 |---|---|
 | `account_profile` | `"personal"`, `"work"`, or a custom label. |
 | `claude_config_dir` | Path to a dedicated Claude config directory. Empty string = personal (do **not** set explicitly to `~/.claude`). |
-| `expected_identity` | Email that must be logged in at dispatch time. Must be a valid email address. |
+| `expected_identity` | Email that must be logged in at dispatch time (auth_mode `subscription`). Must be a valid email address. For `api-key`/`oauth-token` modes this becomes a free-form display label — no `@` required, never itself verified. |
+| `auth_mode` | `"subscription"` (default, empty means subscription) \| `"api-key"` \| `"oauth-token"`. See [Authentication modes](authentication-modes.md). |
+| `credential` | Only set for `api-key`/`oauth-token` modes: `{source: "vault"\|"env", provider, key_ref, env_var}` — how to resolve the long-lived credential. `env_var`/the vault item must never resolve to the literal string `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`. |
+| `identity_fingerprint` | Only set for `api-key`/`oauth-token` modes: a non-secret `sha256:<prefix>` of the resolved credential, recorded at registration and re-derived at every dispatch to detect a swapped key/token. |
 
 ### Profiles
 
@@ -262,8 +265,9 @@ and a separate keychain entry, keeping work and personal sessions isolated.
 
 ### Identity verification — fail closed
 
-Before every dispatch, koryph reads `<configDir||$HOME>/.claude.json`,
-extracts `oauthAccount.emailAddress`, and compares it case-insensitively to
+This section describes the default `auth_mode: subscription` check. Before
+every dispatch, koryph reads `<configDir||$HOME>/.claude.json`, extracts
+`oauthAccount.emailAddress`, and compares it case-insensitively to
 `expected_identity`. Any of the following **refuses dispatch immediately**:
 
 - The `.claude.json` file cannot be read.
@@ -274,6 +278,12 @@ extracts `oauthAccount.emailAddress`, and compares it case-insensitively to
 
 There is no fallback path. Fix the root cause (`claude auth login`, or update
 the record via `koryph project set-account`) then retry.
+
+An `api-key`/`oauth-token` account has no `.claude.json` to check at all —
+identity verification instead resolves the credential, compares its
+fingerprint against `identity_fingerprint`, and probes it live against
+Anthropic; see [Authentication modes](authentication-modes.md) for that
+mode-specific check.
 
 ### Changing the account triple (set-account)
 

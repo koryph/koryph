@@ -5,7 +5,11 @@
 
 Koryph is subscription-first: every dispatched agent runs against your
 Claude subscription by default. Per-token (API-key) spend is an opt-in
-exception that requires three explicit gates to open.
+exception, entered one of two ways: a break-glass fallback under a
+subscription account (three explicit gates, below), or a project registered
+explicitly under `auth_mode: api-key` (see [Authentication
+modes](authentication-modes.md)), which bills per token from wave one
+instead of the subscription. Neither path is ever entered by accident.
 
 ---
 
@@ -63,6 +67,31 @@ strictly ascending.
 **Fail-closed windows.** A window whose source is `unavailable` reports
 fraction 1.0 and immediately triggers drain. An uncalibrated account (both
 ceilings zero) is always `ok` — baseline establishment is never blocked.
+
+---
+
+## Billing and quota by auth mode
+
+The ladder above measures a subscription's `/usage` percentage — it assumes
+a plan window exists. A project registered under `auth_mode: api-key` (see
+[Authentication modes](authentication-modes.md)) has no such window:
+
+| `auth_mode` | Billing | Governed by |
+|---|---|---|
+| `subscription` (default) | subscription | 5h/weekly calibrated-% windows, above |
+| `oauth-token` | subscription | same 5h/weekly windows — usage is still read from the local transcript scan, which does not distinguish how you authenticated |
+| `api-key` | pay-per-token, from wave 1 | a rolling-$ ceiling (spent-USD / ceiling-USD), when configured |
+
+An `api-key` account's rolling-$ ladder mirrors the 5h/weekly one — the same
+warn/throttle/drain/stop shape, driven off absolute dollars spent instead of
+a plan percentage — but it is not yet wired into the engine's per-wave
+governor gate, so it behaves as **advisory only** today: measured and
+logged, never blocking dispatch, the same posture an uncalibrated
+subscription account has. The caps that *are* enforced for an `api-key`
+account are the per-run `--budget` flag and the per-agent
+`per_agent_max_usd` cap described under [Per-agent budget
+caps](#per-agent-budget-caps-and-the-turn-boundary-nuance) below — both
+apply regardless of auth mode.
 
 ---
 
@@ -249,6 +278,12 @@ Calibrating (below) clears both the warning and the block.
 ---
 
 ## Explicit API-key fallback
+
+This is the **break-glass** path — spilling a `subscription`-auth-mode
+account to per-token spend only once it hits governor stop. A project
+registered with `auth_mode: api-key` bills per token from wave one instead
+and never goes through this gate; see [Billing and quota by auth
+mode](#billing-and-quota-by-auth-mode) above.
 
 To continue dispatching after a governor `stop` at subscription-plan
 capacity, all three of the following must be satisfied simultaneously:

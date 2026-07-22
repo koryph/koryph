@@ -61,6 +61,7 @@ nav:
           - Intake: user-guide/intake.md
       - Running the loop:
           - Projects & accounts: user-guide/projects-and-accounts.md
+          - Authentication modes: user-guide/authentication-modes.md
           - Choosing a forge: user-guide/forges.md
           - Running waves: user-guide/running-waves.md
           - Merge reconcilers: user-guide/merge-reconcilers.md
