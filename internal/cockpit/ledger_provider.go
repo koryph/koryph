@@ -628,10 +628,16 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time, alive func(int) bool) SlotSn
 			}
 		}
 	}
-	// Zombie: non-terminal slot, PID recorded, but the process is gone.
-	// Best-effort and read-only — never mutates the slot; a nil alive func
-	// (or an unset PID) simply leaves Zombie false, same as today.
-	if !terminal && sl.PID > 0 && alive != nil && !alive(sl.PID) {
+	// Zombie: a "running" slot (ledger says its agent is actively working)
+	// whose recorded agent pid is gone. Best-effort and read-only — never
+	// mutates the slot; a nil alive func (or an unset PID) leaves Zombie false,
+	// same as today. The gate is SlotRunning, NOT !terminal: review/stuck/
+	// dispatching slots legitimately have a dead AGENT pid while the engine
+	// drives the post-build stages, so a !terminal gate would falsely brand
+	// every reviewed bead a zombie. Mirrors the engine's mid-run liveness
+	// patrol (internal/engine/health.go patrolCheckDeadActiveAgents); the
+	// separate stalled signal covers a quiet-but-not-dead running slot.
+	if sl.Status == ledger.SlotRunning && sl.PID > 0 && alive != nil && !alive(sl.PID) {
 		ss.Zombie = true
 	}
 	return ss

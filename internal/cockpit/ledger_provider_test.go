@@ -163,10 +163,13 @@ func TestDerivedRefreshTimeoutResetsLatch(t *testing.T) {
 }
 
 // TestSlotToSnapshot_Zombie is the koryph-k6o regression guard for the
-// zombie-slot check itself: non-terminal + a recorded pid the probe reports
-// dead → Zombie=true; a terminal slot, an unset pid, or a live pid must all
-// leave it false, and a nil alive func must never panic (best-effort, skip
-// silently — same rendering as before this change).
+// zombie-slot check itself: a RUNNING slot with a recorded pid the probe
+// reports dead → Zombie=true; a terminal slot, an unset pid, or a live pid
+// must all leave it false, and a nil alive func must never panic (best-effort,
+// skip silently — same rendering as before this change). Crucially, review/
+// stuck/dispatching slots legitimately have a dead AGENT pid while the engine
+// drives post-build stages and must NOT be flagged (else every reviewed bead
+// falsely reads as a zombie — the blocking review finding this guards).
 func TestSlotToSnapshot_Zombie(t *testing.T) {
 	dead := func(int) bool { return false }
 	live := func(int) bool { return true }
@@ -178,12 +181,14 @@ func TestSlotToSnapshot_Zombie(t *testing.T) {
 		alive func(int) bool
 		want  bool
 	}{
-		{"non-terminal, dead pid → zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, dead, true},
-		{"non-terminal, live pid → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, live, false},
+		{"running, dead pid → zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, dead, true},
+		{"running, live pid → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, live, false},
 		{"terminal status, dead pid → not zombie (finished, not a zombie)", &ledger.Slot{Status: ledger.SlotDone, PID: 4242}, dead, false},
 		{"no pid recorded → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 0}, dead, false},
 		{"nil alive func → not zombie (best-effort skip)", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, nil, false},
-		{"dispatching status counts as non-terminal too", &ledger.Slot{Status: ledger.SlotDispatching, PID: 4242}, dead, true},
+		{"review status, dead agent pid → not zombie (engine drives review)", &ledger.Slot{Status: ledger.SlotReview, PID: 4242}, dead, false},
+		{"stuck status, dead agent pid → not zombie (not the running stage)", &ledger.Slot{Status: ledger.SlotStuck, PID: 4242}, dead, false},
+		{"dispatching status, dead agent pid → not zombie (agent not up yet)", &ledger.Slot{Status: ledger.SlotDispatching, PID: 4242}, dead, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

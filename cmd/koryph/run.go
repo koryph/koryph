@@ -134,10 +134,12 @@ type boardEntry struct {
 	RunStatus       string         `json:"run_status,omitempty"`
 	Slots           map[string]int `json:"slots,omitempty"`
 	LivePIDs        int            `json:"live_pids"`
-	// Zombies is the count of non-terminal slots (running/dispatching/review/
-	// stuck) whose recorded PID is no longer alive — the running:N/LIVE:0
-	// mismatch (koryph-k6o) called out explicitly instead of left for the
-	// operator to notice by comparing SLOTS and LIVE by hand.
+	// Zombies is the count of slots the ledger marks running whose recorded
+	// agent PID is no longer alive — the running:N/LIVE:0 mismatch (koryph-k6o)
+	// called out explicitly instead of left for the operator to notice by
+	// comparing SLOTS and LIVE by hand. Scoped to the running stage (not any
+	// non-terminal slot): review/stuck/dispatching slots legitimately have a
+	// dead agent PID while the engine drives post-build stages — see zombieSlot.
 	Zombies int `json:"zombies"`
 }
 
@@ -179,10 +181,9 @@ func cmdBoard(args []string, stdout, stderr io.Writer) int {
 				case sl.PID > 0 && dispatch.Alive(sl.PID):
 					e.LivePIDs++
 				case zombieSlot(sl, dispatch.Alive):
-					// Non-terminal (still "running" work per the ledger) but the
-					// pid is dead: the exact mismatch this column exists to
-					// surface loudly instead of leaving SLOTS/LIVE to be
-					// compared by hand.
+					// Ledger says running but the agent pid is dead: the exact
+					// mismatch this column exists to surface loudly instead of
+					// leaving SLOTS/LIVE to be compared by hand.
 					e.Zombies++
 				}
 			}
@@ -221,13 +222,22 @@ func zombieCell(n int) string {
 	return fmt.Sprintf("⚠ %d", n)
 }
 
-// zombieSlot reports whether sl is non-terminal (the ledger still records it
-// as live work) but its recorded pid is no longer alive per the probe —
+// zombieSlot reports whether sl is a "running" slot (the ledger says its agent
+// is actively working) whose recorded pid is no longer alive per the probe —
 // dead process, live status. Shared by koryph board and koryph status
 // (koryph-k6o) so both surfaces agree on exactly what counts as a zombie.
-// alive is dispatch.Alive in production; tests inject a deterministic stub.
+//
+// The gate is deliberately sl.Status == SlotRunning, NOT !Terminal(status):
+// review/stuck/dispatching slots legitimately have a dead AGENT pid while the
+// engine drives the post-build stages (review, rebase, gate, merge), so
+// flagging every non-terminal dead-agent slot would falsely brand every
+// reviewed bead a zombie. This mirrors the engine's own mid-run liveness
+// patrol (internal/engine/health.go patrolCheckDeadActiveAgents), which
+// restricts to SlotRunning for exactly this reason; the separate stalled
+// signal covers a quiet-but-not-dead running slot. alive is dispatch.Alive in
+// production; tests inject a deterministic stub.
 func zombieSlot(sl *ledger.Slot, alive func(int) bool) bool {
-	return sl != nil && sl.PID > 0 && !ledger.Terminal(sl.Status) && !alive(sl.PID)
+	return sl != nil && sl.PID > 0 && sl.Status == ledger.SlotRunning && !alive(sl.PID)
 }
 
 // slotSummary renders a compact "status:count" summary, or "-" when empty.
@@ -291,10 +301,10 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		status := sl.Status
-		// Best-effort, read-only liveness probe (koryph-k6o): a non-terminal
-		// slot with a dead recorded pid is rendered as a distinct "zombie"
-		// state instead of the plain persisted status, which otherwise reads
-		// identically to a genuinely live slot.
+		// Best-effort, read-only liveness probe (koryph-k6o): a slot the ledger
+		// marks running with a dead recorded agent pid is rendered as a distinct
+		// "zombie" state instead of the plain persisted status, which otherwise
+		// reads identically to a genuinely live slot.
 		if zombieSlot(sl, dispatch.Alive) {
 			status = sl.Status + " (dead pid — zombie)"
 			zombies++

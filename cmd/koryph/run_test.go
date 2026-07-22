@@ -63,9 +63,11 @@ func TestPrintFrontier_JSON(t *testing.T) {
 }
 
 // TestZombieSlot is the koryph-k6o regression guard for the shared
-// board/status zombie predicate: non-terminal status + a recorded pid the
+// board/status zombie predicate: only a RUNNING slot whose recorded pid the
 // probe reports dead is a zombie; a terminal status, an unset pid, or a live
-// pid must never be flagged.
+// pid must never be flagged. Review/stuck/dispatching slots legitimately have
+// a dead AGENT pid while the engine drives post-build stages, so they must NOT
+// be flagged (the blocking review finding this guards).
 func TestZombieSlot(t *testing.T) {
 	dead := func(int) bool { return false }
 	live := func(int) bool { return true }
@@ -79,6 +81,9 @@ func TestZombieSlot(t *testing.T) {
 		{"running + dead pid → zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 123}, dead, true},
 		{"running + live pid → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 123}, live, false},
 		{"merged (terminal) + dead pid → not zombie", &ledger.Slot{Status: ledger.SlotMerged, PID: 123}, dead, false},
+		{"review + dead agent pid → not zombie (engine drives review)", &ledger.Slot{Status: ledger.SlotReview, PID: 123}, dead, false},
+		{"stuck + dead agent pid → not zombie (not the running stage)", &ledger.Slot{Status: ledger.SlotStuck, PID: 123}, dead, false},
+		{"dispatching + dead agent pid → not zombie (agent not up yet)", &ledger.Slot{Status: ledger.SlotDispatching, PID: 123}, dead, false},
 		{"no pid recorded → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 0}, dead, false},
 		{"nil slot → not zombie", nil, dead, false},
 	}

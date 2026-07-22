@@ -167,7 +167,7 @@ func TestSlotToRow_BeadColumnDropsProjectPrefix(t *testing.T) {
 	}
 }
 
-// TestSlotToRow_Zombie verifies a non-terminal slot with a dead pid renders a
+// TestSlotToRow_Zombie verifies a running slot flagged Zombie renders a
 // distinct "dead pid" status instead of the (stale/empty) last step line, and
 // that the marker outranks a mere stall — a dead process is not "quiet", it's
 // gone (koryph-k6o).

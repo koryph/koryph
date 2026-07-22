@@ -137,14 +137,18 @@ type SlotSnapshot struct {
 	// worker — so they no longer masquerade as active threads.
 	Terminal bool
 
-	// Zombie reports whether the slot is non-terminal (the ledger still says
-	// it's live work) but its recorded PID is no longer alive. Computed with a
-	// best-effort, read-only signal-0 probe (dispatch.Alive) — never persisted,
-	// never used to mutate the slot. False whenever PID is unset (dispatch
-	// hadn't recorded one yet) or the probe couldn't run. koryph-k6o: closes
-	// the incident where a read-only view kept rendering a dead-pid slot as
-	// "running" for hours because only board's separate LIVE column hinted at
-	// the truth and nothing correlated the two.
+	// Zombie reports whether a RUNNING slot (the ledger says its agent is
+	// actively working) has an agent PID that is no longer alive. Computed with
+	// a best-effort, read-only signal-0 probe (dispatch.Alive) — never
+	// persisted, never used to mutate the slot. False whenever PID is unset
+	// (dispatch hadn't recorded one yet) or the probe couldn't run. The gate is
+	// the running stage specifically, NOT any non-terminal slot: review/stuck/
+	// dispatching slots legitimately have a dead agent PID while the engine
+	// drives post-build stages, so flagging those would falsely brand every
+	// reviewed bead a zombie. koryph-k6o: closes the incident where a read-only
+	// view kept rendering a dead-pid running slot as "running" for hours
+	// because only board's separate LIVE column hinted at the truth and nothing
+	// correlated the two.
 	Zombie bool
 
 	// Cost and estimate (zero means unknown/not-yet-set).
