@@ -21,15 +21,11 @@ import (
 // quota.Config.MaxThreads seed the engine resolves at dispatch is available
 // here too, purely for accurate `governor show`/`governor set` cap display —
 // a store with SeedCap unset (e.g. any hand-built test Store{}) simply skips
-// this fallback level, matching the pre-koryph-1o2.3 behavior. A LoadConfig
-// error (missing/corrupt account file) yields 0 — no seed — the fail-open
-// posture every other govern helper already uses.
+// this fallback level, matching the pre-koryph-1o2.3 behavior. Delegates to
+// quota.SeedCap, the one documented home for the account→seed-cap mapping
+// (including its fail-open-on-LoadConfig-error semantics).
 func seedCapFromQuota(pool string) int {
-	cfg, err := quota.LoadConfig(pool)
-	if err != nil {
-		return 0
-	}
-	return cfg.MaxThreads
+	return quota.SeedCap(pool)
 }
 
 // newGovernStore returns a govern.Store with the koryph-1o2.3 per-account

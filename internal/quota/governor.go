@@ -109,6 +109,22 @@ func LoadConfig(account string) (*Config, error) {
 	return &cfg, nil
 }
 
+// SeedCap resolves the account→seed-cap mapping (koryph-1o2.3): the persisted
+// concurrency seed (Config.MaxThreads) for account, fail-open to 0 on any
+// LoadConfig error (missing/corrupt account file) — the same fail-open
+// posture every other govern helper already uses. This is the one documented
+// home for "account name → seeded default concurrency cap"; callers that
+// already hold a loaded *Config in memory (e.g. the engine's per-runner
+// dispatch hot path) should read cfg.MaxThreads directly rather than call
+// this, to avoid a redundant per-dispatch LoadConfig.
+func SeedCap(account string) int {
+	cfg, err := LoadConfig(account)
+	if err != nil {
+		return 0
+	}
+	return cfg.MaxThreads
+}
+
 // SaveConfig writes cfg atomically to ~/.koryph/quota/<account>.json (0600 —
 // private account state).
 func SaveConfig(cfg *Config) error {
