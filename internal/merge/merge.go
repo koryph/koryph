@@ -294,6 +294,31 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 		}
 	}
 
+	// (6b) post-rebase signature re-verification (koryph audit finding #30):
+	// preflight's RequireSigned check above ran on the PRE-rebase range and
+	// therefore only ever inspected commits that do NOT land — rebase gives
+	// every rebased commit a new SHA (new parent) and, when the merge
+	// runner's git config has commit.gpgsign set, a fresh signature from the
+	// RUNNER's own key (see preflight's laundering note); reconcileRebase
+	// and merge_prepare can also ADD brand-new commits (a reconciler
+	// self-heal, merge_prepare's renumber fix) that did not exist at
+	// preflight time at all and so were never checked. Re-verify the range
+	// that is actually about to land — after rebase/reconcile/prepare,
+	// before ff-merge or PR — so an unsigned or unverifiable commit can
+	// never slip in via either path.
+	if o.RequireSigned {
+		bad, verr := signing.Verify(ctx, wt.Path, def, o.Branch)
+		if verr != nil {
+			return Result{Status: StatusError}, verr
+		}
+		if len(bad) > 0 {
+			return Result{
+				Status:     StatusUnsigned,
+				GateOutput: "unsigned or unverifiable commits on " + o.Branch + " after rebase:\n" + strings.Join(bad, "\n"),
+			}, nil
+		}
+	}
+
 	// (7) PR path diverges here: the branch is rebased, gated, and green.
 	// Instead of fast-forward merging into the local default, push the branch
 	// and open a pull request. The worktree and branch stay alive so a later

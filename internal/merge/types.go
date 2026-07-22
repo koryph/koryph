@@ -84,12 +84,18 @@ type Opts struct {
 	SlotRetries   int // bd merge-slot acquire retries (default 3)
 
 	// RequireSigned verifies every commit on <default>..<branch> carries a
-	// good signature (git %G? == 'G') BEFORE any mutation. Verification must
-	// precede the rebase: a rebase rewrites commits and — with
-	// commit.gpgsign set — would re-sign them with the merge runner's key,
-	// laundering unsigned agent work. Failures return
-	// Result{Status: "unsigned"} listing the offending SHAs; the tree is
-	// untouched and the merge slot is released.
+	// good signature (git %G? == 'G'), TWICE: once BEFORE any mutation
+	// (preflight) and once more immediately before landing (ff-merge or PR),
+	// after rebase/reconcile/merge_prepare. The preflight pass must precede
+	// the rebase: a rebase rewrites commits and — with commit.gpgsign set —
+	// would re-sign them with the merge runner's key, laundering unsigned
+	// agent work if it were the ONLY check. The second pass exists because
+	// the preflight range does not cover what actually lands: rebase gives
+	// every commit a new SHA, and reconcileRebase / merge_prepare can add
+	// brand-new commits after preflight ran — those are only ever checked by
+	// this second pass. Failures return Result{Status: "unsigned"} listing
+	// the offending SHAs; either way the worktree and branch are left intact
+	// (never cleaned up) for inspection, and the merge slot is released.
 	RequireSigned bool
 
 	// AllowProtected lifts ONLY the LiftableProtected subset of the
