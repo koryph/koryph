@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/quota"
@@ -60,6 +61,12 @@ type LedgerProvider struct {
 	ls *ledger.Store
 	gs *govern.Store
 	bd *beads.Adapter
+
+	// alive probes PID liveness for the zombie-slot check (koryph-k6o):
+	// non-terminal slot, dead recorded PID. Defaults to dispatch.Alive; tests
+	// swap it for a deterministic stub instead of depending on real OS
+	// process state.
+	alive func(int) bool
 
 	// Derived sections (burndown, efficiency, graph, queue) are expensive to
 	// assemble: they shell out to bd, which costs several seconds on a large
@@ -122,6 +129,7 @@ func NewLedgerProvider(projectID, repoRoot, accountProfile string) *LedgerProvid
 		ls:             ledger.NewStore(repoRoot),
 		gs:             govern.NewStore(),
 		bd:             beads.New(repoRoot),
+		alive:          dispatch.Alive,
 		graph:          NewGraphProvider(repoRoot, 0), // 0 → package default graphTTL
 		events:         newEventCollector(),
 		derivedTimeout: derivedRefreshTimeout,
@@ -213,7 +221,7 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 			if sl == nil {
 				continue
 			}
-			ss := slotToSnapshot(sl, now)
+			ss := slotToSnapshot(sl, now, p.alive)
 			slots = append(slots, ss)
 		}
 		sort.Slice(slots, func(i, j int) bool {
@@ -557,8 +565,11 @@ func convertResourceStatuses(in []govern.ResourceStatus) []ResourceSnapshot {
 }
 
 // slotToSnapshot converts a ledger.Slot to a SlotSnapshot, reading the
-// agent's status.json when StatusPath is set.
-func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
+// agent's status.json when StatusPath is set. alive probes PID liveness for
+// the Zombie flag (koryph-k6o); pass nil to skip the probe (Zombie stays
+// false, same as today's rendering).
+func slotToSnapshot(sl *ledger.Slot, now time.Time, alive func(int) bool) SlotSnapshot {
+	terminal := ledger.Terminal(sl.Status)
 	ss := SlotSnapshot{
 		PhaseID:            sl.PhaseID,
 		BeadID:             sl.BeadID,
@@ -580,7 +591,7 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 		ConflictRequeues:   sl.ConflictRequeues,
 		RateLimitRequeues:  sl.RateLimitRequeues,
 		BudgetKillRequeues: sl.BudgetKillRequeues,
-		Terminal:           ledger.Terminal(sl.Status),
+		Terminal:           terminal,
 		PeakRSSMB:          sl.PeakRSSMB,
 		AvgRSSMB:           sl.AvgRSSMB,
 		CPUSeconds:         sl.CPUSeconds,
@@ -616,6 +627,12 @@ func slotToSnapshot(sl *ledger.Slot, now time.Time) SlotSnapshot {
 				ss.StatusAge = age
 			}
 		}
+	}
+	// Zombie: non-terminal slot, PID recorded, but the process is gone.
+	// Best-effort and read-only — never mutates the slot; a nil alive func
+	// (or an unset PID) simply leaves Zombie false, same as today.
+	if !terminal && sl.PID > 0 && alive != nil && !alive(sl.PID) {
+		ss.Zombie = true
 	}
 	return ss
 }

@@ -75,12 +75,29 @@ rest. Terminals ≥ 110 columns also get a Mem column:
 | Elapsed | Wall time since dispatch (final wall time once terminal) |
 | Cost/Est | Actual spend vs the estimator's pre-dispatch estimate |
 | Mem(MB) | Average/peak resident memory of the agent's process cohort (wide terminals only) |
-| Status | Last line from the agent's `status.json`; `⚠ stalled <age>` when a running agent's step heartbeat has been silent for 15+ minutes; `✗ <death reason>` on a classified failure |
+| Status | Last line from the agent's `status.json`; `☠ dead pid <pid> — reconcile: koryph stop then koryph merge` when the slot is non-terminal but its recorded process is gone (a zombie — see below); `⚠ stalled <age>` when a running agent's step heartbeat has been silent for 15+ minutes; `✗ <death reason>` on a classified failure |
 
 The title line above the table shows the active filter and counts —
-`filter:active  showing 3/7  (3 active)` — plus `⚠ N stalled` and `✗ N failed`
-tallies whenever those need attention. Stall detection is structured (work
-assigned + `status.json` mtime + liveness), never output scraping.
+`filter:active  showing 3/7  (3 active)` — plus `☠ N zombie`, `⚠ N stalled`,
+and `✗ N failed` tallies whenever those need attention. Stall detection is
+structured (work assigned + `status.json` mtime + liveness), never output
+scraping.
+
+#### Zombie slots: running status, dead process
+
+Every non-terminal slot's recorded pid is probed with a read-only, best-effort
+liveness check (the same signal-0 probe `koryph board`'s LIVE column uses).
+Normally the engine's exit handling reclassifies a dead agent within a tick,
+but a lost signal can leave a slot marked `running` for hours with nothing
+alive behind it — the exact incident this check exists to catch (2026-07-10:
+an operator trusted a stale "running" row because nothing correlated it
+against the process's actual liveness). A zombie slot outranks a stalled one
+in both the Status cell and the title-bar tally — a dead process is not
+"quiet", it's gone. Reconcile with `koryph stop` then `koryph merge` if the
+slot doesn't clear on its own; the engine's health patrol also surfaces the
+same condition as a `dead-active-agent` event in the Events feed. The probe
+never mutates the slot — if it can't run (unreadable /proc, permissions), the
+slot renders exactly as it did before this check existed.
 
 Press `Enter` on any slot row to open the **Detail** panel for that bead
 (including its per-bead resource usage). Press `Esc` or `Backspace` to return.

@@ -61,3 +61,42 @@ func TestPrintFrontier_JSON(t *testing.T) {
 		t.Errorf("json frontier missing verdict field:\n%s", s)
 	}
 }
+
+// TestZombieSlot is the koryph-k6o regression guard for the shared
+// board/status zombie predicate: non-terminal status + a recorded pid the
+// probe reports dead is a zombie; a terminal status, an unset pid, or a live
+// pid must never be flagged.
+func TestZombieSlot(t *testing.T) {
+	dead := func(int) bool { return false }
+	live := func(int) bool { return true }
+
+	cases := []struct {
+		name  string
+		sl    *ledger.Slot
+		alive func(int) bool
+		want  bool
+	}{
+		{"running + dead pid → zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 123}, dead, true},
+		{"running + live pid → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 123}, live, false},
+		{"merged (terminal) + dead pid → not zombie", &ledger.Slot{Status: ledger.SlotMerged, PID: 123}, dead, false},
+		{"no pid recorded → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 0}, dead, false},
+		{"nil slot → not zombie", nil, dead, false},
+	}
+	for _, c := range cases {
+		if got := zombieSlot(c.sl, c.alive); got != c.want {
+			t.Errorf("%s: zombieSlot = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestZombieCell verifies the board ZOMBIES column renders "-" when clean and
+// a loud "⚠ N" otherwise, so a running:N/LIVE:0 mismatch can't be missed by
+// comparing SLOTS against LIVE by eye.
+func TestZombieCell(t *testing.T) {
+	if got := zombieCell(0); got != "-" {
+		t.Errorf("zombieCell(0) = %q, want %q", got, "-")
+	}
+	if got := zombieCell(2); got != "⚠ 2" {
+		t.Errorf("zombieCell(2) = %q, want %q", got, "⚠ 2")
+	}
+}

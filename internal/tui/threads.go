@@ -190,11 +190,15 @@ func (m *threadsModel) titleBar() string {
 
 	total := len(m.snap.Slots)
 	shown := len(m.visible)
-	active, stalled, failed := 0, 0, 0
+	active, stalled, zombie, failed := 0, 0, 0, 0
 	for _, sl := range m.snap.Slots {
 		if !sl.Terminal {
 			active++
-			if slotStalled(sl) {
+			switch {
+			case sl.Zombie:
+				// Dead pid outranks a mere stall — it's not "quiet", it's gone.
+				zombie++
+			case slotStalled(sl):
 				stalled++
 			}
 		} else if sl.Stage == "failed" || sl.Stage == "conflict" || sl.Stage == "blocked" {
@@ -204,6 +208,10 @@ func (m *threadsModel) titleBar() string {
 	title := fmt.Sprintf("Threads  filter:%s  showing %d/%d  (%d active)",
 		m.filter.label(), shown, total, active)
 	extra := ""
+	if zombie > 0 {
+		extra += "  " + lipgloss.NewStyle().Foreground(m.theme.Error).
+			Render(fmt.Sprintf("☠ %d zombie", zombie))
+	}
 	if stalled > 0 {
 		extra += "  " + lipgloss.NewStyle().Foreground(m.theme.Warning).
 			Render(fmt.Sprintf("⚠ %d stalled", stalled))
@@ -366,13 +374,18 @@ func slotToRow(sl cockpit.SlotSnapshot, projectID string, descW, statusW int, wi
 	elapsed := formatElapsed(sl.Elapsed)
 	cost := formatCost(sl.CostUSD, sl.EstimateUSD)
 
-	// Status cell: stall and death classifications outrank the (stale) last
-	// step line — a thread that has gone quiet or died must SAY so.
+	// Status cell: zombie, stall, and death classifications outrank the
+	// (stale) last step line — a thread that has died, gone quiet, or failed
+	// must SAY so. Zombie outranks stalled: a dead pid is not "quiet", it's
+	// gone, and the incident this closes (koryph-k6o) is exactly a "running"
+	// row silently masking a dead process for hours.
 	status := sl.StatusLine
 	if status == "" {
 		status = sl.StatusJSON
 	}
 	switch {
+	case sl.Zombie:
+		status = fmt.Sprintf("☠ dead pid %d — reconcile: koryph stop then koryph merge", sl.PID)
 	case slotStalled(sl):
 		status = fmt.Sprintf("⚠ stalled %s · %s", formatElapsed(sl.StatusAge), status)
 	case sl.Terminal && sl.DeathReason != "":

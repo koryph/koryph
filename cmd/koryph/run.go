@@ -134,6 +134,11 @@ type boardEntry struct {
 	RunStatus       string         `json:"run_status,omitempty"`
 	Slots           map[string]int `json:"slots,omitempty"`
 	LivePIDs        int            `json:"live_pids"`
+	// Zombies is the count of non-terminal slots (running/dispatching/review/
+	// stuck) whose recorded PID is no longer alive — the running:N/LIVE:0
+	// mismatch (koryph-k6o) called out explicitly instead of left for the
+	// operator to notice by comparing SLOTS and LIVE by hand.
+	Zombies int `json:"zombies"`
 }
 
 // cmdBoard prints a one-line-per-project run overview.
@@ -170,8 +175,15 @@ func cmdBoard(args []string, stdout, stderr io.Writer) int {
 					continue
 				}
 				e.Slots[sl.Status]++
-				if sl.PID > 0 && dispatch.Alive(sl.PID) {
+				switch {
+				case sl.PID > 0 && dispatch.Alive(sl.PID):
 					e.LivePIDs++
+				case zombieSlot(sl, dispatch.Alive):
+					// Non-terminal (still "running" work per the ledger) but the
+					// pid is dead: the exact mismatch this column exists to
+					// surface loudly instead of leaving SLOTS/LIVE to be
+					// compared by hand.
+					e.Zombies++
 				}
 			}
 		}
@@ -189,14 +201,33 @@ func cmdBoard(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PROJECT\tMIGRATION\tACCOUNT\tRUN\tRUN-STATUS\tSLOTS\tLIVE")
+	fmt.Fprintln(tw, "PROJECT\tMIGRATION\tACCOUNT\tRUN\tRUN-STATUS\tSLOTS\tLIVE\tZOMBIES")
 	for _, e := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 			e.ProjectID, e.MigrationStatus, e.Account,
-			orDash(e.RunID), orDash(e.RunStatus), slotSummary(e.Slots), e.LivePIDs)
+			orDash(e.RunID), orDash(e.RunStatus), slotSummary(e.Slots), e.LivePIDs, zombieCell(e.Zombies))
 	}
 	tw.Flush()
 	return 0
+}
+
+// zombieCell renders the board's ZOMBIES column: "-" when clean, else a loud
+// "⚠ N" so a running:N/LIVE:0 mismatch (koryph-k6o) can't be missed by eyeballing
+// SLOTS against LIVE.
+func zombieCell(n int) string {
+	if n == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("⚠ %d", n)
+}
+
+// zombieSlot reports whether sl is non-terminal (the ledger still records it
+// as live work) but its recorded pid is no longer alive per the probe —
+// dead process, live status. Shared by koryph board and koryph status
+// (koryph-k6o) so both surfaces agree on exactly what counts as a zombie.
+// alive is dispatch.Alive in production; tests inject a deterministic stub.
+func zombieSlot(sl *ledger.Slot, alive func(int) bool) bool {
+	return sl != nil && sl.PID > 0 && !ledger.Terminal(sl.Status) && !alive(sl.PID)
 }
 
 // slotSummary renders a compact "status:count" summary, or "-" when empty.
@@ -253,15 +284,28 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "project %s  run %s  status %s  wave %d\n", rec.ProjectID, run.RunID, run.Status, run.Wave)
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "PHASE\tSTATUS\tMODEL\tCOST\tATTEMPTS\tBRANCH\tWORKTREE")
+	zombies := 0
 	for _, k := range sortedSlotKeys(run.Slots) {
 		sl := run.Slots[k]
 		if sl == nil {
 			continue
 		}
+		status := sl.Status
+		// Best-effort, read-only liveness probe (koryph-k6o): a non-terminal
+		// slot with a dead recorded pid is rendered as a distinct "zombie"
+		// state instead of the plain persisted status, which otherwise reads
+		// identically to a genuinely live slot.
+		if zombieSlot(sl, dispatch.Alive) {
+			status = sl.Status + " (dead pid — zombie)"
+			zombies++
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t$%.2f\t%d\t%s\t%s\n",
-			sl.PhaseID, sl.Status, orDash(sl.Model), sl.CostUSD, sl.Attempts, orDash(sl.Branch), orDash(sl.Worktree))
+			sl.PhaseID, status, orDash(sl.Model), sl.CostUSD, sl.Attempts, orDash(sl.Branch), orDash(sl.Worktree))
 	}
 	tw.Flush()
+	if zombies > 0 {
+		fmt.Fprintf(stdout, "\n⚠ %d slot(s) marked as live work with a dead pid — the exit was never processed. Reconcile: koryph stop then koryph merge if a slot stays stuck.\n", zombies)
+	}
 	return 0
 }
 

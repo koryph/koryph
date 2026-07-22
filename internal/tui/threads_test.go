@@ -166,3 +166,42 @@ func TestSlotToRow_BeadColumnDropsProjectPrefix(t *testing.T) {
 		t.Errorf("Bead cell = %q, want the project-stripped suffix %q", got, "9af.6")
 	}
 }
+
+// TestSlotToRow_Zombie verifies a non-terminal slot with a dead pid renders a
+// distinct "dead pid" status instead of the (stale/empty) last step line, and
+// that the marker outranks a mere stall — a dead process is not "quiet", it's
+// gone (koryph-k6o).
+func TestSlotToRow_Zombie(t *testing.T) {
+	sl := cockpit.SlotSnapshot{
+		Stage: "running", Terminal: false, Zombie: true, PID: 4242,
+		StatusLine: "some stale step",
+		StatusAge:  2 * stallAfter, // would also qualify as "stalled" — zombie must win
+	}
+	row := slotToRow(sl, "koryph", 30, 60, false)
+	status := row[len(row)-1]
+	if !strings.Contains(status, "dead pid 4242") {
+		t.Errorf("status cell = %q, want it to call out the dead pid", status)
+	}
+	if strings.Contains(status, "stalled") {
+		t.Errorf("status cell = %q, zombie should outrank the stalled marker", status)
+	}
+}
+
+// TestThreadsTitleBar_ZombieCount verifies the title bar surfaces a zombie
+// count distinct from (and outranking) the stalled count, so an operator
+// scanning the tab sees "dead" called out rather than folded into "stalled".
+func TestThreadsTitleBar_ZombieCount(t *testing.T) {
+	m := newThreadsModel(DefaultTheme())
+	m.Resize(120, 20)
+	m.SetSnapshot(cockpit.Snapshot{Slots: []cockpit.SlotSnapshot{
+		{BeadID: "zombie-1", Stage: "running", Terminal: false, Zombie: true, StatusAge: 2 * stallAfter},
+		{BeadID: "live-1", Stage: "running", Terminal: false},
+	}})
+	title := m.titleBar()
+	if !strings.Contains(title, "1 zombie") {
+		t.Errorf("titleBar = %q, want a zombie count", title)
+	}
+	if strings.Contains(title, "stalled") {
+		t.Errorf("titleBar = %q, zombie-1 should count as zombie, not stalled", title)
+	}
+}

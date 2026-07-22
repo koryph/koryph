@@ -161,3 +161,66 @@ func TestDerivedRefreshTimeoutResetsLatch(t *testing.T) {
 		t.Errorf("queue cache clobbered by the failed pass: %+v (want the seeded tree kept, stale ComputedAt intact)", got)
 	}
 }
+
+// TestSlotToSnapshot_Zombie is the koryph-k6o regression guard for the
+// zombie-slot check itself: non-terminal + a recorded pid the probe reports
+// dead → Zombie=true; a terminal slot, an unset pid, or a live pid must all
+// leave it false, and a nil alive func must never panic (best-effort, skip
+// silently — same rendering as before this change).
+func TestSlotToSnapshot_Zombie(t *testing.T) {
+	dead := func(int) bool { return false }
+	live := func(int) bool { return true }
+	now := time.Now()
+
+	cases := []struct {
+		name  string
+		sl    *ledger.Slot
+		alive func(int) bool
+		want  bool
+	}{
+		{"non-terminal, dead pid → zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, dead, true},
+		{"non-terminal, live pid → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, live, false},
+		{"terminal status, dead pid → not zombie (finished, not a zombie)", &ledger.Slot{Status: ledger.SlotDone, PID: 4242}, dead, false},
+		{"no pid recorded → not zombie", &ledger.Slot{Status: ledger.SlotRunning, PID: 0}, dead, false},
+		{"nil alive func → not zombie (best-effort skip)", &ledger.Slot{Status: ledger.SlotRunning, PID: 4242}, nil, false},
+		{"dispatching status counts as non-terminal too", &ledger.Slot{Status: ledger.SlotDispatching, PID: 4242}, dead, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := slotToSnapshot(c.sl, now, c.alive)
+			if got.Zombie != c.want {
+				t.Errorf("Zombie = %v, want %v", got.Zombie, c.want)
+			}
+		})
+	}
+}
+
+// TestRefresh_ZombieSlot verifies the end-to-end wiring: a LedgerProvider with
+// its alive probe overridden to report every pid dead surfaces a non-terminal
+// slot's dead pid as Zombie=true on the Snapshot returned by Refresh — the
+// path the TUI/cockpit actually reads from (koryph-k6o).
+func TestRefresh_ZombieSlot(t *testing.T) {
+	repo := t.TempDir()
+	st := ledger.NewStore(repo)
+	run, err := st.NewRun("proj", "test", "v0")
+	if err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	run.Slots["bead-1"] = &ledger.Slot{
+		PhaseID: "bead-1", BeadID: "bead-1", Status: ledger.SlotRunning, PID: 99999,
+	}
+	if err := st.SaveRun(run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	p := NewLedgerProvider("proj", repo, "")
+	p.alive = func(int) bool { return false } // every pid reported dead
+
+	snap, err := p.Refresh()
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if len(snap.Slots) != 1 || !snap.Slots[0].Zombie {
+		t.Fatalf("Slots = %+v, want exactly one slot with Zombie=true", snap.Slots)
+	}
+}
