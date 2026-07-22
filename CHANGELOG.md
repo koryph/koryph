@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.10.0](https://github.com/koryph/koryph/compare/v0.9.0...v0.10.0) (2026-07-22)
+
+
+### Features
+
+* **adopt:** koryph adopt — the idiot-proof onboarding wizard for existing repos ([4f92107](https://github.com/koryph/koryph/commit/4f9210790de71b67f70e640676dd86aee200dd55))
+* **commands:** /koryph-adopt skill — conversational adoption from any adopted workspace ([cf3cf7a](https://github.com/koryph/koryph/commit/cf3cf7ababdb71e30835ab0c802fcb147e831a36))
+* **dispatch:** gate implementer MCP loading via agent_mcp registry field ([dc2f5d7](https://github.com/koryph/koryph/commit/dc2f5d738bda422e08cbcf3b16fbc63bcafafcad))
+* **engine,cli:** inject a bead into a running loop (D10) ([86ba11c](https://github.com/koryph/koryph/commit/86ba11c1a18a0664d482aa5735950ea90270c027))
+* **engine,cli:** operator-override sidecar so manual merges aren't clobbered (D5) ([fb1275b](https://github.com/koryph/koryph/commit/fb1275b3eae5d2efee827471dae09752e2fa23ff))
+* **engine,cli:** persist and render the wave frontier verdict (D7/D9) ([fd409cc](https://github.com/koryph/koryph/commit/fd409ccf7693f8a7c489c404b32cf8ee642dab69))
+* **engine:** attribute requeue cost to run_id+project in telemetry ([27451aa](https://github.com/koryph/koryph/commit/27451aa0fb3a02c24e59978eefb891f16887dbff))
+* **engine:** autonomous-recovery hardening (operator-stop, drain, block hints, revert) ([f09997c](https://github.com/koryph/koryph/commit/f09997c1dd566fbb8e3f3ca2d32d7b6b058666db))
+* **engine:** detect stale self-parked in_progress beads ([e22baab](https://github.com/koryph/koryph/commit/e22baab0cb38de281d5c7663c33505b76fcbac8e))
+* **engine:** key the concurrency governor pool per account ([b940fc7](https://github.com/koryph/koryph/commit/b940fc731e4bb15a166cded38da946763bec3578))
+* **engine:** patrol sweep for dead agents on running slots (D1/D12) ([1beeb85](https://github.com/koryph/koryph/commit/1beeb851cc745a1efdd52bb97e818b8e1209b0c6))
+* **engine:** pre-stage rebase + degrade-not-park on stage timeout ([#2](https://github.com/koryph/koryph/issues/2), D6) ([1f6b74a](https://github.com/koryph/koryph/commit/1f6b74a4da8a7a71086b188d102f0d6e833b3466))
+* **intent:** route described asks into beads — /koryph-design + intent hook ([7f92da1](https://github.com/koryph/koryph/commit/7f92da1b9615b3b357a007f28229bfb3d0ef13f1))
+* **merge:** self-heal generated-file rebase collisions ([254ad6e](https://github.com/koryph/koryph/commit/254ad6e8b2ae6569a207bacdef3ce7d9ace74606))
+* **review:** per-project reviewer timeout with adaptive escalation and 20-min cap ([dfc066e](https://github.com/koryph/koryph/commit/dfc066eb429ad33c391e195bbc632a6be2fd309b))
+* **tui:** cockpit correctness overhaul with a filterable activity tail ([156bf4b](https://github.com/koryph/koryph/commit/156bf4bea531c3f767dda9bed6bb0c57883e9403))
+
+
+### Bug Fixes
+
+* **cli:** koryph merge --push must not silently skip the push ([27b1a4b](https://github.com/koryph/koryph/commit/27b1a4b4d36b100a52bcefa97de41225231e9d1f))
+* **cli:** make merge --close-bead verify the close and fail loudly (D5) ([65657e4](https://github.com/koryph/koryph/commit/65657e47f82df837c6c97993ff24a97d82acb1b2))
+* **engine:** epics never auto-close because ListChildren hides closed children ([ddc23c8](https://github.com/koryph/koryph/commit/ddc23c808aaccc02336aa468b7ec016976366643))
+* **engine:** escalation counts faults, not dispatches or environment no-ops ([b12f000](https://github.com/koryph/koryph/commit/b12f000094f80cbac36355d8aa14b83727571d42))
+* **engine:** exclude live-slot worktrees from the stale-worktrees patrol ([72323d8](https://github.com/koryph/koryph/commit/72323d833226afe10d8d14eb268acdc82dbd2c11))
+* **engine:** honor the resuming run's --max when re-dispatching stalled beads ([7e1dff6](https://github.com/koryph/koryph/commit/7e1dff68c960482cb0fb92b7bf0639436aedadfb))
+* **engine:** let an explicit --max outrank a stale persisted resize override ([464c647](https://github.com/koryph/koryph/commit/464c64746725e73b0ee0f620960ee3549af79661))
+* **engine:** make pipeline stage timeout configurable and distinct from failure ([6c93223](https://github.com/koryph/koryph/commit/6c93223862e4615d122868a0c1071d611378d254))
+* **engine:** patrol emit-throttle survives resume (D11) ([cf22677](https://github.com/koryph/koryph/commit/cf22677801b58649436a9047aca8cb66bf6395b1))
+* **engine:** re-derive slot status from ground truth, incl. stream activity ([3ba7e49](https://github.com/koryph/koryph/commit/3ba7e49c7085bebaaeabda8d7c9228f9461f75f4))
+* **engine:** stop progress() double-logging into the run log (D8) ([7c8e804](https://github.com/koryph/koryph/commit/7c8e8046af29d9ee852e4fdccbd73227226bc0e2))
+* **merge:** rebase/land robustness — ff-first, reset-before-rebase, breadcrumb exclusion ([3dd6dd4](https://github.com/koryph/koryph/commit/3dd6dd4fc5516f19d24eca0c0c01f8d015bc8b33))
+* **merge:** retry the post-rebase gate once before it counts as a fault ([3bfd4a4](https://github.com/koryph/koryph/commit/3bfd4a44903e461e7fd3195e72f5db9d1da2a2f7))
+
 ## [0.9.0](https://github.com/koryph/koryph/compare/v0.8.0...v0.9.0) (2026-07-12)
 
 
