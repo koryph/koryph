@@ -9,9 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -99,28 +103,79 @@ func severityNumber(level slog.Level) int {
 	}
 }
 
-// normaliseEndpoint ensures the endpoint has an HTTP scheme and ends with
-// /v1/logs.  A bare host (no scheme) is treated as http://; use an explicit
-// https:// scheme for any non-localhost collector to avoid cleartext export.
-func normaliseEndpoint(ep string) string {
-	if !strings.HasPrefix(ep, "http://") && !strings.HasPrefix(ep, "https://") {
-		ep = "http://" + ep
+// isLocalOTLPHost reports whether host (as returned by url.URL.Hostname(),
+// i.e. with any port and IPv6 brackets already stripped) refers to the local
+// machine. Only these are exempt from the https requirement (koryph-5a1
+// #61): a collector on the same box has no network hop for a passive
+// listener to observe, but ANY other host sends every log record — which can
+// carry account identity, bead IDs, and proxy diagnostics — in the clear.
+func isLocalOTLPHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
 	}
-	// Strip trailing slash for consistent appending.
-	ep = strings.TrimRight(ep, "/")
-	if !strings.HasSuffix(ep, "/v1/logs") {
-		ep = ep + "/v1/logs"
+	return false
+}
+
+// normaliseEndpoint validates and normalises the OTLP endpoint: a bare host
+// (no scheme) defaults to https:// unless it is localhost (which defaults to
+// http://, matching a collector run on the same box with no cert to trust);
+// an EXPLICIT http:// scheme for a non-localhost host is rejected outright
+// rather than silently honored, since that is the exact cleartext-export
+// misconfiguration this guards against (koryph-5a1 #61) — a typo'd or
+// copy-pasted "http://" for a real collector must not degrade into quietly
+// leaking telemetry instead of erroring. The path /v1/logs is appended
+// unless the endpoint already ends with it.
+func normaliseEndpoint(ep string) (string, error) {
+	raw := ep
+	hasScheme := strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://")
+	if !hasScheme {
+		// Peek at the host (strip any path) to pick the default scheme.
+		host := raw
+		if i := strings.IndexByte(host, '/'); i >= 0 {
+			host = host[:i]
+		}
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if isLocalOTLPHost(host) {
+			raw = "http://" + raw
+		} else {
+			raw = "https://" + raw
+		}
 	}
-	return ep
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("otel_endpoint %q: %w", ep, err)
+	}
+	if u.Scheme == "http" && !isLocalOTLPHost(u.Hostname()) {
+		return "", fmt.Errorf(
+			"otel_endpoint %q uses cleartext http:// for a non-localhost collector — "+
+				"use https:// (log records can carry account identity, bead IDs, and proxy diagnostics)", ep)
+	}
+
+	trimmed := strings.TrimRight(raw, "/")
+	if !strings.HasSuffix(trimmed, "/v1/logs") {
+		trimmed += "/v1/logs"
+	}
+	return trimmed, nil
 }
 
 // NewOTLPHTTPHandler creates and starts an OTLPHTTPHandler.
 // endpoint is the OTLP/HTTP base URL (e.g. "localhost:4318" or
-// "http://collector.internal:4318").
+// "https://collector.internal:4318"). Returns an error (rather than silently
+// degrading) when endpoint cannot be normalised — see normaliseEndpoint —
+// so the caller can skip enabling OTLP export and say why (koryph-5a1 #61).
 // Close must be called when the handler is no longer needed.
-func NewOTLPHTTPHandler(endpoint string, min slog.Level) *OTLPHTTPHandler {
+func NewOTLPHTTPHandler(endpoint string, min slog.Level) (*OTLPHTTPHandler, error) {
+	ep, err := normaliseEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
 	h := &OTLPHTTPHandler{
-		endpoint: normaliseEndpoint(endpoint),
+		endpoint: ep,
 		client:   &http.Client{Timeout: 10 * time.Second},
 		min:      min,
 		batch:    make([]otlpLogRecord, 0, 100),
@@ -128,7 +183,7 @@ func NewOTLPHTTPHandler(endpoint string, min slog.Level) *OTLPHTTPHandler {
 		done:     make(chan struct{}),
 	}
 	go h.flushLoop()
-	return h
+	return h, nil
 }
 
 func (h *OTLPHTTPHandler) Enabled(_ context.Context, level slog.Level) bool {
@@ -257,19 +312,50 @@ func (h *OTLPHTTPHandler) flush() {
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return // drop if marshalling fails
+		reportOTLPDrop(len(records), h.endpoint, "marshal: "+err.Error())
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.endpoint, bytes.NewReader(data))
 	if err != nil {
+		reportOTLPDrop(len(records), h.endpoint, "build request: "+err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return // best-effort; log loss is acceptable
+		reportOTLPDrop(len(records), h.endpoint, "transport: "+err.Error())
+		return
 	}
-	_ = resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		reportOTLPDrop(len(records), h.endpoint, fmt.Sprintf("HTTP %d", resp.StatusCode))
+	}
+}
+
+// otlpDropped is the process-wide count of log records the OTLP exporter has
+// dropped since startup — a marshal failure, a request-build failure, a
+// transport error, or a non-2xx response (koryph-5a1 #60: before this,
+// flush() silently ate every one of these with no local signal at all, not
+// even the non-2xx case, which was never even checked). One counter is
+// enough: a process runs at most one OTLP handler (BuildPipeline constructs
+// it once from cfg.OTELEndpoint).
+var otlpDropped atomic.Int64
+
+// OTLPDroppedRecords returns the number of log records dropped by the OTLP
+// exporter since process start. Exposed for `koryph doctor` / tests; the
+// production signal is the WARN reportOTLPDrop also emits.
+func OTLPDroppedRecords() int64 { return otlpDropped.Load() }
+
+// reportOTLPDrop records n lost records in the process-wide counter and
+// writes a WARN directly to stderr — never through slog/obs.For. The OTLP
+// handler is itself wired into the active MultiHandler pipeline
+// (BuildPipeline), so routing this warning back through the logging system
+// would re-enter this same handler's Handle/flush on every single export
+// failure, i.e. a failing collector would retry-storm itself.
+func reportOTLPDrop(n int, endpoint, reason string) {
+	otlpDropped.Add(int64(n))
+	fmt.Fprintf(os.Stderr, "koryph: WARN: obs: OTLP export to %s dropped %d record(s): %s\n", endpoint, n, reason)
 }

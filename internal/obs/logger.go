@@ -5,6 +5,7 @@ package obs
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -229,10 +230,17 @@ func BuildPipeline(cfg Config, w *os.File, telDir string) slog.Handler {
 	fh := newFileJSONHandler(telDir, maxBytes, cfg.defaultSlogLevel())
 	handlers = append(handlers, fh)
 
-	// Optional OTLP/HTTP forwarding.
+	// Optional OTLP/HTTP forwarding. A bad endpoint (e.g. explicit cleartext
+	// http:// for a non-localhost collector, koryph-5a1 #61) must not take
+	// down the rest of the logging pipeline — skip OTLP and say why, the same
+	// best-effort posture as the file handler above.
 	if cfg.OTELEndpoint != "" {
-		oh := NewOTLPHTTPHandler(cfg.OTELEndpoint, cfg.defaultSlogLevel())
-		handlers = append(handlers, oh)
+		oh, err := NewOTLPHTTPHandler(cfg.OTELEndpoint, cfg.defaultSlogLevel())
+		if err != nil {
+			fmt.Fprintf(w, "koryph: WARN: obs: OTLP export disabled: %v\n", err)
+		} else {
+			handlers = append(handlers, oh)
+		}
 	}
 
 	if len(handlers) == 1 {

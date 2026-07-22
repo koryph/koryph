@@ -319,8 +319,15 @@ gRPC port 4317):
 Or with the env override for one-off runs:
 
 ```sh
-KORYPH_OTEL_ENDPOINT=http://collector.internal:4318 koryph run --project myproject
+KORYPH_OTEL_ENDPOINT=https://collector.internal:4318 koryph run --project myproject
 ```
+
+**`https://` is required for any non-`localhost` endpoint.** A bare host
+(no scheme) defaults to `http://` for `localhost`/`127.0.0.1`/`::1` and to
+`https://` for everything else; an *explicit* `http://` for a non-local host
+is rejected outright at startup (with a `koryph: WARN: obs: OTLP export
+disabled: …` line) rather than silently sending log records — which can
+carry account identity, bead IDs, and proxy diagnostics — in the clear.
 
 A typical local collector stack (OTel Collector → Grafana Tempo):
 
@@ -342,8 +349,12 @@ service:
 ```
 
 Records are batched in memory (up to 100 records or 5 s, whichever comes
-first) and delivered in a background goroutine.  Delivery failures are
-silently dropped — local JSONL files remain the authoritative record.
+first) and delivered in a background goroutine.  Delivery failures (marshal
+errors, a non-2xx response, or a transport failure) do not stop the local
+JSONL write — it remains the authoritative record — but each dropped batch
+increments a process-wide counter and writes a `koryph: WARN: obs: OTLP
+export to … dropped N record(s): …` line directly to stderr, so a failing or
+misconfigured collector is no longer silent.
 
 ## doctor checks
 
