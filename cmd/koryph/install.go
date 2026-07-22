@@ -70,16 +70,19 @@ var assetTargets = []string{"agentsmd", "agents", "commands", "rules"}
 // the koryph assets — fallback personas, koryph-* slash commands, and the hook
 // scripts + settings wiring — that `project add` installs automatically. The
 // optional positional target (agents|commands|rules|all, default all) narrows
-// the set; --force overwrites differing files; --all-projects installs into
-// every registered project. The per-asset top-level verbs (agents install,
-// commands install, rules install) remain as working aliases.
+// the set; --force overwrites differing files; --all installs into every
+// registered project (the older --all-projects spelling still works as a
+// hidden alias, koryph-b8g #18). The per-asset top-level verbs (agents
+// install, commands install, rules install) remain as working aliases.
 func cmdProjectInstallAssets(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project install-assets", stderr)
 	force := fs.Bool("force", false, "overwrite existing assets whose content differs")
-	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
+	allProjects := fs.Bool("all", false, "install into every registered project (registry-wide refresh)")
+	fs.BoolVar(allProjects, "all-projects", false, "deprecated alias for --all")
+	hideFlag(fs, "all-projects")
 	setUsage(fs, stdout,
 		"(re)install koryph assets (AGENTS.md, agents, commands & rules) — normally run automatically by `koryph project add`",
-		"(<root> | --all-projects) [agentsmd|agents|commands|rules|all] [--force]")
+		"(<root> | --all) [agentsmd|agents|commands|rules|all] [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -105,12 +108,12 @@ func cmdProjectInstallAssets(args []string, stdout, stderr io.Writer) int {
 
 	if *allProjects {
 		if rootArg != "" {
-			return usageErr(stderr, "project install-assets: <root> and --all-projects are mutually exclusive")
+			return usageErr(stderr, "project install-assets: <root> and --all are mutually exclusive")
 		}
 		return installAssetsAllProjects(stdout, stderr, targets, *force)
 	}
 	if rootArg == "" {
-		return usageErr(stderr, "project install-assets: <root> is required (or use --all-projects)")
+		return usageErr(stderr, "project install-assets: <root> is required (or use --all)")
 	}
 	root, err := filepath.Abs(rootArg)
 	if err != nil {
@@ -234,7 +237,7 @@ func cmdCommands(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "commands", "manage the koryph-* Claude slash commands in a project (normally run by `koryph project add`)", []subVerb{
 			{"install <root> [--force]", "install koryph-* slash commands into <root>/.claude/commands"},
-			{"install --all-projects [--force]", "install koryph-* slash commands into every registered project"},
+			{"install --all [--force]", "install koryph-* slash commands into every registered project"},
 		})
 		return 0
 	}
@@ -309,15 +312,18 @@ func reportSettings(stdout, stderr io.Writer, action string) {
 
 // cmdCommandsInstall writes the koryph-* Claude slash commands into
 // <root>/.claude/commands. Identical files are a no-op; content that differs is
-// left untouched unless --force is passed. With --all-projects, installs into
-// every registered project instead of a single <root>.
+// left untouched unless --force is passed. With --all, installs into every
+// registered project instead of a single <root> (the older --all-projects
+// spelling still works as a hidden alias, koryph-b8g #18).
 func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("commands install", stderr)
 	force := fs.Bool("force", false, "overwrite existing commands whose content differs")
-	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
+	allProjects := fs.Bool("all", false, "install into every registered project (registry-wide refresh)")
+	fs.BoolVar(allProjects, "all-projects", false, "deprecated alias for --all")
+	hideFlag(fs, "all-projects")
 	setUsage(fs, stdout,
 		"install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; normally run automatically by `koryph project add`)",
-		"(<root> | --all-projects) [--force]")
+		"(<root> | --all) [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -325,7 +331,7 @@ func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 
 	if *allProjects {
 		if len(pos) > 0 {
-			return usageErr(stderr, "commands install: <root> and --all-projects are mutually exclusive")
+			return usageErr(stderr, "commands install: <root> and --all are mutually exclusive")
 		}
 		return installAllProjects(stdout, stderr, "commands", *force,
 			func(root string, force bool) ([]scaffold.Result, error) {
@@ -334,7 +340,7 @@ func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(pos) < 1 {
-		return usageErr(stderr, "commands install: <root> is required (or use --all-projects)")
+		return usageErr(stderr, "commands install: <root> is required (or use --all)")
 	}
 	root, err := filepath.Abs(pos[0])
 	if err != nil {

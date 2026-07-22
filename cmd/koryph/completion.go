@@ -149,10 +149,15 @@ func topLevelNames() []string {
 	return names
 }
 
-// subNames returns c's subcommand names.
+// subNames returns c's visible subcommand names — hidden two-word aliases
+// (e.g. "sign blob" once "sign" flattened to a single verb, koryph-b8g #24)
+// are still dispatchable via findSub but are not offered as completions.
 func subNames(c *command) []string {
 	names := make([]string, 0, len(c.subs))
 	for _, s := range c.subs {
+		if s.hidden {
+			continue
+		}
 		names = append(names, s.name)
 	}
 	return names
@@ -160,7 +165,9 @@ func subNames(c *command) []string {
 
 // flagNames returns the "--"-prefixed flag names of a command, enumerated from
 // the real flag.FlagSet the command builds (captured without side effects), so
-// completion never hand-duplicates any flag list.
+// completion never hand-duplicates any flag list. Flags marked via hideFlag
+// (back-compat spelling aliases) are excluded so completion only ever offers
+// the current spelling.
 func flagNames(c *command) []string {
 	if c.run == nil {
 		return nil
@@ -171,7 +178,9 @@ func flagNames(c *command) []string {
 	}
 	var names []string
 	fs.VisitAll(func(f *flag.Flag) {
-		names = append(names, "--"+f.Name)
+		if !hiddenFlags[f] {
+			names = append(names, "--"+f.Name)
+		}
 	})
 	return names
 }

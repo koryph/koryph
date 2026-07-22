@@ -27,12 +27,14 @@ func cmdBotCreateGitLab(args []string, stdout, stderr io.Writer) int {
 	flagProject := fs.String("project", "", "namespace/project path the token should cover (omit for a personal access token)")
 	flagTokenName := fs.String("token-name", "", "display name to give the GitLab token (default: koryph-bot-<name>)")
 	flagHeadless := fs.Bool("headless", false, "print the settings URL instead of opening the browser")
-	flagVaultProvider := fs.String("vault-provider", "", "vault provider for the token (auto-selects when omitted)")
+	flagVaultProvider := fs.String("provider", "", "vault provider for the token (auto-selects when omitted)")
+	fs.StringVar(flagVaultProvider, "vault-provider", "", "deprecated alias for --provider")
+	hideFlag(fs, "vault-provider")
 	flagKeyRef := fs.String("key-ref", "", "provider-specific key reference (auto-derived when omitted)")
 	flagPlaintext := fs.Bool("plaintext", false, "store the token inline as plaintext (legacy; prefer a vault provider)")
 	setUsage(fs, stdout,
 		"guided GitLab access-token creation: opens settings URL, validates pasted token, stores via vault",
-		"--name N [--host HOST] [--project NS/PROJ] [--token-name NAME] [--headless] [--vault-provider P] [--key-ref R] [--plaintext]")
+		"--name N [--host HOST] [--project NS/PROJ] [--token-name NAME] [--headless] [--provider P] [--key-ref R] [--plaintext]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}

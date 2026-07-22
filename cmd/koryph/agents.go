@@ -41,7 +41,7 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "agents", "manage the fallback koryph personas in a project (normally run by `koryph project add`)", []subVerb{
 			{"install <root> [--runtime NAME] [--force]", "install fallback personas into <root>/.claude/agents"},
-			{"install --all-projects [--force]", "install fallback personas into every registered project"},
+			{"install --all [--force]", "install fallback personas into every registered project"},
 		})
 		return 0
 	}
@@ -56,10 +56,11 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 
 // cmdAgentsInstall writes the fallback personas into <root>/.claude/agents.
 // Identical files are a no-op; a persona whose content differs is left
-// untouched unless --force is passed. With --all-projects, installs into
-// every registered project instead of a single <root> (always the verbatim
-// claude rendering — --runtime is not supported alongside --all-projects
-// today, koryph-v8u.12).
+// untouched unless --force is passed. With --all, installs into every
+// registered project instead of a single <root> (always the verbatim claude
+// rendering — --runtime is not supported alongside --all today,
+// koryph-v8u.12). The older --all-projects spelling still works as a hidden
+// alias (koryph-b8g #18).
 //
 // --runtime renders each persona's frontmatter `model:` pin for a target
 // runtime other than claude (koryph-v8u.12; see
@@ -71,11 +72,13 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 func cmdAgentsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("agents install", stderr)
 	force := fs.Bool("force", false, "overwrite existing personas whose content differs")
-	allProjects := fs.Bool("all-projects", false, "install into every registered project (registry-wide refresh)")
+	allProjects := fs.Bool("all", false, "install into every registered project (registry-wide refresh)")
+	fs.BoolVar(allProjects, "all-projects", false, "deprecated alias for --all")
+	hideFlag(fs, "all-projects")
 	runtimeName := fs.String("runtime", "", "target runtime name (default: <root>'s default_runtime, else \"claude\")")
 	setUsage(fs, stdout,
 		"install fallback personas into <root>/.claude/agents (idempotent; normally run automatically by `koryph project add`)",
-		"(<root> | --all-projects) [--runtime NAME] [--force]")
+		"(<root> | --all) [--runtime NAME] [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -83,10 +86,10 @@ func cmdAgentsInstall(args []string, stdout, stderr io.Writer) int {
 
 	if *allProjects {
 		if len(pos) > 0 {
-			return usageErr(stderr, "agents install: <root> and --all-projects are mutually exclusive")
+			return usageErr(stderr, "agents install: <root> and --all are mutually exclusive")
 		}
 		if *runtimeName != "" {
-			return usageErr(stderr, "agents install: --runtime and --all-projects are mutually exclusive")
+			return usageErr(stderr, "agents install: --runtime and --all are mutually exclusive")
 		}
 		return installAllProjects(stdout, stderr, "agents", *force,
 			func(root string, force bool) ([]scaffold.Result, error) {
@@ -95,7 +98,7 @@ func cmdAgentsInstall(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(pos) < 1 {
-		return usageErr(stderr, "agents install: <root> is required (or use --all-projects)")
+		return usageErr(stderr, "agents install: <root> is required (or use --all)")
 	}
 	root, err := filepath.Abs(pos[0])
 	if err != nil {

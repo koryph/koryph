@@ -30,9 +30,10 @@ func init() {
 // cmdTUI launches the interactive terminal cockpit.
 //
 // Project selection, in precedence order:
-//   - --project ID       — that single project.
-//   - --all-projects / -a — every registered project (aggregate cockpit).
-//   - neither            — the project whose repo root contains the current
+//   - --project ID — that single project.
+//   - --all / -a   — every registered project (aggregate cockpit); the older
+//     --all-projects spelling still works as a hidden alias (koryph-b8g #18).
+//   - neither      — the project whose repo root contains the current
 //     directory (a repo added to koryph, or any subdirectory of one). Outside
 //     every registered root we cannot guess which project is meant, so we ask
 //     the operator to name one rather than silently opening an unrelated
@@ -40,17 +41,19 @@ func init() {
 func cmdTUI(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("tui", stderr)
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
-	allProjects := fs.Bool("all-projects", false, "show every registered project (aggregate cockpit)")
-	fs.BoolVar(allProjects, "a", false, "shorthand for --all-projects")
+	allProjects := fs.Bool("all", false, "show every registered project (aggregate cockpit)")
+	fs.BoolVar(allProjects, "a", false, "shorthand for --all")
+	fs.BoolVar(allProjects, "all-projects", false, "deprecated alias for --all")
+	hideFlag(fs, "all-projects")
 	readOnly := fs.Bool("read-only", false, "disable write actions (nudge, drain) — safe for shared/observer sessions")
 	setUsage(fs, stdout, "interactive terminal cockpit — threads, queue, events, efficiency",
-		"[--project ID | --all-projects] [--read-only]")
+		"[--project ID | --all] [--read-only]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
 
 	if *projectID != "" && *allProjects {
-		return usageErr(stderr, "tui: --project and --all-projects are mutually exclusive")
+		return usageErr(stderr, "tui: --project and --all are mutually exclusive")
 	}
 
 	ctx := context.Background()
@@ -139,10 +142,10 @@ func resolveTUIProjects(stderr io.Writer, store *registry.Store, projectID strin
 
 // tuiSelectProjectHint reports that the current directory is outside every
 // registered project and tells the operator how to pick one: name it with
-// --project ID, or use --all-projects (-a) to view them all. The registered
+// --project ID, or use --all (-a) to view them all. The registered
 // ids and roots are listed so a valid choice is one glance away. tui keeps its
 // own hint (rather than the shared projectSelectHint) because it is the only
-// project-scoped command with an --all-projects option to advertise. Returns
+// project-scoped command with an --all option to advertise. Returns
 // the usage exit code.
 func tuiSelectProjectHint(stderr io.Writer, store *registry.Store) int {
 	fmt.Fprintln(stderr, "tui: the current directory is not inside a registered koryph project.")
@@ -156,5 +159,5 @@ func tuiSelectProjectHint(stderr io.Writer, store *registry.Store) int {
 		fmt.Fprintf(tw, "  %s\t%s\n", rec.ProjectID, rec.Root)
 	}
 	tw.Flush()
-	return usageErr(stderr, "specify one with --project ID, or use --all-projects (-a) to view them all")
+	return usageErr(stderr, "specify one with --project ID, or use --all (-a) to view them all")
 }

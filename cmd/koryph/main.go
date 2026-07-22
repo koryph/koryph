@@ -124,13 +124,31 @@ func isHelpArg(tok string) bool {
 	return tok == "-h" || tok == "--help" || tok == "help"
 }
 
+// hiddenFlags marks flags that are fully registered and dispatchable but kept
+// out of -h output, shell completion, and the generated CLI reference — used
+// for back-compat spelling aliases (e.g. --all-projects for --all, koryph-b8g
+// #18/#19) so the old spelling keeps working without cluttering the surface
+// that documents the current one. Keyed by *flag.Flag identity; populate with
+// hideFlag right after the flag.*Var call that registers the alias.
+var hiddenFlags = map[*flag.Flag]bool{}
+
+// hideFlag marks name in fs as hidden (registered, fully functional, but
+// invisible in -h, tab completion, and docgen). name must already be
+// registered on fs; a lookup miss is a silent no-op.
+func hideFlag(fs *flag.FlagSet, name string) {
+	if f := fs.Lookup(name); f != nil {
+		hiddenFlags[f] = true
+	}
+}
+
 // setUsage installs a FlagSet usage function that prints a one-line purpose, a
 // positional/flag synopsis, and (when the set defines flags) the flag
 // defaults. It replaces stdlib's bare "Usage of X:" so every leaf command's
 // -h is self-documenting. synopsis is the text after the command name (e.g.
 // "--project ID [flags]" or "<root> [--force]"); pass "" for a flagless,
 // positional-less command. Help output goes to stdout; genuine parse-error
-// messages still go to the FlagSet's stderr output.
+// messages still go to the FlagSet's stderr output. Flags marked via hideFlag
+// are omitted from the FLAGS listing.
 func setUsage(fs *flag.FlagSet, stdout io.Writer, purpose, synopsis string) {
 	fs.Usage = func() {
 		fmt.Fprintf(stdout, "koryph %s — %s\n\nUSAGE\n  koryph %s", fs.Name(), purpose, fs.Name())
@@ -138,12 +156,17 @@ func setUsage(fs *flag.FlagSet, stdout io.Writer, purpose, synopsis string) {
 			fmt.Fprintf(stdout, " %s", synopsis)
 		}
 		fmt.Fprintln(stdout)
-		hasFlags := false
-		fs.VisitAll(func(*flag.Flag) { hasFlags = true })
-		if hasFlags {
+		var visible []*flag.Flag
+		fs.VisitAll(func(f *flag.Flag) {
+			if !hiddenFlags[f] {
+				visible = append(visible, f)
+			}
+		})
+		if len(visible) > 0 {
 			fmt.Fprintln(stdout, "\nFLAGS")
-			fs.SetOutput(stdout)
-			fs.PrintDefaults()
+			for _, f := range visible {
+				writeFlagDefault(stdout, f)
+			}
 		}
 	}
 }

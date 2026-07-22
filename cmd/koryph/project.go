@@ -92,7 +92,7 @@ func cmdProject(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "project", "onboard and manage registered projects", []subVerb{
 			{"add <root> --account P --identity EMAIL [--posture <profile>|--no-posture] [flags]", "register a project (inspect + register + scaffold); offers default posture profile interactively"},
-			{"install-assets (<root> | --all-projects) [agents|commands|rules|all] [--force]", "(re)install koryph assets (agents, commands & rules; normally run by 'add')"},
+			{"install-assets (<root> | --all) [agents|commands|rules|all] [--force]", "(re)install koryph assets (agents, commands & rules; normally run by 'add')"},
 			{"list", "list managed projects (id, account, status, root)"},
 			{"show <id>|--project ID", "print one project record as JSON"},
 			{"set-account <id> --profile P --identity EMAIL --reason R", "change a project's account (audited)"},

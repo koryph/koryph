@@ -75,7 +75,7 @@ func TestResolveTUIProjectsOutsideAnyProjectHints(t *testing.T) {
 		t.Fatalf("recs = %v, want nil", recs)
 	}
 	out := errb.String()
-	for _, want := range []string{"not inside a registered", "--project", "--all-projects", "demo"} {
+	for _, want := range []string{"not inside a registered", "--project", "--all", "demo"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stderr = %q, want it to contain %q", out, want)
 		}
@@ -169,6 +169,33 @@ func TestTUIProjectAndAllProjectsConflict(t *testing.T) {
 	}
 	if !strings.Contains(errb, "mutually exclusive") {
 		t.Errorf("stderr = %q, want 'mutually exclusive'", errb)
+	}
+}
+
+// TestTUIAllIsThePrimarySpelling confirms --all (koryph-b8g #18's
+// standardized spelling) is wired identically to the --all-projects alias it
+// replaces: --project and --all still conflict.
+func TestTUIAllIsThePrimarySpelling(t *testing.T) {
+	isolate(t)
+	code, _, errb := runCmd("tui", "--project", "x", "--all")
+	if code != engine.ExitUsage {
+		t.Fatalf("code = %d, want usage exit on conflict", code)
+	}
+	if !strings.Contains(errb, "mutually exclusive") {
+		t.Errorf("stderr = %q, want 'mutually exclusive'", errb)
+	}
+}
+
+// TestTUIAllProjectsFlagIsHiddenFromHelp confirms the back-compat spelling
+// stays functional (see TestTUIProjectAndAllProjectsConflict) but does not
+// clutter -h output — --all is the one documented spelling.
+func TestTUIAllProjectsFlagIsHiddenFromHelp(t *testing.T) {
+	_, out, _ := runCmd("tui", "-h")
+	if !strings.Contains(out, "--all") {
+		t.Errorf("tui -h should document --all:\n%s", out)
+	}
+	if strings.Contains(out, "--all-projects") {
+		t.Errorf("tui -h should not list the deprecated --all-projects alias:\n%s", out)
 	}
 }
 

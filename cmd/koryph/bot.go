@@ -95,7 +95,7 @@ func cmdBot(args []string, stdout, stderr io.Writer) int {
 			{"attach [--forge github|gitlab] --name N ...", "wire a repo/project to a bot: set secrets or CI variables"},
 			{"list [--check] [--forge github|gitlab]", "list provisioned bots; --check does a live identity check"},
 			{"check [--forge github|gitlab] --name N ...", "run the full validator chain"},
-			{"vault-migrate --name N [--vault-provider P] [--key-ref R]", "move a plaintext key into a vault or encrypted file"},
+			{"vault-migrate --name N [--provider P] [--key-ref R]", "move a plaintext key into a vault or encrypted file"},
 		})
 		return 0
 	}
@@ -173,23 +173,25 @@ func cmdBotCreate(args []string, stdout, stderr io.Writer) int {
 	flagOrg := fs.String("org", "", "create the app under this GitHub organization (omit for personal account)")
 	flagPublic := fs.Bool("public", false, "make the app publicly installable (required for guest-org repo-admin installs)")
 	flagHeadless := fs.Bool("headless", false, "print the URL instead of opening the browser (set automatically when TERM is unset)")
-	flagVaultProvider := fs.String("vault-provider", "", "vault provider for the private key (protonpass|onepassword|encrypted-file|keychain|file|…); auto-selects when omitted")
+	flagVaultProvider := fs.String("provider", "", "vault provider for the private key (protonpass|onepassword|encrypted-file|keychain|file|…); auto-selects when omitted")
+	fs.StringVar(flagVaultProvider, "vault-provider", "", "deprecated alias for --provider")
+	hideFlag(fs, "vault-provider")
 	flagKeyRef := fs.String("key-ref", "", "provider-specific reference for the key (e.g. pass:// URI, op:// ref, or file path); auto-derived when omitted")
 	flagPlaintext := fs.Bool("plaintext", false, "store the private key inline as plaintext PEM (legacy; prefer a vault or encrypted-file provider)")
 	setUsage(fs, stdout,
 		"create a GitHub App via the GitHub App Manifest flow (one browser click)",
-		"[--name N] [--org ORG] [--public] [--headless] [--vault-provider P] [--key-ref R] [--plaintext]")
+		"[--name N] [--org ORG] [--public] [--headless] [--provider P] [--key-ref R] [--plaintext]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
 
-	// Validate vault-provider flag.
+	// Validate provider flag.
 	if *flagVaultProvider != "" && !isKnownProvider(*flagVaultProvider) {
-		return usageErr(stderr, fmt.Sprintf("bot create: unknown --vault-provider %q; valid: %s",
+		return usageErr(stderr, fmt.Sprintf("bot create: unknown --provider %q; valid: %s",
 			*flagVaultProvider, strings.Join(signing.VaultProviders, "|")))
 	}
 	if *flagPlaintext && *flagVaultProvider != "" {
-		return usageErr(stderr, "bot create: --plaintext and --vault-provider are mutually exclusive")
+		return usageErr(stderr, "bot create: --plaintext and --provider are mutually exclusive")
 	}
 
 	name := *flagName
@@ -510,9 +512,9 @@ func runGH(args ...string) (string, error) {
 //
 // Destinations:
 //
-//	--vault-provider P  use the named vault provider
-//	(default)           apply the no-vault fallback ladder:
-//	                    keychain (darwin) > encrypted-file (other platforms)
+//	--provider P  use the named vault provider
+//	(default)     apply the no-vault fallback ladder:
+//	              keychain (darwin) > encrypted-file (other platforms)
 //
 // The migration is atomic from the user's perspective: the old PEM is not
 // erased until the vault store succeeds.  On failure the original file is
@@ -520,11 +522,13 @@ func runGH(args ...string) (string, error) {
 func cmdBotVaultMigrate(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("bot vault-migrate", stderr)
 	flagName := fs.String("name", "", "bot name (required)")
-	flagVaultProvider := fs.String("vault-provider", "", "destination vault provider (auto-selected when omitted)")
+	flagVaultProvider := fs.String("provider", "", "destination vault provider (auto-selected when omitted)")
+	fs.StringVar(flagVaultProvider, "vault-provider", "", "deprecated alias for --provider")
+	hideFlag(fs, "vault-provider")
 	flagKeyRef := fs.String("key-ref", "", "provider-specific key reference (auto-derived when omitted)")
 	setUsage(fs, stdout,
 		"move a plaintext bot private key into a vault or encrypted file",
-		"--name N [--vault-provider P] [--key-ref R]")
+		"--name N [--provider P] [--key-ref R]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -532,7 +536,7 @@ func cmdBotVaultMigrate(args []string, stdout, stderr io.Writer) int {
 		return usageErr(stderr, "bot vault-migrate: --name is required")
 	}
 	if *flagVaultProvider != "" && !isKnownProvider(*flagVaultProvider) {
-		return usageErr(stderr, fmt.Sprintf("bot vault-migrate: unknown --vault-provider %q; valid: %s",
+		return usageErr(stderr, fmt.Sprintf("bot vault-migrate: unknown --provider %q; valid: %s",
 			*flagVaultProvider, strings.Join(signing.VaultProviders, "|")))
 	}
 
