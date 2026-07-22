@@ -318,10 +318,7 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 	// SetCalibrationStaleAt with s.quotaDir() so tests that point the Store at a
 	// temp home also write the stale flag there (not to the global KORYPH_HOME).
 	if oldProxyID != newProxyID {
-		qAccount := rec.QuotaProfile
-		if qAccount == "" {
-			qAccount = rec.AccountProfile
-		}
+		qAccount := rec.QuotaAccount()
 		reason := fmt.Sprintf("agent_proxy changed for project %s (%q → %q); re-run `koryph quota calibrate --account %s`",
 			rec.ProjectID, oldProxyID, newProxyID, qAccount)
 		_ = quota.SetCalibrationStaleAt(qAccount, reason, s.quotaDir())

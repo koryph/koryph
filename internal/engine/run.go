@@ -484,12 +484,11 @@ func effectiveWidth(optMax, cfgMax int) int {
 	return w
 }
 
-// quotaName resolves the governor profile name for this project.
+// quotaName resolves the governor profile name for this project. It defers to
+// registry.Record.QuotaAccount, the sole definition of the
+// QuotaProfile-else-AccountProfile rule (koryph-qta.11).
 func (r *runner) quotaName() string {
-	if r.rec.QuotaProfile != "" {
-		return r.rec.QuotaProfile
-	}
-	return r.rec.AccountProfile
+	return r.rec.QuotaAccount()
 }
 
 // progress writes one human-readable line to the console sink (opts.Out). When

@@ -258,14 +258,12 @@ func collectProjectExperiment(rec *registry.Record) (ProjectExperiment, error) {
 	return pe, nil
 }
 
-// quotaAccountFor mirrors internal/engine's runner.quotaName() /
-// internal/registry's Store.Save proxy-flip staleness lookup: QuotaProfile
-// wins when set, else AccountProfile.
+// quotaAccountFor defers to registry.Record.QuotaAccount, the sole definition
+// of the QuotaProfile-else-AccountProfile rule shared with internal/engine's
+// runner.quotaName() and internal/registry's Store.Save proxy-flip staleness
+// lookup (koryph-qta.11).
 func quotaAccountFor(rec *registry.Record) string {
-	if rec.QuotaProfile != "" {
-		return rec.QuotaProfile
-	}
-	return rec.AccountProfile
+	return rec.QuotaAccount()
 }
 
 // finalizeArm turns a bead-aggregate map into the arm's rendered totals.

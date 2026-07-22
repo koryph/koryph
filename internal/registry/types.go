@@ -395,6 +395,20 @@ func (r *Record) PromptCacheEnabled() bool {
 	return r.EffectivePromptCachePolicy() == PromptCacheOn
 }
 
+// QuotaAccount resolves the governor/quota account name for this project:
+// QuotaProfile when set, else AccountProfile. This is the SOLE definition of
+// that rule — the quota-governor staleness marking (registry.Store.Save
+// proxy-flip), the engine wave-loop (runner.quotaName), and the experiment
+// report (metrics.quotaAccountFor) all call this so the account a report reads,
+// the estimator segments against, and doctor prompts to recalibrate can never
+// drift apart (koryph-qta.11).
+func (r *Record) QuotaAccount() string {
+	if r.QuotaProfile != "" {
+		return r.QuotaProfile
+	}
+	return r.AccountProfile
+}
+
 // RuntimeAccount is one runtime's account-scoped identity/env configuration
 // (koryph-v8u.5) — the runtime-scoped counterpart of Record's flat
 // AccountProfile/ClaudeConfigDir/ExpectedIdentity/EnvPassthrough fields. See
