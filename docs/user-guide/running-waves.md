@@ -544,6 +544,48 @@ This is report-only: it never resets the bead itself, because an
 represent, and an automatic reset would just get it redispatched into the
 same blocker.
 
+### Zombie runs: `koryph ops reconcile`
+
+`--resume` (above) is the right recovery tool when you want the engine to
+**re-dispatch** dead work — it is a live engine process that classifies the
+latest run and requeues or reattaches. But sometimes a run loop was killed (or
+the host slept, or the process was reaped) and you do **not** want anything
+re-dispatched — you just want the ledger to stop lying: a slot can be left
+`status=running` with a dead agent pid forever, because nothing outside a
+fresh engine run ever revisits it. That zombie is cosmetic but misleading
+(`koryph board`/`koryph status`/the TUI still show it as running), it strands
+the run un-finalized, and it can pin stale governor leases/demand that count
+against the project's fair share.
+
+`koryph ops reconcile` is the dispatch-free fix — it never starts an engine
+and never sends any bead to an agent:
+
+```sh
+koryph ops reconcile --project myproject            # apply
+koryph ops reconcile --project myproject --dry-run  # preview only
+```
+
+It loads the project's latest run and, for every **non-terminal** slot:
+
+| Slot state | Action |
+|---|---|
+| A live engine (`koryph.lock`'s pid) still owns this project | Report and exit — reconcile never races a running engine's own recovery path |
+| Agent pid still alive | Left alone and reported (the same signal `--resume` would reattach to) |
+| Agent pid dead | Parked `blocked` with a note recording how many commits were preserved on its branch (`reconciled: agent dead, loop gone; N commits preserved on <branch>`); its global governor lease is released |
+
+Once every slot is terminal the run is finalized (matching `FinalizeRun`'s
+stale-`running` fix). A `blocked` slot reconciled this way keeps its worktree
+and branch exactly like any other `blocked` slot — nothing is deleted, and a
+later `koryph run --resume` (or a manual `koryph merge`) can still recover its
+commits.
+
+As a best-effort cross-check (platform-permitting, via `ps -o etime=`), an
+agent pid that is still alive but whose process start time is well after the
+slot's recorded dispatch time is flagged with a warning — the known `kill(0)`
+false positive where an OS eventually recycles a dead agent's pid for an
+unrelated later process. The slot is still left alone (the report is a hint
+to verify manually, not an automatic reclassification).
+
 ## Poll interval
 
 The engine polls each running slot's `status.json` heartbeat every **10 seconds**

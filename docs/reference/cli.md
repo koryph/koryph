@@ -108,6 +108,8 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph obs tail`](#koryph-obs-tail) | tail the telemetry JSONL stream in human-readable form |
 | ↳ [`koryph obs export`](#koryph-obs-export) | bundle one run's telemetry as redaction-verified JSONL |
 | ↳ [`koryph obs prune`](#koryph-obs-prune) | remove telemetry files older than the retention window |
+| [`koryph ops`](#koryph-ops) | dispatch-free operator maintenance (reconcile dead runs) |
+| ↳ [`koryph ops reconcile`](#koryph-ops-reconcile) | park zombie slots of a dead run blocked, release their leases, finalize the run |
 | [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
 
 ---
@@ -1279,6 +1281,28 @@ remove telemetry files older than the retention window
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--dry-run` | bool |  | list files that would be removed without removing them |
+
+
+---
+
+## `koryph ops` { #koryph-ops }
+
+dispatch-free operator maintenance (reconcile dead runs)
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+Run `koryph ops <subcommand> -h` for subcommand flags.
+
+## `koryph ops reconcile` { #koryph-ops-reconcile }
+
+park zombie slots of a dead run blocked, release their leases, finalize the run
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--dry-run` | bool |  | report what would change without mutating the ledger or releasing leases |
+| `--project` | string |  | project id (default: the project containing the current directory) |
 
 
 ---
