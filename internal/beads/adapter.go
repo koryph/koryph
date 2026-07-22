@@ -178,6 +178,15 @@ func (a *Adapter) AddLabel(ctx context.Context, id, label string) error {
 	return err
 }
 
+// RemoveLabel removes a single label from an issue via
+// `bd update <id> --remove-label <label>`. Removing a label the issue does
+// not carry is a no-op on bd's side, not an error — callers may call this
+// unconditionally to supersede a prior state.
+func (a *Adapter) RemoveLabel(ctx context.Context, id, label string) error {
+	_, err := a.run(ctx, "update", id, "--remove-label", label)
+	return err
+}
+
 // DepAdd wires "id depends on blockedBy" via `bd dep add <id> --blocked-by
 // <blockedBy>`. Used by the epic-validation act layer to wire gap-bead
 // sibling edges after all siblings exist (forward references included).

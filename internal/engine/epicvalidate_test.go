@@ -30,11 +30,12 @@ type epicFakeStore struct {
 	issues   map[string]beads.Issue
 	children map[string][]beads.Issue
 
-	created []beads.CreateInput
-	labels  []string // "<id>:<label>"
-	notes   []string // "<id>:<text>"
-	closed  []string // "<id>:<reason>"
-	deps    []string // "<id>:<blockedBy>"
+	created       []beads.CreateInput
+	labels        []string // "<id>:<label>"
+	removedLabels []string // "<id>:<label>"
+	notes         []string // "<id>:<text>"
+	closed        []string // "<id>:<reason>"
+	deps          []string // "<id>:<blockedBy>"
 
 	// listCalls and childrenCalls count bd-subprocess-equivalent calls, used
 	// by the health-patrol cadence tests (koryph-bbe) to verify the epic
@@ -121,6 +122,22 @@ func (f *epicFakeStore) AddLabel(_ context.Context, id, label string) error {
 		iss.Labels = append(iss.Labels, label)
 		f.issues[id] = iss
 	}
+	return nil
+}
+func (f *epicFakeStore) RemoveLabel(_ context.Context, id, label string) error {
+	f.removedLabels = append(f.removedLabels, id+":"+label)
+	iss, ok := f.issues[id]
+	if !ok {
+		return nil
+	}
+	kept := iss.Labels[:0]
+	for _, l := range iss.Labels {
+		if l != label {
+			kept = append(kept, l)
+		}
+	}
+	iss.Labels = kept
+	f.issues[id] = iss
 	return nil
 }
 func (f *epicFakeStore) DepAdd(_ context.Context, id, blockedBy string) error {
@@ -217,6 +234,79 @@ func TestEpicValidation_MetFilesDocsBeadAndDefersClose(t *testing.T) {
 	}
 	if !anyPrefixed(fake.closed, "ep1:") {
 		t.Errorf("epic not closed after docs merge; closed = %v", fake.closed)
+	}
+}
+
+// degradedEpicFixture is closedEpicFixture with ep1 already carrying
+// LabelDegraded — the state a prior round's timeout/subprocess failure would
+// have left behind (koryph-99if: BUG-4).
+func degradedEpicFixture() *epicFakeStore {
+	fake := closedEpicFixture()
+	iss := fake.issues["ep1"]
+	iss.Labels = []string{epicreview.LabelDegraded}
+	fake.issues["ep1"] = iss
+	return fake
+}
+
+// TestEpicValidation_DegradedThenMetClearsLabel covers koryph-99if BUG-4: a
+// successful "met" round must remove the stale validation:degraded label a
+// prior degraded round left behind, or the health patrol permanently skips
+// the epic as an operator-decision state (internal/engine/health.go's
+// patrolCheckUnvalidatedEpics) even after every child closes.
+func TestEpicValidation_DegradedThenMetClearsLabel(t *testing.T) {
+	fake := degradedEpicFixture()
+	r, _ := epicRunner(t, fake, epicreview.Verdict{Met: true, Summary: "all good"})
+
+	r.epicPending = map[string]bool{"ep1": true}
+	r.maybeStartEpicValidation(t.Context(), true)
+	drainVerdict(t, r)
+
+	wantRemoved := "ep1:" + epicreview.LabelDegraded
+	if !containsStr(fake.removedLabels, wantRemoved) {
+		t.Errorf("removedLabels = %v, want %s", fake.removedLabels, wantRemoved)
+	}
+	if fake.issues["ep1"].HasLabel(epicreview.LabelDegraded) {
+		t.Error("ep1 still carries validation:degraded after a met round")
+	}
+
+	// Reproduce the stranding scenario BUG-4 describes: the docs bead (the
+	// met round's only remaining child) closes with nothing running to
+	// observe the edge — exactly TestPatrolCheckUnvalidatedEpics_
+	// ValidationPassedRequeues's close-after-docs shape. Before this fix,
+	// validation:degraded would still be on ep1 and the patrol's degraded
+	// exclusion would hide it forever even though it now also carries
+	// validation:passed and every child (including the docs bead) is closed.
+	docsID := "created-1"
+	_ = fake.Close(t.Context(), docsID, "merged")
+	fake.children["ep1"][1].Status = "closed"
+
+	findings := r.patrolCheckUnvalidatedEpics(t.Context(), time.Now())
+	if !r.epicPending["ep1"] {
+		t.Errorf("patrol must re-queue ep1 now that validation:degraded is cleared; findings = %+v", findings)
+	}
+}
+
+// TestEpicValidation_DegradedThenGapsClearsLabel is the gaps-branch sibling of
+// TestEpicValidation_DegradedThenMetClearsLabel: a round that finds gaps is
+// still a successful round (the validator ran and returned a real verdict),
+// so it must supersede the prior degraded state exactly the same way.
+func TestEpicValidation_DegradedThenGapsClearsLabel(t *testing.T) {
+	fake := degradedEpicFixture()
+	r, _ := epicRunner(t, fake, epicreview.Verdict{
+		Met:  false,
+		Gaps: []epicreview.Gap{{Title: "gap A", Why: "w", Acceptance: "a"}},
+	})
+
+	r.epicPending = map[string]bool{"ep1": true}
+	r.maybeStartEpicValidation(t.Context(), true)
+	drainVerdict(t, r)
+
+	wantRemoved := "ep1:" + epicreview.LabelDegraded
+	if !containsStr(fake.removedLabels, wantRemoved) {
+		t.Errorf("removedLabels = %v, want %s", fake.removedLabels, wantRemoved)
+	}
+	if fake.issues["ep1"].HasLabel(epicreview.LabelDegraded) {
+		t.Error("ep1 still carries validation:degraded after a gaps round")
 	}
 }
 

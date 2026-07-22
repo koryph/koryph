@@ -27,6 +27,7 @@ type BeadStore interface {
 	Close(ctx context.Context, id, reason string) error
 	AppendNotes(ctx context.Context, id, text string) error
 	AddLabel(ctx context.Context, id, label string) error
+	RemoveLabel(ctx context.Context, id, label string) error
 	DepAdd(ctx context.Context, id, blockedBy string) error
 }
 
@@ -109,6 +110,7 @@ func Act(ctx context.Context, bd BeadStore, o ActOpts, v Verdict) (ActResult, er
 		return res, nil
 
 	case v.Met:
+		clearDegraded(ctx, bd, o, progress)
 		res.StructuralIDs = fileStructural(ctx, bd, o, v.Structural, progress)
 
 		docs := o.Config.EffectiveDocsUpdate()
@@ -159,6 +161,7 @@ func Act(ctx context.Context, bd BeadStore, o ActOpts, v Verdict) (ActResult, er
 		return res, nil
 
 	default: // gaps
+		clearDegraded(ctx, bd, o, progress)
 		res.Outcome = "gaps-filed"
 		res.StructuralIDs = fileStructural(ctx, bd, o, v.Structural, progress)
 		gapIDs, err := fileGaps(ctx, bd, o, v.Gaps, progress)
@@ -173,6 +176,21 @@ func Act(ctx context.Context, bd BeadStore, o ActOpts, v Verdict) (ActResult, er
 		progress("epic %s: round %d found %d gap(s); %d follow-up(s) filed",
 			o.EpicID, o.Round, len(v.Gaps), len(gapIDs))
 		return res, nil
+	}
+}
+
+// clearDegraded removes LabelDegraded, if present, at the start of a met or
+// gaps round. A successful validator round (one that returned a real
+// verdict, not another degradation) supersedes a prior degraded state by
+// definition — otherwise the stale label permanently hides the epic from the
+// health patrol's re-queue scan (internal/engine/health.go's
+// patrolCheckUnvalidatedEpics deliberately skips LabelDegraded epics as an
+// operator-decision state), stranding it open even after every child closes.
+// Removing an absent label is a no-op on bd's side, so this runs
+// unconditionally rather than paying for a Show to check first.
+func clearDegraded(ctx context.Context, bd BeadStore, o ActOpts, progress func(string, ...any)) {
+	if err := bd.RemoveLabel(ctx, o.EpicID, LabelDegraded); err != nil {
+		progress("epic %s: remove %s label: %v", o.EpicID, LabelDegraded, err)
 	}
 }
 
