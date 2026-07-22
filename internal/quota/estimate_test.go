@@ -24,37 +24,52 @@ func TestSizeOf(t *testing.T) {
 	}
 }
 
-func TestEstimateItem(t *testing.T) {
+func TestEstimateItemForRuntimeClaude(t *testing.T) {
 	cfg := DefaultConfig("acct") // sonnet=3, M=1.0, margin=1.5
 
 	// Static: sonnet base * M mult * safety margin.
-	if got := EstimateItem(cfg, "sonnet", "M"); !approx(got, 4.5) {
+	if got := EstimateItemForRuntime(cfg, "claude", "sonnet", "M"); !approx(got, 4.5) {
 		t.Fatalf("static estimate = %g, want 4.5", got)
 	}
 	// opus L: 9 * 2 * 1.5 = 27.
-	if got := EstimateItem(cfg, "opus", "L"); !approx(got, 27) {
+	if got := EstimateItemForRuntime(cfg, "claude", "opus", "L"); !approx(got, 27) {
 		t.Fatalf("opus L estimate = %g, want 27", got)
 	}
 	// Unknown tier falls back to sonnet base.
-	if got := EstimateItem(cfg, "mystery", "M"); !approx(got, 4.5) {
+	if got := EstimateItemForRuntime(cfg, "claude", "mystery", "M"); !approx(got, 4.5) {
 		t.Fatalf("unknown-tier estimate = %g, want 4.5 (sonnet base)", got)
+	}
+
+	// The rest of claude's tier table.
+	cases := []struct {
+		tier, size string
+		want       float64
+	}{
+		{"haiku", "S", 0.3},   // 0.4 * 0.5 * 1.5
+		{"fable", "M", 22.5},  // 15.0 * 1.0 * 1.5
+		{"mystery", "M", 4.5}, // fallback (sonnet base): 3.0 * 1.0 * 1.5
+	}
+	for _, tc := range cases {
+		if got := EstimateItemForRuntime(cfg, "claude", tc.tier, tc.size); !approx(got, tc.want) {
+			t.Errorf("EstimateItemForRuntime(claude, %s, %s) = %g, want %g", tc.tier, tc.size, got, tc.want)
+		}
 	}
 
 	// Calibration beats the static estimate.
 	cfg.Calibration = map[string]float64{"sonnet:M": 2.0}
-	if got := EstimateItem(cfg, "sonnet", "M"); !approx(got, 2.0) {
+	if got := EstimateItemForRuntime(cfg, "claude", "sonnet", "M"); !approx(got, 2.0) {
 		t.Fatalf("calibrated estimate = %g, want 2.0 (calibration wins)", got)
 	}
 }
 
-func TestEstimateWave(t *testing.T) {
+func TestEstimateWaveForRuntimeClaude(t *testing.T) {
 	cfg := DefaultConfig("acct")
 	items := []struct{ Tier, Size string }{
 		{"sonnet", "M"}, // 4.5
 		{"opus", "L"},   // 27.0
 	}
-	if got := EstimateWave(cfg, items); !approx(got, 31.5) {
-		t.Fatalf("EstimateWave = %g, want 31.5", got)
+	if got := EstimateWaveForRuntime(cfg, "claude", items); !approx(got, 31.5) {
+		t.Fatalf("EstimateWaveForRuntime(claude) = %g, want 31.5", got)
 	}
 }
 
@@ -205,32 +220,6 @@ func TestRecordCannotPoisonBias(t *testing.T) {
 	}
 }
 
-// TestEstimateItemForRuntimeClaudeParity proves EstimateItemForRuntime(cfg,
-// "claude", tier, size) is byte-for-byte EstimateItem(cfg, tier, size) —
-// including the unknown-tier fallback path — across every existing fixture
-// (koryph-v8u.12's "claude parity" requirement).
-func TestEstimateItemForRuntimeClaudeParity(t *testing.T) {
-	cfg := DefaultConfig("acct")
-	cases := []struct{ tier, size string }{
-		{"haiku", "S"}, {"sonnet", "M"}, {"opus", "L"}, {"fable", "M"}, {"mystery", "M"},
-	}
-	for _, tc := range cases {
-		want := EstimateItem(cfg, tc.tier, tc.size)
-		got := EstimateItemForRuntime(cfg, "claude", tc.tier, tc.size)
-		if !approx(got, want) {
-			t.Errorf("EstimateItemForRuntime(claude, %s, %s) = %g, want %g (EstimateItem parity)",
-				tc.tier, tc.size, got, want)
-		}
-	}
-
-	// Calibration wins identically regardless of the runtime argument: it is
-	// NOT runtime-namespaced (koryph-v8u.12 back-compat decision).
-	cfg.Calibration = map[string]float64{"sonnet:M": 2.0}
-	if got := EstimateItemForRuntime(cfg, "claude", "sonnet", "M"); !approx(got, 2.0) {
-		t.Errorf("calibrated EstimateItemForRuntime(claude, ...) = %g, want 2.0", got)
-	}
-}
-
 // TestEstimateItemForRuntimeStubTable proves the estimator base table is
 // genuinely namespaced by runtime: a runtime whose config carries no
 // PerTierUSD entry for a tier falls back to THAT RUNTIME's own default base,
@@ -275,21 +264,6 @@ func TestEstimateItemForRuntimeUnknownRuntimeFallsBackToClaude(t *testing.T) {
 	want := EstimateItemForRuntime(cfg, "claude", "mystery", "M")
 	if !approx(got, want) {
 		t.Errorf("EstimateItemForRuntime(no-such-runtime, ...) = %g, want claude fallback %g", got, want)
-	}
-}
-
-// TestEstimateWaveForRuntimeClaudeParity proves EstimateWaveForRuntime(cfg,
-// "claude", items) matches EstimateWave(cfg, items).
-func TestEstimateWaveForRuntimeClaudeParity(t *testing.T) {
-	cfg := DefaultConfig("acct")
-	items := []struct{ Tier, Size string }{
-		{"sonnet", "M"},
-		{"opus", "L"},
-	}
-	want := EstimateWave(cfg, items)
-	got := EstimateWaveForRuntime(cfg, "claude", items)
-	if !approx(got, want) {
-		t.Errorf("EstimateWaveForRuntime(claude, ...) = %g, want %g (EstimateWave parity)", got, want)
 	}
 }
 

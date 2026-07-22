@@ -514,7 +514,7 @@ func buildCostBurndown(inp burndownInput, obs []slotObs) CostBurndown {
 		cb.ProjectedP90USD = p90cost * float64(cb.RemainingBeads)
 	} else if inp.quotaCfg != nil {
 		// Fall back to quota estimator (sonnet/M as a reasonable default).
-		base := quota.EstimateItem(inp.quotaCfg, "sonnet", "M")
+		base := quota.EstimateItemForRuntime(inp.quotaCfg, "claude", "sonnet", "M")
 		cb.AvgCostPerBead = base
 		cb.ProjectedP50USD = base * float64(cb.RemainingBeads)
 		cb.ProjectedP90USD = base * 1.5 * float64(cb.RemainingBeads)

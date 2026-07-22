@@ -33,9 +33,9 @@
 //     graceful_stop, min 1 below graceful_stop, 0 at/above graceful_stop.
 //   - Preflight(u, waveEstimateUSD, cfg) (ok bool, reason string) — a loop
 //     wave that would cross graceful_stop (97%) does not dispatch.
-//   - EstimateWave / EstimateItem — per-tier base cost x size multiplier x
-//     safety margin, EWMA-calibrated per tier from observed slot costs
-//     (Record(tier, size, actualUSD)).
+//   - EstimateWaveForRuntime / EstimateItemForRuntime — per-tier base cost x
+//     size multiplier x safety margin, EWMA-calibrated per tier from observed
+//     slot costs (Record(tier, size, actualUSD)).
 //
 // Rolling-$ accounting (koryph-i3b.3, design docs/designs/2026-07-api-key-auth.md
 // §7): the ladder above is shaped for subscription/oauth-token accounts, which

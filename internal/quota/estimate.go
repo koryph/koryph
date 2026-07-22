@@ -26,8 +26,8 @@ func SizeOf(descLen int) string {
 // explicit fallback base for a tier name the table has no entry for
 // (koryph-v8u.12). It mirrors usage.go's runtimePriceTable shape
 // (rules+fallback, koryph-v8u.3 item 4) at the coarser "$/dispatch"
-// granularity EstimateItem works at, rather than usage.go's per-MTok token
-// pricing.
+// granularity EstimateItemForRuntime works at, rather than usage.go's
+// per-MTok token pricing.
 type tierUSDTable struct {
 	perTier  map[string]float64
 	fallback float64
@@ -40,14 +40,14 @@ type tierUSDTable struct {
 // named "sonnet"), so the governor's estimator seed must be looked up by
 // runtime name too, not assumed to be Anthropic's haiku/sonnet/opus/fable
 // forever. Only "claude" carries real numbers today — preserved byte-for-
-// byte from the pre-koryph-v8u.12 hardcoded DefaultConfig literal and
-// EstimateItem's cfg.PerTierUSD["sonnet"] fallback — a future runtime
-// adapter bead adds its own entry here exactly as usage.go's pricingTables
-// documents for token-level pricing.
+// byte from the pre-koryph-v8u.12 hardcoded DefaultConfig literal and the
+// unrecognized-tier cfg.PerTierUSD["sonnet"] fallback the estimator has
+// always used — a future runtime adapter bead adds its own entry here
+// exactly as usage.go's pricingTables documents for token-level pricing.
 var tierUSDTables = map[string]tierUSDTable{
 	"claude": {
 		perTier:  map[string]float64{"haiku": 0.4, "sonnet": 3.0, "opus": 9.0, "fable": 15.0},
-		fallback: 3.0, // sonnet rate: the literal EstimateItem's cfg.PerTierUSD["sonnet"] fallback resolved to before this bead
+		fallback: 3.0, // sonnet rate: the unrecognized-tier fallback the estimator has always used
 	},
 }
 
@@ -63,31 +63,21 @@ func tierUSDTableForRuntime(runtimeName string) tierUSDTable {
 	return tierUSDTables["claude"]
 }
 
-// EstimateItem estimates the USD cost of one dispatch. A calibrated
-// "<tier>:<size>" observation wins; otherwise it is the tier base times the
-// size multiplier times the safety margin. An unknown tier falls back to the
-// sonnet base. Equivalent to EstimateItemForRuntime(cfg, "claude", tier,
-// size); see that function for the runtime-aware generalization
-// (koryph-v8u.12).
-func EstimateItem(cfg *Config, tier, size string) float64 {
-	return EstimateItemForRuntime(cfg, "claude", tier, size)
-}
-
-// EstimateItemForRuntime is EstimateItem generalized across runtimes
-// (koryph-v8u.12): when cfg.PerTierUSD has no entry for tier (an
-// unrecognized or not-yet-configured tier name), the fallback base comes
-// from runtimeName's OWN default table instead of a hardcoded
-// claude-specific literal — so a non-claude runtime's unrecognized tier
-// degrades to ITS OWN base price, never Anthropic's sonnet rate. For
-// runtimeName=="claude" (or ""), this is byte-for-byte EstimateItem:
-// tierUSDTables["claude"].fallback is the exact 3.0 literal EstimateItem
-// always used. Calibration keys ("<tier>:<size>") are NOT runtime-
-// namespaced (back-compat decision, koryph-v8u.12: only claude dispatches
-// have ever recorded calibration, and Record's key shape is unchanged) — a
-// calibrated observation always wins regardless of runtime, matching
-// EstimateItem's existing precedence. Equivalent to
-// EstimateItemForRuntimeProxy(cfg, runtimeName, tier, size, "") — see that
-// function for the proxy-identity segmentation seam (koryph-77r.1).
+// EstimateItemForRuntime estimates the USD cost of one dispatch for the given
+// runtime (koryph-v8u.12). A calibrated "<tier>:<size>" observation wins;
+// otherwise it is the tier base times the size multiplier times the safety
+// margin. When cfg.PerTierUSD has no entry for tier (an unrecognized or
+// not-yet-configured tier name), the fallback base comes from runtimeName's
+// OWN default table instead of a hardcoded claude-specific literal — so a
+// non-claude runtime's unrecognized tier degrades to ITS OWN base price,
+// never Anthropic's sonnet rate. For runtimeName=="claude" (or ""), the
+// fallback is tierUSDTables["claude"].fallback (3.0). Calibration keys
+// ("<tier>:<size>") are NOT runtime-namespaced (back-compat decision,
+// koryph-v8u.12: only claude dispatches have ever recorded calibration, and
+// Record's key shape is unchanged) — a calibrated observation always wins
+// regardless of runtime. Equivalent to EstimateItemForRuntimeProxy(cfg,
+// runtimeName, tier, size, "") — see that function for the proxy-identity
+// segmentation seam (koryph-77r.1).
 func EstimateItemForRuntime(cfg *Config, runtimeName, tier, size string) float64 {
 	return EstimateItemForRuntimeProxy(cfg, runtimeName, tier, size, "")
 }
@@ -163,14 +153,8 @@ func EstimateItemForRuntimeProxy(cfg *Config, runtimeName, tier, size, proxyID s
 	return base * mult * margin
 }
 
-// EstimateWave sums the per-item cost estimates for a wave. Equivalent to
-// EstimateWaveForRuntime(cfg, "claude", items).
-func EstimateWave(cfg *Config, items []struct{ Tier, Size string }) float64 {
-	return EstimateWaveForRuntime(cfg, "claude", items)
-}
-
-// EstimateWaveForRuntime is EstimateWave generalized across runtimes
-// (koryph-v8u.12); see EstimateItemForRuntime.
+// EstimateWaveForRuntime sums the per-item cost estimates for a wave
+// dispatched on the given runtime (koryph-v8u.12); see EstimateItemForRuntime.
 func EstimateWaveForRuntime(cfg *Config, runtimeName string, items []struct{ Tier, Size string }) float64 {
 	var total float64
 	for _, it := range items {
