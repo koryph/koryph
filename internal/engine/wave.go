@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/koryph/koryph/internal/account"
@@ -652,13 +651,20 @@ func (r *runner) runCostUSD() float64 {
 }
 
 // projectedRunCostUSD is the budget-admission figure (koryph-u7q): settled cost
-// PLUS each still-running slot's dispatch-time estimate. Without the in-flight
+// PLUS each still-live slot's dispatch-time estimate. Without the in-flight
 // term, runCostUSD reads $0 until agents complete, so a whole wave (or a
 // requeue) could be admitted after the cap was already committed and only settle
 // past it later — the "budget sails past the cap" bug. EstimateUSD is the
 // per-attempt estimate stamped at dispatch (bias-corrected when samples exist),
-// and CostUSD already carries prior attempts' accumulated cost, so a running
+// and CostUSD already carries prior attempts' accumulated cost, so a live
 // slot contributes prior-spend + this-attempt-estimate.
+//
+// "Live" is SlotRunning OR SlotStuck: pollSlot (poll.go) flips a running
+// slot's status to SlotStuck when it goes quiet, but the process (and its
+// spend) is still alive — koryph never interrupts a running agent on its
+// own. A stuck-but-alive slot dropping out of this sum the moment it is
+// flagged would let projected cost fall back below the cap while the agent
+// keeps accruing real spend, breaching --budget silently.
 func (r *runner) projectedRunCostUSD() float64 {
 	var total float64
 	for _, sl := range r.run.Slots {
@@ -666,7 +672,7 @@ func (r *runner) projectedRunCostUSD() float64 {
 			continue
 		}
 		total += sl.CostUSD
-		if sl.Status == ledger.SlotRunning {
+		if sl.Status == ledger.SlotRunning || sl.Status == ledger.SlotStuck {
 			total += sl.EstimateUSD
 		}
 	}
@@ -1507,10 +1513,14 @@ func (r *runner) baseCommit(ctx context.Context) string {
 	return strings.TrimSpace(res.Stdout)
 }
 
-// interruptActiveSlots sends SIGTERM to every non-terminal slot's agent PID
-// (hard budget stop). Agents are designed to checkpoint on SIGTERM; their
-// worktrees and branches are preserved. Never SIGKILLs — a dirty worktree is
-// recoverable; a killed process in the middle of a commit is not.
+// interruptActiveSlots sends SIGTERM to every non-terminal slot's agent
+// process GROUP (hard budget stop). Agents are launched Setsid (see
+// dispatch.StopGraceful) so their subprocess children share the leader's
+// pgid; signaling the leader pid alone orphans those children instead of
+// stopping them, leaving them running (and spending) past the budget cap.
+// Agents are designed to checkpoint on SIGTERM; their worktrees and branches
+// are preserved. Never SIGKILLs — a dirty worktree is recoverable; a killed
+// process in the middle of a commit is not.
 func (r *runner) interruptActiveSlots() {
 	for id, sl := range r.run.Slots {
 		if sl == nil || ledger.Terminal(sl.Status) {
@@ -1521,10 +1531,10 @@ func (r *runner) interruptActiveSlots() {
 			r.progress("hard stop: slot %s has no PID (agent not yet attached or already gone)", id)
 			continue
 		}
-		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-			r.progress("hard stop: could not signal pid %d (slot %s): %v — already gone?", pid, id, err)
+		if err := dispatch.StopGraceful(pid); err != nil {
+			r.progress("hard stop: could not signal pgid for pid %d (slot %s): %v — already gone?", pid, id, err)
 		} else {
-			r.progress("hard stop: sent SIGTERM to pid %d (slot %s)", pid, id)
+			r.progress("hard stop: sent SIGTERM to process group of pid %d (slot %s)", pid, id)
 		}
 	}
 }
