@@ -55,6 +55,17 @@ func gitRepoWithBranch(t *testing.T) (string, string) {
 	t.Helper()
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", "-b", "main")
+	// Persist a committer identity in the repo's own config, the way every
+	// real koryph-managed repo has one (signing setup writes user.email /
+	// user.name into repo config). rebaseWorktreeBestEffort replays commits
+	// via a plain `git rebase` that inherits the ambient environment, NOT the
+	// GIT_AUTHOR_* env this helper injects into its own git invocations — so
+	// without a config identity the replay fails with "no email was given and
+	// auto-detection is disabled" on any host whose git can't synthesize one
+	// (e.g. CI runners), even though the rebase is conflict-free. Setting it
+	// here makes the test hermetic and faithful to production.
+	git(t, repo, "config", "user.email", "t@t")
+	git(t, repo, "config", "user.name", "t")
 	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
