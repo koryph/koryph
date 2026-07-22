@@ -13,6 +13,18 @@ import (
 
 // WriteAtomic writes data to path via a temp file + rename so readers never
 // observe a partial file. Parent directories are created as needed.
+//
+// The rename is followed by an fsync of the PARENT directory: on the common
+// crash-consistency journaling modes (e.g. ext4 ordered/writeback, ordinary
+// APFS), a rename is only durable once the directory entry change itself is
+// flushed — fsyncing the temp file before rename guarantees the file's DATA
+// survives a crash, but not that the rename that makes it visible at path
+// does. Without this, a crash between rename() and the next unrelated fsync
+// of that directory can resurrect the pre-rename state (old content, or no
+// file at all) even though the caller observed a successful write. Best
+// effort: a directory fsync failure (e.g. an fs that rejects O_RDONLY dir
+// fsync) is not fatal — the rename already succeeded — but is returned so
+// callers/tests can see it.
 func WriteAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -39,7 +51,25 @@ func WriteAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return fsyncDir(dir)
+}
+
+// fsyncDir opens dir and fsyncs it, making a prior rename/create/remove in
+// that directory durable across a crash. Opening the directory should never
+// fail immediately after a successful rename into it, but if it does (e.g. a
+// permissions race), that's treated as best-effort — the caller's actual
+// write already succeeded — while a real fsync failure on an opened
+// directory descriptor is surfaced like any other durability error.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return nil // best effort: cannot make durability stronger than the OS allows
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // WriteJSONAtomic marshals v with indentation and writes it atomically (0644).

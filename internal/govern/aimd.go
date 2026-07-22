@@ -539,7 +539,15 @@ func (s *Store) ReportRateLimit(provider, project, bead string, now time.Time) e
 	pool := NormalizeProvider(provider)
 	var decreased, breakerOpened bool
 	err := s.withLock(func() error {
-		f, err := s.readFile()
+		// readFileForWrite (koryph audit finding #27): this is a wholesale
+		// rewrite of governor.json just like SetCap/SetAdaptiveCap, so a
+		// corrupt file must refuse rather than be silently treated as empty
+		// and overwritten. The engine's only caller already discards this
+		// error (dispatch must never block on it) — skipping the AIMD
+		// decrease/breaker-open update while corrupt changes nothing
+		// user-visible beyond preventing the wipe, since a corrupt file
+		// already reads back as a non-adaptive default pool everywhere else.
+		f, err := s.readFileForWrite()
 		if err != nil {
 			return err
 		}
@@ -603,7 +611,7 @@ func (s *Store) SetAdaptiveCap(provider string, maxGlobal, hardMax, settleSecond
 		MinDispatchIntervalSeconds: minDispatchIntervalSeconds,
 	}
 	return s.withLock(func() error {
-		f, err := s.readFile()
+		f, err := s.readFileForWrite()
 		if err != nil {
 			return err
 		}

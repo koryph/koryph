@@ -6,6 +6,7 @@ package govern
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	mathrand "math/rand"
 	"os"
 	"path/filepath"
@@ -18,6 +19,11 @@ import (
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/procx"
 )
+
+// corruptBackupSuffix names the sibling file readFile/readFileForWrite copy a
+// present-but-unparseable governor.json to before falling open (koryph audit
+// finding #27) — see backupCorrupt.
+const corruptBackupSuffix = ".corrupt-backup"
 
 // Store coordinates global concurrency through files under paths.SlotsDir,
 // guarded by a flock. Now/Alive are injectable for tests.
@@ -186,7 +192,7 @@ func (s *Store) SetResource(kind string, spec ResourceKind) error {
 		return errors.New("govern: resource kind must be non-empty")
 	}
 	return s.withLock(func() error {
-		f, err := s.readFile()
+		f, err := s.readFileForWrite()
 		if err != nil {
 			return err
 		}
@@ -209,7 +215,7 @@ func (s *Store) SetResource(kind string, spec ResourceKind) error {
 // --unset` (R5).
 func (s *Store) UnsetResource(kind string) error {
 	return s.withLock(func() error {
-		f, err := s.readFile()
+		f, err := s.readFileForWrite()
 		if err != nil {
 			return err
 		}
@@ -231,7 +237,7 @@ func (s *Store) SetCap(provider string, n int) error {
 	}
 	pool := NormalizeProvider(provider)
 	return s.withLock(func() error {
-		f, err := s.readFile()
+		f, err := s.readFileForWrite()
 		if err != nil {
 			return err
 		}
@@ -250,7 +256,7 @@ func (s *Store) SetCap(provider string, n int) error {
 func (s *Store) SetMinFreeMemoryMB(provider string, mb int) error {
 	pool := NormalizeProvider(provider)
 	return s.withLock(func() error {
-		f, err := s.readFile()
+		f, err := s.readFileForWrite()
 		if err != nil {
 			return err
 		}
@@ -922,18 +928,95 @@ func (s *Store) Pools() ([]string, error) {
 // --- internals (must be called under the lock) ---------------------------
 
 // readFile reads governor.json into a File (transparently migrating a legacy
-// single-pool document — see File.UnmarshalJSON). Absent/corrupt fails open
-// to an empty pool map, matching this package's existing fail-open
-// convention (a stuck/missing governor.json must never block dispatch).
+// single-pool document — see File.UnmarshalJSON). Absent fails open to an
+// empty pool map, matching this package's existing fail-open convention (a
+// stuck/missing governor.json must never block dispatch: admission reads —
+// Cap, MinFreeMemoryMB, Resources, loadAndProbeLocked, etc. — all go through
+// this path deliberately).
+//
+// A PRESENT-but-unparseable file (disk corruption, a hand-edit gone wrong, an
+// old non-atomic write torn by a crash) is a DIFFERENT failure mode from
+// "absent" and used to be handled identically — silently as empty — which is
+// exactly what let a corrupt file be lost forever: readFile's caller in
+// SetCap/SetMinFreeMemoryMB/SetResource/UnsetResource takes that empty File
+// and unconditionally rewrites governor.json wholesale, permanently erasing
+// every OTHER pool's operator cap and the machine resource ledger, and
+// quietly RELAXING (or tightening) every cap back to the package default in
+// the meantime (koryph audit finding #27). readFile still fails open here
+// (so admission itself is never the thing that blocks on this), but it now
+// backs the corrupt file up first — see backupCorrupt — so the original
+// bytes always survive even if a subsequent write clobbers governor.json.
+// Write paths use readFileForWrite instead, which turns this same corruption
+// into a hard error rather than silently proceeding to overwrite it.
 func (s *Store) readFile() (File, error) {
-	var f File
-	if err := fsx.ReadJSON(s.cfgPath, &f); err != nil {
-		return File{Pools: map[string]Config{}}, nil
+	f, corrupt := s.readFileRaw()
+	if corrupt {
+		s.backupCorrupt()
 	}
 	if f.Pools == nil {
 		f.Pools = map[string]Config{}
 	}
 	return f, nil
+}
+
+// readFileForWrite is readFile's fail-CLOSED counterpart for the
+// Set*/Unset* mutators (koryph audit finding #27): every one of them reads
+// governor.json, mutates the in-memory File, and then unconditionally
+// rewrites the WHOLE file — so silently swallowing a corrupt file as empty
+// (readFile's admission-path behavior) would make an ordinary `governor set`
+// permanently wipe every other pool's config and the resource ledger with no
+// warning. A present-but-corrupt file is backed up (see backupCorrupt, same
+// as readFile) and then returned as a hard error, forcing the operator to
+// notice and resolve it before any write proceeds. An absent file still
+// fails open to an empty File — first-run / freshly-initialized ~/.koryph is
+// not corruption.
+func (s *Store) readFileForWrite() (File, error) {
+	f, corrupt := s.readFileRaw()
+	if corrupt {
+		s.backupCorrupt()
+		return File{}, fmt.Errorf(
+			"govern: %s exists but failed to parse; a copy was saved to %s — repair or remove it before writing",
+			s.cfgPath, s.cfgPath+corruptBackupSuffix)
+	}
+	if f.Pools == nil {
+		f.Pools = map[string]Config{}
+	}
+	return f, nil
+}
+
+// readFileRaw reads governor.json, additionally reporting whether the file
+// EXISTS but failed to parse (as opposed to simply being absent) — the
+// distinction readFile/readFileForWrite need to choose fail-open vs
+// fail-closed handling. Absent (os.ErrNotExist) is never "corrupt".
+func (s *Store) readFileRaw() (f File, corrupt bool) {
+	err := fsx.ReadJSON(s.cfgPath, &f)
+	if err == nil {
+		return f, false
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return File{Pools: map[string]Config{}}, false
+	}
+	return File{Pools: map[string]Config{}}, true
+}
+
+// backupCorrupt best-effort copies the current (unparseable) governor.json to
+// a sibling ".corrupt-backup" file so the original bytes are recoverable
+// after a fail-open read or a refused write. Idempotent and non-overwriting:
+// once a backup exists it is left alone, so the FIRST corruption observed —
+// the one most likely to still resemble the operator's real config, before
+// any further writes land — is the one preserved, not clobbered by repeated
+// detections of the same (or a newly, differently corrupt) file across many
+// calls.
+func (s *Store) backupCorrupt() {
+	backup := s.cfgPath + corruptBackupSuffix
+	if fsx.Exists(backup) {
+		return
+	}
+	data, err := os.ReadFile(s.cfgPath)
+	if err != nil {
+		return
+	}
+	_ = fsx.WriteAtomic(backup, data, 0o644)
 }
 
 // prune drops leases whose agent pid is dead or that exceed LeaseTTL, and
