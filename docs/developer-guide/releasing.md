@@ -404,6 +404,69 @@ release URLs, taking each `sha256` from the release's own
 `checksums.txt` — never from locally rebuilt archives, which are not
 byte-identical. The next GoReleaser release overwrites the file.
 
+**The cask token must use `.Env`, not the `env` function.** In
+`.goreleaser.yaml`, `homebrew_casks.repository.token` must be
+`"{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"`. The `env "KEY"` template
+*function* is **not defined** in that field's context and errors with
+`function "env" not defined` the moment the field is rendered — which only
+happens on a real publish (token present → `skip_upload` not `true`). This
+stayed dormant for every release with an empty tap token and only surfaced
+on the first real cask push (v0.10.0). `.Env.KEY` cannot panic here: the
+workflow always exports the var, and when it is empty `skip_upload` is true
+so the field is never rendered.
+
+**Stale-tap fallout for early adopters.** Because the tap was empty for
+several releases, anyone who ran `brew install koryph/tap/koryph` during
+that window cached a HEAD-less local clone and now hits
+`Could not resolve HEAD to a commit` on every `brew` run. The remote is
+healthy; the fix is theirs to run — `brew untap koryph/tap` then reinstall.
+This is documented for users under
+[Installation → Troubleshooting](../user-guide/installation.md#troubleshooting).
+
+## Recovering a failed release
+
+The release build is gated on the HEAD commit **subject** matching
+`^chore(main): release X.Y.Z` (the release-please merge). There is no
+`workflow_dispatch`, so re-running a release that failed *after* the tag
+and draft were created — a flaky step, a bad `.goreleaser.yaml`, a missing
+credential — takes a deliberate sequence rather than a button:
+
+1. **Fix the cause** and commit it to `main` with a non-release type so
+   release-please does not propose a new version — `ci(release): …` or
+   `fix(release): …` (a bare `fix:` would open a v`X.Y.Z+1` PR you do not
+   want).
+2. **Delete the half-finished release and tag** (safe only because a failed
+   build never publishes — the draft is invisible to users):
+
+   ```sh
+   gh release delete vX.Y.Z --yes
+   git push origin :refs/tags/vX.Y.Z
+   ```
+
+3. **Re-trigger** the build at the fixed HEAD with an empty commit carrying
+   the release subject; the tag-creation step is idempotent and recreates
+   the tag at HEAD:
+
+   ```sh
+   git commit --allow-empty -s -m "chore(main): release X.Y.Z"
+   git push origin main
+   ```
+
+   **Rebase onto the real `origin/main` first.** The release-please merge
+   commit carries the `internal/version.Engine` bump that GoReleaser's
+   before-hook checks against the tag; committing on a stale local `main`
+   that lacks it makes the build fail the version check.
+
+4. **Watch the run** and confirm the tail end that failed before — for a
+   cask failure, that the tap received a `chore: update koryph cask to
+   vX.Y.Z` commit and that `brew install` serves the new version (see the
+   verification loop above).
+
+Prefer cutting the *next* patch version instead only when the failed
+version was already published to users; a draft-stage failure has no such
+constraint, so reusing the version leaves no confusing gap in the release
+history.
+
 ## Reusable release-train workflow
 
 (koryph-0vf.3) The four jobs above live in `.github/workflows/
