@@ -180,6 +180,7 @@ func Run(opts Options) (*Report, error) {
 	r.addAll(checkBinaries(opts))
 	r.add(checkBeadsVersion(opts))
 	r.add(checkRegistry(opts))
+	r.addAll(checkAuthMode(opts))
 	r.addAll(checkGovernorConfig(opts))
 	r.addAll(checkAdaptiveCapPinned(opts))
 	r.addAll(checkCircuitBreaker(opts))
