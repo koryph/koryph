@@ -36,6 +36,12 @@ cd <repo-root> || exit 1
 LOG="${1:?usage: koryph-loop.sh <logfile>}"
 iter=0
 while true; do
+  # Stop sentinel: shutdown touches $LOG.stop instead of killing this script,
+  # so a live `koryph run` child is never signalled by task teardown.
+  if [ -f "$LOG.stop" ]; then
+    echo "LOOP-STOPPED sentinel seen; exiting cleanly" >>"$LOG"
+    exit 0
+  fi
   iter=$((iter + 1))
   {
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) iteration $iter start ==="
@@ -156,9 +162,24 @@ vocabulary: `/koryph-ops`.
   gate is retried once automatically; repeated deterministic failure means
   the bead's change is wrong — let escalation handle it or stop + fix.
 
-## 4. Shutdown
+## 4. Shutdown — order matters
 
-On "drain/stop the loop": stop the watcher monitor and the wrapper task,
-then verify — no `koryph run --project <id>` process remains and
-`koryph status --project <id>` shows no active slots. Summarize what
-merged/failed during the run from the loop log.
+**NEVER TaskStop/kill the wrapper task while a `koryph run` child is alive:**
+task teardown signals the whole process group, which kills the engine AND its
+agents abruptly — no ledger finalization, stranded bd claims, and status/TUI
+showing a phantom running thread (learned 2026-07-22: the drain sentinel was
+written but the engine died before ever reading it; there was no
+`engine.run.end` in telemetry). The safe order:
+
+1. `touch <logfile>.stop` — the wrapper exits at its next loop top instead of
+   relaunching; no signal touches the engine.
+2. `koryph drain --project <id>` — the live engine finishes active slots and
+   exits on its own.
+3. Wait for the engine to exit and **verify it drained rather than died**:
+   the loop log must show an `engine.run.end` line for the final run, and
+   `koryph status --project <id>` must show no `running` slots. A "running"
+   slot with a dead engine means the exit was NOT graceful — recover per the
+   playbook (capture WIP, `bd update --status open`, and reconcile/repair the
+   ledger; `koryph ops reconcile` where available).
+4. Only now stop the watcher monitor and (if still sleeping) the wrapper task.
+5. Summarize what merged/failed during the run from the loop log.
