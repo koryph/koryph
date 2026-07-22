@@ -131,10 +131,19 @@ homebrew_casks:
     repository:
       owner: koryph
       name: homebrew-tap
-      # env() returns "" when the var is unset (unlike .Env.VAR which panics).
-      # An empty token falls back to GITHUB_TOKEN; skip_upload: true below
-      # prevents an actual push attempt when neither token is useful.
-      token: '{{ env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+      # Token for pushing the cask to the (sibling) tap repo. Must use the
+      # `.Env.KEY` template var, NOT the `env "KEY"` FUNCTION: the function is
+      # not defined in this field's template context and errors with
+      # `function "env" not defined` the moment the field is actually
+      # evaluated — which only happens on a real publish (token present →
+      # skip_upload != true). That is exactly what broke the v0.10.0 release;
+      # the earlier releases never hit it because an empty token made
+      # skip_upload short-circuit before this field was rendered.
+      # `.Env.KEY` panics only if KEY is wholly ABSENT from the environment;
+      # the release workflow always exports HOMEBREW_TAP_GITHUB_TOKEN (empty
+      # or not), and when it is empty skip_upload is true so this field is
+      # never rendered — so no panic in any path.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
@@ -142,13 +151,13 @@ homebrew_casks:
     homepage: "https://github.com/koryph/koryph"
     description: "Autonomous AI coding-wave orchestrator"
     license: "Apache-2.0"
-    # Guard: skip (not fail) when HOMEBREW_TAP_GITHUB_TOKEN is absent.
-    # When the token is present, "auto" skips pre-releases and snapshots.
-    # NB: the `env` template FUNCTION is NOT available in the skip_upload
-    # field's template context (it works in `token:` above but errors here
-    # with `function "env" not defined` — the exact failure that blocked the
-    # v0.7.0 release). `index .Env "KEY"` is available in every context and
-    # returns "" for an unset key (unlike `.Env.KEY`, which panics).
+    # Guard: skip (not fail) when HOMEBREW_TAP_GITHUB_TOKEN is empty/absent.
+    # When the token is present, "auto" still skips pre-releases and snapshots.
+    # `index .Env "KEY"` returns "" for an unset key in every template context
+    # (unlike the `env` FUNCTION, which is not defined here, and unlike
+    # `.Env.KEY`, which panics on a wholly-absent key). Keep this expression
+    # as the single guard that decides whether the token field above is ever
+    # rendered.
     skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}auto{{ end }}'
     # Shell completions: calls `koryph completion bash` / `koryph completion zsh`
     # at install time and writes the output to Homebrew's completion dirs.
