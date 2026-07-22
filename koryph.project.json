@@ -140,12 +140,12 @@
     }
   },
   "review": {
-    "timeout_seconds": 900,
+    "timeout_seconds": 1200,
     "max_timeout_seconds": 1200
   },
   "epic_validation": {
     "structural_parent": "koryph-qta",
-    "timeout_seconds": 900,
+    "timeout_seconds": 1200,
     "docs_update": {
       "labels": [
         "area:docs",
