@@ -81,7 +81,14 @@ you:
   cluster, container stack, or long-running server, so the machine is
   protected as well as the merge.
 - **Model routing** — `model:<tier>` labels where a stage clearly needs a
-  stronger or cheaper model.
+  stronger or cheaper model. Implementers default to sonnet, review and
+  recovery run on opus, and explore/debug run on haiku; label a bead
+  `model:opus` when the work genuinely needs it, or `model:haiku` for a
+  purely mechanical change (a rename, a version bump, a generated-file
+  refresh) where sonnet's reasoning is wasted. Weigh haiku against the fact
+  that a failed attempt escalates straight to opus on requeue — the cheap
+  tier only pays off when the change is trivial enough to land first try,
+  gate and all.
 - **Dependency edges** — so the ready-graph releases work in the right
   order, and the frontier is always safe to dispatch.
 
