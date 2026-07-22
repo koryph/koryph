@@ -165,7 +165,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		// proceed where an 8-bead wave estimate would have been refused.
 		est := r.waveEstimate(w.Items)
 		if allowDispatch && !r.opts.NoPreflight && !r.opts.Manual && calibrated && !gate.advisory && len(w.Items) > 0 {
-			if ok, reason := quota.Preflight(usage, est, r.quotaCfg); !ok {
+			if ok, reason := quota.PreflightForAuthMode(r.authMode, usage, r.projectedRunCostUSD(), est, r.quotaCfg); !ok {
 				allowDispatch = false
 				r.progress("preflight refused refill: %s", reason)
 				if len(active) == 0 {

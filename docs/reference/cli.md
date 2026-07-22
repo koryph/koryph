@@ -65,6 +65,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph quota calibrate`](#koryph-quota-calibrate) | calibrate a governor ceiling from an observed /usage reading |
 | ↳ [`koryph quota guard`](#koryph-quota-guard) | live billing-guard toggle — on\|advisory\|off \[--until <duration>]; re-read each wave without a restart |
 | ↳ [`koryph quota set-threads`](#koryph-quota-set-threads) | set (or clear with 0) this account's persisted default concurrency-pool seed |
+| ↳ [`koryph quota set-rolling`](#koryph-quota-set-rolling) | set (or clear with 0) an api-key account's rolling-$ governor ceiling (USD) |
 | [`koryph metrics`](#koryph-metrics) | burn + reliability rollup across projects |
 | ↳ [`koryph metrics estimator`](#koryph-metrics-estimator) | per-(model,size) estimator accuracy stats |
 | ↳ [`koryph metrics tokens`](#koryph-metrics-tokens) | per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend |
@@ -780,6 +781,16 @@ live billing-guard toggle — on|advisory|off \[--until <duration>]; re-read eac
 ## `koryph quota set-threads` { #koryph-quota-set-threads }
 
 set (or clear with 0) this account's persisted default concurrency-pool seed
+
+**See also:** [Billing and quota](../user-guide/billing-and-quota) · [Governors](../concepts/governors)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--account` | string |  | account to configure (required) |
+
+## `koryph quota set-rolling` { #koryph-quota-set-rolling }
+
+set (or clear with 0) an api-key account's rolling-$ governor ceiling (USD)
 
 **See also:** [Billing and quota](../user-guide/billing-and-quota) · [Governors](../concepts/governors)
 

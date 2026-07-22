@@ -53,6 +53,15 @@ func init() {
 					"concepts/governors.md",
 				},
 			},
+			{
+				name:    "set-rolling",
+				summary: "set (or clear with 0) an api-key account's rolling-$ governor ceiling (USD)",
+				run:     cmdQuotaSetRolling,
+				DocLinks: []string{
+					"user-guide/billing-and-quota.md",
+					"concepts/governors.md",
+				},
+			},
 		},
 	})
 	registerCmd(command{
@@ -100,6 +109,8 @@ func cmdQuota(args []string, stdout, stderr io.Writer) int {
 			return cmdQuotaGuard(args[1:], stdout, stderr)
 		case "set-threads":
 			return cmdQuotaSetThreads(args[1:], stdout, stderr)
+		case "set-rolling":
+			return cmdQuotaSetRolling(args[1:], stdout, stderr)
 		}
 	}
 	return cmdQuotaShow(args, stdout, stderr)
@@ -383,6 +394,67 @@ func cmdQuotaSetThreads(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "quota %s: default concurrency-pool seed set to %d\n", *acct, cfg.MaxThreads)
 	} else {
 		fmt.Fprintf(stdout, "quota %s: default concurrency-pool seed cleared\n", *acct)
+	}
+	return 0
+}
+
+// cmdQuotaSetRolling sets (or, with $0, clears) an api-key account's rolling-$
+// governor ceiling (koryph-i3b.9, quota.Config.RollingCeilingUSD). A
+// first-class api-key (pay-per-token) account has no subscription 5h/weekly
+// window to calibrate a ceiling off, so the governor reads its
+// warn/throttle/graceful-stop/hard-stop ladder off spent$/RollingCeilingUSD
+// instead — this command is how the operator sets that ceiling. With no
+// ceiling the api-key governor stays advisory (measured, never blocking). The
+// engine re-reads the quota config at every wave boundary (via governor() →
+// quota.LoadConfig), so a change here takes effect on the next wave without a
+// loop restart, exactly like `koryph quota guard`.
+//
+// Usage: koryph quota set-rolling --account A $USD
+func cmdQuotaSetRolling(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("quota set-rolling", stderr)
+	acct := fs.String("account", "", "account to configure (required)")
+	setUsage(fs, stdout,
+		"set (or clear with 0) an api-key account's rolling-$ governor ceiling in USD — the pay-per-token analogue of a 5h/weekly window ceiling",
+		"--account A <USD>")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if *acct == "" {
+		return usageErr(stderr, "quota set-rolling: --account is required")
+	}
+	if len(pos) != 1 {
+		return usageErr(stderr, "quota set-rolling: exactly one positional argument required: USD (0 clears the ceiling)")
+	}
+	usd, perr := strconv.ParseFloat(pos[0], 64)
+	if perr != nil || usd < 0 {
+		return usageErr(stderr, fmt.Sprintf("quota set-rolling: %q is not a valid non-negative dollar amount", pos[0]))
+	}
+
+	cfg, serr := quota.SetRollingCeiling(*acct, usd)
+	if serr != nil {
+		return fail(stderr, serr)
+	}
+
+	// Audit: emit to the registry audit log so the change is traceable,
+	// mirroring cmdQuotaGuard/cmdQuotaSetThreads.
+	ctx := context.Background()
+	store, aerr := openStore(ctx)
+	if aerr == nil {
+		_ = store.Audit(registry.Event{
+			Kind:  "quota-set-rolling",
+			Actor: cliActor(),
+			Detail: map[string]any{
+				"account":             *acct,
+				"rolling_ceiling_usd": cfg.RollingCeilingUSD,
+			},
+		})
+	}
+
+	if cfg.RollingCeilingUSD > 0 {
+		fmt.Fprintf(stdout, "quota %s: rolling-$ governor ceiling set to $%.2f\n", *acct, cfg.RollingCeilingUSD)
+	} else {
+		fmt.Fprintf(stdout, "quota %s: rolling-$ governor ceiling cleared (api-key governor advisory)\n", *acct)
 	}
 	return 0
 }

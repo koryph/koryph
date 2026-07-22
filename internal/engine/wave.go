@@ -152,16 +152,28 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 		if r.quotaCfg != nil {
 			eff = r.quotaCfg.Ladder.Effective()
 		}
+		// frac is the fraction of the enforcing ceiling this run is at, for
+		// logging. subscription/oauth-token report the 5h window fraction
+		// (unchanged); a first-class api-key account reports spent$/rolling-$
+		// ceiling — the ladder it is actually enforced on (koryph-i3b.9).
+		frac := r.govFraction(usage)
 		switch level {
 		case quota.LevelStop:
 			// Hard stop: interrupt active agents (SIGTERM — checkpoints; worktrees
-			// preserved for resume) and park the run immediately.
-			if r.billing != account.BillingAPIKey {
+			// preserved for resume) and park the run immediately. Skip ONLY for the
+			// legacy break-glass api-key fallback (a subscription account that
+			// switched to per-token billing AT stop precisely to keep going past
+			// the exhausted subscription window — parking would defeat the opt-in).
+			// A first-class api-key account (authMode == AuthModeAPIKey) whose
+			// rolling-$ ceiling reached hard-stop DOES park: that is the rolling-$
+			// ladder's terminal rung (koryph-i3b.9, design §7).
+			legacyFallback := r.billing == account.BillingAPIKey && r.authMode != registry.AuthModeAPIKey
+			if !legacyFallback {
 				r.interruptActiveSlots()
 				r.run.Status = ledger.RunHardStopQuota
 				_ = r.store.SaveRun(r.run)
 				r.progress("governor hard stop: run %s parked at %.0f%% (hard-stop %.0f%%) — active agents sent SIGTERM, worktrees preserved for resume",
-					r.run.RunID, usage.Window5h.Fraction()*100, eff.HardStop*100)
+					r.run.RunID, frac*100, eff.HardStop*100)
 				g.paused = true
 				g.outcome = r.outcome(ExitOK, "quota-hard-stop", false)
 				return g
@@ -169,13 +181,13 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 		case quota.LevelDrain:
 			g.allowDispatch = false
 			r.progress("governor graceful stop: no new dispatch (%.0f%% >= graceful-stop %.0f%%); finishing %d active slot(s)",
-				usage.Window5h.Fraction()*100, eff.GracefulStop*100, r.activeCount())
+				frac*100, eff.GracefulStop*100, r.activeCount())
 		case quota.LevelThrottle:
 			r.progress("governor throttle: slot scaling active (%.0f%% >= throttle %.0f%%)",
-				usage.Window5h.Fraction()*100, eff.Throttle*100)
+				frac*100, eff.Throttle*100)
 		case quota.LevelWarn:
 			r.progress("governor warn: usage at %.0f%% (warn %.0f%%, throttle %.0f%%, graceful-stop %.0f%%, hard-stop %.0f%%)",
-				usage.Window5h.Fraction()*100, eff.Warn*100, eff.Throttle*100, eff.GracefulStop*100, eff.HardStop*100)
+				frac*100, eff.Warn*100, eff.Throttle*100, eff.GracefulStop*100, eff.HardStop*100)
 		}
 	}
 
@@ -237,7 +249,7 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 		}
 	}
 	if !r.opts.Manual && calibrated && !advisory {
-		if scaled := quota.ScaleSlots(usage, r.quotaCfg, width); scaled < width {
+		if scaled := quota.ScaleSlotsForAuthMode(r.authMode, usage, r.projectedRunCostUSD(), r.quotaCfg, width); scaled < width {
 			width = scaled
 		}
 	}
@@ -416,7 +428,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		// Preflight (loop mode only, calibrated + enforcing governor only).
 		est := r.waveEstimate(w.Items)
 		if allowDispatch && !r.opts.NoPreflight && !r.opts.Manual && calibrated && !gate.advisory && len(w.Items) > 0 {
-			if ok, reason := quota.Preflight(usage, est, r.quotaCfg); !ok {
+			if ok, reason := quota.PreflightForAuthMode(r.authMode, usage, r.projectedRunCostUSD(), est, r.quotaCfg); !ok {
 				allowDispatch = false
 				r.progress("preflight refused wave: %s", reason)
 				if len(active) == 0 {
@@ -557,13 +569,41 @@ func (r *runner) governor(ctx context.Context) (quota.Level, bool, quota.Usage) 
 	if cfgQ, err := quota.LoadConfig(r.quotaName()); err == nil {
 		r.quotaCfg = cfgQ
 	}
+	// First-class api-key account (koryph-i3b.9, design §7): the governor reads
+	// the ladder off spent$/RollingCeilingUSD, not the 5h/weekly subscription
+	// window (which does not apply). Short-circuit to advisory when no rolling-$
+	// ceiling is configured — the api-key analogue of the uncalibrated escape
+	// below — and skip the (subscription-only) usage snapshot entirely, since
+	// StateForAuthMode ignores it for api-key. spent is the run's own tracked
+	// pay-per-token cost (projectedRunCostUSD).
+	if r.authMode == registry.AuthModeAPIKey {
+		if !quota.RollingCalibrated(r.quotaCfg) {
+			return quota.LevelOK, false, quota.Usage{Account: r.quotaCfg.Account}
+		}
+		u := quota.Usage{Account: r.quotaCfg.Account}
+		level, calibrated := quota.StateForAuthMode(r.authMode, u, r.projectedRunCostUSD(), r.quotaCfg)
+		return level, calibrated, u
+	}
 	if r.quotaCfg.WindowCeilingUSD <= 0 && r.quotaCfg.WeeklyCeilingUSD <= 0 {
 		return quota.LevelOK, false, quota.Usage{Account: r.quotaCfg.Account}
 	}
 	u, _ := quota.Snapshot(ctx, r.profile, r.quotaCfg)
 	quota.LogUsage(u, r.quotaCfg)
-	level, calibrated := quota.State(u, r.quotaCfg)
+	level, calibrated := quota.StateForAuthMode(r.authMode, u, r.projectedRunCostUSD(), r.quotaCfg)
 	return level, calibrated, u
+}
+
+// govFraction is the fraction of the enforcing ceiling this run is at, for
+// governor log lines. subscription/oauth-token accounts report the worse of
+// the 5h/weekly window fractions (the value the ladder is evaluated against,
+// unchanged from before koryph-i3b.9); a first-class api-key account has no
+// subscription window, so it reports spent$/RollingCeilingUSD instead — the
+// same rolling-$ fraction StateForAuthMode/ScaleSlotsForAuthMode enforce on.
+func (r *runner) govFraction(u quota.Usage) float64 {
+	if r.authMode == registry.AuthModeAPIKey {
+		return quota.RollingFraction(r.projectedRunCostUSD(), r.quotaCfg)
+	}
+	return u.Window5h.Fraction()
 }
 
 // guardMode resolves whether the billing guard's throttling constraints are

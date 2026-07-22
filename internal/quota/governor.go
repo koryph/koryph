@@ -176,6 +176,24 @@ func SetMaxThreads(account string, n int) (*Config, error) {
 	})
 }
 
+// SetRollingCeiling writes this account's rolling-$ ceiling (koryph-i3b.3/.9,
+// design §7, Config.RollingCeilingUSD) under the same exclusive per-account
+// flock as every other quota config mutation. usd <= 0 CLEARS the ceiling
+// (the api-key governor reverts to advisory — see RollingCeilingUSD's doc);
+// usd > 0 sets it. Backs `koryph quota set-rolling --account X $USD`. This is
+// the api-key-mode analogue of Calibrate's WindowCeilingUSD/WeeklyCeilingUSD:
+// a first-class api-key account has no subscription window to read a ceiling
+// off, so the operator sets the rolling-$ ceiling directly.
+func SetRollingCeiling(account string, usd float64) (*Config, error) {
+	return UpdateConfig(account, func(c *Config) error {
+		if usd < 0 {
+			usd = 0
+		}
+		c.RollingCeilingUSD = usd
+		return nil
+	})
+}
+
 // SetCalibrationStaleAt marks the quota config at quotaDir/<account>.json as
 // stale (koryph-3l1.2). quotaDir is passed explicitly so callers that manage
 // their own home directory (e.g. registry.Store in tests) bypass the global
@@ -357,6 +375,15 @@ func rollingFraction(spentUSD float64, cfg *Config) float64 {
 		return 0
 	}
 	return spentUSD / cfg.RollingCeilingUSD
+}
+
+// RollingFraction is the exported spent/ceiling accessor for the rolling-$
+// ladder (koryph-i3b.9): the engine reads it to render an api-key account's
+// governor log lines against its rolling-$ ceiling instead of the 5h window
+// (which does not apply). Returns 0 when unconfigured — pair with
+// RollingCalibrated, exactly like the internal rollingFraction it wraps.
+func RollingFraction(spentUSD float64, cfg *Config) float64 {
+	return rollingFraction(spentUSD, cfg)
 }
 
 // StateForAuthMode is the auth-mode-branched entry point for the governor

@@ -94,6 +94,54 @@ func TestQuotaSetThreads(t *testing.T) {
 	}
 }
 
+// TestQuotaSetRolling covers `koryph quota set-rolling` (koryph-i3b.9): set,
+// clear ($0), and the required --account / positional-arg validation. This is
+// the operator surface that makes RollingCeilingUSD configurable so an api-key
+// account's rolling-$ governor ladder can actually enforce.
+func TestQuotaSetRolling(t *testing.T) {
+	isolate(t)
+
+	code, out, errb := runCmd("quota", "set-rolling", "--account", "personal", "250")
+	if code != 0 {
+		t.Fatalf("quota set-rolling: code=%d stderr=%s", code, errb)
+	}
+	if !strings.Contains(out, "$250.00") {
+		t.Errorf("expected confirmation mentioning $250.00, got: %s", out)
+	}
+	cfg, err := quota.LoadConfig("personal")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.RollingCeilingUSD != 250 {
+		t.Fatalf("RollingCeilingUSD = %v, want 250", cfg.RollingCeilingUSD)
+	}
+
+	code, out, errb = runCmd("quota", "set-rolling", "--account", "personal", "0")
+	if code != 0 {
+		t.Fatalf("quota set-rolling (clear): code=%d stderr=%s", code, errb)
+	}
+	if !strings.Contains(out, "cleared") {
+		t.Errorf("expected confirmation mentioning cleared, got: %s", out)
+	}
+	cfg, err = quota.LoadConfig("personal")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.RollingCeilingUSD != 0 {
+		t.Fatalf("RollingCeilingUSD after clear = %v, want 0", cfg.RollingCeilingUSD)
+	}
+
+	if code, _, _ := runCmd("quota", "set-rolling", "250"); code == 0 {
+		t.Error("quota set-rolling without --account should fail")
+	}
+	if code, _, _ := runCmd("quota", "set-rolling", "--account", "personal"); code == 0 {
+		t.Error("quota set-rolling without a positional USD should fail")
+	}
+	if code, _, _ := runCmd("quota", "set-rolling", "--account", "personal", "-5"); code == 0 {
+		t.Error("quota set-rolling with a negative amount should fail")
+	}
+}
+
 // TestMetricsEstimatorDisplaysProxySegmentedKeys is the koryph-3l1.3 carried-
 // contract regression test for cmdMetricsEstimator: a Calibration/ErrorStats
 // key segmented by a proxyID built from a base_url with its own colons (e.g.

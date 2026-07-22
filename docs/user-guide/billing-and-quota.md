@@ -83,13 +83,29 @@ a plan window exists. A project registered under `auth_mode: api-key` (see
 | `api-key` | pay-per-token, from wave 1 | a rolling-$ ceiling (spent-USD / ceiling-USD), when configured |
 
 An `api-key` account's rolling-$ ladder mirrors the 5h/weekly one — the same
-warn/throttle/drain/stop shape, driven off absolute dollars spent instead of
-a plan percentage — but it is not yet wired into the engine's per-wave
-governor gate, so it behaves as **advisory only** today: measured and
-logged, never blocking dispatch, the same posture an uncalibrated
-subscription account has. The caps that *are* enforced for an `api-key`
-account are the per-run `--budget` flag and the per-agent
-`per_agent_max_usd` cap described under [Per-agent budget
+warn/throttle/drain/stop shape, driven off absolute dollars spent
+(`projected run cost / rolling ceiling`) instead of a plan percentage. Set
+the ceiling with:
+
+```sh
+koryph quota set-rolling --account personal 250   # $250 rolling ceiling
+koryph quota set-rolling --account personal 0     # clear — back to advisory
+```
+
+Once a ceiling is set, the per-wave governor gate enforces it: at **warn**
+it logs, at **throttle** it scales the wave's slot count down, at
+**graceful-stop** it stops starting new agents while active ones finish, and
+at **hard-stop** it interrupts active agents (SIGTERM — checkpoints, worktrees
+preserved) and parks the run for `--resume`, exactly as the subscription
+ladder does. The ceiling is re-read at every wave boundary (like `koryph
+quota guard`), so a `set-rolling` change takes effect on the next wave
+without a loop restart.
+
+With **no** rolling ceiling configured, an `api-key` account stays
+**advisory only**: spend is measured and logged, never blocking dispatch —
+the same posture an uncalibrated subscription account has. The other caps
+enforced for an `api-key` account are the per-run `--budget` flag and the
+per-agent `per_agent_max_usd` cap described under [Per-agent budget
 caps](#per-agent-budget-caps-and-the-turn-boundary-nuance) below — both
 apply regardless of auth mode.
 
