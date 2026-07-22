@@ -22,12 +22,15 @@
 package scripts
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/govern"
 )
 
 // repoPath resolves a path relative to the repo root from within the
@@ -127,6 +130,26 @@ func TestDocsDrift_PackagesMDCoversInternal(t *testing.T) {
 	if len(stale) > 0 {
 		t.Errorf("packages.md has section(s) for package(s) that do not exist under internal/: %s\n"+
 			"remove or rename the stale section(s) in %s", strings.Join(stale, ", "), docPath)
+	}
+}
+
+// TestDocsDrift_MachineCeilingDefault ties govern.DefaultMaxMachineAgents
+// (koryph-4rk6.2) to its documented value in the global-governor design doc,
+// so bumping the default in code without updating the doc (or vice versa) fails
+// the gate. The doc states the default as "`govern.DefaultMaxMachineAgents`
+// (**N**)"; this asserts N == the constant.
+func TestDocsDrift_MachineCeilingDefault(t *testing.T) {
+	docPath := repoPath(t, filepath.Join("docs", "developer-guide", "global-governor.md"))
+	doc, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", docPath, err)
+	}
+	want := fmt.Sprintf("`govern.DefaultMaxMachineAgents` (**%d**)", govern.DefaultMaxMachineAgents)
+	if !strings.Contains(string(doc), want) {
+		t.Errorf("global-governor.md does not document the machine-ceiling default as %q\n"+
+			"govern.DefaultMaxMachineAgents = %d — update the 'Machine-wide agent ceiling' "+
+			"section in %s to match (or vice versa)",
+			want, govern.DefaultMaxMachineAgents, docPath)
 	}
 }
 

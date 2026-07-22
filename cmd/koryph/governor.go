@@ -326,17 +326,22 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	breakSec := fs.Int("break-sec", 0, "circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600)")
 	minDispatchInterval := fs.Int("min-dispatch-interval", 0, "minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%)")
 	minFreeMem := fs.Int("min-free-memory-mb", 0, "memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global")
-	setUsage(fs, stdout, "set one pool's cap on concurrently running agents (per account with --account)",
-		"[--max-global N] [--min-free-memory-mb N] [--account NAME | --provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
+	machineCeiling := fs.Int("machine-ceiling", 0, "machine-wide ceiling on TOTAL concurrent agents across ALL pools (koryph-4rk6.2, > 0): bounds the sum of per-pool caps so independent pools cannot jointly sink the host. Machine-scoped, not per-pool — ignores --account/--provider; may be set alone. Absent/unset uses the default (8)")
+	setUsage(fs, stdout, "set one pool's cap on concurrently running agents (per account with --account), or the machine-wide ceiling across all pools",
+		"[--max-global N] [--min-free-memory-mb N] [--machine-ceiling N] [--account NAME | --provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
 	// Detect whether --min-free-memory-mb was given (0 is a meaningful value —
 	// "reset to auto" — so a sentinel default won't do).
 	memProvided := false
+	ceilingProvided := false
 	fs.Visit(func(fl *flag.Flag) {
-		if fl.Name == "min-free-memory-mb" {
+		switch fl.Name {
+		case "min-free-memory-mb":
 			memProvided = true
+		case "machine-ceiling":
+			ceilingProvided = true
 		}
 	})
 	// The pool is keyed on the account (koryph-1o2.1); --account is the intuitive
@@ -348,11 +353,25 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	pool := govern.NormalizeProvider(poolArg)
 	gs := newGovernStore()
 
+	// Machine-wide ceiling across ALL pools (koryph-4rk6.2): machine-scoped, so
+	// it is applied independently of the per-pool operations (it preserves every
+	// pool config and the resource ledger) and may be the sole operation.
+	if ceilingProvided {
+		if err := gs.SetMachineCeiling(*machineCeiling); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "machine ceiling set to %d agents across all pools\n", *machineCeiling)
+	}
+
 	// Floor-only invocation: adjust the memory gate without resetting the pool's
-	// cap or AIMD state (SetMinFreeMemoryMB preserves every other field).
+	// cap or AIMD state (SetMinFreeMemoryMB preserves every other field). A
+	// ceiling-only invocation (no cap, no floor) is likewise complete here.
 	if *maxGlobal <= 0 {
 		if !memProvided {
-			return usageErr(stderr, "governor set: need --max-global (> 0) and/or --min-free-memory-mb")
+			if ceilingProvided {
+				return 0 // machine-ceiling was the sole operation
+			}
+			return usageErr(stderr, "governor set: need --max-global (> 0), --min-free-memory-mb, and/or --machine-ceiling")
 		}
 		if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
 			return fail(stderr, err)

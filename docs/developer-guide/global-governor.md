@@ -270,12 +270,16 @@ governor.json:
   place `internal/engine` constructs leases (`internal/engine/govern.go`'s
   `poolKey()`). A `nil` record — degenerate/test paths with no project — keeps
   the empty key (⇒ `DefaultPool`), matching the old hardcoded constant exactly.
-- **No cross-account shared cap, by design.** Total machine concurrency is
-  the sum of every pool's cap — each account's API is an independently rate
-  limited resource, so one account's 429 must never throttle another account's
-  (or a codex agent's) admission. (Local CPU/RAM pressure is a separate
-  concern: the operator's `--max-global` choice, made per pool, is what bounds
-  it, alongside the memory floor and machine resource ledger.)
+- **No cross-account *rate-limit* cap, but a machine-wide *concurrency*
+  ceiling.** Each account's API is an independently rate limited resource, so
+  one account's 429 must never throttle another account's (or a codex agent's)
+  admission — there is deliberately no shared *rate-limit* pool. But the *sum*
+  of every pool's cap is a local-machine hazard (personal 16 + anthropic 8 +
+  work 1 = 25 agents on one laptop), so koryph-4rk6.2 layers a machine-wide
+  `max_machine_agents` ceiling across all pools on top of the per-pool caps —
+  see [Machine-wide agent ceiling](#machine-wide-agent-ceiling-koryph-4rk62)
+  below. (Local CPU/RAM pressure is bounded by that ceiling plus the operator's
+  per-pool `--max-global`, the memory floor, and the machine resource ledger.)
 - **Migration.** A `governor.json` written before koryph-v8u.11 (any shape
   from koryph-1xk through koryph-2im.11 — a flat document with no top-level
   `"pools"` key) loads transparently as the `anthropic` pool, preserving
@@ -302,6 +306,45 @@ governor.json:
   the original bytes are copied, once, to a sibling
   `governor.json.corrupt-backup` so nothing is lost; repair or remove that
   backup, then fix or delete `governor.json`, before retrying the write.
+
+### Machine-wide agent ceiling (koryph-4rk6.2)
+
+Per-pool `max_global_agents` caps protect each provider/account **API**; they
+do nothing for the **machine**. Three pools each at their own cap can still
+jointly sink one laptop — personal 16 + anthropic 8 + work 1 = **25** possible
+concurrent agents (each a claude subprocess + a git worktree). The machine
+ceiling is a second, orthogonal bound: the **sum** of live leases across *all*
+pools may never exceed `max_machine_agents`.
+
+```
+governor.json:
+{
+  "max_machine_agents": 8,
+  "pools": { "personal": {...}, "anthropic": {...}, "work": {...} }
+}
+```
+
+- **Default is 8.** Absent/unset `max_machine_agents` resolves to
+  `govern.DefaultMaxMachineAgents` (**8**) — the default *always* binds, so a
+  machine that never configured a ceiling is still bounded rather than admitting
+  the unbounded sum of its pool caps. This value is tied to this doc by a drift
+  test (`scripts/docs_drift_test.go`).
+- **Enforced at the same flock-serialized admission point as the pool caps.**
+  `AcquireEx` checks the ceiling *before* the adaptive/breaker-probe and
+  pool-cap sections, so it gates every admission path (including a half-open
+  circuit-breaker probe). It lives at the top level of `governor.json` (like the
+  resource ledger), not inside any pool, because it is a machine property. It
+  reuses the existing lease files (no new state) and the koryph-4ql memory
+  reservation / floor accounting — a machine-wide **count** ceiling layered on
+  the capacity + reservation clauses, not a duplicate of them.
+- **Backpressure is visible.** A ceiling denial emits a WARN telemetry record
+  (`"machine ceiling reached, deferring dispatch"`, event
+  `govern.machine.ceiling`, with `ceiling`/`active`) so operators see the
+  machine is saturated instead of silence. The verdict is `AdmitDeniedCap`
+  (machine-wide, not per-bead), so the engine batch-breaks the wave.
+- **`koryph doctor` shows it.** `checkGovernorConfig` reports one finding —
+  `machine ceiling: N agents across all pools` (or `… (default)` when unset) —
+  above the per-pool cap findings.
 
 ### Per-account seeded-default cap (koryph-1o2.3)
 
@@ -526,10 +569,12 @@ set.
   each project periodically gets a turn.
 - **Lock contention**: the flock is held for microseconds; acquisition races
   resolve on the next re-check.
-- **Absent `governor.json`**: default cap 8 — raised to let a single
+- **Absent `governor.json`**: default cap 8 per pool — raised to let a single
   self-hosting project run a wider wave; under watch for Claude API rate
   limiting (drop to 6 if beads get throttled). The cap only bites when total
-  demand across projects exceeds it.
+  demand across projects exceeds it. The machine-wide ceiling across all pools
+  also defaults to 8 (koryph-4rk6.2) — see
+  [Machine-wide agent ceiling](#machine-wide-agent-ceiling-koryph-4rk62).
 
 ## Testing
 

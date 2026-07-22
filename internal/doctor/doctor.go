@@ -347,7 +347,8 @@ func checkGovernorConfig(opts Options) []Finding {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []Finding{{Check: checkNameGovernor, Level: LevelOK,
-			Message: fmt.Sprintf("governor.json absent (default cap %d in use)", govern.DefaultMaxGlobalAgents)}}
+			Message: fmt.Sprintf("governor.json absent (default cap %d/pool, machine ceiling %d in use)",
+				govern.DefaultMaxGlobalAgents, govern.DefaultMaxMachineAgents)}}
 	}
 	if err != nil {
 		return []Finding{{Check: checkNameGovernor, Level: LevelError,
@@ -362,7 +363,18 @@ func checkGovernorConfig(opts Options) []Finding {
 	if len(pools) == 0 {
 		return []Finding{{Check: checkNameGovernor, Level: LevelOK, Message: "governor.json: no pools configured"}}
 	}
-	findings := make([]Finding, 0, len(pools))
+	findings := make([]Finding, 0, len(pools)+1)
+	// Machine-wide ceiling across ALL pools (koryph-4rk6.2): a single finding,
+	// since it is a machine property, not a per-pool one. Reported first so the
+	// operator sees the combined ceiling above the individual pool caps that
+	// sum against it.
+	if f.MaxMachineAgents <= 0 {
+		findings = append(findings, Finding{Check: checkNameGovernor, Level: LevelOK,
+			Message: fmt.Sprintf("machine ceiling: %d agents across all pools (default)", govern.DefaultMaxMachineAgents)})
+	} else {
+		findings = append(findings, Finding{Check: checkNameGovernor, Level: LevelOK,
+			Message: fmt.Sprintf("machine ceiling: %d agents across all pools", f.MaxMachineAgents)})
+	}
 	for _, pool := range pools {
 		cfg := f.Pools[pool]
 		if cfg.MaxGlobalAgents <= 0 {

@@ -179,6 +179,39 @@ func (s *Store) Resources() ResourcesConfig {
 	return *f.Resources
 }
 
+// MachineCeiling returns the resolved machine-wide agent ceiling across ALL
+// pools (koryph-4rk6.2): the configured max_machine_agents when >0, else
+// DefaultMaxMachineAgents. Fails open to the default when governor.json is
+// absent or unreadable, matching the Cap/Resources fail-open posture. A plain
+// unlocked read (like Cap/MinFreeMemoryMB) — doctor and status only RENDER it.
+func (s *Store) MachineCeiling() int {
+	f, err := s.readFile()
+	if err != nil {
+		return DefaultMaxMachineAgents
+	}
+	return f.MachineCeiling()
+}
+
+// SetMachineCeiling writes the machine-wide agent ceiling to governor.json,
+// PRESERVING every pool config and the resource ledger (the SetResource
+// preserve-don't-reset precedent, NOT SetCap's wholesale reset). n<=0 is
+// rejected — the ceiling is a positive count; to revert to the default, an
+// operator removes the key. Relies on File.UnmarshalJSON decoding the field on
+// read so an earlier set is not stripped by this whole-file rewrite.
+func (s *Store) SetMachineCeiling(n int) error {
+	if n <= 0 {
+		return errors.New("govern: max_machine_agents must be positive")
+	}
+	return s.withLock(func() error {
+		f, err := s.readFileForWrite()
+		if err != nil {
+			return err
+		}
+		f.MaxMachineAgents = n
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
+}
+
 // SetResource writes (or replaces) kind's machine capacity/cost in
 // governor.json's top-level resources ledger (koryph-4ql.1, L2), PRESERVING
 // every pool config and every OTHER kind — the SetMinFreeMemoryMB
@@ -358,6 +391,27 @@ func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 			return err
 		}
 		now := s.Now()
+
+		// Machine-wide ceiling across ALL pools (koryph-4rk6.2): even when this
+		// pool has room under its own cap (and even for the half-open breaker
+		// probe below), the sum of live leases over EVERY provider pool must not
+		// exceed the machine ceiling — per-pool caps protect each provider API,
+		// this protects the host. Checked here, before the adaptive/probe and
+		// pool-cap sections, so it gates every admission path. The candidate's
+		// own lease (same project+bead — a re-acquire or a stale reservation) is
+		// excluded so it is never counted against itself. Fails OPEN on a read
+		// error (I6), like the resource clauses: a denial is a deferral, not an
+		// error. It is a machine-wide (not per-bead) condition, so it maps to
+		// AdmitDeniedCap and the engine batch-breaks (nothing else fits either).
+		if all, lerr := s.leases(); lerr == nil {
+			ceiling := f.MachineCeiling()
+			active := machineActive(all, l)
+			if active >= ceiling {
+				result = AdmitResult{Outcome: AdmitDeniedCap}
+				logMachineCeiling(pool, l.Project, l.Bead, ceiling, active)
+				return nil
+			}
+		}
 
 		if c.Adaptive {
 			switch c.BreakerState {
@@ -539,6 +593,21 @@ func (s *Store) checkResourcesLocked(rc *ResourcesConfig, cand Lease, mem MemInp
 		}
 	}
 	return nil
+}
+
+// machineActive counts live leases across ALL pools for the machine-wide
+// ceiling (koryph-4rk6.2), EXCLUDING the candidate's own lease (same
+// project+bead — a re-acquire or a stale reservation) so a bead is never
+// counted against itself. Pure; callers hold the flock and have pruned.
+func machineActive(all []Lease, cand Lease) int {
+	n := 0
+	for _, l := range all {
+		if l.Project == cand.Project && l.Bead == cand.Bead {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // grantLease writes l's lease file, stamping AcquiredAt if unset. l.Provider

@@ -35,6 +35,21 @@ func logDenied(pool, project, bead string, cap, active int) {
 	)
 }
 
+// logMachineCeiling emits a WARN record when the machine-wide ceiling across
+// all pools (koryph-4rk6.2) refuses a dispatch, so operators see backpressure
+// instead of silence. The message string is stable ("machine ceiling reached,
+// deferring dispatch") for log-grep/alerting.
+func logMachineCeiling(pool, project, bead string, ceiling, active int) {
+	log.Warn("machine ceiling reached, deferring dispatch",
+		slog.String("event", "govern.machine.ceiling"),
+		slog.String("pool", pool),
+		slog.String("project", project),
+		slog.String("bead", bead),
+		slog.Int("ceiling", ceiling),
+		slog.Int("active", active),
+	)
+}
+
 // logCapDecreased emits a WARN record when a rate-limit event decreases the cap.
 func logCapDecreased(pool, project, bead string, oldCap, newCap int) {
 	log.Warn("govern.aimd.cap.decreased",

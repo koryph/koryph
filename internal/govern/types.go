@@ -47,6 +47,16 @@ import (
 // governor.json still overrides this per machine, per pool.
 const DefaultMaxGlobalAgents = 8
 
+// DefaultMaxMachineAgents is the machine-wide ceiling across ALL pools
+// combined (koryph-4rk6.2, docs/designs/2026-07-resource-governor.md) used
+// when governor.json sets no max_machine_agents. Per-pool caps
+// (DefaultMaxGlobalAgents) protect each provider's API; this ceiling protects
+// the local machine, since three pools at their individual caps (personal 16
+// + anthropic 8 + work 1 = 25) can still jointly sink one laptop. Set to 8 per
+// operator direction; a governor.json max_machine_agents overrides it per
+// machine. The value is tied to the docs by a drift test (scripts/).
+const DefaultMaxMachineAgents = 8
+
 // DefaultPool is the pool key used when a lease, demand heartbeat, or store
 // entry point carries no explicit provider — i.e. today's single implicit
 // pool, and the migration target for a legacy (pre-koryph-v8u.11)
@@ -203,6 +213,19 @@ type RateLimitEvent struct {
 // once, here, rather than being re-implemented at each call site.
 type File struct {
 	Pools map[string]Config `json:"pools"`
+
+	// MaxMachineAgents is the machine-wide ceiling across ALL pools combined
+	// (koryph-4rk6.2): the sum of live leases over every provider pool may
+	// never exceed it, regardless of each pool's own max_global_agents. It
+	// lives at the File level (like Resources) because it is a machine
+	// property, not a provider one — per-pool caps protect each API, this
+	// protects the host. <=0 (absent/unset) resolves to DefaultMaxMachineAgents
+	// via machineCeiling. Additive/omitempty: a governor.json without the key
+	// round-trips unchanged and the legacy flat-document migration leaves it 0.
+	// Like Resources, File.UnmarshalJSON MUST decode it explicitly (see below)
+	// or every readFile would silently drop it.
+	MaxMachineAgents int `json:"max_machine_agents,omitempty"`
+
 	// Resources is the machine's top-level external-resource ledger
 	// (koryph-4ql.1, docs/designs/2026-07-resource-governor.md L2),
 	// deliberately OUTSIDE the per-provider pools because RAM/clusters/daemons
@@ -229,6 +252,16 @@ func (f *File) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		f.Pools = pools
+		// koryph-4rk6.2: the machine-wide ceiling rides the pools-shaped
+		// document alongside the resource ledger; this custom decoder copies
+		// only keys it names, so decode "max_machine_agents" explicitly or it
+		// is dropped on every readFile and stripped by the next whole-file
+		// rewrite. Absent → 0 (machineCeiling resolves the default).
+		if mraw, ok := probe["max_machine_agents"]; ok {
+			if err := json.Unmarshal(mraw, &f.MaxMachineAgents); err != nil {
+				return err
+			}
+		}
 		// koryph-4ql.1 (L2): the machine resource ledger rides the
 		// pools-shaped document. This custom decoder only copies keys it names,
 		// so a struct field alone would be silently dropped on every readFile
@@ -257,6 +290,21 @@ func (f *File) UnmarshalJSON(data []byte) error {
 	}
 	f.Pools = map[string]Config{DefaultPool: legacy}
 	return nil
+}
+
+// MachineCeiling resolves the machine-wide agent ceiling across ALL pools
+// (koryph-4rk6.2): the configured MaxMachineAgents when >0, else
+// DefaultMaxMachineAgents. The default ALWAYS binds — including for a File
+// with no key at all — so a machine that never configured a ceiling still
+// caps total concurrency at the safe default rather than at the unbounded sum
+// of its pool caps. Safe on a zero-value receiver. Exported so readers that
+// parse governor.json directly (internal/doctor) resolve it identically to the
+// admission path rather than re-implementing the default fallback.
+func (f File) MachineCeiling() int {
+	if f.MaxMachineAgents > 0 {
+		return f.MaxMachineAgents
+	}
+	return DefaultMaxMachineAgents
 }
 
 // PoolStatus is one pool's full observable state, for `koryph governor show`

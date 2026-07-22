@@ -717,6 +717,7 @@ set the machine-wide cap
 | `--adaptive` | bool |  | enable the AIMD overlay: probe the cap up on quiet, halve it on rate-limit |
 | `--break-sec` | int |  | circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600) |
 | `--hard-max` | int |  | absolute ceiling for upward probing under --adaptive (default 2x --max-global) |
+| `--machine-ceiling` | int |  | machine-wide ceiling on TOTAL concurrent agents across ALL pools (koryph-4rk6.2, > 0): bounds the sum of per-pool caps so independent pools cannot jointly sink the host. Machine-scoped, not per-pool — ignores --account/--provider; may be set alone. Absent/unset uses the default (8) |
 | `--max-global` | int |  | cap on concurrently running agents in this pool (required, > 0) |
 | `--min-dispatch-interval` | int |  | minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%) |
 | `--min-free-memory-mb` | int |  | memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global |

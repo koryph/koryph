@@ -266,10 +266,11 @@ func TestGovernorConfigOnePerPool(t *testing.T) {
 	}})
 	r, _ := Run(opts(home))
 	findings := findAllChecks(r, checkNameGovernor)
-	if len(findings) != 2 {
-		t.Fatalf("governor findings = %d, want 2 (one per pool):\n%+v", len(findings), findings)
+	// Two per-pool cap findings plus one machine-ceiling finding (koryph-4rk6.2).
+	if len(findings) != 3 {
+		t.Fatalf("governor findings = %d, want 3 (one per pool + machine ceiling):\n%+v", len(findings), findings)
 	}
-	var sawAnthropic8, sawOpenAI3 bool
+	var sawAnthropic8, sawOpenAI3, sawCeiling bool
 	for _, f := range findings {
 		if strings.Contains(f.Message, "pool anthropic: cap=8") {
 			sawAnthropic8 = true
@@ -277,9 +278,15 @@ func TestGovernorConfigOnePerPool(t *testing.T) {
 		if strings.Contains(f.Message, "pool openai: cap=3") {
 			sawOpenAI3 = true
 		}
+		if strings.Contains(f.Message, "machine ceiling") {
+			sawCeiling = true
+		}
 	}
 	if !sawAnthropic8 || !sawOpenAI3 {
 		t.Errorf("expected per-pool cap findings for both pools:\n%+v", findings)
+	}
+	if !sawCeiling {
+		t.Errorf("expected a machine-ceiling finding:\n%+v", findings)
 	}
 }
 
