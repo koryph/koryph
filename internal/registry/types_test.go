@@ -105,6 +105,89 @@ func TestRuntimeAccountsJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAuthModeCredentialJSONRoundTrip is the koryph-i3b.1 acceptance test
+// for auth_mode/credential/identity_fingerprint: absent (omitempty) on a
+// record with no non-subscription config — the back-compat shape of every
+// pre-koryph-i3b registry.d/*.json on disk — and round-trips exactly when
+// set.
+func TestAuthModeCredentialJSONRoundTrip(t *testing.T) {
+	rec := Record{ProjectID: "p"}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, key := range []string{`"auth_mode"`, `"credential"`, `"identity_fingerprint"`} {
+		if strings.Contains(string(data), key) {
+			t.Errorf("empty auth fields must omit %s entirely: %s", key, data)
+		}
+	}
+
+	rec.AuthMode = AuthModeAPIKey
+	rec.Credential = &Credential{
+		Source:   CredentialSourceVault,
+		Provider: "protonpass",
+		KeyRef:   "Anthropic API Key",
+	}
+	rec.IdentityFingerprint = "sha256:ab34"
+	data, err = json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got Record
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.AuthMode != rec.AuthMode {
+		t.Errorf("AuthMode round-trip = %q, want %q", got.AuthMode, rec.AuthMode)
+	}
+	if !reflect.DeepEqual(got.Credential, rec.Credential) {
+		t.Errorf("Credential round-trip = %+v, want %+v", got.Credential, rec.Credential)
+	}
+	if got.IdentityFingerprint != rec.IdentityFingerprint {
+		t.Errorf("IdentityFingerprint round-trip = %q, want %q", got.IdentityFingerprint, rec.IdentityFingerprint)
+	}
+}
+
+// TestEffectiveAuthModeDefaultsToSubscription proves migration for existing
+// records (koryph-i3b.1 acceptance criteria): a record with no auth_mode at
+// all — every registry.d/*.json written before this bead — resolves to
+// AuthModeSubscription via EffectiveAuthMode, and an explicit non-default
+// mode is never overridden.
+func TestEffectiveAuthModeDefaultsToSubscription(t *testing.T) {
+	legacy := &Record{ProjectID: "p"}
+	if got := legacy.EffectiveAuthMode(); got != AuthModeSubscription {
+		t.Errorf("EffectiveAuthMode() on legacy record = %q, want %q", got, AuthModeSubscription)
+	}
+
+	explicit := &Record{ProjectID: "p", AuthMode: AuthModeOAuthToken}
+	if got := explicit.EffectiveAuthMode(); got != AuthModeOAuthToken {
+		t.Errorf("EffectiveAuthMode() with explicit mode = %q, want %q (must not be overridden)", got, AuthModeOAuthToken)
+	}
+}
+
+// TestAccountForCarriesAuthFields proves AccountFor's flat-field fallback
+// (koryph-v8u.5's pattern) extends to the new auth fields: a record with no
+// runtime_accounts block synthesizes AuthMode/Credential/IdentityFingerprint
+// from the flat Record fields, same as ConfigDir/ExpectedIdentity above.
+func TestAccountForCarriesAuthFields(t *testing.T) {
+	rec := &Record{
+		AccountProfile:      "work",
+		AuthMode:            AuthModeAPIKey,
+		Credential:          &Credential{Source: CredentialSourceEnv, EnvVar: "KORYPH_ANTHROPIC_KEY"},
+		IdentityFingerprint: "sha256:ab34",
+	}
+	got := rec.AccountFor("claude")
+	if got.AuthMode != rec.AuthMode {
+		t.Errorf("AccountFor.AuthMode = %q, want %q", got.AuthMode, rec.AuthMode)
+	}
+	if !reflect.DeepEqual(got.Credential, rec.Credential) {
+		t.Errorf("AccountFor.Credential = %+v, want %+v", got.Credential, rec.Credential)
+	}
+	if got.IdentityFingerprint != rec.IdentityFingerprint {
+		t.Errorf("AccountFor.IdentityFingerprint = %q, want %q", got.IdentityFingerprint, rec.IdentityFingerprint)
+	}
+}
+
 // TestEffectiveHoldoutDefaultsWhenUnset is the koryph-3l1.3 acceptance test
 // for AgentProxy.Holdout's tri-state resolution: nil (unset) resolves to
 // DefaultHoldout; an explicit 0 stays 0 (never silently promoted to the

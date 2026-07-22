@@ -171,6 +171,9 @@ func (s *Store) Get(id string) (*Record, error) {
 	if err := validateAgentProxy(&rec); err != nil {
 		return nil, err
 	}
+	if err := validateCredential(&rec); err != nil {
+		return nil, err
+	}
 	return &rec, nil
 }
 
@@ -197,6 +200,9 @@ func (s *Store) List() ([]*Record, error) {
 			return nil, err
 		}
 		if err := validateAgentProxy(&rec); err != nil {
+			return nil, err
+		}
+		if err := validateCredential(&rec); err != nil {
 			return nil, err
 		}
 		recs = append(recs, &rec)
@@ -430,7 +436,38 @@ func validate(rec *Record) error {
 	if !emailRe.MatchString(rec.ExpectedIdentity) {
 		return fmt.Errorf("registry: expected_identity %q must be an email", rec.ExpectedIdentity)
 	}
-	return validateAgentProxy(rec)
+	if err := validateAgentProxy(rec); err != nil {
+		return err
+	}
+	return validateCredential(rec)
+}
+
+// forbiddenEnvVars are the canonical env var names ChildEnv injects a
+// resolved credential under (design docs/designs/2026-07-api-key-auth.md
+// §6) — Credential.EnvVar (the SOURCE var, read by ResolveCredential) must
+// never name one of these, or a dispatched agent's own ambient env would
+// satisfy its own credential lookup, defeating the vault/named-var
+// indirection entirely (mirrors the batch client's refusal,
+// internal/anthro/client.go:104-105).
+var forbiddenEnvVars = map[string]bool{
+	"ANTHROPIC_API_KEY":       true,
+	"CLAUDE_CODE_OAUTH_TOKEN": true,
+}
+
+// validateCredential enforces Credential.EnvVar's naming restriction
+// (koryph-i3b, design §6) — machine-checked at load, not just documented,
+// mirroring validateAgentProxy's pattern. A nil Credential (subscription
+// mode, or a non-subscription record that resolves via vault) is always
+// valid. Called from validate (Store.Add) and directly from Get/List so
+// every load path checks it, not just the write path.
+func validateCredential(rec *Record) error {
+	if rec.Credential == nil {
+		return nil
+	}
+	if rec.Credential.Source == CredentialSourceEnv && forbiddenEnvVars[rec.Credential.EnvVar] {
+		return fmt.Errorf("registry: credential.env_var %q is a canonical injected name and must not be used as the source var (name a purpose-specific var instead)", rec.Credential.EnvVar)
+	}
+	return nil
 }
 
 // validateAgentProxy enforces the agent_proxy loopback-only invariant

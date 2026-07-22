@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -505,6 +506,87 @@ func TestAgentProxyIDAndProxyBaseURL(t *testing.T) {
 	rec.AgentProxy = p
 	if got, want := rec.ProxyBaseURL(), "http://127.0.0.1:8091"; got != want {
 		t.Errorf("ProxyBaseURL() = %q, want %q", got, want)
+	}
+}
+
+// TestCredentialEnvVarRejectsCanonicalNames is the koryph-i3b.1 acceptance
+// test: credential.env_var must not name a canonical injected var
+// (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN) — reusing one as the SOURCE
+// var would let a dispatched agent's own ambient env satisfy its own
+// credential lookup. A purpose-specific name, or a vault-sourced credential
+// (env_var irrelevant), is accepted.
+func TestCredentialEnvVarRejectsCanonicalNames(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+
+	cases := []struct {
+		name       string
+		credential *Credential
+		wantErr    bool
+	}{
+		{"absent (subscription mode)", nil, false},
+		{"purpose-specific env var", &Credential{Source: CredentialSourceEnv, EnvVar: "KORYPH_ANTHROPIC_KEY"}, false},
+		{"vault source ignores env_var", &Credential{Source: CredentialSourceVault, Provider: "protonpass", KeyRef: "Anthropic API Key"}, false},
+		{"rejects ANTHROPIC_API_KEY", &Credential{Source: CredentialSourceEnv, EnvVar: "ANTHROPIC_API_KEY"}, true},
+		{"rejects CLAUDE_CODE_OAUTH_TOKEN", &Credential{Source: CredentialSourceEnv, EnvVar: "CLAUDE_CODE_OAUTH_TOKEN"}, true},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newInitStore(t)
+			id := fmt.Sprintf("proj-cred-%d", i)
+			rec := sampleRecord(id, root)
+			rec.AuthMode = AuthModeAPIKey
+			rec.Credential = tc.credential
+
+			err := s.Add(ctx, rec)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Add succeeded with a canonical env_var name; want refusal at load")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			got, err := s.Get(id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if !reflect.DeepEqual(got.Credential, tc.credential) {
+				t.Fatalf("Credential roundtrip = %+v, want %+v", got.Credential, tc.credential)
+			}
+		})
+	}
+}
+
+// TestCredentialValidatedIndependentlyAtLoad proves the env_var check runs
+// on every load path (Get and List), not merely inside Add — mirrors
+// TestAgentProxyValidatedIndependentlyAtLoad.
+func TestCredentialValidatedIndependentlyAtLoad(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+
+	rec := sampleRecord("hand-edited-cred", root)
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Bypass Add's validation entirely: write a bad credential straight to
+	// the record file via the unexported put(), simulating a hand-edit.
+	rec.AuthMode = AuthModeAPIKey
+	rec.Credential = &Credential{Source: CredentialSourceEnv, EnvVar: "ANTHROPIC_API_KEY"}
+	if err := s.put(rec); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	if _, err := s.Get("hand-edited-cred"); err == nil {
+		t.Fatal("Get succeeded loading a forbidden credential.env_var; want refusal at load")
+	}
+	if _, err := s.List(); err == nil {
+		t.Fatal("List succeeded loading a forbidden credential.env_var; want refusal at load")
 	}
 }
 

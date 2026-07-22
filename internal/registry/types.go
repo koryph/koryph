@@ -37,6 +37,25 @@ const (
 	StatusValidated   = "validated"   // canary dispatch green; dispatchable
 )
 
+// Auth modes (koryph-i3b, design docs/designs/2026-07-api-key-auth.md §4).
+// AuthModeSubscription is the default and today's only behavior: OAuth
+// login billed against a Claude subscription, identity verified via
+// ExpectedIdentity's email. AuthModeAPIKey and AuthModeOAuthToken are
+// long-lived-credential modes: identity is verified via
+// IdentityFingerprint instead of an email (§5), and the credential itself
+// is resolved via Credential (§6).
+const (
+	AuthModeSubscription = "subscription"
+	AuthModeAPIKey       = "api-key"
+	AuthModeOAuthToken   = "oauth-token"
+)
+
+// Credential source kinds (§6).
+const (
+	CredentialSourceVault = "vault"
+	CredentialSourceEnv   = "env"
+)
+
 // Record is one managed project.
 type Record struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -69,6 +88,24 @@ type Record struct {
 	ClaudeConfigDir  string `json:"claude_config_dir,omitempty"`
 	ExpectedIdentity string `json:"expected_identity"` // login email that MUST match at dispatch
 	DirenvExpected   string `json:"direnv_expected,omitempty"`
+
+	// AuthMode selects how this account authenticates (koryph-i3b, design
+	// §4): AuthModeSubscription (default), AuthModeAPIKey, or
+	// AuthModeOAuthToken. Empty ("") means AuthModeSubscription — every
+	// record written before this field was introduced defaults to today's
+	// behavior unchanged; read EffectiveAuthMode rather than this field
+	// directly. subscription mode ignores Credential/IdentityFingerprint
+	// and behaves exactly as today.
+	AuthMode string `json:"auth_mode,omitempty"`
+	// Credential resolves the long-lived credential for AuthModeAPIKey /
+	// AuthModeOAuthToken (§6); nil for subscription mode.
+	Credential *Credential `json:"credential,omitempty"`
+	// IdentityFingerprint is a non-secret sha256 prefix of the resolved
+	// credential, recorded at enrollment and re-derived at dispatch to
+	// detect a swapped key/token (§5) — the identity signal for
+	// AuthModeAPIKey / AuthModeOAuthToken, which have no email to verify.
+	// Empty for subscription mode.
+	IdentityFingerprint string `json:"identity_fingerprint,omitempty"`
 
 	// Model policy
 	AllowedModels       []string `json:"allowed_models"`        // e.g. ["opus","sonnet","haiku"]; add "fable" to permit explicit Fable
@@ -138,6 +175,32 @@ type Record struct {
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+// Credential is a long-lived credential reference for AuthModeAPIKey /
+// AuthModeOAuthToken accounts (koryph-i3b, design §6) — never the secret
+// itself, only where to find it. Resolution happens elsewhere
+// (internal/account.ResolveCredential); this type is pure data.
+type Credential struct {
+	// Source is CredentialSourceVault (fetch via signing.FetchSecret using
+	// Provider+KeyRef) or CredentialSourceEnv (read the named EnvVar).
+	Source string `json:"source"`
+	// Provider is the vault provider name (any signing.VaultProviders
+	// value) when Source == CredentialSourceVault; ignored otherwise.
+	Provider string `json:"provider,omitempty"`
+	// KeyRef is the vault item reference passed to FetchSecret when
+	// Source == CredentialSourceVault; ignored otherwise.
+	KeyRef string `json:"key_ref,omitempty"`
+	// EnvVar names the environment variable holding the credential when
+	// Source == CredentialSourceEnv; ignored otherwise. MUST NOT be
+	// "ANTHROPIC_API_KEY" or "CLAUDE_CODE_OAUTH_TOKEN" — those are the
+	// CANONICAL names ChildEnv injects the resolved value under, so reusing
+	// one as the SOURCE var would let a dispatched agent's own ambient env
+	// satisfy its own credential lookup, defeating the vault/named-var
+	// indirection (mirrors the batch client's refusal,
+	// internal/anthro/client.go:104-105). Machine-checked at load, not just
+	// documented — see validateCredential in store.go.
+	EnvVar string `json:"env_var,omitempty"`
 }
 
 // AgentProxy is one project's local interception-proxy configuration
@@ -288,6 +351,18 @@ func (r *Record) StrictMCP() bool {
 	return r.AgentMCP == "strict"
 }
 
+// EffectiveAuthMode returns r.AuthMode, defaulting empty (every record
+// written before this field existed, and any record that never opted into
+// a non-subscription mode) to AuthModeSubscription — the single accessor
+// callers should use instead of reading AuthMode directly (koryph-i3b,
+// design §4).
+func (r *Record) EffectiveAuthMode() string {
+	if r.AuthMode == "" {
+		return AuthModeSubscription
+	}
+	return r.AuthMode
+}
+
 // RuntimeAccount is one runtime's account-scoped identity/env configuration
 // (koryph-v8u.5) — the runtime-scoped counterpart of Record's flat
 // AccountProfile/ClaudeConfigDir/ExpectedIdentity/EnvPassthrough fields. See
@@ -309,6 +384,16 @@ type RuntimeAccount struct {
 	// EnvPassthrough overrides Record.EnvPassthrough for this runtime only;
 	// nil means "use Record.EnvPassthrough" (see AccountFor).
 	EnvPassthrough []string `json:"env_passthrough,omitempty"`
+
+	// AuthMode, Credential, and IdentityFingerprint are the per-runtime
+	// counterparts of Record's fields of the same name (koryph-i3b, design
+	// §4) — for a runtime whose auth mode genuinely differs from claude's.
+	// Empty AuthMode falls back the same way Record.AuthMode does (see
+	// EffectiveAuthMode); AccountFor synthesizes these from the flat
+	// Record fields exactly as it does the fields above.
+	AuthMode            string      `json:"auth_mode,omitempty"`
+	Credential          *Credential `json:"credential,omitempty"`
+	IdentityFingerprint string      `json:"identity_fingerprint,omitempty"`
 }
 
 // AccountFor resolves the effective account profile for the named runtime
@@ -324,10 +409,13 @@ func (r *Record) AccountFor(name string) RuntimeAccount {
 		return ra
 	}
 	return RuntimeAccount{
-		ConfigDir:        r.ClaudeConfigDir,
-		ExpectedIdentity: r.ExpectedIdentity,
-		APIKeyEnvVar:     r.APIKeyEnvVar,
-		EnvPassthrough:   r.EnvPassthrough,
+		ConfigDir:           r.ClaudeConfigDir,
+		ExpectedIdentity:    r.ExpectedIdentity,
+		APIKeyEnvVar:        r.APIKeyEnvVar,
+		EnvPassthrough:      r.EnvPassthrough,
+		AuthMode:            r.AuthMode,
+		Credential:          r.Credential,
+		IdentityFingerprint: r.IdentityFingerprint,
 	}
 }
 
