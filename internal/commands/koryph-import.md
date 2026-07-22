@@ -159,7 +159,7 @@ any skipped candidates with the reason and the existing bead id they matched.
 After all beads are filed, run:
 
 ```
-koryph plan audit
+koryph plan
 ```
 
 This prints:
@@ -213,7 +213,7 @@ Print a summary table:
 
 Then report:
 
-- **Parallel width** from the `koryph plan audit` output.
+- **Parallel width** from the `koryph plan` output.
 - **Residual serialization**: any remaining `domain:unknown`, `refactor-core`,
   or `no-dispatch` beads, with the reason.
 - **Archival notes**: paste the proposed archival blocks (step 6) for the

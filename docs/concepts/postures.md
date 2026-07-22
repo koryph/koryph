@@ -27,10 +27,10 @@ against a live repo and *apply* to it. Secrets resolve through a **vault** layer
 A posture is checked, diffed, and applied by name:
 
 ```bash
-koryph posture list                       # available profiles
-koryph posture check oss-solo-maintainer  # compare live repo; exit 1 on drift
-koryph posture diff  oss-solo-maintainer  # same, always exit 0
-koryph posture apply oss-solo-maintainer  # diff, then apply the changes
+koryph posture list                                   # available profiles
+koryph posture check oss-solo-maintainer              # compare live repo; exit 1 on drift
+koryph posture check oss-solo-maintainer --no-fail    # same, always exit 0 ('diff' is a deprecated alias for this)
+koryph posture apply oss-solo-maintainer              # diff, then apply the changes
 ```
 
 The built-in `oss-solo-maintainer` profile is the opinionated default:

@@ -105,7 +105,8 @@ projects that have no project-level vault block:
 Every command that stores or fetches a secret walks this ladder (first
 non-empty wins):
 
-1. **Explicit flag** (`--provider` / `--vault-provider`)
+1. **Explicit flag** (`--provider`; `--vault-provider` still works as a
+   deprecated alias on `koryph bot` commands)
 2. **`vault` block** in `koryph.project.json`
 3. **`signing` block** in `koryph.project.json` — `provider` + `vault_name`
    (legacy proxy; keeps existing projects working without migration)
@@ -142,7 +143,7 @@ non-empty wins):
 | `item_title`| no       | Provenance: item title used to resolve `public_key` via `--item-title`. |
 | `identity`  | yes      | Signer email; becomes the principal in `.allowed_signers`. |
 | `public_key`| ssh only | SSH public key literal (`ssh-ed25519 AAAA…`). Captured deterministically at setup; written to `user.signingkey` and `.allowed_signers`. |
-| `artifacts` | no       | Enable `koryph sign blob` (cosign) for release artifacts. |
+| `artifacts` | no       | Enable `koryph sign` (cosign) for release artifacts. |
 
 ---
 
@@ -770,9 +771,11 @@ above. Consequently, when `required` is `true`, any `merge_method` other than
 Enable `"artifacts": true` in the signing block, then:
 
 ```bash
-koryph sign blob --project my-project dist/release.tar.gz
+koryph sign --project my-project dist/release.tar.gz
 # → dist/release.tar.gz.sig
 ```
+
+(The two-word `koryph sign blob` form still works as an alias.)
 
 Koryph fetches the private key, passes it to `cosign sign-blob` via
 `env://KORYPH_COSIGN_KEY` (child env only, never on disk), and writes

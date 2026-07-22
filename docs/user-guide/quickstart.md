@@ -112,7 +112,7 @@ koryph project install-assets <root> [agentsmd|agents|commands|rules|all]  # def
 ```
 
 Pass a single kind to narrow it, `--force` to overwrite differing files, or
-`--all-projects` to refresh every registered project. The per-kind verbs
+`--all` to refresh every registered project. The per-kind verbs
 (`koryph agents install <root> --force`, `koryph commands install <root> --force`,
 `koryph rules install <root> --force`) remain as working aliases. The point of
 shipping these commands is that koryph semantics are enforced whether you run

@@ -84,7 +84,7 @@ Epics that exhaust `max_rounds` without a passing verdict are labeled
 skip validation and the docs stage entirely.
 
 See [Epic validation](../user-guide/epic-validation.md) for the full
-lifecycle diagram, configuration reference, and the `koryph epic validate`
+lifecycle diagram, configuration reference, and the `koryph epic`
 backfill command.
 
 ## Operate it

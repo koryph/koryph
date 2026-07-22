@@ -142,26 +142,27 @@ Each setting line gains a `live:` sub-line:
 ### `posture check`
 
 ```
-koryph posture check <profile> [--repo owner/name] [--param k=v]...
+koryph posture check <profile> [--repo owner/name] [--param k=v]... [--no-fail]
 ```
 
 Compares the live GitHub repository state against the profile. Prints `OK`,
 `MISSING`, or `DRIFT` per section — identical to `koryph repo check`. **Exits 1**
-if drift is detected (useful for CI gating).
+if drift is detected (useful for CI gating); pass `--no-fail` to always exit 0
+(informational — useful for exploration and auditing without breaking scripts).
 
 ```
 koryph posture check oss-solo-maintainer --repo myorg/myrepo \
   --param required_checks="pre-commit,make gate"
 ```
 
-### `posture diff`
+### `posture diff` (deprecated alias)
 
 ```
 koryph posture diff <profile> [--repo owner/name] [--param k=v]...
 ```
 
-Same as `check` but **always exits 0** — drift is informational, not a failure.
-Useful for exploration and auditing without breaking scripts.
+Deprecated alias for `posture check --no-fail` — same behavior, always exits
+0. Prefer `check --no-fail` in new scripts.
 
 ### `posture apply`
 
@@ -175,7 +176,7 @@ changes. Never deletes rulesets it does not know about.
 Before making any live change, koryph captures the **current** GitHub state into
 a timestamped snapshot under `<repo-root>/.koryph/snapshots/settings-<ts>.json`.
 If the diff is empty (nothing to change), no snapshot is written. Roll back with
-`koryph repo rollback` (see below).
+`koryph posture rollback` (see below) — an alias for `koryph repo rollback`.
 
 ```
 koryph posture apply oss-solo-maintainer --repo myorg/myrepo \
@@ -188,7 +189,7 @@ Output:
 --- rulesets diff ---
 MISSING  pr-checks (no live ruleset)
 MISSING  signed-commits (no live ruleset)
-captured pre-change state → .koryph/snapshots/settings-2026-07-04T16-40-18Z.json; rollback with koryph repo rollback
+captured pre-change state → .koryph/snapshots/settings-2026-07-04T16-40-18Z.json; rollback with koryph posture rollback
 --- applying rulesets ---
 CREATED  pr-checks
 CREATED  signed-commits
@@ -537,6 +538,9 @@ When the diff is empty (nothing would change) no snapshot is written.
 ```
 koryph repo rollback [--repo owner/name] [--to <timestamp>|latest]
 ```
+
+`koryph posture rollback` is an identical alias — use whichever spelling
+matches how you got here (`repo apply`/`repo check` vs. `posture apply`).
 
 Lists the available snapshots when no `--to` is given and multiple exist for the
 repo. Shows a **diff of snapshot vs. live state** before applying (same

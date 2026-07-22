@@ -52,7 +52,7 @@ the current release.
 - **Planning skills** — `/koryph-plan` decomposes a design doc into an epic
   plus dependency-linked, footprint-labelled child beads; `/koryph-import`
   converts existing `ROADMAP.md`/`TODO.md` corpora; `/koryph-issue` files a
-  single well-formed issue; `koryph plan audit` analyses a corpus for
+  single well-formed issue; `koryph plan` analyses a corpus for
   conflicts.
   → [From prompt to beads](user-guide/describing-work.md)
 - **Beads and the ready-graph** — work lives in
@@ -184,7 +184,7 @@ the current release.
   Escalation counts *faults*, never environment noise. *(new: fault-only
   counting)*
   → [Recovery & escalation](user-guide/recovery.md#escalation)
-- **Learned model routing** — `koryph models learn` mines escalation history
+- **Learned model routing** — `koryph models` mines escalation history
   and pre-labels similar work to start on the stronger tier directly;
   enable `adaptive_escalation` to run the pass at every wave boundary.
   → [Recovery & escalation](user-guide/recovery.md#learned-model-labels)

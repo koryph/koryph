@@ -193,14 +193,15 @@ durable provenance.
 
 ### Learned model labels (adaptive escalation)
 
-Escalations are also a training signal. `koryph models learn` aggregates
-escalated-then-merged beads by `(area:* label, size bucket)` and — once a
-bucket has enough evidence (default 2) that outweighs its clean cheap-tier
-merges — recommends starting similar beads on the stronger tier directly:
+Escalations are also a training signal. `koryph models` (the two-word `models
+learn` still works as an alias) aggregates escalated-then-merged beads by
+`(area:* label, size bucket)` and — once a bucket has enough evidence
+(default 2) that outweighs its clean cheap-tier merges — recommends starting
+similar beads on the stronger tier directly:
 
 ```console
-$ koryph models learn            # dry run: show recommendations + evidence
-$ koryph models learn --apply    # label matching ready beads
+$ koryph models            # dry run: show recommendations + evidence
+$ koryph models --apply    # label matching ready beads
 ```
 
 `--apply` stamps `model:<tier>` plus a `model-learned:<yyyy-mm-dd>`
@@ -798,13 +799,14 @@ run without editing `governor.json`, set `KORYPH_MIN_FREE_MEMORY_MB` in the envi
 configured floor for that run. The available-memory signal is read from `/proc/meminfo`
 (Linux) or `sysctl` + `vm_stat` (macOS); a platform with no probe fails open (gate off).
 
-## Corpus audit: koryph plan audit
+## Corpus audit: koryph plan
 
 Before running the loop — or after changing `area_map` in `koryph.project.json` — run the
-corpus audit to see how well your bead corpus parallelizes under the current scheduler rules:
+corpus audit to see how well your bead corpus parallelizes under the current scheduler rules
+(the two-word `plan audit` still works as an alias):
 
 ```sh
-koryph plan audit --project myproject
+koryph plan --project myproject
 ```
 
 The audit is **read-only** (no bd mutations, no loop-behavior change). It reports:
@@ -821,7 +823,7 @@ The audit is **read-only** (no bd mutations, no loop-behavior change). It report
 (e.g., for a `koryph-replan` skill that automatically files label-fix beads):
 
 ```sh
-koryph plan audit --project myproject --json | jq .parallel_width
+koryph plan --project myproject --json | jq .parallel_width
 ```
 
 **Typical workflow after changing `area_map`.** Refinining the area map changes which tokens
@@ -830,7 +832,7 @@ each `area:*` label resolves to, which can reveal new conflicts or unlock new pa
 ```sh
 # 1. Edit koryph.project.json: add/modify area_map entries.
 # 2. Audit the corpus to see the impact:
-koryph plan audit --project myproject
+koryph plan --project myproject
 # 3. File labeling tasks for beads with domain:unknown, or split conflicting beads.
 # 4. Re-run the audit to confirm the improvement.
 ```

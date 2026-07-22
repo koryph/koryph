@@ -30,8 +30,8 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph stop`](#koryph-stop) | stop an agent (or every agent with --all) |
 | [`koryph drain`](#koryph-drain) | gracefully wind down a run: finish active slots, dispatch nothing new |
 | [`koryph resize`](#koryph-resize) | live width override for a running loop |
-| [`koryph merge`](#koryph-merge) | land a finished agent branch |
-| [`koryph land`](#koryph-land) | land an engine-opened PR fast-forward-only |
+| [`koryph merge`](#koryph-merge) | merge a worktree branch by name (push/squash/keep-worktree) |
+| [`koryph land`](#koryph-land) | land an engine-opened PR by bead id, fast-forward-only |
 | [`koryph review-pr`](#koryph-review-pr) | analyze another author's PR |
 | [`koryph pr-sync`](#koryph-pr-sync) | reconcile pr-opened beads against live PR state |
 | [`koryph bot`](#koryph-bot) | provision and manage koryph GitHub App bots |
@@ -47,8 +47,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph signing keygen`](#koryph-signing-keygen) | generate a passphrase-protected SSH signing key (no-vault path) |
 | ↳ [`koryph signing status`](#koryph-signing-status) | mode/provider/agent-ready summary |
 | ↳ [`koryph signing verify`](#koryph-signing-verify) | verify branch commit signatures |
-| [`koryph sign`](#koryph-sign) | cosign sign-blob an artifact |
-| ↳ [`koryph sign blob`](#koryph-sign-blob) | sign a file via the vault key |
+| [`koryph sign`](#koryph-sign) | cosign sign-blob an artifact via the vault key |
 | [`koryph release`](#koryph-release) | configure and operate the project release pipeline |
 | ↳ [`koryph release setup`](#koryph-release-setup) | render and install release workflow + release-please config |
 | ↳ [`koryph release kick`](#koryph-release-kick) | close+reopen the Release PR so checks fire under your gh auth |
@@ -57,8 +56,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph status`](#koryph-status) | latest-run per-slot detail |
 | [`koryph tail`](#koryph-tail) | tail a phase's session.log + stderr.log |
 | [`koryph doctor`](#koryph-doctor) | health check: layout, binaries, registry, governor |
-| [`koryph plan`](#koryph-plan) | plan and analyze the project bead corpus |
-| ↳ [`koryph plan audit`](#koryph-plan-audit) | read-only corpus conflict analysis: footprint gaps, non-dispatchable beads, parallel width |
+| [`koryph plan`](#koryph-plan) | deterministic corpus conflict analysis (read-only) |
 | [`koryph governor`](#koryph-governor) | inspect and set the machine-wide concurrency cap |
 | ↳ [`koryph governor show`](#koryph-governor-show) | show the cap, active leases, and demand |
 | ↳ [`koryph governor set`](#koryph-governor-set) | set the machine-wide cap |
@@ -78,9 +76,10 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | [`koryph posture`](#koryph-posture) | apply a named desired-state profile to a GitHub repo |
 | ↳ [`koryph posture list`](#koryph-posture-list) | list built-in and user-defined profiles |
 | ↳ [`koryph posture describe`](#koryph-posture-describe) | explain every setting a profile enforces and why |
-| ↳ [`koryph posture check`](#koryph-posture-check) | diff live GitHub state against a profile (exit 1 on drift) |
-| ↳ [`koryph posture diff`](#koryph-posture-diff) | show drift between live state and a profile (always exit 0) |
+| ↳ [`koryph posture check`](#koryph-posture-check) | diff live GitHub state against a profile (exit 1 on drift, or 0 with --no-fail) |
+| ↳ [`koryph posture diff`](#koryph-posture-diff) | deprecated alias for `check --no-fail` (always exit 0) |
 | ↳ [`koryph posture apply`](#koryph-posture-apply) | show diff then apply a profile to the live GitHub repo |
+| ↳ [`koryph posture rollback`](#koryph-posture-rollback) | roll back to a pre-apply snapshot (alias for `repo rollback`) |
 | [`koryph onboard`](#koryph-onboard) | read-only inventory of a project |
 | [`koryph batch`](#koryph-batch) | submit a Message Batch (explicit per-token spend) |
 | ↳ [`koryph batch run`](#koryph-batch-run) | submit a batch from a JSONL file |
@@ -94,12 +93,10 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph ci setup`](#koryph-ci-setup) | render and install CI assets into the project |
 | ↳ [`koryph ci check`](#koryph-ci-check) | report drift between installed CI assets and current Render output |
 | [`koryph cockpit`](#koryph-cockpit) | emit a cockpit snapshot for the VS Code extension |
-| [`koryph epic`](#koryph-epic) | epic lifecycle management (validate, …) |
-| ↳ [`koryph epic validate`](#koryph-epic-validate) | on-demand epic validation: completeness + structural health review |
+| [`koryph epic`](#koryph-epic) | on-demand epic validation: completeness + structural health review |
 | [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
 | [`koryph inject`](#koryph-inject) | add a bead to a running loop even if it is outside the run's scope |
-| [`koryph models`](#koryph-models) | model-routing insight: learn starting tiers from escalation history |
-| ↳ [`koryph models learn`](#koryph-models-learn) | recommend (and --apply) learned model labels from escalation history |
+| [`koryph models`](#koryph-models) | recommend (and --apply) learned model tiers from escalation history |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail, export, prune |
 | ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
 | ↳ [`koryph obs level`](#koryph-obs-level) | set the log level for a component (or default) |
@@ -164,7 +161,8 @@ register a project (inspect + register + scaffold adapter + install assets)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--all-projects` | bool |  | install into every registered project (registry-wide refresh) |
+| `--all` | bool |  | install into every registered project (registry-wide refresh) |
+| `--all-projects` | bool |  | deprecated alias for --all |
 | `--force` | bool |  | overwrite existing assets whose content differs |
 
 ## `koryph project list` { #koryph-project-list }
@@ -325,7 +323,7 @@ live width override for a running loop
 
 ## `koryph merge` { #koryph-merge }
 
-land a finished agent branch
+merge a worktree branch by name (push/squash/keep-worktree)
 
 **See also:** [Running waves](../user-guide/running-waves) · [Worktrees](../concepts/worktrees)
 
@@ -344,7 +342,7 @@ land a finished agent branch
 
 ## `koryph land` { #koryph-land }
 
-land an engine-opened PR fast-forward-only
+land an engine-opened PR by bead id, fast-forward-only
 
 **See also:** [Running waves](../user-guide/running-waves) · [Worktrees](../concepts/worktrees)
 
@@ -412,8 +410,9 @@ create a GitHub App via the manifest flow (one browser click)
 | `--name` | string |  | GitHub App name (e.g. mylogin-release-bot); defaults to <gh-login>-release-bot when omitted (requires gh CLI) |
 | `--org` | string |  | create the app under this GitHub organization (omit for personal account) |
 | `--plaintext` | bool |  | store the private key inline as plaintext PEM (legacy; prefer a vault or encrypted-file provider) |
+| `--provider` | string |  | vault provider for the private key (protonpass\|onepassword\|encrypted-file\|keychain\|file\|…); auto-selects when omitted |
 | `--public` | bool |  | make the app publicly installable (required for guest-org repo-admin installs) |
-| `--vault-provider` | string |  | vault provider for the private key (protonpass\|onepassword\|encrypted-file\|keychain\|file\|…); auto-selects when omitted |
+| `--vault-provider` | string |  | deprecated alias for --provider |
 
 ## `koryph bot install` { #koryph-bot-install }
 
@@ -468,7 +467,8 @@ move a plaintext bot private key into a vault or encrypted file
 |------|------|---------|-------------|
 | `--key-ref` | string |  | provider-specific key reference (auto-derived when omitted) |
 | `--name` | string |  | bot name (required) |
-| `--vault-provider` | string |  | destination vault provider (auto-selected when omitted) |
+| `--provider` | string |  | destination vault provider (auto-selected when omitted) |
+| `--vault-provider` | string |  | deprecated alias for --provider |
 
 
 ---
@@ -549,15 +549,7 @@ verify branch commit signatures
 
 ## `koryph sign` { #koryph-sign }
 
-cosign sign-blob an artifact
-
-**See also:** [Signing](../user-guide/signing) · [Supply chain](../user-guide/supply-chain)
-
-Run `koryph sign <subcommand> -h` for subcommand flags.
-
-## `koryph sign blob` { #koryph-sign-blob }
-
-sign a file via the vault key
+cosign sign-blob an artifact via the vault key
 
 **See also:** [Signing](../user-guide/signing) · [Supply chain](../user-guide/supply-chain)
 
@@ -683,15 +675,7 @@ health check: layout, binaries, registry, governor
 
 ## `koryph plan` { #koryph-plan }
 
-plan and analyze the project bead corpus
-
-**See also:** [Beads](../concepts/beads) · [Footprints](../concepts/footprints)
-
-Run `koryph plan <subcommand> -h` for subcommand flags.
-
-## `koryph plan audit` { #koryph-plan-audit }
-
-read-only corpus conflict analysis: footprint gaps, non-dispatchable beads, parallel width
+deterministic corpus conflict analysis (read-only)
 
 **See also:** [Beads](../concepts/beads) · [Footprints](../concepts/footprints)
 
@@ -923,26 +907,28 @@ explain every setting a profile enforces and why
 
 ## `koryph posture check` { #koryph-posture-check }
 
-diff live GitHub state against a profile (exit 1 on drift)
+diff live GitHub state against a profile (exit 1 on drift, or 0 with --no-fail)
 
 **See also:** [Postures](../concepts/postures) · [Postures](../user-guide/postures)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--force` | bool |  | with apply: overwrite stale fragment files (default: only install missing fragments) |
+| `--no-fail` | bool |  | always exit 0, even when drift is found (informational; same as `posture diff`) |
 | `--org` | string |  | GitHub organisation for org-level ruleset check/apply (requires org owner/admin) |
 | `--param` | multi |  | profile parameter as key=value (repeatable, e.g. --param required_checks="pre-commit,make gate") |
 | `--repo` | string |  | repository in owner/name form (default: detected from git remote via gh) |
 
 ## `koryph posture diff` { #koryph-posture-diff }
 
-show drift between live state and a profile (always exit 0)
+deprecated alias for `check --no-fail` (always exit 0)
 
 **See also:** [Postures](../concepts/postures) · [Postures](../user-guide/postures)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--force` | bool |  | with apply: overwrite stale fragment files (default: only install missing fragments) |
+| `--no-fail` | bool | `true` | always exit 0, even when drift is found (informational; same as `posture diff`) |
 | `--org` | string |  | GitHub organisation for org-level ruleset check/apply (requires org owner/admin) |
 | `--param` | multi |  | profile parameter as key=value (repeatable, e.g. --param required_checks="pre-commit,make gate") |
 | `--repo` | string |  | repository in owner/name form (default: detected from git remote via gh) |
@@ -959,6 +945,17 @@ show diff then apply a profile to the live GitHub repo
 | `--org` | string |  | GitHub organisation for org-level ruleset check/apply (requires org owner/admin) |
 | `--param` | multi |  | profile parameter as key=value (repeatable, e.g. --param required_checks="pre-commit,make gate") |
 | `--repo` | string |  | repository in owner/name form (default: detected from git remote via gh) |
+
+## `koryph posture rollback` { #koryph-posture-rollback }
+
+roll back to a pre-apply snapshot (alias for `repo rollback`)
+
+**See also:** [Postures](../user-guide/postures)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--repo` | string |  | repository in owner/name form (default: detected from git remote via gh) |
+| `--to` | string | `latest` | snapshot selector: "latest" or a RFC3339 timestamp (or prefix, e.g. "2026-07-04T16") |
 
 
 ---
@@ -1130,17 +1127,9 @@ emit a cockpit snapshot for the VS Code extension
 
 ## `koryph epic` { #koryph-epic }
 
-epic lifecycle management (validate, …)
-
-**See also:** [Epic validation](../user-guide/epic-validation) · [Beads](../concepts/beads)
-
-Run `koryph epic <subcommand> -h` for subcommand flags.
-
-## `koryph epic validate` { #koryph-epic-validate }
-
 on-demand epic validation: completeness + structural health review
 
-**See also:** [Epic validation](../user-guide/epic-validation)
+**See also:** [Epic validation](../user-guide/epic-validation) · [Beads](../concepts/beads)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -1181,19 +1170,7 @@ add a bead to a running loop even if it is outside the run's scope
 
 ## `koryph models` { #koryph-models }
 
-model-routing insight: learn starting tiers from escalation history
-
-**See also:** [Running waves](../user-guide/running-waves)
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--apply` | bool |  | write model:<tier> + model-learned:<date> labels onto matching ready beads |
-| `--min-evidence` | int |  | escalated-then-merged beads required per (area,size) bucket (0 = default 2) |
-| `--project` | string |  | project id (defaults to the project owning the current directory) |
-
-## `koryph models learn` { #koryph-models-learn }
-
-recommend (and --apply) learned model labels from escalation history
+recommend (and --apply) learned model tiers from escalation history
 
 **See also:** [Running waves](../user-guide/running-waves)
 
@@ -1315,8 +1292,9 @@ interactive terminal cockpit (threads, queue, events)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--a` | bool |  | shorthand for --all-projects |
-| `--all-projects` | bool |  | show every registered project (aggregate cockpit) |
+| `--a` | bool |  | shorthand for --all |
+| `--all` | bool |  | show every registered project (aggregate cockpit) |
+| `--all-projects` | bool |  | deprecated alias for --all |
 | `--project` | string |  | project id (default: the project containing the current directory) |
 | `--read-only` | bool |  | disable write actions (nudge, drain) — safe for shared/observer sessions |
 

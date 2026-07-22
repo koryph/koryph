@@ -11,7 +11,7 @@ and shares the same data layer (`internal/cockpit`) as the VS Code extension
 ## Launch
 
 ```sh
-koryph tui [--project ID | --all-projects] [--read-only]
+koryph tui [--project ID | --all] [--read-only]
 ```
 
 - **Default (no selection flag)** — shows the project whose repository root
@@ -19,12 +19,13 @@ koryph tui [--project ID | --all-projects] [--read-only]
   checkout you have added to koryph (the repo root or any subdirectory) and it
   opens that project's cockpit. Outside every registered project, the command
   cannot guess which one you mean, so it lists the registered projects and asks
-  you to name one with `--project` (or `--all-projects`) rather than opening an
+  you to name one with `--project` (or `--all`) rather than opening an
   unrelated cockpit.
 - **`--project ID`** — show only the named project, regardless of the current
   directory.
-- **`--all-projects`**, **`-a`** — show every registered project (the aggregate
+- **`--all`**, **`-a`** — show every registered project (the aggregate
   cockpit; cycle between them with `p`). Mutually exclusive with `--project`.
+  (`--all-projects` still works as a deprecated alias.)
 - **`--read-only`** — disables write actions (nudge, drain); safe for shared
   or observer sessions.
 

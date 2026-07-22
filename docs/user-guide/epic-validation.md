@@ -175,13 +175,14 @@ docs stage. The epic closes immediately when all children are terminal.
 | `validation:structural` | Filed on structural follow-up beads; these never block the epic. |
 | `validation:docs` | Filed on the auto-filed documentation update bead. |
 
-## On-demand validation: `koryph epic validate`
+## On-demand validation: `koryph epic`
 
 Run validation manually at any time — the `enabled` flag does not gate the
-explicit command:
+explicit command. The two-word `koryph epic validate <epic-id>` form still
+works as an alias:
 
 ```sh
-koryph epic validate <epic-id> --project <project-id>
+koryph epic <epic-id> --project <project-id>
 ```
 
 All children must be closed before the command will proceed. Use
@@ -191,13 +192,13 @@ emit the raw verdict JSON; the engine still acts on the verdict.
 
 ```sh
 # Backfill an epic that completed before epic validation existed:
-koryph epic validate koryph-2im --project koryph
+koryph epic koryph-2im --project koryph
 
 # Recovery path for a parked epic after operator triage:
-koryph epic validate koryph-oji --project koryph --round 3
+koryph epic koryph-oji --project koryph --round 3
 
 # Inspect the verdict without the human-readable summary:
-koryph epic validate koryph-c6j --project koryph --json
+koryph epic koryph-c6j --project koryph --json
 ```
 
 Verdicts are persisted to `.koryph/epic-reviews/<epic-id>-round<N>.json`
@@ -210,7 +211,7 @@ When the validator agent times out or returns unparseable output, koryph
 labels the epic `validation:degraded` and appends a note explaining the
 failure. The run does not fail; subsequent waves continue. `koryph doctor`
 surfaces degraded epics in its health report. Retry by running
-`koryph epic validate` again after addressing the root cause (usually a
+`koryph epic <epic-id>` again after addressing the root cause (usually a
 timeout — raise `timeout_seconds` or check quota headroom).
 
 ## Self-healing: stranded completed epics
@@ -239,7 +240,7 @@ states surfaced elsewhere (see the label vocabulary above).
 
 - [Work: beads and the ready-graph](../concepts/beads.md) — the bead
   lifecycle that epic validation extends.
-- [CLI Reference: koryph epic validate](../reference/cli.md#koryph-epic-validate)
+- [CLI Reference: koryph epic](../reference/cli.md#koryph-epic)
 - [Running waves](running-waves.md) — the wave loop that dispatches
   follow-up beads.
 - [Billing & quota](billing-and-quota.md) — quota guard interaction with

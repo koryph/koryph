@@ -380,7 +380,7 @@ Every footprint collision serializes two beads that could otherwise run in
 parallel. Before starting a long loop, audit:
 
 ```sh
-koryph plan audit --project <id>
+koryph plan --project <id>
 ```
 
 Fix any `domain:unknown` beads with real `area:*` labels; wire missing

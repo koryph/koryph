@@ -49,7 +49,7 @@ Read `project_id` and `area_map` from `koryph.project.json` at the repo root.
 Run the deterministic conflict analysis to capture the **before** state:
 
 ```
-koryph plan audit --project <project_id> --json
+koryph plan --project <project_id> --json
 ```
 
 Save the JSON output — you will diff it against the **after** state in step 7.
@@ -313,7 +313,7 @@ bd update <epic-id> --note "replan: step 6 done — <n> beads relabeled, <m> dep
 Run the audit again to capture the **after** state:
 
 ```
-koryph plan audit --project <project_id>
+koryph plan --project <project_id>
 ```
 
 Report side-by-side:

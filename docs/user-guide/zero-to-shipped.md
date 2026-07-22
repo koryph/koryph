@@ -150,9 +150,9 @@ the same discipline anywhere — the built-in `oss-solo-maintainer` profile
 carries a 1-approval + signed-commits + secret-scanning baseline:
 
 ```sh
-koryph posture list                                  # built-ins + ~/.koryph/postures
-koryph posture diff  oss-solo-maintainer --repo O/R  # see what would change
-koryph posture apply oss-solo-maintainer --repo O/R  # diff-first, then apply
+koryph posture list                                            # built-ins + ~/.koryph/postures
+koryph posture check oss-solo-maintainer --repo O/R --no-fail  # see what would change
+koryph posture apply oss-solo-maintainer --repo O/R            # diff-first, then apply
 ```
 
 Repo-local `.github/` IaC, when present, always overrides the profile — an

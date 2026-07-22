@@ -191,7 +191,7 @@ returns a `Verdict` — met, gaps, and/or structural findings. `Act` applies a
 verdict deterministically: stamps `validation:passed`/`parked`/`degraded`
 labels, files gap and structural follow-up beads with round labels, files the
 docs-update bead, and closes the epic when appropriate. Both the engine hook
-and `koryph epic validate` call this package so the two paths cannot drift.
+and `koryph epic` call this package so the two paths cannot drift.
 
 - **`Validate(ctx, Opts)`** — run the frontier validator, return a `Verdict`
 - **`Act(ctx, BeadStore, ActOpts, Verdict)`** — deterministic verdict actuation
@@ -454,7 +454,7 @@ rules (`FootprintFor` + `Conflicts`), surfacing unlabeled beads (the
 `domain:unknown` serializers), non-dispatchable ready beads, dependency-
 unordered conflicting pairs, and achievable vs. potential parallel width.
 
-- **`AuditReport`** — the JSON-marshalable result (behind `koryph plan audit`)
+- **`AuditReport`** — the JSON-marshalable result (behind `koryph plan`)
 - **`ConflictPair`** / **`WidthReport`** / **`ItemSummary`** / **`SkipSummary`** — report parts
 
 ## posture

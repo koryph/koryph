@@ -71,11 +71,12 @@ Retries are bounded, cause-coded, and visible (the TUI Threads tab shows
 Escalations are a training signal, not just a save:
 
 ```console
-$ koryph models learn            # dry run: recommendations + evidence
-$ koryph models learn --apply    # pre-label matching ready beads
+$ koryph models            # dry run: recommendations + evidence
+$ koryph models --apply    # pre-label matching ready beads
 ```
 
-`models learn` aggregates escalated-then-merged beads by area and size
+`koryph models` (the two-word `models learn` still works as an alias)
+aggregates escalated-then-merged beads by area and size
 bucket; once a bucket has enough evidence, similar ready beads are labelled
 to *start* on the stronger tier — skipping the doomed cheap attempts
 entirely. A human-set `model:*` label always wins. Projects can run the
