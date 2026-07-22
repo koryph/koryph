@@ -6,6 +6,7 @@ package stage
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
 )
@@ -84,6 +86,12 @@ func Run(ctx context.Context, o Opts) Result {
 	// architecture review).
 	args = append(args, "--fallback-model", claude.FallbackModel, "--output-format", "json")
 
+	// obs.Span adoption (koryph-5a1 #59): the stage agent spawn is the same
+	// shape of hot path as a reviewer/forge/vault call — one blocking
+	// external process per pipeline stage — so it gets the same
+	// latency/status/error span instead of being invisible to trace
+	// correlation entirely.
+	sp := obs.StartSpan(ctx, log, slog.LevelDebug, "stage.agent_spawn", obs.ForgeAttrs("claude", o.Model, o.Persona)...)
 	res, err := execx.Run(ctx, execx.Cmd{
 		Dir:     o.Worktree,
 		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: o.Billing, APIKey: o.APIKey, SSHAuthSock: o.SSHAuthSock, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "stage"}),
@@ -92,15 +100,32 @@ func Run(ctx context.Context, o Opts) Result {
 		Stdin:   prompt,
 		Timeout: time.Duration(timeout) * time.Second,
 	})
+	switch {
+	case err != nil:
+		sp.End(0, err)
+	case res.ExitCode != 0:
+		sp.End(0, fmt.Errorf("exit %d (timed_out=%v)", res.ExitCode, res.TimedOut))
+	default:
+		sp.EndOK()
+	}
 
 	out := Result{Ran: true}
-	// Persist the raw envelope for inspection and parse its cost (best-effort).
+	// Persist the raw envelope and the full stderr for inspection — mirrors
+	// dispatch's session.log/stderr.log (koryph-5a1 #56): before this, a stage
+	// agent's stderr was swallowed into a 400-char Note with nothing durable
+	// left once the process exited. Written unconditionally (not just on
+	// failure) so a clean run's stderr (deprecation warnings, etc.) is still
+	// recoverable.
 	if o.PhaseDir != "" {
 		envPath := filepath.Join(o.PhaseDir, "stage-"+o.Stage+".json")
 		if werr := fsx.WriteAtomic(envPath, []byte(res.Stdout+"\n"), 0o644); werr == nil {
 			if cost, ok := dispatch.ParseResultCost(envPath); ok {
 				out.CostUSD = cost
 			}
+		}
+		if res.Stderr != "" {
+			stderrPath := filepath.Join(o.PhaseDir, "stage-"+o.Stage+"-stderr.log")
+			_ = fsx.WriteAtomic(stderrPath, []byte(res.Stderr), 0o644)
 		}
 	}
 
@@ -120,6 +145,9 @@ func Run(ctx context.Context, o Opts) Result {
 			out.Note = fmt.Sprintf("timed out after %s", time.Duration(timeout)*time.Second)
 		} else {
 			out.Note = fmt.Sprintf("agent exited %d: %s", res.ExitCode, tail(res.Stderr, 400))
+			if o.PhaseDir != "" && res.Stderr != "" {
+				out.Note += fmt.Sprintf(" (full stderr: %s)", filepath.Join(o.PhaseDir, "stage-"+o.Stage+"-stderr.log"))
+			}
 		}
 		return out
 	}
