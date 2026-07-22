@@ -370,6 +370,7 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 		if aerr := bd.AppendNotes(ctx, phaseID, note); aerr != nil {
 			return fail(stderr, fmt.Errorf("nudge: %s is not dispatched yet; append-notes failed: %w", phaseID, aerr))
 		}
+		auditNudge(store, rec.ProjectID, phaseID)
 		fmt.Fprintf(stdout, "%s: not dispatched yet — recorded as a bd note "+
 			"(delivered as OPERATOR NOTES at its next dispatch)\n", phaseID)
 		return 0
@@ -398,8 +399,25 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "koryph: warning: bd comment failed:", cerr)
 		}
 	}
+	auditNudge(store, rec.ProjectID, phaseID)
 	fmt.Fprintf(stdout, "nudged %s (%s)\n", phaseID, filepath.Join(phaseDir, "INBOX.md"))
 	return 0
+}
+
+// auditNudge records the nudge in the registry's audit trail (koryph-5a1
+// #57): internal/cockpit/events.go's auditToEvent already renders a "nudge"
+// audit kind into the TUI's Events tab feed, but nothing ever wrote one —
+// this was the missing half. Best-effort: an audit-log failure must not
+// block (or roll back) the nudge that already landed.
+func auditNudge(store *registry.Store, projectID, phaseID string) {
+	if aerr := store.Audit(registry.Event{
+		Kind:      "nudge",
+		ProjectID: projectID,
+		Actor:     cliActor(),
+		Detail:    map[string]any{"bead_id": phaseID},
+	}); aerr != nil {
+		fmt.Fprintln(os.Stderr, "koryph: warning: audit log failed:", aerr)
+	}
 }
 
 // cmdStop sends a graceful SIGTERM to a phase's agent process group.

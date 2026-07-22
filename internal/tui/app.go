@@ -683,6 +683,7 @@ func (a App) doNudge(beadID, text string) tea.Cmd {
 		if cerr := f.Close(); cerr != nil {
 			return actionResultMsg{Err: fmt.Errorf("nudge: close: %w", cerr)}
 		}
+		auditOperatorAction("nudge", a.providers[a.projectIdx].ProjectID(), map[string]any{"bead_id": beadID})
 		return actionResultMsg{Msg: fmt.Sprintf("nudged %s", beadID)}
 	}
 }
@@ -737,6 +738,7 @@ func (a App) doDrain() tea.Cmd {
 		if err := ledger.NewStore(repoRoot).RequestDrain(); err != nil {
 			return actionResultMsg{Err: fmt.Errorf("drain: %w", err)}
 		}
+		auditOperatorAction("drain", projectID, nil)
 		return actionResultMsg{Msg: fmt.Sprintf("drain requested for %s", projectID)}
 	}
 }

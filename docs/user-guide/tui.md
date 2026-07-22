@@ -239,6 +239,7 @@ and the machine-wide audit log (`~/.koryph/audit.jsonl`):
 | `fail` | red | A running slot died (failed/conflict/blocked) — includes the engine's death classification and any block note, so an escalation watcher can decide whether a higher-tier model should take over |
 | `patrol` | amber | A warn-level health-patrol finding (stuck claim, stale worktree, …); `(auto-fixed)` when the engine repaired it itself |
 | `drain` | red | An operator requested a graceful wind-down |
+| `nudge` | gray | An operator nudged a bead (from the TUI or `koryph nudge`) |
 | `cap-change` / `resize` | cyan | A concurrency-cap override was applied |
 
 Event messages lead with the bead's **title** (`<title> [id]`) so the feed is
