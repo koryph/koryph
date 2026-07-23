@@ -57,9 +57,18 @@ const (
 
 // Engine defaults.
 const (
-	defaultPollSec    = 10 // was 45; L3 fast-completion-detection (koryph-2im.2)
-	defaultStuckSec   = 900
-	defaultWaveWidth  = 4 // was 3; koryph-4rk6.4 laptop-safe default (2026-07-21 OOM)
+	defaultPollSec  = 10 // was 45; L3 fast-completion-detection (koryph-2im.2)
+	defaultStuckSec = 900
+	// defaultWaveWidth is the per-project wave-width fallback when neither
+	// --max nor koryph.project.json's max_concurrent_slots is set (was 3,
+	// koryph-4rk6.4). This value alone is NOT the 2026-07-21 OOM fix — a
+	// wider per-project default is, taken alone, more concurrency, not
+	// less. It is safe only paired with koryph-4rk6.2's machine-wide
+	// max_machine_agents ceiling (default 8), which is what actually bounds
+	// the cross-project sum that caused the incident: this default bounds
+	// one project's common-case width, the ceiling bounds the total across
+	// every concurrently-running project on the machine.
+	defaultWaveWidth  = 4
 	defaultBackoffSec = 15
 )
 

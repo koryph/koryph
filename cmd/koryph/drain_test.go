@@ -164,7 +164,7 @@ func TestResizeRejectsZeroOrNegativeMax(t *testing.T) {
 
 func TestResizeClampsToProjectCapWithoutForce(t *testing.T) {
 	isolate(t)
-	rec := addProject(t, "demo") // scaffolded koryph.project.json defaults MaxConcurrentSlots=3
+	rec := addProject(t, "demo") // scaffolded koryph.project.json defaults MaxConcurrentSlots=4
 
 	code, out, errb := runCmd("resize", "--project", "demo", "--max", "10")
 	if code != 0 {
@@ -174,8 +174,8 @@ func TestResizeClampsToProjectCapWithoutForce(t *testing.T) {
 		t.Errorf("stdout = %q, want a clamp notice", out)
 	}
 	ov, ok := ledger.NewStore(rec.Root).LoadResize()
-	if !ok || ov.Max != 3 {
-		t.Errorf("LoadResize = (%+v, %v), want (Max:3, true)", ov, ok)
+	if !ok || ov.Max != 4 {
+		t.Errorf("LoadResize = (%+v, %v), want (Max:4, true)", ov, ok)
 	}
 }
 

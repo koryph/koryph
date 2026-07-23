@@ -784,7 +784,7 @@ func Default(projectID string) *Config {
 		Gate:                   []string{"make lint", "make test"},
 		MergePolicy:            PolicyManual,
 		RiskTierDefault:        2,
-		MaxConcurrentSlots:     3,
+		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 8,
 	}
 }
