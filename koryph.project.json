@@ -127,7 +127,7 @@
     "item_title": "GitHub Signing Key (McCodeman)"
   },
   "max_concurrent_slots": 6,
-  "dispatch_stagger_seconds": 2,
+  "dispatch_stagger_seconds": 10,
   "default_runtime": "codex",
   "runtimes": {
     "codex": {

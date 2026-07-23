@@ -37,7 +37,7 @@ by `koryph validate`.
 | `merge_policy` | string | — | Default merge behaviour: `"manual"`, `"auto"`, or `"pr"`. Required. |
 | `risk_tier_default` | int | 2 | Recovery tier (0–3) for beads without an `rt:*` label. |
 | `max_concurrent_slots` | int | 4 | Wave width cap for this project (koryph-4rk6.4 laptop-safe default; was 3). |
-| `dispatch_stagger_seconds` | int | 8 | Seconds between agent launches within a wave. |
+| `dispatch_stagger_seconds` | int | 10 | Seconds between agent launches within a wave. 10s is an anti-stampede floor (koryph-4rk6.3): below it, a whole wave can land before the memory impact of the first agent registers in the admission probe, so each admission should observe the steady-state footprint of the previous agent. `0`/omitted uses the floor; a project may still configure lower explicitly — `koryph doctor --project` notes it when it does. |
 | `poll_seconds` | int | 10 | Poll-tick interval (seconds) for reading slot `status.json` heartbeats. 0 uses the engine default (10 s). Overridden by `KORYPH_POLL_SEC` or `Options.PollSec` at the programmatic call site. |
 | `dispatch_mode` | string | `"wave"` | `"wave"` or `"rolling"`. Rolling continuously refills a slot as it frees up instead of waiting for the whole batch; see [Running Waves](running-waves.md#dispatch-mode-wave-vs-rolling). `--dispatch-mode` on `koryph run` overrides this per run. |
 | `review` | object | — | Post-implementation reviewer timeout: `{timeout_seconds?}`. See [Agent timeouts](#agent-timeouts) below. |

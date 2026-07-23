@@ -270,8 +270,11 @@ Each iteration:
 4. **Preflight.** In loop mode on a calibrated, enforcing governor,
    `quota.Preflight` can refuse the whole wave if its estimated spend would
    breach the drain fraction.
-5. **Dispatch.** For each item (optionally staggered by
-   `dispatch_stagger_seconds`), `dispatchBead` routes a model, ensures a
+5. **Dispatch.** For each item, staggered by `dispatch_stagger_seconds`
+   (default 10 s — an anti-stampede floor so each admission observes the
+   steady-state footprint of the previous agent rather than the whole wave
+   landing before the first agent's memory impact registers), `dispatchBead`
+   routes a model, ensures a
    worktree + bootstrap, compiles a prompt, launches the backend, claims the
    bead, and writes a ledger slot + manifest.
 6. **Poll.** `pollUntilIdle` ticks every `poll_sec` (default 10, configurable

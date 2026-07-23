@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
@@ -61,6 +62,41 @@ func TestRunRejectsInvalidDispatchModeFlag(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "wave|rolling") {
 		t.Errorf("error %q does not name the accepted values", err)
+	}
+}
+
+// TestStaggerDelayFallsBackToAntiStampedeFloor proves the koryph-4rk6.3 fix:
+// an unset/omitted dispatch_stagger_seconds (the zero value cfg.Load leaves
+// when the field is absent from koryph.project.json) must NOT resolve to "no
+// stagger" — it falls back to defaultStaggerSec, the same anti-stampede
+// floor project.Default() gives newly onboarded projects. Explicit config
+// and the KORYPH_STAGGER_SEC env override both still take precedence.
+func TestStaggerDelayFallsBackToAntiStampedeFloor(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		cfgSec  int
+		wantSec int
+	}{
+		{"unset config falls back to the floor", "", 0, defaultStaggerSec},
+		{"explicit config below the floor is honored as-is", "", 3, 3},
+		{"explicit config above the floor is honored as-is", "", 15, 15},
+		{"env override wins over an unset config", "5", 0, 5},
+		{"env override wins even over an explicit config", "1", 12, 1},
+		{"env override of 0 disables stagger entirely", "0", 10, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv("KORYPH_STAGGER_SEC", tc.env)
+			}
+			r := &runner{cfg: &project.Config{DispatchStaggerSeconds: tc.cfgSec}}
+			got := r.staggerDelay()
+			want := time.Duration(tc.wantSec) * time.Second
+			if got != want {
+				t.Errorf("staggerDelay() = %v, want %v", got, want)
+			}
+		})
 	}
 }
 

@@ -684,7 +684,10 @@ type Config struct {
 	// MaxConcurrentSlots caps wave width for this project (default 4, koryph-4rk6.4 laptop-safe default; was 3).
 	MaxConcurrentSlots int `json:"max_concurrent_slots,omitempty"`
 
-	// DispatchStaggerSeconds between agent launches (default 8).
+	// DispatchStaggerSeconds between agent launches (default 10; koryph-4rk6.3
+	// anti-stampede floor — see engine.defaultStaggerSec for the rationale). A
+	// project may still configure a lower value explicitly; `koryph doctor
+	// --project` surfaces that as an informational finding.
 	DispatchStaggerSeconds int `json:"dispatch_stagger_seconds,omitempty"`
 
 	// PollSeconds overrides the engine's slot poll tick for this project
@@ -806,7 +809,7 @@ func Default(projectID string) *Config {
 		MergePolicy:            PolicyManual,
 		RiskTierDefault:        2,
 		MaxConcurrentSlots:     4,
-		DispatchStaggerSeconds: 8,
+		DispatchStaggerSeconds: 10,
 	}
 }
 

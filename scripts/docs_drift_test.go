@@ -31,6 +31,7 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/project"
 )
 
 // repoPath resolves a path relative to the repo root from within the
@@ -150,6 +151,49 @@ func TestDocsDrift_MachineCeilingDefault(t *testing.T) {
 			"govern.DefaultMaxMachineAgents = %d — update the 'Machine-wide agent ceiling' "+
 			"section in %s to match (or vice versa)",
 			want, govern.DefaultMaxMachineAgents, docPath)
+	}
+}
+
+// TestDocsDrift_DispatchStaggerDefault ties project.Default's
+// DispatchStaggerSeconds (koryph-4rk6.3 anti-stampede floor: below it, a
+// whole wave can land before the memory impact of the first agent registers
+// in the admission probe) to the documented default in the project-config
+// reference table, so bumping the default in code without updating the doc
+// (or vice versa) fails the gate.
+func TestDocsDrift_DispatchStaggerDefault(t *testing.T) {
+	docPath := repoPath(t, filepath.Join("docs", "user-guide", "projects-and-accounts.md"))
+	doc, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", docPath, err)
+	}
+	def := project.Default("x").DispatchStaggerSeconds
+	want := fmt.Sprintf("| `dispatch_stagger_seconds` | int | %d |", def)
+	if !strings.Contains(string(doc), want) {
+		t.Errorf("projects-and-accounts.md does not document dispatch_stagger_seconds's default as %d\n"+
+			"project.Default().DispatchStaggerSeconds = %d — update the reference table in %s to match (or vice versa)",
+			def, def, docPath)
+	}
+}
+
+// TestDocsDrift_KoryphProjectStaggerAtOrAboveFloor pins koryph.project.json's
+// own dispatch_stagger_seconds at or above the anti-stampede floor
+// (koryph-4rk6.3 acceptance: "koryph.project.json's own 2s gets bumped or
+// explicitly justified" — this repo bumped it). An explicit lower value is
+// still legal project config (see doctor's dispatch-stagger check); this
+// repo just chooses not to run one, so a future edit that quietly drops it
+// back below the floor fails the gate instead of silently reintroducing the
+// stampede risk on koryph's own self-build loop.
+func TestDocsDrift_KoryphProjectStaggerAtOrAboveFloor(t *testing.T) {
+	path := repoPath(t, "koryph.project.json")
+	cfg, err := project.Load(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("load %s: %v", path, err)
+	}
+	floor := project.Default("x").DispatchStaggerSeconds
+	if cfg.DispatchStaggerSeconds != 0 && cfg.DispatchStaggerSeconds < floor {
+		t.Errorf("koryph.project.json dispatch_stagger_seconds=%d is below the %ds anti-stampede floor; "+
+			"bump it back to >=%d or add an explicit justification here and in the bead history",
+			cfg.DispatchStaggerSeconds, floor, floor)
 	}
 }
 

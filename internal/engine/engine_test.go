@@ -203,6 +203,13 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 	t.Setenv("FAKE_BD_DIR", f.bdDir)
 	t.Setenv("KORYPH_NO_NPX", "1")
 	t.Setenv("KORYPH_BACKOFF_SEC", "0")
+	// Disable the dispatch stagger for full-run fixtures: koryph-4rk6.3 made
+	// an unset/omitted dispatch_stagger_seconds fall back to a 10s
+	// anti-stampede floor (previously 0 = no stagger), which is correct for
+	// real dispatch but would make every multi-bead fixture pay a real 10s
+	// sleep per launch and starve short waitForCondition deadlines. Tests
+	// that exercise stagger pacing itself set KORYPH_STAGGER_SEC explicitly.
+	t.Setenv("KORYPH_STAGGER_SEC", "0")
 	// Disable per-slot resource sampling in full-run fixtures: it forks `ps` /
 	// scans /proc on the poll loop, and that subprocess overhead perturbs the
 	// timing-sensitive wave/pacing tests under load. Sampling has its own

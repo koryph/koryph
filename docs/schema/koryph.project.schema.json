@@ -645,7 +645,7 @@
     },
     "dispatch_stagger_seconds": {
       "type": "integer",
-      "description": "DispatchStaggerSeconds between agent launches (default 8)."
+      "description": "DispatchStaggerSeconds between agent launches (default 10; koryph-4rk6.3\nanti-stampede floor — see engine.defaultStaggerSec for the rationale). A\nproject may still configure a lower value explicitly; `koryph doctor\n--project` surfaces that as an informational finding."
     },
     "poll_seconds": {
       "type": "integer",

@@ -502,7 +502,8 @@ Loads the per-project adapter configuration (`koryph.project.json`).
 
 Key scheduler fields: `DispatchMode` (`"wave"` | `"rolling"`, default `"wave"`),
 `PollSeconds` (poll tick override; 0 → engine default 10 s), `MaxConcurrentSlots`
-(wave-width cap per project), `DispatchStaggerSeconds` (inter-agent launch spacing).
+(wave-width cap per project), `DispatchStaggerSeconds` (inter-agent launch
+spacing; 0/unset → the engine's 10s anti-stampede floor, koryph-4rk6.3).
 
 ## promptc
 

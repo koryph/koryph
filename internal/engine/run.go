@@ -71,6 +71,17 @@ const (
 	// every concurrently-running project on the machine.
 	defaultWaveWidth  = 4
 	defaultBackoffSec = 15
+	// defaultStaggerSec is the dispatch-stagger fallback when neither
+	// KORYPH_STAGGER_SEC nor koryph.project.json's dispatch_stagger_seconds is
+	// set (koryph-4rk6.3, anti-stampede floor). Below ~10s a wave of agents can
+	// all land before the memory impact of the FIRST one registers in the
+	// admission probe, so the whole batch is admitted against a stale
+	// (pre-launch) footprint reading instead of each new admission observing
+	// the steady-state footprint of the previous agent — a stampeding-herd
+	// effect that defeats any per-agent floor. project.Default() carries the
+	// same value for newly onboarded projects; this constant is what an
+	// EXISTING project.json with the field omitted (zero value) falls back to.
+	defaultStaggerSec = 10
 )
 
 // runner carries the state of one engine run.
@@ -799,15 +810,17 @@ func (r *runner) dispatchMode() string {
 }
 
 // staggerDelay is the pause between dispatches: env override, else project
-// config.
+// config, else defaultStaggerSec — an unset/omitted config value is NOT "no
+// stagger" (koryph-4rk6.3); it falls back to the same anti-stampede floor a
+// freshly onboarded project gets from project.Default().
 func (r *runner) staggerDelay() time.Duration {
 	if v, ok := envInt(envStaggerSec); ok && v >= 0 {
 		return time.Duration(v) * time.Second
 	}
-	if r.cfg.DispatchStaggerSeconds > 0 {
+	if r.cfg != nil && r.cfg.DispatchStaggerSeconds > 0 {
 		return time.Duration(r.cfg.DispatchStaggerSeconds) * time.Second
 	}
-	return 0
+	return time.Duration(defaultStaggerSec) * time.Second
 }
 
 // backoffSleep pauses attempts*base seconds before a requeue (ctx-aware).
