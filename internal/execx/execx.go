@@ -96,6 +96,14 @@ func MustSucceed(ctx context.Context, c Cmd) (Result, error) {
 		return res, err
 	}
 	if res.ExitCode != 0 {
+		// A timeout kill arrives as a non-zero exit with a nil error (signal:
+		// killed), so Run's ErrTimeout wrap in the spawn-failure branch is never
+		// reached here. Re-surface it distinctly so callers using
+		// errors.Is(err, ErrTimeout) can apply their documented degraded path
+		// (koryph-1dg) rather than treating a hung child as an ordinary failure.
+		if res.TimedOut {
+			return res, fmt.Errorf("timeout after %s: %s %s: %w", c.Timeout, c.Name, strings.Join(c.Args, " "), ErrTimeout)
+		}
 		tail := res.Stderr
 		if len(tail) > 800 {
 			tail = tail[len(tail)-800:]

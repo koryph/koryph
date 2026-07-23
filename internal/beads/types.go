@@ -42,6 +42,8 @@
 //   - exclude beads already active in a ledger
 package beads
 
+import "time"
+
 // Issue is the subset of bd's JSON the engine consumes.
 type Issue struct {
 	ID          string `json:"id"`
@@ -107,6 +109,12 @@ type Adapter struct {
 	RepoRoot string
 	BeadsDir string // usually <RepoRoot>/.beads; exported as BEADS_DIR to agents
 	Bin      string // bd binary; ResolveBin() unless overridden (tests)
+	// Timeout, when > 0, overrides BOTH the read and write default timeouts for
+	// every bd subprocess this adapter spawns. Zero means "use the built-in
+	// per-class defaults" (defaultReadTimeout / defaultWriteTimeout). Set it to
+	// bound a whole adapter tightly (tests use a few ms to prove a hung bd
+	// binary cannot stall the engine loop past the bound; see koryph-1dg).
+	Timeout time.Duration
 }
 
 // New returns an adapter for the project rooted at repoRoot. The bd binary

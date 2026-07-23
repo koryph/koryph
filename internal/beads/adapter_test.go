@@ -5,12 +5,15 @@ package beads
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/koryph/koryph/internal/execx"
 )
 
 // fakeBD is a stand-in `bd` binary. It appends its full argv (one line) to the
@@ -341,6 +344,80 @@ func TestCreateWithExternalRef(t *testing.T) {
 	args := lastArgs(t, log)[0]
 	if !strings.Contains(args, "--external-ref gh-99") {
 		t.Fatalf("create argv missing --external-ref: %q", args)
+	}
+}
+
+// hungBD is a stand-in `bd` that never returns (sleeps far longer than any test
+// bound). It models a bd/dolt lock held by another process wedging the binary.
+const hungBD = "#!/bin/sh\nsleep 300\n"
+
+// newHungAdapter points an adapter at the hung stub with a tight Timeout so the
+// timeout fires in milliseconds.
+func newHungAdapter(t *testing.T, timeout time.Duration) *Adapter {
+	t.Helper()
+	repo := t.TempDir()
+	bin := filepath.Join(repo, "bd")
+	if err := os.WriteFile(bin, []byte(hungBD), 0o755); err != nil {
+		t.Fatalf("write hung bd: %v", err)
+	}
+	return &Adapter{RepoRoot: repo, BeadsDir: filepath.Join(repo, ".beads"), Bin: bin, Timeout: timeout}
+}
+
+// TestHungBdReadTimesOutWithinBound proves the core koryph-1dg guarantee: a
+// loop-critical read (Show — called by beadClosedMidFlight before every requeue)
+// against a wedged bd binary cannot stall past the adapter's timeout, and the
+// timeout surfaces distinctly via errors.Is(err, execx.ErrTimeout).
+func TestHungBdReadTimesOutWithinBound(t *testing.T) {
+	bound := 100 * time.Millisecond
+	a := newHungAdapter(t, bound)
+
+	start := time.Now()
+	_, err := a.Show(context.Background(), "x-1")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error from a hung bd, got nil")
+	}
+	if !errors.Is(err, execx.ErrTimeout) {
+		t.Fatalf("error does not wrap execx.ErrTimeout: %v", err)
+	}
+	// Generous slack for process spawn/kill scheduling, but far below the 300s
+	// the stub would otherwise sleep — proving the call is genuinely bounded.
+	if elapsed > 10*time.Second {
+		t.Fatalf("Show took %s, expected it bounded near %s", elapsed, bound)
+	}
+}
+
+// TestHungBdWriteTimesOut proves writes (Claim/Comment/AddLabel — best-effort on
+// the dispatch/complete path) are bounded too and surface a timeout distinctly.
+func TestHungBdWriteTimesOut(t *testing.T) {
+	a := newHungAdapter(t, 100*time.Millisecond)
+	start := time.Now()
+	err := a.Claim(context.Background(), "x-1")
+	if err == nil {
+		t.Fatal("expected a timeout error from a hung bd claim, got nil")
+	}
+	if !errors.Is(err, execx.ErrTimeout) {
+		t.Fatalf("claim error does not wrap execx.ErrTimeout: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("Claim took %s, expected it bounded", elapsed)
+	}
+}
+
+// TestAdapterTimeoutDefaults asserts the per-class defaults exist and reads are
+// bounded no looser than writes (a stale read is cheap to retry next pass).
+func TestAdapterTimeoutDefaults(t *testing.T) {
+	a := &Adapter{} // no override
+	if a.readTimeout() <= 0 || a.writeTimeout() <= 0 {
+		t.Fatalf("default timeouts must be finite and positive: read=%s write=%s", a.readTimeout(), a.writeTimeout())
+	}
+	if a.readTimeout() > a.writeTimeout() {
+		t.Fatalf("read timeout %s should not exceed write timeout %s", a.readTimeout(), a.writeTimeout())
+	}
+	a.Timeout = 5 * time.Second
+	if a.readTimeout() != 5*time.Second || a.writeTimeout() != 5*time.Second {
+		t.Fatalf("Adapter.Timeout override should apply to both classes: read=%s write=%s", a.readTimeout(), a.writeTimeout())
 	}
 }
 

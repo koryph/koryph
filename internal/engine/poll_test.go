@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
@@ -151,6 +152,45 @@ func TestPollPassRefreshesDemand(t *testing.T) {
 	}
 	if d.Project != "proj" {
 		t.Errorf("demand Project = %q, want \"proj\"", d.Project)
+	}
+}
+
+// TestBeadClosedMidFlightBoundedOnHungBd proves the koryph-1dg guarantee at the
+// engine boundary: the loop-critical bd read pollPass makes before every requeue
+// (beadClosedMidFlight → adapter.Show) cannot stall the poll pass past the
+// adapter's timeout when the bd binary is wedged (a dolt lock held by another
+// process). Without the adapter timeout this call would block for the stub's
+// full 300s sleep, freezing liveness reaping, completeSlot, and drain.
+func TestBeadClosedMidFlightBoundedOnHungBd(t *testing.T) {
+	repo := t.TempDir()
+	bin := filepath.Join(repo, "bd")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 300\n"), 0o755); err != nil {
+		t.Fatalf("write hung bd: %v", err)
+	}
+	adapter := &beads.Adapter{
+		RepoRoot: repo,
+		BeadsDir: filepath.Join(repo, ".beads"),
+		Bin:      bin,
+		Timeout:  100 * time.Millisecond, // tight bound for the test
+	}
+	r := &runner{adapter: adapter}
+
+	done := make(chan bool, 1)
+	start := time.Now()
+	go func() { done <- r.beadClosedMidFlight(context.Background(), "x-1") }()
+
+	select {
+	case closed := <-done:
+		// A timed-out Show surfaces an error, which beadClosedMidFlight treats as
+		// "not closed — let the requeue proceed" (its documented degraded path).
+		if closed {
+			t.Fatal("hung bd Show should error and be treated as not-closed, got closed=true")
+		}
+		if elapsed := time.Since(start); elapsed > 10*time.Second {
+			t.Fatalf("beadClosedMidFlight took %s, expected it bounded near the 100ms adapter timeout", elapsed)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("beadClosedMidFlight stalled on a hung bd — the adapter timeout did not bound the loop-critical read")
 	}
 }
 

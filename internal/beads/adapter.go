@@ -24,28 +24,73 @@ const mergeSlotBackoffCap = 30 * time.Second
 // the cap. Package-level so tests can shrink it for fast retry coverage.
 var mergeSlotBackoffBase = time.Second
 
-// run executes `bd <args...>` in the project root, failing on a non-zero exit.
-func (a *Adapter) run(ctx context.Context, args ...string) (execx.Result, error) {
+// Default bd subprocess timeouts (koryph-1dg). Every Adapter call carries one so
+// a bd/dolt lock held by another process (an operator bd command, a second
+// session) can never stall the engine loop indefinitely: the poll/complete path
+// calls bd synchronously (beadClosedMidFlight→Show before each requeue, Claim in
+// dispatch, Comment/AddLabel write-backs, MergeSlotAcquire under merges), so an
+// unbounded hang there freezes liveness reaping, completeSlot, and drain.
+//
+// Reads on the loop-critical path get a tighter bound than writes: a stale read
+// is cheap to retry next pass, whereas a bd sync WRITE (create/close/label) can
+// legitimately take longer, so its bound is more generous. Both are finite.
+// Package-level vars so tests can shrink them; per-Adapter Adapter.Timeout
+// overrides both when set.
+var (
+	defaultReadTimeout  = 45 * time.Second
+	defaultWriteTimeout = 120 * time.Second
+)
+
+// readTimeout returns the effective timeout for a loop-critical bd read.
+func (a *Adapter) readTimeout() time.Duration {
+	if a.Timeout > 0 {
+		return a.Timeout
+	}
+	return defaultReadTimeout
+}
+
+// writeTimeout returns the effective timeout for a bd write/mutation.
+func (a *Adapter) writeTimeout() time.Duration {
+	if a.Timeout > 0 {
+		return a.Timeout
+	}
+	return defaultWriteTimeout
+}
+
+// exec runs `bd <args...>` in the project root with stdin and a finite timeout,
+// failing on a non-zero exit. A timeout surfaces distinctly (errors.Is(err,
+// execx.ErrTimeout)) so each caller's documented degraded path applies.
+func (a *Adapter) exec(ctx context.Context, timeout time.Duration, stdin string, args ...string) (execx.Result, error) {
 	return execx.MustSucceed(ctx, execx.Cmd{
-		Dir:  a.RepoRoot,
-		Name: a.Bin,
-		Args: args,
+		Dir:     a.RepoRoot,
+		Name:    a.Bin,
+		Args:    args,
+		Stdin:   stdin,
+		Timeout: timeout,
 	})
 }
 
-// runStdin is run with data piped to the command's stdin.
+// run executes a bd MUTATION (`bd <args...>`) under the write timeout, failing
+// on a non-zero exit.
+func (a *Adapter) run(ctx context.Context, args ...string) (execx.Result, error) {
+	return a.exec(ctx, a.writeTimeout(), "", args...)
+}
+
+// runRead executes a bd READ (`bd <args...>`) under the tighter read timeout.
+// Use for loop-critical queries (show/ready/list/digraph/version) whose result
+// the poll pass consumes synchronously.
+func (a *Adapter) runRead(ctx context.Context, args ...string) (execx.Result, error) {
+	return a.exec(ctx, a.readTimeout(), "", args...)
+}
+
+// runStdin is run (write timeout) with data piped to the command's stdin.
 func (a *Adapter) runStdin(ctx context.Context, stdin string, args ...string) (execx.Result, error) {
-	return execx.MustSucceed(ctx, execx.Cmd{
-		Dir:   a.RepoRoot,
-		Name:  a.Bin,
-		Args:  args,
-		Stdin: stdin,
-	})
+	return a.exec(ctx, a.writeTimeout(), stdin, args...)
 }
 
 // Version returns the first line of `bd version`, trimmed.
 func (a *Adapter) Version(ctx context.Context) (string, error) {
-	res, err := a.run(ctx, "version")
+	res, err := a.runRead(ctx, "version")
 	if err != nil {
 		return "", err
 	}
@@ -63,7 +108,7 @@ func (a *Adapter) Ready(ctx context.Context, opts ReadyOpts) ([]Issue, error) {
 	if opts.Parent != "" {
 		args = append(args, "--parent", opts.Parent)
 	}
-	res, err := a.run(ctx, args...)
+	res, err := a.runRead(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +117,7 @@ func (a *Adapter) Ready(ctx context.Context, opts ReadyOpts) ([]Issue, error) {
 
 // Show returns one issue via `bd show <id> --json`.
 func (a *Adapter) Show(ctx context.Context, id string) (Issue, error) {
-	res, err := a.run(ctx, "show", id, "--json")
+	res, err := a.runRead(ctx, "show", id, "--json")
 	if err != nil {
 		return Issue{}, err
 	}
@@ -85,7 +130,7 @@ func (a *Adapter) Show(ctx context.Context, id string) (Issue, error) {
 // ListChildrenAll instead — an epic with every child closed looks
 // indistinguishable from a childless epic through this method.
 func (a *Adapter) ListChildren(ctx context.Context, id string) ([]Issue, error) {
-	res, err := a.run(ctx, "list", "--parent", id, "--json")
+	res, err := a.runRead(ctx, "list", "--parent", id, "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +143,7 @@ func (a *Adapter) ListChildren(ctx context.Context, id string) ([]Issue, error) 
 // check — ListChildren's default bd filter excludes closed issues, so it
 // cannot distinguish a fully-completed epic from a childless one.
 func (a *Adapter) ListChildrenAll(ctx context.Context, id string) ([]Issue, error) {
-	res, err := a.run(ctx, "list", "--parent", id, "--json", "--all", "--limit", "0")
+	res, err := a.runRead(ctx, "list", "--parent", id, "--json", "--all", "--limit", "0")
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +154,7 @@ func (a *Adapter) ListChildrenAll(ctx context.Context, id string) ([]Issue, erro
 // `bd list --label <label> --json --limit 0`. Callers use it for idempotency
 // checks (e.g. gh-intake dedupe on a `gh-<number>` provenance label).
 func (a *Adapter) ListByLabel(ctx context.Context, label string) ([]Issue, error) {
-	res, err := a.run(ctx, "list", "--label", label, "--json", "--limit", "0", "--all")
+	res, err := a.runRead(ctx, "list", "--label", label, "--json", "--limit", "0", "--all")
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +166,7 @@ func (a *Adapter) ListByLabel(ctx context.Context, label string) ([]Issue, error
 // Used as the primary idempotency check during intake (see also ListByLabel for
 // backward-compat fallback on beads created before external-ref was introduced).
 func (a *Adapter) ListByExternalRef(ctx context.Context, ref string) ([]Issue, error) {
-	res, err := a.run(ctx, "list", "--external-ref", ref, "--json", "--limit", "0", "--all")
+	res, err := a.runRead(ctx, "list", "--external-ref", ref, "--json", "--limit", "0", "--all")
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +382,7 @@ func (a *Adapter) Remember(ctx context.Context, text string) error {
 // beads (gt:*, agent/rig/role/message types) are excluded by bd's default
 // filters; closed issues are excluded unless --all is passed (it is not here).
 func (a *Adapter) List(ctx context.Context) ([]Issue, error) {
-	res, err := a.run(ctx, "list", "--json", "--limit", "0")
+	res, err := a.runRead(ctx, "list", "--json", "--limit", "0")
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +399,7 @@ func (a *Adapter) DepDigraph(ctx context.Context) (map[string][]string, error) {
 	if !a.Available() {
 		return map[string][]string{}, nil
 	}
-	res, err := a.run(ctx, "list", "--format", "digraph", "--limit", "0")
+	res, err := a.runRead(ctx, "list", "--format", "digraph", "--limit", "0")
 	if err != nil {
 		// A non-zero exit (e.g. no issues in the db) is a graceful empty.
 		return map[string][]string{}, nil
