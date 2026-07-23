@@ -3,7 +3,12 @@
 
 package quota
 
-import "testing"
+import (
+	"math"
+	"testing"
+
+	"github.com/koryph/koryph/internal/pricing"
+)
 
 // TestPriceForRuntimeClaudeParity proves priceFor(model) is exactly
 // priceForRuntime("claude", model) (koryph-v8u.3 item 4): the table-driven
@@ -82,5 +87,40 @@ func TestPriceForRuntimeUnknownRuntimeFallsBackToClaude(t *testing.T) {
 	want := priceForRuntime("claude", "claude-opus-4-8")
 	if got != want {
 		t.Errorf("priceForRuntime(no-such-runtime, ...) = %+v, want claude fallback %+v", got, want)
+	}
+}
+
+// TestClaudePriceTableMatchesCanonical proves claudePriceTable is a faithful
+// projection of pricing.Claude (koryph-fiv finding #5): base in/out come
+// straight from the canonical rate, cache from the 5-minute-TTL multipliers.
+// This is the guarantee usage.go's doc names — the table is derived, never a
+// second hand-maintained copy that can drift.
+func TestClaudePriceTableMatchesCanonical(t *testing.T) {
+	round6 := func(v float64) float64 { return math.Round(v*1e6) / 1e6 }
+	for _, tier := range pricing.Claude {
+		got := priceForRuntime("claude", tier.Name)
+		want := modelPrice{
+			in:         tier.Rate.InPerMTok,
+			out:        tier.Rate.OutPerMTok,
+			cacheWrite: round6(tier.Rate.InPerMTok * pricing.CacheWrite5MinMultiplier),
+			cacheRead:  round6(tier.Rate.InPerMTok * pricing.CacheReadMultiplier),
+		}
+		if got != want {
+			t.Errorf("claude price for %q = %+v, want canonical-derived %+v", tier.Name, got, want)
+		}
+	}
+}
+
+// TestTierUSDTableCoversCanonicalTiers guards the deliberate NON-derivation in
+// estimate.go: its coarse $/dispatch seed is a different granularity than
+// pricing.Claude's per-MTok rates, so it is not derived — but it MUST still
+// name every canonical Claude tier, so a tier added to pricing.Claude cannot be
+// silently forgotten by the governor's estimator seed (koryph-fiv finding #5).
+func TestTierUSDTableCoversCanonicalTiers(t *testing.T) {
+	claude := tierUSDTables["claude"].perTier
+	for _, tier := range pricing.Claude {
+		if _, ok := claude[tier.Name]; !ok {
+			t.Errorf("tierUSDTables[claude] missing canonical tier %q — add its $/dispatch seed", tier.Name)
+		}
 	}
 }

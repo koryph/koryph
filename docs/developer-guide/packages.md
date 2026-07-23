@@ -513,6 +513,28 @@ prompt-cache hits are maximised across re-dispatches.
 - **`Compile(in)`** — assemble final prompt string
 - **`Preamble(engineVersion)`** — static koryph-protocol preamble
 
+## pricing
+
+Single source of truth for Anthropic Claude per-model list prices (koryph-fiv
+finding #5). Before it, `anthro`, `quota`'s usage accounting, and `quota`'s
+per-dispatch estimator each hand-maintained their own Claude price copy and had
+silently drifted (anthro priced Opus at $5/$25 per MTok vs the real $15/$75).
+Consumers now derive their base rates from here; a price change is a one-line
+edit, not a three-way reconciliation.
+
+- **`Rate`** — one model's base list price (USD / MTok input + output)
+- **`Claude`** — the ordered canonical Claude tier→rate list (order significant
+  for `quota`'s substring matching: opus, haiku, fable, sonnet)
+- **`ClaudeRate(tier)`** / **`ClaudeFallbackRate()`** — exact-tier lookup and the
+  sonnet fallback for an unrecognized model id
+- **`CacheReadMultiplier`** / **`CacheWrite5MinMultiplier`** /
+  **`CacheWrite1HourMultiplier`** — cache-TTL multipliers (fraction of input
+  rate) each consumer applies on top of the shared base: `quota` prices 5-minute
+  writes (1.25x), `anthro` prices 1-hour writes (2x)
+
+Only base in/out rates are shared; the cache-TTL choice legitimately differs by
+context. Reads/writes no files.
+
 ## procx
 
 Small OS-process primitives shared across the recovery, governor, and health

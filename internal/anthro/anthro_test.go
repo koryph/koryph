@@ -193,17 +193,22 @@ func TestMessageNoCachePrefixNoSystem(t *testing.T) {
 // --- EstimateUSD --------------------------------------------------------------
 
 func TestEstimateUSD(t *testing.T) {
-	// opus: (2000+2000)/4 = 1000 input tokens @ $5/M + 2000/2 = 1000 output @ $25/M
-	req := MsgReq{Model: "opus", System: strings.Repeat("s", 2000), User: strings.Repeat("u", 2000), MaxTokens: 2000}
-	approx(t, EstimateUSD([]MsgReq{req}), 0.005+0.025, "EstimateUSD(opus)")
+	// Canonical list prices (internal/pricing, koryph-fiv finding #5): opus
+	// $15/$75, haiku $0.8/$4 per MTok. Before consolidation anthro used a
+	// drifted local copy ($5/$25 opus, $1/$5 haiku); these expectations track
+	// the corrected canonical rates.
 
-	// haiku with default MaxTokens: (200+200)/4=100 in @ $1/M + 4096/2=2048 out @ $5/M
+	// opus: (2000+2000)/4 = 1000 input tokens @ $15/M + 2000/2 = 1000 output @ $75/M
+	req := MsgReq{Model: "opus", System: strings.Repeat("s", 2000), User: strings.Repeat("u", 2000), MaxTokens: 2000}
+	approx(t, EstimateUSD([]MsgReq{req}), 0.015+0.075, "EstimateUSD(opus)")
+
+	// haiku with default MaxTokens: (200+200)/4=100 in @ $0.8/M + 4096/2=2048 out @ $4/M
 	req2 := MsgReq{Model: "haiku", System: strings.Repeat("s", 200), User: strings.Repeat("u", 200)}
-	approx(t, EstimateUSD([]MsgReq{req2}), 100.0/1e6+2048*5/1e6, "EstimateUSD(haiku default max)")
+	approx(t, EstimateUSD([]MsgReq{req2}), 100.0*0.8/1e6+2048*4/1e6, "EstimateUSD(haiku default max)")
 
 	// Unknown tier contributes zero; list sums.
 	unknown := MsgReq{Model: "gpt-4", User: "x", MaxTokens: 100}
-	approx(t, EstimateUSD([]MsgReq{req, req2, unknown}), 0.03+100.0/1e6+2048*5/1e6, "EstimateUSD(sum)")
+	approx(t, EstimateUSD([]MsgReq{req, req2, unknown}), 0.09+100.0*0.8/1e6+2048*4/1e6, "EstimateUSD(sum)")
 
 	approx(t, EstimateUSD(nil), 0, "EstimateUSD(nil)")
 }
@@ -304,8 +309,8 @@ func TestBatchWait(t *testing.T) {
 	if results[0].ID != "bead-1" || results[0].Text != "answer one" || results[0].Err != "" {
 		t.Errorf("succeeded result = %+v", results[0])
 	}
-	// haiku: 1M in @ $1 + 1M out @ $5 = $6
-	approx(t, results[0].Usage.EstimateUSD, 6.0, "succeeded usage estimate")
+	// haiku canonical rates (internal/pricing): 1M in @ $0.8 + 1M out @ $4 = $4.80
+	approx(t, results[0].Usage.EstimateUSD, 4.8, "succeeded usage estimate")
 
 	if results[1].ID != "bead-2" || !strings.Contains(results[1].Err, "boom") {
 		t.Errorf("errored result = %+v", results[1])

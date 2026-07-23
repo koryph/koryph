@@ -11,27 +11,34 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/koryph/koryph/internal/pricing"
 )
 
 // price is USD per million tokens for one tier.
-type price struct {
-	InPerMTok  float64
-	OutPerMTok float64
-}
+type price = pricing.Rate
 
-// priceTable is the per-token price table (USD / MTok), duplicated locally
-// so anthro carries no dependency on package quota. Cache multipliers per
-// the API pricing model: reads 0.1x input, 1h-TTL writes 2x input.
-var priceTable = map[string]price{
-	"haiku":  {InPerMTok: 1, OutPerMTok: 5},
-	"sonnet": {InPerMTok: 3, OutPerMTok: 15},
-	"opus":   {InPerMTok: 5, OutPerMTok: 25},
-	"fable":  {InPerMTok: 10, OutPerMTok: 50},
+// priceTable is the per-token price table (USD / MTok), keyed by tier, derived
+// from the canonical base rates in internal/pricing (koryph-fiv finding #5) —
+// before consolidation this was a hand-maintained copy that had drifted from
+// the real list price (it priced Opus at $5/$25 rather than $15/$75). Cache
+// multipliers per the API pricing model: reads 0.1x input, 1h-TTL writes 2x
+// input (this client requests 1-hour ephemeral cache).
+var priceTable = buildPriceTable()
+
+// buildPriceTable indexes pricing.Claude's canonical base rates by tier name
+// for anthro's exact-key lookups (EstimateUSD / estimateUsageUSD).
+func buildPriceTable() map[string]price {
+	m := make(map[string]price, len(pricing.Claude))
+	for _, t := range pricing.Claude {
+		m[t.Name] = t.Rate
+	}
+	return m
 }
 
 const (
-	cacheReadMultiplier  = 0.1
-	cacheWriteMultiplier = 2.0 // 1h ephemeral TTL writes
+	cacheReadMultiplier  = pricing.CacheReadMultiplier
+	cacheWriteMultiplier = pricing.CacheWrite1HourMultiplier // 1h ephemeral TTL writes
 )
 
 // messageBackend is the single-message slice of the SDK, factored out so

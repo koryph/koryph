@@ -44,6 +44,12 @@ type tierUSDTable struct {
 // unrecognized-tier cfg.PerTierUSD["sonnet"] fallback the estimator has
 // always used — a future runtime adapter bead adds its own entry here
 // exactly as usage.go's pricingTables documents for token-level pricing.
+//
+// These are a COARSE $/dispatch heuristic seed, a different granularity than
+// internal/pricing's per-MTok list prices, so they are NOT derived from
+// pricing.Claude — but their tier vocabulary is the same, and
+// TestTierUSDTableCoversCanonicalTiers guards against a Claude tier being
+// added to pricing.Claude and silently forgotten here (koryph-fiv finding #5).
 var tierUSDTables = map[string]tierUSDTable{
 	"claude": {
 		perTier:  map[string]float64{"haiku": 0.4, "sonnet": 3.0, "opus": 9.0, "fable": 15.0},

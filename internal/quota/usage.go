@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/obs"
+	"github.com/koryph/koryph/internal/pricing"
 )
 
 const ccusageTimeout = 40 * time.Second
@@ -189,17 +191,39 @@ type runtimePriceTable struct {
 	fallback modelPrice
 }
 
-// claudePriceTable is claude's pricing table (koryph-v8u.3 item 4),
-// preserved byte-for-byte from the pre-existing hardcoded priceFor switch —
-// same substrings, same order, same fallback (sonnet rates).
-var claudePriceTable = runtimePriceTable{
-	rules: []priceRule{
-		{"opus", modelPrice{in: 15, out: 75, cacheWrite: 18.75, cacheRead: 1.5}},
-		{"haiku", modelPrice{in: 0.8, out: 4, cacheWrite: 1, cacheRead: 0.08}},
-		{"fable", modelPrice{in: 25, out: 125, cacheWrite: 31.25, cacheRead: 2.5}},
-		{"sonnet", modelPrice{in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.3}},
-	},
-	fallback: modelPrice{in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.3},
+// claudePriceTable is claude's pricing table (koryph-v8u.3 item 4), now
+// derived from the canonical base rates in internal/pricing (koryph-fiv
+// finding #5) rather than a second hand-maintained copy. Base in/out come
+// straight from pricing.Claude; cache rates are the 5-minute-TTL derivation
+// (read 0.1x input, write 1.25x input) transcript accounting sees — verified
+// byte-for-byte identical to the pre-consolidation literals by
+// TestClaudePriceTableMatchesCanonical.
+var claudePriceTable = buildClaudePriceTable()
+
+// buildClaudePriceTable projects pricing.Claude's ordered base rates into a
+// runtimePriceTable, applying the 5-minute cache-TTL multipliers. It keeps
+// pricing.Claude's order (opus, haiku, fable, sonnet) so substring matching is
+// unchanged, and reuses pricing.ClaudeFallbackTier (sonnet) for the no-match
+// fallback.
+func buildClaudePriceTable() runtimePriceTable {
+	// round6 trims the float noise a multiply introduces (0.8*0.1 =
+	// 0.08000000000000002) back to the exact 6-dp literal the hand-written
+	// table used, so the derivation is bit-identical to the pre-consolidation
+	// values TestPriceForRuntimeExactValues pins.
+	round6 := func(v float64) float64 { return math.Round(v*1e6) / 1e6 }
+	toModelPrice := func(r pricing.Rate) modelPrice {
+		return modelPrice{
+			in:         r.InPerMTok,
+			out:        r.OutPerMTok,
+			cacheWrite: round6(r.InPerMTok * pricing.CacheWrite5MinMultiplier),
+			cacheRead:  round6(r.InPerMTok * pricing.CacheReadMultiplier),
+		}
+	}
+	t := runtimePriceTable{fallback: toModelPrice(pricing.ClaudeFallbackRate())}
+	for _, tier := range pricing.Claude {
+		t.rules = append(t.rules, priceRule{substr: tier.Name, price: toModelPrice(tier.Rate)})
+	}
+	return t
 }
 
 // pricingTables namespaces per-MTok pricing by runtime name (koryph-v8u.3
