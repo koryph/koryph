@@ -182,6 +182,7 @@ func Run(opts Options) (*Report, error) {
 	r.add(checkRegistry(opts))
 	r.addAll(checkAuthMode(opts))
 	r.addAll(checkGovernorConfig(opts))
+	r.addAll(checkMemoryFloors(opts))
 	r.addAll(checkAdaptiveCapPinned(opts))
 	r.addAll(checkCircuitBreaker(opts))
 	r.addAll(checkZombieLeases(opts))
@@ -217,6 +218,7 @@ const checkNameBinaries = "binaries"
 const checkNameBeadsVersion = "beads-version"
 const checkNameRegistry = "registry"
 const checkNameGovernor = "governor"
+const checkNameMemoryFloor = "memory-floor"
 const checkNameAdaptiveCap = "adaptive-cap"
 const checkNameBreaker = "circuit-breaker"
 const checkNameZombies = "zombie-leases"
@@ -384,6 +386,62 @@ func checkGovernorConfig(opts Options) []Finding {
 		}
 		findings = append(findings, Finding{Check: checkNameGovernor, Level: LevelOK,
 			Message: fmt.Sprintf("pool %s: cap=%d", pool, cfg.MaxGlobalAgents)})
+	}
+	return findings
+}
+
+// checkMemoryFloors flags any pool with no EXPLICIT min_free_memory_mb
+// (koryph-4rk6.1): the 2026-07-21 OOM incident's root cause was exactly this
+// — the "anthropic" pool shipped min_free_memory_mb:2048 while "personal"/
+// "work" had a max_global_agents cap but no memory floor at all, so 11+
+// agents dispatched before the implicit per-host auto floor (sysmem's
+// admission-time fallback for a raw 0/unset setting, still in effect —
+// internal/engine/govern.go's floorFromSetting) reined them in. A raw 0
+// covers BOTH "never configured" and an operator's deliberate
+// `governor set --min-free-memory-mb 0` ("reset to auto") — this check
+// cannot distinguish the two (the setting round-trips identically either
+// way), so it warns on both: relying on the implicit auto floor is exactly
+// the shape this bead closes. Store.SetCap/BackfillMemoryFloors are how an
+// operator (or `koryph run`'s own startup) fixes a warning here. A negative
+// (explicitly disabled) floor is a deliberate, unambiguous operator choice —
+// reported OK, not warned.
+func checkMemoryFloors(opts Options) []Finding {
+	path := filepath.Join(opts.home(), "governor.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []Finding{{Check: checkNameMemoryFloor, Level: LevelOK,
+			Message: "governor.json absent (no pools to check for a memory floor)"}}
+	}
+	if err != nil {
+		return []Finding{{Check: checkNameMemoryFloor, Level: LevelError,
+			Message: fmt.Sprintf("read governor.json: %v", err)}}
+	}
+	var f govern.File
+	if err := json.Unmarshal(data, &f); err != nil {
+		return []Finding{{Check: checkNameMemoryFloor, Level: LevelError,
+			Message: fmt.Sprintf("parse governor.json: %v", err)}}
+	}
+	pools := sortedPoolNames(f.Pools)
+	if len(pools) == 0 {
+		return []Finding{{Check: checkNameMemoryFloor, Level: LevelOK, Message: "governor.json: no pools configured"}}
+	}
+
+	findings := make([]Finding, 0, len(pools))
+	for _, pool := range pools {
+		cfg := f.Pools[pool]
+		switch {
+		case cfg.MinFreeMemoryMB > 0:
+			findings = append(findings, Finding{Check: checkNameMemoryFloor, Level: LevelOK,
+				Message: fmt.Sprintf("pool %s: memory floor %d MB", pool, cfg.MinFreeMemoryMB)})
+		case cfg.MinFreeMemoryMB < 0:
+			findings = append(findings, Finding{Check: checkNameMemoryFloor, Level: LevelOK,
+				Message: fmt.Sprintf("pool %s: memory floor explicitly disabled", pool)})
+		default:
+			findings = append(findings, Finding{Check: checkNameMemoryFloor, Level: LevelWarn,
+				Message: fmt.Sprintf(
+					"pool %s: no explicit min_free_memory_mb — relying on the implicit auto floor; run `koryph governor set --min-free-memory-mb %d --account %s` to pin one (or -1 to disable deliberately)",
+					pool, govern.DefaultMinFreeMemoryMB, pool)})
+		}
 	}
 	return findings
 }

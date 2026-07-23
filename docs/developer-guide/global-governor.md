@@ -47,7 +47,7 @@ burst of cheap agents still exceeds the limit.
 
 | Path | Contents |
 |---|---|
-| `~/.koryph/governor.json` | `{ "pools": { "<provider>": { "max_global_agents": N, "min_free_memory_mb": M, ... } } }` — one independent cap/AIMD-overlay per provider pool (koryph-v8u.11, see below). Absent/missing pool ⇒ default **8**. `min_free_memory_mb` (koryph-930) is the memory admission floor: dispatch is deferred while host available memory is below it. The gate is ON by default, sized to physical memory — the raw setting is `>0` an explicit floor, `<0` disabled, `0`/unset the auto floor (`sysmem.DefaultFloorMB` ≈ 1/8 of RAM, clamped to 1–8 GB). Edited only by the machine owner (never per-run), so no single project can lift the ceiling. |
+| `~/.koryph/governor.json` | `{ "pools": { "<provider>": { "max_global_agents": N, "min_free_memory_mb": M, ... } } }` — one independent cap/AIMD-overlay per provider pool (koryph-v8u.11, see below). Absent/missing pool ⇒ default **8**. `min_free_memory_mb` (koryph-930) is the memory admission floor: dispatch is deferred while host available memory is below it. The gate is ON by default, sized to physical memory — the raw setting is `>0` an explicit floor, `<0` disabled, `0`/unset the auto floor (`sysmem.DefaultFloorMB` ≈ 1/8 of RAM, clamped to 1–8 GB). Edited only by the machine owner (never per-run), so no single project can lift the ceiling. Every pool ends up with an *explicit* floor rather than resting on the implicit auto one (koryph-4rk6.1, see below): `Store.SetCap` seeds `DefaultMinFreeMemoryMB` onto a pool it creates fresh, and `Store.BackfillMemoryFloors` — run once at `koryph run` startup — seeds it onto any pre-existing pool still at a raw, never-set `0`. `koryph doctor`'s `memory-floor` check flags any pool that still has no explicit floor. |
 | `~/.koryph/slots/<project>-<bead>-<pid>.json` | One **lease** per running agent: `{project, bead, pid, engine_pid, model, acquired_at, provider}`. Keyed to the **agent** PID (detached), so a lease survives an engine restart/resume and frees only when the real agent dies. `provider` selects which pool the lease counts against. |
 | `~/.koryph/slots/demand/<project>.json` | One **demand heartbeat** per active engine with ready work, per pool: `{project, engine_pid, updated_at, provider}`. Refreshed each wave; pruned when stale (TTL) or `engine_pid` dead. |
 
@@ -547,7 +547,11 @@ set.
   this BEFORE the flocked `Acquire` so the probe never runs under the
   machine-wide lock, and fails open on any read error.
   `KORYPH_MIN_FREE_MEMORY_MB` overrides the configured floor for a single run
-  (same `>0`/`0`/`<0` semantics).
+  (same `>0`/`0`/`<0` semantics). `N==0` is a same-session reset only
+  (koryph-4rk6.1): a raw `0` is indistinguishable from "never configured", so
+  the next `koryph run` startup backfills it back up to
+  `DefaultMinFreeMemoryMB` via `Store.BackfillMemoryFloors`. `N<0` is the only
+  setting that survives a backfill untouched.
 - `koryph governor set-resource <kind> ...` writes one kind's
   capacity/mem-mb/ramp-seconds/probe in the top-level `resources` ledger
   (`Store.SetResource`); its `--unset` form removes a kind

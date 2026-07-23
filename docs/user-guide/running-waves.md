@@ -848,6 +848,22 @@ run without editing `governor.json`, set `KORYPH_MIN_FREE_MEMORY_MB` in the envi
 configured floor for that run. The available-memory signal is read from `/proc/meminfo`
 (Linux) or `sysctl` + `vm_stat` (macOS); a platform with no probe fails open (gate off).
 
+> **Every pool ends up with an explicit floor (koryph-4rk6.1).** The
+> 2026-07-21 incident happened because the `anthropic` pool shipped an
+> explicit `min_free_memory_mb`, but the `personal`/`work` pools had none at
+> all and quietly rode the implicit auto-sized floor above — which wasn't
+> tight enough to stop 11+ agents from OOMing the host. To make the floor an
+> operator-visible, uniform number instead of an implicit fallback, `koryph
+> run` now backfills `DefaultMinFreeMemoryMB` (2048 MB) onto any pool whose
+> `min_free_memory_mb` is still the raw, never-set `0` at startup, and
+> `koryph governor set --max-global` seeds the same default onto any pool it
+> creates fresh. One consequence: `--min-free-memory-mb 0` ("reset to auto")
+> is a same-session reset only — the *next* `koryph run` backfills that pool
+> back up to the uniform default, since a raw `0` is indistinguishable from
+> "never configured." Use `--min-free-memory-mb -1` for a floor that
+> genuinely stays disabled across runs. `koryph doctor` flags any pool still
+> missing an explicit floor.
+
 ## Corpus audit: koryph plan
 
 Before running the loop — or after changing `area_map` in `koryph.project.json` — run the

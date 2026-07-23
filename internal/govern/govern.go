@@ -264,6 +264,18 @@ func (s *Store) UnsetResource(kind string) error {
 // AIMD/settle/breaker/smoothing state wholesale (exactly today's single-pool
 // SetCap semantics — a plain `set` disables any previously-enabled overlay)
 // while leaving every OTHER pool untouched (koryph-v8u.11).
+//
+// Memory floor (koryph-4rk6.1): the wholesale reset would otherwise also
+// silently drop the pool's min_free_memory_mb (a plain int field, zeroed by
+// the fresh Config{} literal below) — the exact "cap configured, floor
+// missing" shape that let "personal"/"work" run floorless in the 2026-07-21
+// incident. So this preserves the pool's PRIOR explicit floor (whatever it
+// was — positive, or negative/disabled) across a cap-only change, and only
+// seeds DefaultMinFreeMemoryMB when the pool is being created fresh here (no
+// prior entry) or its floor was never configured (raw 0). An operator's
+// explicit reset-to-auto/disable made via SetMinFreeMemoryMB in a SEPARATE
+// call is untouched by any OTHER pool's SetCap (only this same pool's own
+// prior value is read).
 func (s *Store) SetCap(provider string, n int) error {
 	if n <= 0 {
 		return errors.New("govern: max_global_agents must be positive")
@@ -274,9 +286,58 @@ func (s *Store) SetCap(provider string, n int) error {
 		if err != nil {
 			return err
 		}
-		f.Pools[pool] = Config{MaxGlobalAgents: n}
+		floor := f.Pools[pool].MinFreeMemoryMB // 0 for a brand-new pool
+		if floor == 0 {
+			floor = DefaultMinFreeMemoryMB
+		}
+		f.Pools[pool] = Config{MaxGlobalAgents: n, MinFreeMemoryMB: floor}
 		return fsx.WriteJSONAtomic(s.cfgPath, f)
 	})
+}
+
+// BackfillMemoryFloors seeds DefaultMinFreeMemoryMB onto every EXISTING pool
+// in governor.json that carries no explicit memory floor (raw
+// MinFreeMemoryMB == 0 — koryph-4rk6.1): the migration for a governor.json an
+// older koryph version already wrote before this field's uniform-default
+// policy existed, e.g. the incident's "personal"/"work" pools (a
+// max_global_agents cap but no min_free_memory_mb at all). A pool with an
+// explicit floor already set (positive, or negative/disabled) is left
+// completely untouched.
+//
+// This is a deliberately explicit, caller-invoked "on load" step — NOT wired
+// into every mutating Set*/Unset* call — so a later, unrelated write (e.g.
+// `governor set-resource`) never silently re-seeds a pool an operator
+// separately, deliberately reset to 0 (auto) via SetMinFreeMemoryMB earlier
+// in the same session. Callers (the engine run startup, `koryph doctor
+// --fix`-style tooling) should invoke it once per load, not per mutation.
+//
+// Returns the sorted list of pool names it changed (for logging/tests) and
+// performs no write at all when nothing needed backfilling. A pool that
+// exists only via a live lease/demand heartbeat (no governor.json entry) is
+// not touched — nothing to persist a floor onto until it gets an explicit
+// Config entry (e.g. via SetCap).
+func (s *Store) BackfillMemoryFloors() ([]string, error) {
+	var changed []string
+	err := s.withLock(func() error {
+		f, err := s.readFileForWrite()
+		if err != nil {
+			return err
+		}
+		for pool, c := range f.Pools {
+			if c.MinFreeMemoryMB != 0 {
+				continue
+			}
+			c.MinFreeMemoryMB = DefaultMinFreeMemoryMB
+			f.Pools[pool] = c
+			changed = append(changed, pool)
+		}
+		if len(changed) == 0 {
+			return nil
+		}
+		sort.Strings(changed)
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
+	return changed, err
 }
 
 // SetMinFreeMemoryMB writes provider's memory admission floor (koryph-930) to

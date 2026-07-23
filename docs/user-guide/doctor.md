@@ -89,6 +89,17 @@ Validates `governor.json` when present. An absent file is fine — koryph
 falls back to the default cap. A corrupt or zero-value file is an
 **error**/**warning** respectively.
 
+### memory-floor
+Flags any pool in `governor.json` with no *explicit* `min_free_memory_mb`
+(koryph-4rk6.1) — the exact gap ("`anthropic` had a floor, `personal`/`work`
+didn't") behind the 2026-07-21 OOM incident. A pool with a positive floor or
+an explicit negative (deliberately disabled) is **ok**; a pool at the raw,
+never-set `0` is a **warning** naming the `koryph governor set
+--min-free-memory-mb` command to pin one. `koryph run` self-heals this on
+every startup by backfilling `DefaultMinFreeMemoryMB` onto any such pool, so
+in practice this check mostly catches drift from a `governor.json` edited or
+restored outside of koryph.
+
 ### zombie-leases
 Scans `slots/*.json` for lease files whose tracked PID is no longer alive.
 Each zombie is a **warning**; pass `--fix` to remove them immediately.

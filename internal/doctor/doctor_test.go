@@ -290,6 +290,60 @@ func TestGovernorConfigOnePerPool(t *testing.T) {
 	}
 }
 
+// TestMemoryFloorAbsentGovernor covers the no-config default: nothing to
+// check when governor.json does not exist at all.
+func TestMemoryFloorAbsentGovernor(t *testing.T) {
+	home := fabricate(t)
+	r, _ := Run(opts(home))
+	f := findCheck(r, checkNameMemoryFloor)
+	if f.Level != LevelOK {
+		t.Errorf("memory-floor level=%s, want ok when governor.json absent", f.Level)
+	}
+}
+
+// TestMemoryFloorFlagsFloorlessPool proves the koryph-4rk6.1 doctor check:
+// a pool with an explicit cap but NO min_free_memory_mb — exactly the
+// 2026-07-21 incident's "personal"/"work" shape — warns, while a pool that
+// already ships an explicit floor (like "anthropic" did in the incident) is
+// ok, and a pool that deliberately disabled the gate (negative) is also ok
+// (a distinct, unambiguous operator choice, not a gap).
+func TestMemoryFloorFlagsFloorlessPool(t *testing.T) {
+	home := fabricate(t)
+	writeGovernorFile(t, home, govern.File{Pools: map[string]govern.Config{
+		"anthropic": {MaxGlobalAgents: 8, MinFreeMemoryMB: 2048},
+		"personal":  {MaxGlobalAgents: 16}, // no min_free_memory_mb at all
+		"work":      {MaxGlobalAgents: 1, MinFreeMemoryMB: -1},
+	}})
+	r, _ := Run(opts(home))
+	findings := findAllChecks(r, checkNameMemoryFloor)
+	if len(findings) != 3 {
+		t.Fatalf("memory-floor findings = %d, want 3 (one per pool):\n%+v", len(findings), findings)
+	}
+	byPool := map[string]Finding{}
+	for _, f := range findings {
+		switch {
+		case strings.Contains(f.Message, "pool anthropic"):
+			byPool["anthropic"] = f
+		case strings.Contains(f.Message, "pool personal"):
+			byPool["personal"] = f
+		case strings.Contains(f.Message, "pool work"):
+			byPool["work"] = f
+		}
+	}
+	if byPool["anthropic"].Level != LevelOK {
+		t.Errorf("anthropic (explicit 2048) = %+v, want ok", byPool["anthropic"])
+	}
+	if byPool["personal"].Level != LevelWarn {
+		t.Errorf("personal (no floor) = %+v, want warn", byPool["personal"])
+	}
+	if !strings.Contains(byPool["personal"].Message, "governor set") {
+		t.Errorf("personal warning should suggest a remediation command: %q", byPool["personal"].Message)
+	}
+	if byPool["work"].Level != LevelOK {
+		t.Errorf("work (explicitly disabled) = %+v, want ok", byPool["work"])
+	}
+}
+
 // TestZombieLeaseDeadAgentAliveEngineNotZombie covers the koryph-p42 false-
 // positive: when the agent process has legitimately exited (build done) but
 // the engine is still alive managing the slot through review / rebase / gate

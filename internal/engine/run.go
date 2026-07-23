@@ -384,6 +384,17 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	// the global governor: govern must not import quota (layering), so the
 	// engine hands it a closure over its own already-loaded r.quotaCfg instead.
 	r.gov.SeedCap = r.seedCapForPool
+	// Uniform memory floor (koryph-4rk6.1): repair a governor.json an older
+	// koryph version already wrote with some pools carrying a
+	// max_global_agents cap but no min_free_memory_mb at all — the exact gap
+	// behind the 2026-07-21 OOM incident. Run once per engine load, not on
+	// every governor write (Store.BackfillMemoryFloors doc), and fail open —
+	// the governor is a safety rail, never a correctness dependency (I6).
+	if changed, err := r.gov.BackfillMemoryFloors(); err != nil {
+		r.progress("warning: memory-floor backfill failed (continuing): %v", err)
+	} else if len(changed) > 0 {
+		r.progress("governor: seeded default %d MB memory floor on pool(s) %v (previously unset)", govern.DefaultMinFreeMemoryMB, changed)
+	}
 	// Dispatched agents sign via the koryph scoped signing socket, not the
 	// operator's ambient agent (koryph-3vp.2).
 	if r.requireSigned() && cfg.Signing.EffectiveMode() == signing.ModeSSH {

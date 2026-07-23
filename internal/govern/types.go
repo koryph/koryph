@@ -57,6 +57,23 @@ const DefaultMaxGlobalAgents = 8
 // machine. The value is tied to the docs by a drift test (scripts/).
 const DefaultMaxMachineAgents = 8
 
+// DefaultMinFreeMemoryMB is the memory admission floor SEEDED onto a pool
+// that carries no explicit min_free_memory_mb (koryph-4rk6.1): matches the
+// "anthropic" pool's shipped explicit floor at the time of the 2026-07-21 OOM
+// incident, where "personal"/"work" had a max_global_agents cap but NO memory
+// floor at all — an uneven default that let 11+ agents dispatch before the
+// implicit per-host auto floor (sysmem.DefaultFloorMB, still the engine's
+// admission-time fallback for a raw 0/unset setting — see
+// internal/engine/govern.go's floorFromSetting) caught up. This constant
+// exists to make every pool's floor an explicit, uniform, operator-visible
+// number in governor.json rather than relying solely on that implicit
+// fallback: Store.SetCap seeds it onto a newly-created pool, and
+// Store.BackfillMemoryFloors writes it onto any EXISTING pool an older
+// koryph version already persisted without one. Neither touches a pool that
+// already carries an explicit setting (positive, or negative/disabled) —
+// only a raw 0 (never configured, or reset to auto) is backfilled.
+const DefaultMinFreeMemoryMB = 2048
+
 // DefaultPool is the pool key used when a lease, demand heartbeat, or store
 // entry point carries no explicit provider — i.e. today's single implicit
 // pool, and the migration target for a legacy (pre-koryph-v8u.11)
