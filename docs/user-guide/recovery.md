@@ -122,6 +122,45 @@ needs a decision — and the health patrol WARNs on any residual `in_progress`
 claim with no live agent (a bead a hard crash left before it could reconcile)
 as a backstop. Reopen a resolved one with `bd update <id> --status open`.
 
+## When the engine itself dies { #engine-death }
+
+The recovery paths above are for a dead *agent* under a live engine. The
+opposite case — the **engine** dies while an agent is mid-work — has its own
+contract, and it is deliberate: **a dispatched agent is detached from the
+engine and outlives it.** Every agent is launched into its own session
+(`setsid`), never the engine's process group, so a signal aimed at the engine
+does not reach the agents it started. The engine's job on the way down is to
+leave a clean, resumable ledger — not to take its children with it.
+
+- **Catchable death is graceful.** A `SIGTERM` or `SIGINT` to the engine
+  (a loop-harness stop, `Ctrl-C`, a plain `kill`) is converted to a
+  cancellation that runs the engine's `interrupted` path: it checkpoints every
+  active slot (leaving it non-terminal and recoverable), emits an
+  `engine.run.end` record with reason `interrupted`, releases `koryph.lock`,
+  and exits. The run is left `running` on purpose so `--resume` can pick it up.
+  The in-flight agent is **never signalled** — it keeps working in its own
+  session.
+- **Uncatchable death is backstopped.** A `SIGKILL` (or power loss) cannot be
+  handled, so the engine writes no `run.end` and the run is stranded at
+  status `running` with no live engine owning `koryph.lock`. The read-side
+  liveness derivation flags this as a **dead run** (`koryph board` shows
+  `run_dead`, `koryph doctor` lists it), and `koryph ops reconcile` finalizes
+  it. The detached agents still survive this too.
+- **`--resume` adopts a still-running orphan.** On resume the engine probes
+  each non-terminal slot's recorded PID. A slot whose agent is **still alive**
+  is *reattached* — the poll loop resumes over the same process, with no
+  restart and no lost work — while a slot whose agent has died is requeued or
+  re-dispatched per its death classification. An agent that outlived its
+  engine is therefore picked up exactly where it was, not started over.
+
+> **Operator caution.** Because the engine is catchable-but-graceful, stop it
+> with a single `SIGTERM` to the engine process (or wind the run down with
+> `koryph drain`) — never a `TaskStop`/`kill` aimed at the whole *process
+> tree* that escalates `TERM → KILL`. A tree-wide `SIGKILL` bypasses the
+> graceful path entirely (no `run.end`, no checkpoint) and can catch a
+> not-yet-fully-detached child in the same sweep. The loop wrapper's shutdown
+> uses a stop-sentinel for exactly this reason.
+
 ## The hard lines
 
 Some things never happen automatically, no matter how clean the recovery
