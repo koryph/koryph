@@ -217,7 +217,7 @@
         },
         "timeout_sec": {
           "type": "integer",
-          "description": "TimeoutSec bounds the stage agent's run; \u003c=0 uses the engine default\n(stage.defaultTimeoutSec, 600s). Raise it for stages that legitimately\nneed longer — e.g. a docs sweep over a large rename (koryph-a59)."
+          "description": "TimeoutSec bounds the stage agent's run — the project tier of the unified\ntimeout hierarchy (koryph-w82i). \u003c=0 falls through to the machine-wide\ndefault_timeout_seconds and then the built-in default (stage.DefaultTimeoutSec,\n1200s); a bead `timeout:\u003cseconds\u003e` label overrides it. Raise it for stages\nthat legitimately need longer — e.g. a docs sweep over a large rename (koryph-a59)."
         },
         "optional": {
           "type": "boolean",
@@ -340,7 +340,7 @@
         "max_timeout_seconds": {
           "type": "integer",
           "minimum": 0,
-          "description": "MaxTimeoutSeconds is DEPRECATED (koryph-w82i collapsed the former\nstart/escalate two-tier reviewer timeout into the single TimeoutSeconds\nabove). It is still accepted so existing koryph.project.json files keep\nparsing, but it is IGNORED during resolution; `koryph doctor` emits a NOTE\nwhen it is set, pointing at timeout_seconds. Remove it from your config."
+          "description": "MaxTimeoutSeconds is DEPRECATED (koryph-w82i collapsed the former\nstart/escalate two-tier reviewer timeout into the single TimeoutSeconds\nabove). It is still accepted so existing koryph.project.json files keep\nparsing, but it is IGNORED during resolution; `koryph doctor` warns when it\nis set, pointing at timeout_seconds. Remove it from your config."
         }
       },
       "additionalProperties": false,

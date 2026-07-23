@@ -36,6 +36,26 @@ import (
 // applied when nothing at the bead, project, or system level sets one.
 const BuiltinDefaultSec = 1200
 
+// MaxSaneSec is a defensive upper bound (30 days) applied to any resolved
+// timeout. It is NOT the policy ceiling the design deliberately removed — no
+// real agent timeout comes anywhere near it. Its sole job is to stop an absurd
+// value from overflowing `time.Duration(sec) * time.Second` (an int64
+// nanosecond count wraps around ~9.2e9 seconds), which would produce a negative
+// deadline that kills the agent instantly instead of granting the long run the
+// operator asked for (koryph-w82i review finding). A caller that passes a value
+// above this is clamped down to it rather than wrapping.
+const MaxSaneSec = 30 * 24 * 60 * 60 // 2_592_000
+
+// Clamp bounds sec to the defensive overflow guard (see MaxSaneSec): a value
+// above MaxSaneSec is clamped down to it; everything else passes through
+// unchanged. It does not floor at 0 — callers decide their own "unset" meaning.
+func Clamp(sec int) int {
+	if sec > MaxSaneSec {
+		return MaxSaneSec
+	}
+	return sec
+}
+
 // beadLabelPrefix is the bead-label prefix for a per-bead timeout override.
 const beadLabelPrefix = "timeout:"
 
@@ -64,16 +84,17 @@ func BeadTimeout(labels []string) (int, bool) {
 // Resolve applies the unified precedence bead > project > system > built-in and
 // returns the winning timeout in seconds. Each argument <= 0 means "unset at
 // that level". The result is always > 0 (BuiltinDefaultSec when every level is
-// unset). No ceiling is imposed — an explicit override may exceed the built-in
-// default.
+// unset). No policy ceiling is imposed — an explicit override may exceed the
+// built-in default — but the winner is passed through Clamp so an absurd value
+// can never overflow a time.Duration (see MaxSaneSec).
 func Resolve(beadSec, projectSec, systemSec int) int {
 	switch {
 	case beadSec > 0:
-		return beadSec
+		return Clamp(beadSec)
 	case projectSec > 0:
-		return projectSec
+		return Clamp(projectSec)
 	case systemSec > 0:
-		return systemSec
+		return Clamp(systemSec)
 	default:
 		return BuiltinDefaultSec
 	}

@@ -456,8 +456,8 @@ type ReviewConfig struct {
 	// MaxTimeoutSeconds is DEPRECATED (koryph-w82i collapsed the former
 	// start/escalate two-tier reviewer timeout into the single TimeoutSeconds
 	// above). It is still accepted so existing koryph.project.json files keep
-	// parsing, but it is IGNORED during resolution; `koryph doctor` emits a NOTE
-	// when it is set, pointing at timeout_seconds. Remove it from your config.
+	// parsing, but it is IGNORED during resolution; `koryph doctor` warns when it
+	// is set, pointing at timeout_seconds. Remove it from your config.
 	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty" jsonschema:"minimum=0"`
 }
 
@@ -1105,7 +1105,7 @@ func (c *Config) EffectiveReview() ReviewConfig {
 // above the built-in default — so only >0 is validated (0/absent means "unset",
 // resolved through the timeout hierarchy). max_timeout_seconds is deprecated but
 // still accepted for backwards compatibility; it is validated non-negative and
-// otherwise ignored (a doctor NOTE flags it).
+// otherwise ignored (a doctor warning flags it).
 func validateReview(c *ReviewConfig) error {
 	if c == nil {
 		return nil

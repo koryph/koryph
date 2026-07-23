@@ -3,7 +3,10 @@
 
 package timeoutcfg
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestBeadTimeout(t *testing.T) {
 	cases := []struct {
@@ -44,7 +47,8 @@ func TestResolvePrecedence(t *testing.T) {
 		{"bead over all", 100, 200, 300, 100},
 		{"bead over builtin", 100, 0, 0, 100},
 		{"negative treated as unset", -1, -1, 500, 500},
-		{"override exceeds builtin (no cap)", 5000, 0, 0, 5000},
+		{"override exceeds builtin (no policy cap)", 5000, 0, 0, 5000},
+		{"absurd override clamped to overflow guard", 1 << 40, 0, 0, MaxSaneSec},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -58,5 +62,30 @@ func TestResolvePrecedence(t *testing.T) {
 func TestResolveAlwaysPositive(t *testing.T) {
 	if got := Resolve(0, 0, 0); got <= 0 {
 		t.Fatalf("Resolve(0,0,0) = %d, want > 0", got)
+	}
+}
+
+func TestClamp(t *testing.T) {
+	cases := []struct{ in, want int }{
+		{0, 0},
+		{1200, 1200},
+		{MaxSaneSec, MaxSaneSec},
+		{MaxSaneSec + 1, MaxSaneSec},
+		{1 << 40, MaxSaneSec},
+	}
+	for _, tc := range cases {
+		if got := Clamp(tc.in); got != tc.want {
+			t.Errorf("Clamp(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestClampPreventsDurationOverflow is the regression guard for the review
+// finding: the clamped value, converted to a time.Duration nanosecond count,
+// must stay positive (a value near ~9.2e9 s would wrap int64 to negative).
+func TestClampPreventsDurationOverflow(t *testing.T) {
+	d := time.Duration(Clamp(1<<40)) * time.Second
+	if d <= 0 {
+		t.Fatalf("clamped duration = %v, want > 0 (overflow guard failed)", d)
 	}
 }

@@ -88,14 +88,16 @@ func envTimeoutSec() int {
 // collapsing the former start/escalate pair). Precedence:
 // KORYPH_REVIEW_TIMEOUT_SEC env (break-glass) > the caller-supplied value (itself
 // the bead > project > system winner, resolved by timeoutcfg.Resolve at the
-// engine call site) > DefaultTimeoutSec (the built-in 1200). There is no ceiling:
-// an explicit override may exceed the default. The returned value is always > 0.
+// engine call site) > DefaultTimeoutSec (the built-in 1200). There is no policy
+// ceiling — an explicit override may exceed the default — but the result is
+// passed through timeoutcfg.Clamp so an absurd env/caller value can never
+// overflow the time.Duration deadline. The returned value is always > 0.
 func resolveTimeout(timeoutSec int) int {
 	if env := envTimeoutSec(); env > 0 {
-		return env
+		return timeoutcfg.Clamp(env)
 	}
 	if timeoutSec > 0 {
-		return timeoutSec
+		return timeoutcfg.Clamp(timeoutSec)
 	}
 	return DefaultTimeoutSec
 }
