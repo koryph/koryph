@@ -8,13 +8,13 @@ Status: **implemented** (phases 1–3 landed) · Bead: `koryph-1xk` · Owner: or
 ## Problem
 
 `koryph run` is **one process per project**. Each caps only its *own* wave
-width (`--max` / `max_concurrent_slots`, default 3), optionally scaled *down* by
-the per-account **cost** governor (`internal/quota`, which gates by dollars).
-Nothing bounds the **sum** of concurrently-running agents across projects and
-processes: running loops on _K_ projects launches up to _3K_ headless `claude`
-sessions, which breaches the Claude API concurrency / rate limits (429s,
-throttling). The cost governor never bounds concurrency or request rate — a
-burst of cheap agents still exceeds the limit.
+width (`--max` / `max_concurrent_slots`, default 4 — koryph-4rk6.4, was 3),
+optionally scaled *down* by the per-account **cost** governor (`internal/quota`,
+which gates by dollars). Nothing bounds the **sum** of concurrently-running
+agents across projects and processes: running loops on _K_ projects launches
+up to _4K_ headless `claude` sessions, which breaches the Claude API
+concurrency / rate limits (429s, throttling). The cost governor never bounds
+concurrency or request rate — a burst of cheap agents still exceeds the limit.
 
 ## Goals
 

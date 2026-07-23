@@ -672,7 +672,7 @@ type Config struct {
 	// learn` offers the same pass manually regardless of this gate.
 	AdaptiveEscalation *AdaptiveEscalation `json:"adaptive_escalation,omitempty"`
 
-	// MaxConcurrentSlots caps wave width for this project (default 3).
+	// MaxConcurrentSlots caps wave width for this project (default 4, koryph-4rk6.4 laptop-safe default; was 3).
 	MaxConcurrentSlots int `json:"max_concurrent_slots,omitempty"`
 
 	// DispatchStaggerSeconds between agent launches (default 8).

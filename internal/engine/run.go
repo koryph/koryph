@@ -59,7 +59,7 @@ const (
 const (
 	defaultPollSec    = 10 // was 45; L3 fast-completion-detection (koryph-2im.2)
 	defaultStuckSec   = 900
-	defaultWaveWidth  = 3
+	defaultWaveWidth  = 4 // was 3; koryph-4rk6.4 laptop-safe default (2026-07-21 OOM)
 	defaultBackoffSec = 15
 )
 
