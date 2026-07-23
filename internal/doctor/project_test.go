@@ -391,6 +391,33 @@ func TestCheckReviewTimeoutConfig(t *testing.T) {
 	}
 }
 
+// --- dispatch-stagger (koryph-4rk6.3 anti-stampede floor) ---
+
+func TestCheckDispatchStagger(t *testing.T) {
+	cases := []struct {
+		name  string
+		cfg   *project.Config
+		want  Level
+		msgIn string
+	}{
+		{"unset uses the floor", &project.Config{}, LevelOK, "floor"},
+		{"explicit below floor is a note, not an error", &project.Config{DispatchStaggerSeconds: 2}, LevelOK, "NOTE"},
+		{"explicit at floor is plain OK", &project.Config{DispatchStaggerSeconds: dispatchStaggerFloorSec}, LevelOK, "dispatch_stagger_seconds = 10"},
+		{"explicit above floor is plain OK", &project.Config{DispatchStaggerSeconds: 20}, LevelOK, "dispatch_stagger_seconds = 20"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := checkDispatchStagger(tc.cfg)
+			if f.Level != tc.want {
+				t.Errorf("Level = %s, want %s", f.Level, tc.want)
+			}
+			if !strings.Contains(f.Message, tc.msgIn) {
+				t.Errorf("Message %q missing %q", f.Message, tc.msgIn)
+			}
+		})
+	}
+}
+
 // --- protected-paths ---
 
 func TestProtectedPathsEmpty(t *testing.T) {

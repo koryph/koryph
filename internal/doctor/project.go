@@ -286,7 +286,16 @@ const (
 	checkNameOrphanWorktrees = "orphan-worktrees"
 	checkNameAssetDrift      = "asset-drift"
 	checkNameReviewTimeout   = "review-timeout-config"
+	checkNameDispatchStagger = "dispatch-stagger"
 )
+
+// dispatchStaggerFloorSec mirrors engine.defaultStaggerSec (koryph-4rk6.3):
+// the anti-stampede floor below which a wave of agents can all land before
+// the memory impact of the FIRST one registers in the admission probe. Kept
+// as an independent constant rather than importing internal/engine, which
+// already imports internal/doctor (health.go) for its own checks — importing
+// back would cycle.
+const dispatchStaggerFloorSec = 10
 
 // RunProject executes project-scoped health checks and returns the report.
 // It reuses onboard.Validate structural checks (config, git repo, hooks) and
@@ -312,6 +321,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 		r.addAll(checkSigning(cfg))
 		r.add(checkProtectedPaths(cfg))
 		r.add(checkReviewTimeoutConfig(cfg))
+		r.add(checkDispatchStagger(cfg))
 	}
 	r.addAll(checkStalledRuns(opts, repoRoot))
 	r.addAll(checkOrphanWorktrees(opts, repoRoot, cfg))
@@ -626,6 +636,41 @@ func checkReviewTimeoutConfig(cfg *project.Config) Finding {
 		Message: fmt.Sprintf(
 			"review.max_timeout_seconds (%d) is DEPRECATED and ignored (koryph-w82i unified the reviewer timeout into a single value); remove it and use review.timeout_seconds",
 			cfg.Review.MaxTimeoutSeconds),
+	}
+}
+
+// checkDispatchStagger surfaces an explicitly configured dispatch_stagger_seconds
+// below the anti-stampede floor (koryph-4rk6.3): a wave of agents launched
+// closer together than that risks every admission in the wave observing the
+// SAME pre-launch memory reading instead of each new admission seeing the
+// steady-state footprint of the previous agent — a stampeding-herd effect
+// that defeats any per-agent floor. This is informational, not an error: a
+// project may have a deliberate reason to accept that risk (e.g. a
+// low-memory-footprint bead shape), so a low value is allowed — this note
+// just makes the trade-off visible. An absent/zero field resolves through
+// the same floor at dispatch time (project.Default, engine.staggerDelay), so
+// it is unconditionally OK.
+func checkDispatchStagger(cfg *project.Config) Finding {
+	if cfg.DispatchStaggerSeconds <= 0 {
+		return Finding{
+			Check:   checkNameDispatchStagger,
+			Level:   LevelOK,
+			Message: fmt.Sprintf("dispatch_stagger_seconds unset: uses the %ds anti-stampede floor", dispatchStaggerFloorSec),
+		}
+	}
+	if cfg.DispatchStaggerSeconds < dispatchStaggerFloorSec {
+		return Finding{
+			Check: checkNameDispatchStagger,
+			Level: LevelOK,
+			Message: fmt.Sprintf(
+				"NOTE: dispatch_stagger_seconds is %d, below the %ds anti-stampede floor (each admission should observe the steady-state footprint of the previous agent); intentional low-latency overrides are fine, otherwise raise it",
+				cfg.DispatchStaggerSeconds, dispatchStaggerFloorSec),
+		}
+	}
+	return Finding{
+		Check:   checkNameDispatchStagger,
+		Level:   LevelOK,
+		Message: fmt.Sprintf("dispatch_stagger_seconds = %d", cfg.DispatchStaggerSeconds),
 	}
 }
 
