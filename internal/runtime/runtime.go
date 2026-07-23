@@ -130,6 +130,18 @@ type Runtime interface {
 	// when a soft degrade is preferred over a hard error.
 	Command(spec DispatchSpec) (argv []string, env []string, err error)
 
+	// CommandJSON is Command's one-shot, structured-JSON sibling (koryph-fiv
+	// finding #1): it translates a runtime-neutral JSONSpec into the argv+env
+	// for a single blocking agent that emits one `--output-format json` result
+	// envelope on stdout (the reviewer, post-implement stages, and epic review
+	// — as opposed to the long-lived stream-json implementer Command drives).
+	// argv is the full command line INCLUDING argv[0]; env is the COMPLETE
+	// child environment under the identical allowlist-plus-explicit-injection
+	// contract Command documents. Callers exec it via runtime.SpawnJSON.
+	// Returns an error when the spec requests an unsupported capability, same
+	// as Command.
+	CommandJSON(spec JSONSpec) (argv []string, env []string, err error)
+
 	// ParseEvents adapts this runtime's native streaming output format
 	// (Claude stream-json, a Codex JSONL transcript, ...) into the
 	// normalized Event envelope the engine consumes for cost/rate-limit/

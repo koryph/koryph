@@ -148,6 +148,89 @@ func TestCommandArgvOmitsOptionalFlags(t *testing.T) {
 	}
 }
 
+// TestCommandJSONReviewerArgvGolden pins CommandJSON's argv for a read-only
+// reviewer/epic-validator spawn to the EXACT flag sequence internal/review and
+// internal/epicreview hand-built before the koryph-fiv seam: plan mode, an
+// --effort hint, no fallback-model, no max-budget, --output-format json.
+func TestCommandJSONReviewerArgvGolden(t *testing.T) {
+	rt := Claude{Bin: "claude"}
+	argv, _, err := rt.CommandJSON(runtime.JSONSpec{
+		Persona:        "koryph-security-reviewer",
+		Model:          "opus",
+		Effort:         "high",
+		PermissionMode: "plan",
+		SpawnKind:      "review",
+		Billing:        runtime.BillingSubscription,
+	})
+	if err != nil {
+		t.Fatalf("CommandJSON: %v", err)
+	}
+	want := []string{
+		"claude",
+		"-p",
+		"--agent", "koryph-security-reviewer",
+		"--permission-mode", "plan",
+		"--model", "opus",
+		"--effort", "high",
+		"--output-format", "json",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Errorf("argv =\n%q\nwant\n%q", argv, want)
+	}
+}
+
+// TestCommandJSONStageArgvGolden pins CommandJSON's argv for a mutating stage
+// spawn to the EXACT flag sequence internal/stage hand-built before the seam:
+// dontAsk mode, --max-budget-usd, --fallback-model sonnet, --output-format
+// json.
+func TestCommandJSONStageArgvGolden(t *testing.T) {
+	rt := Claude{Bin: "claude"}
+	argv, _, err := rt.CommandJSON(runtime.JSONSpec{
+		Persona:        "koryph-test-engineer",
+		Model:          "sonnet",
+		MaxBudgetUSD:   25,
+		PermissionMode: "dontAsk",
+		Fallback:       true,
+		SpawnKind:      "stage",
+		Billing:        runtime.BillingSubscription,
+	})
+	if err != nil {
+		t.Fatalf("CommandJSON: %v", err)
+	}
+	want := []string{
+		"claude",
+		"-p",
+		"--agent", "koryph-test-engineer",
+		"--permission-mode", "dontAsk",
+		"--model", "sonnet",
+		"--max-budget-usd", "25",
+		"--fallback-model", "sonnet",
+		"--output-format", "json",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Errorf("argv =\n%q\nwant\n%q", argv, want)
+	}
+}
+
+// TestCommandJSONDefaultsPermissionModeToPlan confirms an unset PermissionMode
+// falls back to the safe read-only "plan" posture, never a mutating mode.
+func TestCommandJSONDefaultsPermissionModeToPlan(t *testing.T) {
+	rt := Claude{Bin: "claude"}
+	argv, _, err := rt.CommandJSON(runtime.JSONSpec{Persona: "p", Model: "opus"})
+	if err != nil {
+		t.Fatalf("CommandJSON: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--permission-mode plan") {
+		t.Errorf("empty PermissionMode did not default to plan: %q", joined)
+	}
+	for _, absent := range []string{"--effort", "--max-budget-usd", "--fallback-model"} {
+		if strings.Contains(joined, absent) {
+			t.Errorf("argv contains %q which should be omitted: %q", absent, joined)
+		}
+	}
+}
+
 // TestCommandEnvSubscriptionOmitsAPIKey mirrors the env assertions from
 // dispatch/cli_test.go's TestDispatchLaunchesDetachedAgent: subscription
 // billing never carries ANTHROPIC_API_KEY, and a work profile's ConfigDir

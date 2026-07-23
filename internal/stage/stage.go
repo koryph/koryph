@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
@@ -71,23 +69,26 @@ func Run(ctx context.Context, o Opts) Result {
 	changed := changedFiles(ctx, o.Worktree, base, o.Branch)
 	prompt := buildPrompt(o, base, changed)
 
-	args := []string{
-		"-p",
-		"--agent", o.Persona,
-		"--permission-mode", "dontAsk",
-		"--model", o.Model,
+	// Route the one-shot JSON spawn through the resolved Runtime seam
+	// (koryph-fiv finding #1), reusing the rt already resolved for
+	// VerifyIdentity above. A stage agent mutates the worktree, so it runs
+	// `--permission-mode dontAsk` with the fallback model (the same "sonnet"
+	// FallbackModel constant dispatch's claude adapter uses) and an optional
+	// per-invocation budget cap.
+	spec := runtime.JSONSpec{
+		Persona:        o.Persona,
+		Model:          o.Model,
+		Effort:         o.Effort,
+		MaxBudgetUSD:   o.MaxBudgetUSD,
+		PermissionMode: "dontAsk",
+		Fallback:       true,
+		SpawnKind:      "stage",
+		Profile:        runtime.Profile{Name: o.Profile.Name, ConfigDir: o.Profile.ConfigDir},
+		Billing:        runtime.BillingMode(o.Billing),
+		APIKey:         o.APIKey,
+		SSHAuthSock:    o.SSHAuthSock,
+		ProxyBaseURL:   o.ProxyBaseURL,
 	}
-	if o.Effort != "" {
-		args = append(args, "--effort", o.Effort)
-	}
-	if o.MaxBudgetUSD > 0 {
-		args = append(args, "--max-budget-usd", strconv.FormatFloat(o.MaxBudgetUSD, 'f', -1, 64))
-	}
-	// FallbackModel (koryph-v8u.2): the same "sonnet" value dispatch/cli.go's
-	// claude adapter uses, now a single shared constant instead of two
-	// independently-duplicated literals (flagged by the koryph-v8u.2
-	// architecture review).
-	args = append(args, "--fallback-model", claude.FallbackModel, "--output-format", "json")
 
 	// obs.Span adoption (koryph-5a1 #59): the stage agent spawn is the same
 	// shape of hot path as a reviewer/forge/vault call — one blocking
@@ -95,11 +96,8 @@ func Run(ctx context.Context, o Opts) Result {
 	// latency/status/error span instead of being invisible to trace
 	// correlation entirely.
 	sp := obs.StartSpan(ctx, log, slog.LevelDebug, "stage.agent_spawn", obs.ForgeAttrs("claude", o.Model, o.Persona)...)
-	res, err := execx.Run(ctx, execx.Cmd{
+	res, err := runtime.SpawnJSON(ctx, rt, spec, runtime.JSONExec{
 		Dir:     o.Worktree,
-		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: o.Billing, APIKey: o.APIKey, SSHAuthSock: o.SSHAuthSock, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "stage"}),
-		Name:    bin,
-		Args:    args,
 		Stdin:   prompt,
 		Timeout: time.Duration(timeout) * time.Second,
 	})

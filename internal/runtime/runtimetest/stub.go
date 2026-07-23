@@ -177,6 +177,54 @@ func (s Stub) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	return argv, env, nil
 }
 
+// CommandJSON implements runtime.Runtime (koryph-fiv finding #1). Like
+// Command it builds a deterministic argv and enforces the same
+// capability-gating contract: a spec field mapping to an unsupported
+// capability is a hard error, never a silent drop.
+func (s Stub) CommandJSON(spec runtime.JSONSpec) ([]string, []string, error) {
+	caps := s.Caps
+	if spec.Effort != "" && !caps.EffortFlag {
+		return nil, nil, fmt.Errorf("stub: Effort set but Capabilities.EffortFlag is false")
+	}
+	if spec.MaxBudgetUSD > 0 && !caps.BudgetFlag {
+		return nil, nil, fmt.Errorf("stub: MaxBudgetUSD set but Capabilities.BudgetFlag is false")
+	}
+	if spec.Model != "" && !caps.ModelSelect {
+		return nil, nil, fmt.Errorf("stub: Model set but Capabilities.ModelSelect is false")
+	}
+	if spec.Persona != "" && !caps.Personas {
+		return nil, nil, fmt.Errorf("stub: Persona set but Capabilities.Personas is false")
+	}
+
+	mode := spec.PermissionMode
+	if mode == "" {
+		mode = "plan"
+	}
+	argv := []string{s.Name(), "run", "--json", "--permission-mode", mode}
+	if spec.Persona != "" {
+		argv = append(argv, "--persona", spec.Persona)
+	}
+	if spec.Model != "" {
+		argv = append(argv, "--model", spec.Model)
+	}
+	if spec.Effort != "" {
+		argv = append(argv, "--effort", spec.Effort)
+	}
+	if spec.Fallback {
+		argv = append(argv, "--fallback")
+	}
+
+	env := append([]string{}, spec.EnvPassthrough...)
+	env = append(env, s.AccountEnv(spec.Profile)...)
+	switch {
+	case spec.CredentialEnvVar != "":
+		env = append(env, spec.CredentialEnvVar+"="+spec.Credential)
+	case spec.Billing == runtime.BillingAPIKey && spec.APIKey != "":
+		env = append(env, "STUB_API_KEY="+spec.APIKey)
+	}
+	return argv, env, nil
+}
+
 // nativeLine is the stub's fake native stream format: deliberately shaped
 // like the subset of Claude's stream-json that
 // internal/dispatch/cli.go's ParseResultCost/ParseRateLimited scan (type,

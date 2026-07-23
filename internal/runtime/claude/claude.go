@@ -190,6 +190,56 @@ func (c Claude) Command(spec runtime.DispatchSpec) (argv []string, env []string,
 	return argv, env, nil
 }
 
+// CommandJSON translates a one-shot JSONSpec into claude's non-streaming
+// `--output-format json` argv+env (koryph-fiv finding #1) — the direct port of
+// the argv the review/stage/epicreview packages each hand-built inline before
+// this seam. env is built through the same account.ChildEnv contract as
+// Command.
+func (c Claude) CommandJSON(spec runtime.JSONSpec) (argv []string, env []string, err error) {
+	argv = append([]string{c.bin()}, buildJSONArgs(spec)...)
+	env = account.ChildEnv(account.ChildEnvSpec{
+		Profile:          toAccountProfile(spec.Profile),
+		Billing:          toAccountBilling(spec.Billing),
+		APIKey:           spec.APIKey,
+		SSHAuthSock:      spec.SSHAuthSock,
+		Passthrough:      spec.EnvPassthrough,
+		ProxyBaseURL:     spec.ProxyBaseURL,
+		Credential:       spec.Credential,
+		CredentialEnvVar: spec.CredentialEnvVar,
+		SpawnKind:        spec.SpawnKind,
+	})
+	return argv, env, nil
+}
+
+// buildJSONArgs constructs the claude CLI flag sequence for a one-shot JSON
+// spawn. PermissionMode is caller-selected ("plan" for the read-only
+// reviewers, "dontAsk" for a mutating stage agent); the fallback-model and
+// max-budget flags are opt-in so each site's pre-seam argv is preserved
+// exactly (the reviewers omitted both).
+func buildJSONArgs(spec runtime.JSONSpec) []string {
+	mode := spec.PermissionMode
+	if mode == "" {
+		mode = "plan"
+	}
+	args := []string{
+		"-p",
+		"--agent", spec.Persona,
+		"--permission-mode", mode,
+		"--model", spec.Model,
+	}
+	if spec.Effort != "" {
+		args = append(args, "--effort", spec.Effort)
+	}
+	if spec.MaxBudgetUSD > 0 {
+		args = append(args, "--max-budget-usd", strconv.FormatFloat(spec.MaxBudgetUSD, 'f', -1, 64))
+	}
+	if spec.Fallback {
+		args = append(args, "--fallback-model", FallbackModel)
+	}
+	args = append(args, "--output-format", "json")
+	return args
+}
+
 // buildArgs constructs the claude CLI flag sequence (everything after
 // argv[0]) for a dispatch-shaped invocation. This is a direct port of
 // internal/dispatch/cli.go's pre-koryph-v8u.2 `args` construction — same

@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/agentjson"
-	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/claude"
 )
 
 // Defaults per the package contract (§3 of 2026-07-epic-validation.md).
@@ -141,21 +141,22 @@ func Validate(ctx context.Context, o Opts) Verdict {
 // degraded verdict whose Reason explains the failure so a degradation is never
 // a black box.
 func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
-	args := []string{
-		"-p",
-		"--agent", o.Persona,
-		"--permission-mode", "plan",
-		"--model", o.Model,
-		"--output-format", "json",
+	// Route the one-shot JSON validator spawn through the resolved Runtime seam
+	// (koryph-fiv finding #1): read-only `--permission-mode plan`, no
+	// fallback/max-budget, matching the pre-seam argv exactly.
+	rt := claude.New(o.ClaudeBin)
+	spec := runtime.JSONSpec{
+		Persona:        o.Persona,
+		Model:          o.Model,
+		Effort:         o.Effort,
+		PermissionMode: "plan",
+		SpawnKind:      "epicreview",
+		Profile:        runtime.Profile{Name: o.Profile.Name, ConfigDir: o.Profile.ConfigDir},
+		Billing:        runtime.BillingSubscription,
+		ProxyBaseURL:   o.ProxyBaseURL,
 	}
-	if o.Effort != "" {
-		args = append(args, "--effort", o.Effort)
-	}
-	res, err := execx.Run(ctx, execx.Cmd{
+	res, err := runtime.SpawnJSON(ctx, rt, spec, runtime.JSONExec{
 		Dir:     o.RepoRoot,
-		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "epicreview"}),
-		Name:    o.ClaudeBin,
-		Args:    args,
 		Stdin:   prompt,
 		Timeout: time.Duration(o.TimeoutSec) * time.Second,
 	})

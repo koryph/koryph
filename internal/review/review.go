@@ -14,11 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/agentjson"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/obs"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/claude"
 	"github.com/koryph/koryph/internal/timeoutcfg"
 )
 
@@ -242,15 +243,19 @@ func persistDegraded(o Opts, v Verdict, history []attemptDiagnosis) {
 // degraded verdict whose Reason explains the failure, so a degradation is never
 // a black box in the logs.
 func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
-	args := []string{
-		"-p",
-		"--agent", o.Persona,
-		"--permission-mode", "plan",
-		"--model", o.Model,
-		"--output-format", "json",
-	}
-	if o.Effort != "" {
-		args = append(args, "--effort", o.Effort)
+	// Route the one-shot JSON spawn through the resolved Runtime seam
+	// (koryph-fiv finding #1) instead of hand-building claude's argv here — a
+	// read-only reviewer is `--permission-mode plan`, no fallback/max-budget.
+	rt := claude.New(o.ClaudeBin)
+	spec := runtime.JSONSpec{
+		Persona:        o.Persona,
+		Model:          o.Model,
+		Effort:         o.Effort,
+		PermissionMode: "plan",
+		SpawnKind:      "review",
+		Profile:        runtime.Profile{Name: o.Profile.Name, ConfigDir: o.Profile.ConfigDir},
+		Billing:        runtime.BillingSubscription,
+		ProxyBaseURL:   o.ProxyBaseURL,
 	}
 	// obs.Span adoption (koryph-5a1 #59): the reviewer spawn is a genuine hot
 	// path — one blocking external call per attempt, up to defaultAttempts
@@ -258,11 +263,8 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	// as forge.api and vault.resolve, giving real correlation across an
 	// entire reviewer attempt instead of scattered log lines.
 	sp := obs.StartSpan(ctx, log, slog.LevelDebug, "review.reviewer_spawn", obs.ForgeAttrs("claude", o.Model, o.Persona)...)
-	res, err := execx.Run(ctx, execx.Cmd{
+	res, err := runtime.SpawnJSON(ctx, rt, spec, runtime.JSONExec{
 		Dir:     o.Worktree,
-		Env:     account.ChildEnv(account.ChildEnvSpec{Profile: o.Profile, Billing: account.BillingSubscription, ProxyBaseURL: o.ProxyBaseURL, SpawnKind: "review"}),
-		Name:    o.ClaudeBin,
-		Args:    args,
 		Stdin:   prompt,
 		Timeout: time.Duration(o.TimeoutSec) * time.Second,
 	})
