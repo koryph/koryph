@@ -162,6 +162,24 @@ func (s *Store) MinFreeMemoryMB(provider string) int {
 	return c.MinFreeMemoryMB
 }
 
+// EstPerAgentMB returns provider's RAW configured per-agent memory reservation
+// for kind-less leases (koryph-3xs): >0 an explicit reservation in MB, <0 the
+// reservation explicitly disabled, 0 unset (callers apply DefaultEstPerAgentMB).
+// Returns 0 (unset) when governor.json or the pool entry is absent, or on any
+// read error, matching MinFreeMemoryMB's fail-open posture.
+func (s *Store) EstPerAgentMB(provider string) int {
+	pool := NormalizeProvider(provider)
+	f, err := s.readFile()
+	if err != nil {
+		return 0
+	}
+	c, ok := f.Pools[pool]
+	if !ok {
+		return 0
+	}
+	return c.EstPerAgentMB
+}
+
 // Resources returns the machine's top-level resource ledger (koryph-4ql.1,
 // docs/designs/2026-07-resource-governor.md L2): the configured per-kind
 // capacities/costs shared across every provider pool. Fails open to the zero
@@ -356,6 +374,27 @@ func (s *Store) SetMinFreeMemoryMB(provider string, mb int) error {
 		}
 		c := f.Pools[pool] // zero Config when the pool is absent
 		c.MinFreeMemoryMB = mb
+		f.Pools[pool] = c
+		return fsx.WriteJSONAtomic(s.cfgPath, f)
+	})
+}
+
+// SetEstPerAgentMB writes provider's kind-less per-agent memory reservation
+// (koryph-3xs) to governor.json, PRESERVING every other field of that pool's
+// config (cap, floor, AIMD overlay) — the SetMinFreeMemoryMB precedent. The
+// value is interpreted by readers: mb>0 an explicit reservation, mb<0 disables
+// it (kind-less leases reserve 0), mb==0 resets to the package default
+// (DefaultEstPerAgentMB). A pool that does not yet exist is created with only
+// this field set. provider=="" is DefaultPool.
+func (s *Store) SetEstPerAgentMB(provider string, mb int) error {
+	pool := NormalizeProvider(provider)
+	return s.withLock(func() error {
+		f, err := s.readFileForWrite()
+		if err != nil {
+			return err
+		}
+		c := f.Pools[pool] // zero Config when the pool is absent
+		c.EstPerAgentMB = mb
 		f.Pools[pool] = c
 		return fsx.WriteJSONAtomic(s.cfgPath, f)
 	})

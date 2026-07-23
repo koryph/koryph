@@ -831,6 +831,23 @@ waiting for the host to actually feel the pressure. See
 [Machine: resources](../concepts/resources.md#reservation-aware-memory-admission-and-the-ramp-window)
 for the mechanics.
 
+A bead that declares **no** `res:<kind>` footprint still costs a `claude` subprocess and a
+worktree, so it too carries a reservation: the **per-agent memory reserve** (default
+**1536 MB**). Without it, N kind-less agents each cleared the floor individually against a
+snapshot that assumed zero cost for the others, so a burst could collectively admit past the
+real headroom and start swapping — the exact macOS OOM this guard closes. With it, admitting
+K kind-less agents reserves K × the per-agent estimate against the floor, the same way
+declared kinds reserve their `mem_mb`. Tune it per pool (or turn it off) with:
+
+```sh
+koryph governor set --est-per-agent-mb 2048            # reserve 2 GB per kind-less agent
+koryph governor set --est-per-agent-mb 0               # reset to the 1536 MB default
+koryph governor set --est-per-agent-mb -1              # disable the per-agent reserve
+```
+
+`KORYPH_EST_PER_AGENT_MB` overrides it for a single run (same value grammar). Beads that
+declare `res:<kind>` are unaffected — they keep reserving their declared per-kind `mem_mb`.
+
 The floor is a machine property (like the global concurrency cap), so it lives in
 `~/.koryph/governor.json`, per provider pool. It is **on by default**, sized to physical
 memory (~1/8 of total RAM, clamped to a 1–8 GB band) — e.g. ~3 GB on a 24 GB host. Override
@@ -846,7 +863,11 @@ koryph governor set --min-free-memory-mb -1            # disable the gate entire
 run without editing `governor.json`, set `KORYPH_MIN_FREE_MEMORY_MB` in the environment
 (same values: a positive floor, `0` for auto, negative to disable) — it overrides the
 configured floor for that run. The available-memory signal is read from `/proc/meminfo`
-(Linux) or `sysctl` + `vm_stat` (macOS); a platform with no probe fails open (gate off).
+(Linux) or `sysctl` + `vm_stat` (macOS); a platform with no probe fails open (gate off). On
+macOS the estimate counts only the promptly reclaimable page classes (free + speculative +
+purgeable) and deliberately **excludes inactive pages**, which the kernel cannot hand out
+without first writing them back — counting them over-reported headroom and admitted agents
+into an already-swapping host.
 
 > **Every pool ends up with an explicit floor (koryph-4rk6.1).** The
 > 2026-07-21 incident happened because the `anthropic` pool shipped an

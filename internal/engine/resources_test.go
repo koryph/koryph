@@ -53,7 +53,8 @@ func TestClassifyAdmitSkipVsBreak(t *testing.T) {
 
 // TestResolveMemReserveMB pins the L5 reservation resolution order: machine
 // ledger mem_mb (govern Store.Resources) overrides the project vocabulary, which
-// overrides 0 for an unconfigured kind.
+// overrides 0 for an unconfigured kind. A kind-less bead reserves the per-agent
+// default (koryph-3xs), NOT 0.
 func TestResolveMemReserveMB(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
@@ -77,7 +78,8 @@ func TestResolveMemReserveMB(t *testing.T) {
 		kinds []string
 		want  int
 	}{
-		{"nil → 0", nil, 0},
+		{"kind-less → per-agent default", nil, govern.DefaultEstPerAgentMB},
+		{"empty slice → per-agent default", []string{}, govern.DefaultEstPerAgentMB},
 		{"machine ledger wins", []string{"kind-cluster"}, 6144},
 		{"project vocabulary fallback", []string{"docker"}, 512},
 		{"machine overrides project vocab", []string{"shared"}, 999},
@@ -90,6 +92,104 @@ func TestResolveMemReserveMB(t *testing.T) {
 				t.Errorf("resolveMemReserveMB(%v) = %d, want %d", tc.kinds, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEstPerAgentMB pins the kind-less per-agent reservation resolver
+// (koryph-3xs): env override > governor pool config > package default, with a
+// negative setting disabling the reservation (0).
+func TestEstPerAgentMB(t *testing.T) {
+	t.Run("default when unset", func(t *testing.T) {
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		r.gov = govern.NewStore()
+		if got := r.estPerAgentMB(); got != govern.DefaultEstPerAgentMB {
+			t.Errorf("estPerAgentMB unset = %d, want %d", got, govern.DefaultEstPerAgentMB)
+		}
+	})
+	t.Run("governor config wins over default", func(t *testing.T) {
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		r.gov = govern.NewStore()
+		if err := r.gov.SetEstPerAgentMB(govern.NormalizeProvider(r.poolKey()), 4096); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.estPerAgentMB(); got != 4096 {
+			t.Errorf("estPerAgentMB configured = %d, want 4096", got)
+		}
+	})
+	t.Run("negative config disables (0)", func(t *testing.T) {
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		r.gov = govern.NewStore()
+		if err := r.gov.SetEstPerAgentMB(govern.NormalizeProvider(r.poolKey()), -1); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.estPerAgentMB(); got != 0 {
+			t.Errorf("estPerAgentMB disabled = %d, want 0", got)
+		}
+	})
+	t.Run("env override wins over config", func(t *testing.T) {
+		t.Setenv("KORYPH_EST_PER_AGENT_MB", "2048")
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		r.gov = govern.NewStore()
+		if err := r.gov.SetEstPerAgentMB(govern.NormalizeProvider(r.poolKey()), 4096); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.estPerAgentMB(); got != 2048 {
+			t.Errorf("estPerAgentMB env override = %d, want 2048", got)
+		}
+	})
+	t.Run("non-numeric env ignored, falls through to default", func(t *testing.T) {
+		t.Setenv("KORYPH_EST_PER_AGENT_MB", "lots")
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		r.gov = govern.NewStore()
+		if got := r.estPerAgentMB(); got != govern.DefaultEstPerAgentMB {
+			t.Errorf("estPerAgentMB with junk env = %d, want %d", got, govern.DefaultEstPerAgentMB)
+		}
+	})
+}
+
+// TestKindlessLeaseReservesEstAgainstFloor is the koryph-3xs acceptance test:
+// admitting K kind-less agents reserves K*est against the free-memory floor, so
+// concurrent kind-less dispatches can no longer collectively blow past headroom
+// each while individually clearing it. A foreign kind-less lease already ramping
+// with est reserved, plus THIS candidate's own est, tips a floor that either one
+// alone would clear → the candidate is denied (a per-bead skip, since it is the
+// candidate's own reservation that tips).
+func TestKindlessLeaseReservesEstAgainstFloor(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	// Floor at 3000 MB; avail 5000 MB. est default is 1536 MB: one kind-less
+	// lease leaves 5000-1536=3464 ≥ 3000 (admits), but a second reserves another
+	// 1536 → 5000-1536-1536=1928 < 3000 (denied). Set AFTER newFixture, which
+	// disables the gate (env -1) for full-run fixtures.
+	t.Setenv("KORYPH_MIN_FREE_MEMORY_MB", "3000")
+	r := runnerFromFixture(t, f)
+	r.gov = govern.NewStore()
+	r.memProbe = func() (sysmem.Stat, bool) { return memStatMB(16000, 5000), true }
+
+	est := r.estPerAgentMB()
+	if est != govern.DefaultEstPerAgentMB {
+		t.Fatalf("precondition: est = %d, want %d", est, govern.DefaultEstPerAgentMB)
+	}
+	// A foreign kind-less agent already holds a lease that reserves est and is
+	// still ramping (fresh Hold → within the ramp window).
+	if err := r.gov.Hold(govern.Lease{
+		Project: "other", Bead: "y1", PID: os.Getpid(), EnginePID: os.Getpid(),
+		MemReserveMB: est,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// This project's kind-less candidate resolves the same est and is denied
+	// because ITS reservation is what tips the floor → per-bead skip.
+	kinds, mem := r.resolveDispatchResources(dispatchReq{issue: beads.Issue{ID: "tb1"}})
+	if len(kinds) != 0 || mem != est {
+		t.Fatalf("kind-less resolveDispatchResources = %v/%d, want empty/%d", kinds, mem, est)
+	}
+	if got := r.acquireGlobalSlot("tb1", kinds, mem); got != admitSkip {
+		t.Errorf("second kind-less admission = %v, want admitSkip (its est tips the floor)", got)
 	}
 }
 
@@ -163,10 +263,11 @@ func TestResolveDispatchResourcesFreeze(t *testing.T) {
 	}
 
 	// And a fresh dispatch of the relabeled bead now sees the empty set — proof
-	// the freeze, not a stale cache, is what protected the requeue above.
+	// the freeze, not a stale cache, is what protected the requeue above. A
+	// kind-less fresh dispatch reserves the per-agent default (koryph-3xs), not 0.
 	nowKinds, nowMem := r.resolveDispatchResources(dispatchReq{issue: relabeled})
-	if len(nowKinds) != 0 || nowMem != 0 {
-		t.Errorf("fresh dispatch of relabeled bead = %v/%d, want empty/0", nowKinds, nowMem)
+	if len(nowKinds) != 0 || nowMem != govern.DefaultEstPerAgentMB {
+		t.Errorf("fresh dispatch of relabeled bead = %v/%d, want empty/%d", nowKinds, nowMem, govern.DefaultEstPerAgentMB)
 	}
 }
 

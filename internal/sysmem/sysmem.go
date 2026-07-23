@@ -10,9 +10,10 @@
 //
 // AvailableBytes is a deliberately conservative "how much could a new process
 // use right now" estimate, not an exact figure — on Linux it is
-// /proc/meminfo's MemAvailable; on macOS it is the reclaimable page classes
-// (free + inactive + speculative + purgeable) reported by vm_stat. Callers use
-// it as a soft admission floor, never as a hard accounting number.
+// /proc/meminfo's MemAvailable; on macOS it is the PROMPTLY reclaimable page
+// classes (free + speculative + purgeable) reported by vm_stat — inactive pages
+// are excluded because on macOS they are not promptly reclaimable (koryph-3xs).
+// Callers use it as a soft admission floor, never as a hard accounting number.
 package sysmem
 
 import "errors"

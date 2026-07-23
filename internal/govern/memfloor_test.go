@@ -24,6 +24,42 @@ func TestSetCapSeedsMemoryFloorOnCreation(t *testing.T) {
 	}
 }
 
+// TestEstPerAgentMBRoundTripAndPreserve pins the koryph-3xs setter/accessor: a
+// fresh pool reads 0 (unset → caller applies the default), SetEstPerAgentMB
+// round-trips the raw value, and it preserves the pool's cap AND memory floor
+// (the SetMinFreeMemoryMB preserve-don't-reset precedent).
+func TestEstPerAgentMBRoundTripAndPreserve(t *testing.T) {
+	s := newTestStore(t)
+	if got := s.EstPerAgentMB("personal"); got != 0 {
+		t.Errorf("EstPerAgentMB(unset pool) = %d, want 0 (unset)", got)
+	}
+	if err := s.SetCap("personal", 16); err != nil {
+		t.Fatalf("SetCap: %v", err)
+	}
+	if err := s.SetMinFreeMemoryMB("personal", 4096); err != nil {
+		t.Fatalf("SetMinFreeMemoryMB: %v", err)
+	}
+	if err := s.SetEstPerAgentMB("personal", 2048); err != nil {
+		t.Fatalf("SetEstPerAgentMB: %v", err)
+	}
+	if got := s.EstPerAgentMB("personal"); got != 2048 {
+		t.Errorf("EstPerAgentMB after set = %d, want 2048", got)
+	}
+	if got := s.Cap("personal"); got != 16 {
+		t.Errorf("Cap after SetEstPerAgentMB = %d, want 16 (preserved)", got)
+	}
+	if got := s.MinFreeMemoryMB("personal"); got != 4096 {
+		t.Errorf("MinFreeMemoryMB after SetEstPerAgentMB = %d, want 4096 (preserved)", got)
+	}
+	// A negative value (disable) round-trips as the raw setting for readers.
+	if err := s.SetEstPerAgentMB("personal", -1); err != nil {
+		t.Fatalf("SetEstPerAgentMB(-1): %v", err)
+	}
+	if got := s.EstPerAgentMB("personal"); got != -1 {
+		t.Errorf("EstPerAgentMB after disable = %d, want -1", got)
+	}
+}
+
 // TestSetCapPreservesExistingMemoryFloor proves a cap-only change to an
 // ALREADY-configured pool does not clobber that pool's own explicit floor —
 // SetCap's documented wholesale AIMD reset must not extend to the memory

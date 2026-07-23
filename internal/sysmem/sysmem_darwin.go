@@ -21,8 +21,7 @@ import (
 // counts — host_statistics64 is a Mach call x/sys/unix does not wrap — so we
 // shell out to /usr/bin/vm_stat, which is present on every macOS install. The
 // "available" estimate sums the page classes the kernel can hand to a new
-// process without swapping: free, inactive (reclaimable file cache),
-// speculative, and purgeable.
+// process WITHOUT swapping (see availablePages for why inactive is excluded).
 func available() (Stat, error) {
 	total, err := unix.SysctlUint64("hw.memsize")
 	if err != nil {
@@ -40,9 +39,24 @@ func available() (Stat, error) {
 		return Stat{}, fmt.Errorf("sysmem: vm_stat: %w", err)
 	}
 	pages := parseVMStat(string(out))
-	availPages := pages["Pages free"] + pages["Pages inactive"] +
-		pages["Pages speculative"] + pages["Pages purgeable"]
-	return Stat{TotalBytes: total, AvailableBytes: availPages * pageSize}, nil
+	return Stat{TotalBytes: total, AvailableBytes: availablePages(pages) * pageSize}, nil
+}
+
+// availablePages sums the vm_stat page classes the kernel can promptly hand to a
+// new process without swapping: free, speculative (read-ahead cache), and
+// purgeable (volatile) pages.
+//
+// It deliberately EXCLUDES "Pages inactive" (koryph-3xs). On macOS the inactive
+// list is NOT a proxy for reclaimable file cache the way it is on Linux: it
+// holds dirty and compressor-backed pages that the kernel must write out (to
+// swap or the compressor) before it can reuse them, so counting them as "free
+// for the taking" over-reports headroom. During the 2026-07 OOM incident the
+// old sum (which added inactive) admitted agents into a host that was already
+// swapping. Excluding inactive is the conservative, cgo-free fix the bead calls
+// for — it can only UNDER-report availability, which fails the admission gate
+// safe (defer a dispatch), never OOM the machine.
+func availablePages(pages map[string]uint64) uint64 {
+	return pages["Pages free"] + pages["Pages speculative"] + pages["Pages purgeable"]
 }
 
 // parseVMStat maps each "Pages free:   6859." line to its page count. Values

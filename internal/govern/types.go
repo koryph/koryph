@@ -74,6 +74,19 @@ const DefaultMaxMachineAgents = 8
 // only a raw 0 (never configured, or reset to auto) is backfilled.
 const DefaultMinFreeMemoryMB = 2048
 
+// DefaultEstPerAgentMB is the memory a single dispatched agent is assumed to
+// consume when the bead declares no res:<kind> footprint (koryph-3xs). Every
+// agent is a claude subprocess plus a git worktree; with no declared kind the
+// reservation-aware memory clause otherwise priced a kind-less lease at 0, so N
+// concurrent kind-less admissions could collectively blow past the free-memory
+// floor while each individually cleared it. Applying this default per-agent
+// reservation to kind-less leases makes admitting K of them reserve K*est
+// against the floor, exactly as res:<kind> beads already reserve their per-kind
+// mem_mb. ~1.5 GB is a conservative estimate for a claude agent + worktree;
+// tune per pool via `governor set --est-per-agent-mb` or the
+// KORYPH_EST_PER_AGENT_MB env override (0 = this default; negative = disabled).
+const DefaultEstPerAgentMB = 1536
+
 // DefaultPool is the pool key used when a lease, demand heartbeat, or store
 // entry point carries no explicit provider — i.e. today's single implicit
 // pool, and the migration target for a legacy (pre-koryph-v8u.11)
@@ -124,6 +137,18 @@ type Config struct {
 	// MaxGlobalAgents, because free RAM is a machine property shared by every
 	// koryph run on the host, exactly like the concurrency cap.
 	MinFreeMemoryMB int `json:"min_free_memory_mb,omitempty"`
+
+	// EstPerAgentMB is the per-agent memory reservation applied to a dispatched
+	// bead that declares NO res:<kind> footprint (koryph-3xs): the machine-wide
+	// memory admission gate (MinFreeMemoryMB) subtracts it, like every declared
+	// kind's mem_mb, so N concurrent kind-less agents reserve N*est against the
+	// floor instead of 0. Interpreted by readers: >0 an explicit reservation in
+	// MB; <0 disabled (kind-less leases reserve 0, the pre-koryph-3xs behavior);
+	// 0/unset the package default (DefaultEstPerAgentMB). Lives here beside
+	// MinFreeMemoryMB because it is a property of the shared machine memory
+	// budget, not of any one project. res:<kind> beads are unaffected — they keep
+	// reserving their declared per-kind mem_mb.
+	EstPerAgentMB int `json:"est_per_agent_mb,omitempty"`
 
 	// Adaptive enables the AIMD overlay: the effective cap floats between 1
 	// and HardMax (probing up on quiet, halving on rate-limit) instead of

@@ -194,6 +194,7 @@ func printPoolStatus(stdout io.Writer, gs *govern.Store, pool string) error {
 		fmt.Fprintln(stdout, "  (no explicit operator cap — using per-account seed / anthropic-pool continuity / package default)")
 	}
 	printMemoryFloor(stdout, gs.MinFreeMemoryMB(pool))
+	printEstPerAgent(stdout, gs.EstPerAgentMB(pool))
 
 	// AIMD overlay (koryph-2im.4): show adaptive status and, when on, the
 	// dynamic cap that Acquire actually admits against — for THIS pool only.
@@ -327,8 +328,9 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	minDispatchInterval := fs.Int("min-dispatch-interval", 0, "minimum inter-dispatch spacing in seconds, under --adaptive (default 3, jittered ±50%)")
 	minFreeMem := fs.Int("min-free-memory-mb", 0, "memory admission floor (koryph-930): defer new agents while host available memory is below N MB. 0 = auto-size to physical memory (the default; the gate is ON); a negative value disables the gate. May be set alone or alongside --max-global")
 	machineCeiling := fs.Int("machine-ceiling", 0, "machine-wide ceiling on TOTAL concurrent agents across ALL pools (koryph-4rk6.2, > 0): bounds the sum of per-pool caps so independent pools cannot jointly sink the host. Machine-scoped, not per-pool — ignores --account/--provider; may be set alone. Absent/unset uses the default (8)")
+	estPerAgent := fs.Int("est-per-agent-mb", 0, "per-agent memory reservation for beads with NO res:<kind> footprint (koryph-3xs): the memory gate subtracts N MB per kind-less agent so K of them reserve K*N against the floor. 0 = the conservative default (1536); a negative value disables the reservation. May be set alone or alongside --max-global")
 	setUsage(fs, stdout, "set one pool's cap on concurrently running agents (per account with --account), or the machine-wide ceiling across all pools",
-		"[--max-global N] [--min-free-memory-mb N] [--machine-ceiling N] [--account NAME | --provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
+		"[--max-global N] [--min-free-memory-mb N] [--est-per-agent-mb N] [--machine-ceiling N] [--account NAME | --provider P] [--adaptive] [--hard-max M] [--settle-sec S] [--break-sec B] [--min-dispatch-interval I]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
@@ -336,12 +338,15 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 	// "reset to auto" — so a sentinel default won't do).
 	memProvided := false
 	ceilingProvided := false
+	estProvided := false
 	fs.Visit(func(fl *flag.Flag) {
 		switch fl.Name {
 		case "min-free-memory-mb":
 			memProvided = true
 		case "machine-ceiling":
 			ceilingProvided = true
+		case "est-per-agent-mb":
+			estProvided = true
 		}
 	})
 	// The pool is keyed on the account (koryph-1o2.1); --account is the intuitive
@@ -363,20 +368,29 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "machine ceiling set to %d agents across all pools\n", *machineCeiling)
 	}
 
-	// Floor-only invocation: adjust the memory gate without resetting the pool's
-	// cap or AIMD state (SetMinFreeMemoryMB preserves every other field). A
-	// ceiling-only invocation (no cap, no floor) is likewise complete here.
+	// Floor/est-only invocation: adjust the memory gate or the per-agent
+	// reservation without resetting the pool's cap or AIMD state (both setters
+	// preserve every other field). A ceiling-only invocation (no cap, no floor,
+	// no est) is likewise complete here.
 	if *maxGlobal <= 0 {
-		if !memProvided {
+		if !memProvided && !estProvided {
 			if ceilingProvided {
 				return 0 // machine-ceiling was the sole operation
 			}
-			return usageErr(stderr, "governor set: need --max-global (> 0), --min-free-memory-mb, and/or --machine-ceiling")
+			return usageErr(stderr, "governor set: need --max-global (> 0), --min-free-memory-mb, --est-per-agent-mb, and/or --machine-ceiling")
 		}
-		if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
-			return fail(stderr, err)
+		if memProvided {
+			if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
+				return fail(stderr, err)
+			}
+			fmt.Fprintf(stdout, "%s [pool %s]\n", memFloorMsg(*minFreeMem), pool)
 		}
-		fmt.Fprintf(stdout, "%s [pool %s]\n", memFloorMsg(*minFreeMem), pool)
+		if estProvided {
+			if err := gs.SetEstPerAgentMB(pool, *estPerAgent); err != nil {
+				return fail(stderr, err)
+			}
+			fmt.Fprintf(stdout, "%s [pool %s]\n", estPerAgentMsg(*estPerAgent), pool)
+		}
 		return 0
 	}
 
@@ -397,13 +411,19 @@ func cmdGovernorSet(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "global concurrency cap set to %d [pool %s]\n", *maxGlobal, pool)
 	}
 
-	// A floor requested alongside the cap must be written AFTER the cap set,
-	// since SetCap/SetAdaptiveCap reset the pool wholesale.
+	// A floor or est requested alongside the cap must be written AFTER the cap
+	// set, since SetCap/SetAdaptiveCap reset the pool wholesale.
 	if memProvided {
 		if err := gs.SetMinFreeMemoryMB(pool, *minFreeMem); err != nil {
 			return fail(stderr, err)
 		}
 		fmt.Fprintf(stdout, "%s [pool %s]\n", memFloorMsg(*minFreeMem), pool)
+	}
+	if estProvided {
+		if err := gs.SetEstPerAgentMB(pool, *estPerAgent); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "%s [pool %s]\n", estPerAgentMsg(*estPerAgent), pool)
 	}
 	return 0
 }
@@ -532,6 +552,32 @@ func printMemoryFloor(stdout io.Writer, setting int) {
 		} else {
 			fmt.Fprintln(stdout, "  memory floor: auto (sized to physical memory) [koryph-930]")
 		}
+	}
+}
+
+// printEstPerAgent renders the kind-less per-agent memory reservation for
+// `governor show` (koryph-3xs): >0 explicit, <0 disabled, 0 the package default.
+func printEstPerAgent(stdout io.Writer, setting int) {
+	switch {
+	case setting > 0:
+		fmt.Fprintf(stdout, "  per-agent memory reserve (kind-less beads): %d MB (koryph-3xs)\n", setting)
+	case setting < 0:
+		fmt.Fprintln(stdout, "  per-agent memory reserve (kind-less beads): disabled")
+	default:
+		fmt.Fprintf(stdout, "  per-agent memory reserve (kind-less beads): %d MB default (koryph-3xs)\n", govern.DefaultEstPerAgentMB)
+	}
+}
+
+// estPerAgentMsg renders the confirmation line for a per-agent-reserve change
+// (koryph-3xs): >0 an explicit reserve, <0 disabled, 0 reset to the default.
+func estPerAgentMsg(mb int) string {
+	switch {
+	case mb > 0:
+		return fmt.Sprintf("per-agent memory reserve (kind-less beads) set to %d MB", mb)
+	case mb < 0:
+		return "per-agent memory reserve (kind-less beads) disabled"
+	default:
+		return fmt.Sprintf("per-agent memory reserve (kind-less beads) reset to the %d MB default", govern.DefaultEstPerAgentMB)
 	}
 }
 

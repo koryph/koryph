@@ -717,6 +717,7 @@ set the machine-wide cap
 | `--account` | string |  | account whose per-account concurrency pool to configure (koryph-1o2.1): the pool is keyed on the resolved account (e.g. "personal", "work"), so a larger subscription can run more agents than a smaller seat. Wins over --provider when both are given; omit both for the default "anthropic" pool |
 | `--adaptive` | bool |  | enable the AIMD overlay: probe the cap up on quiet, halve it on rate-limit |
 | `--break-sec` | int |  | circuit breaker base open duration, under --adaptive (default 300, doubles per re-open, cap 3600) |
+| `--est-per-agent-mb` | int |  | per-agent memory reservation for beads with NO res:<kind> footprint (koryph-3xs): the memory gate subtracts N MB per kind-less agent so K of them reserve K*N against the floor. 0 = the conservative default (1536); a negative value disables the reservation. May be set alone or alongside --max-global |
 | `--hard-max` | int |  | absolute ceiling for upward probing under --adaptive (default 2x --max-global) |
 | `--machine-ceiling` | int |  | machine-wide ceiling on TOTAL concurrent agents across ALL pools (koryph-4rk6.2, > 0): bounds the sum of per-pool caps so independent pools cannot jointly sink the host. Machine-scoped, not per-pool — ignores --account/--provider; may be set alone. Absent/unset uses the default (8) |
 | `--max-global` | int |  | cap on concurrently running agents in this pool (required, > 0) |

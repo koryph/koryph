@@ -195,16 +195,52 @@ const (
 	admitBreak
 )
 
-// resolveMemReserveMB sums the per-kind memory reservation for the resolved
-// resource kinds (koryph-4ql.3, design L5). Resolution order per kind, matching
-// L2: the machine ledger's mem_mb (govern Store.Resources()) when set, else the
-// project vocabulary's mem_mb (cfg.Resources), else 0. Resolved once at dispatch
-// and frozen on the ledger slot (I8), so a vocabulary edit mid-run never
-// re-prices a live slot. A bead with no declared kinds reserves 0 — today's
-// behavior (I9).
+// estPerAgentMB resolves the kind-less per-agent memory reservation in MB
+// (koryph-3xs). Resolution order mirrors memoryFloorMB: the
+// KORYPH_EST_PER_AGENT_MB env override, else the machine-wide governor pool
+// config, else the package default. A setting is interpreted as: >0 an explicit
+// reservation; <0 disabled (kind-less leases reserve 0, the pre-koryph-3xs
+// behavior); 0/unset the conservative default (govern.DefaultEstPerAgentMB). A
+// non-numeric env value is ignored (falls through to config).
+func (r *runner) estPerAgentMB() int {
+	if v := os.Getenv("KORYPH_EST_PER_AGENT_MB"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return estFromSetting(n)
+		}
+	}
+	configured := 0
+	if r.gov != nil {
+		configured = r.gov.EstPerAgentMB(r.poolKey())
+	}
+	return estFromSetting(configured)
+}
+
+// estFromSetting maps a raw est-per-agent setting to an effective reservation:
+// positive is a literal MB reservation, negative disables it (0), and 0/absent
+// applies the package default (koryph-3xs).
+func estFromSetting(n int) int {
+	switch {
+	case n > 0:
+		return n
+	case n < 0:
+		return 0 // explicitly disabled
+	default:
+		return govern.DefaultEstPerAgentMB
+	}
+}
+
+// resolveMemReserveMB resolves the memory reservation for a dispatch
+// (koryph-4ql.3, design L5). A bead with NO declared res:<kind> footprint
+// reserves the kind-less per-agent default (estPerAgentMB, koryph-3xs) so N
+// concurrent kind-less agents reserve N*est against the free-memory floor
+// instead of 0. A bead WITH declared kinds sums the per-kind reservation, per
+// kind, matching L2: the machine ledger's mem_mb (govern Store.Resources()) when
+// set, else the project vocabulary's mem_mb (cfg.Resources), else 0. Resolved
+// once at dispatch and frozen on the ledger slot (I8), so a vocabulary edit
+// mid-run never re-prices a live slot.
 func (r *runner) resolveMemReserveMB(kinds []string) int {
 	if len(kinds) == 0 {
-		return 0
+		return r.estPerAgentMB()
 	}
 	var machine map[string]govern.ResourceKind
 	if r.gov != nil {
