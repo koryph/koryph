@@ -48,6 +48,18 @@ func (f *fakeSource) SetStatus(_ context.Context, id, status string) error {
 func (f *fakeSource) MergeSlotAcquire(context.Context, string, string, int) error { return nil }
 func (f *fakeSource) MergeSlotRelease(context.Context, string) error              { return nil }
 
+// fakeBlocked reports whether the fake WorkSource was asked to set id's status
+// to "blocked" — the koryph-84yu reconcile that keeps a terminally-blocked slot
+// from stranding its bd claim in_progress.
+func fakeBlocked(f *fakeSource, id string) bool {
+	for _, c := range f.setStatus {
+		if c[0] == id && c[1] == "blocked" {
+			return true
+		}
+	}
+	return false
+}
+
 // deadPID returns the PID of a process that has already exited and been reaped,
 // so slotAlive reports it dead on every platform. A hardcoded constant cannot:
 // low PIDs like 2 are live system processes on Linux (kthreadd) and probe as

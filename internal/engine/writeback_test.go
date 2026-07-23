@@ -70,12 +70,18 @@ func TestBlockedAttemptsExhaustedCommentsBead(t *testing.T) {
 	if got := r.run.Slots["wb3"].Status; got != ledger.SlotBlocked {
 		t.Fatalf("status = %q, want blocked", got)
 	}
+	// koryph-84yu: the bd claim is reconciled to blocked — never left stranded
+	// in_progress with no live agent — and the comment still carries model,
+	// attempt count, and death summary.
+	if !fakeBlocked(fake, "wb3") {
+		t.Fatalf("attempts-exhausted did not reconcile the bd claim to blocked; SetStatus = %v (the strand this guards)", fake.setStatus)
+	}
 	if len(fake.comments) != 1 {
 		t.Fatalf("Comment calls = %v, want exactly one", fake.comments)
 	}
 	text := fake.comments[0][1]
 	if fake.comments[0][0] != "wb3" ||
-		!strings.Contains(text, "blocked after 3 attempts") ||
+		!strings.Contains(text, "3 attempts exhausted") ||
 		!strings.Contains(text, "opus") ||
 		!strings.Contains(text, "escalated from sonnet") {
 		t.Errorf("blocked comment = %q, want attempts + model + escalation rationale", text)
@@ -107,6 +113,9 @@ func TestBudgetKillParkCommentsBead(t *testing.T) {
 
 	if got := r.run.Slots["wb4"].Status; got != ledger.SlotBlocked {
 		t.Fatalf("status = %q, want blocked (parked)", got)
+	}
+	if !fakeBlocked(fake, "wb4") {
+		t.Fatalf("budget-kill park did not reconcile the bd claim to blocked; SetStatus = %v", fake.setStatus)
 	}
 	if len(fake.comments) != 1 {
 		t.Fatalf("Comment calls = %v, want exactly one", fake.comments)

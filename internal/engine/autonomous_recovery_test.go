@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -16,6 +17,8 @@ import (
 func TestParkForOperatorStop(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
+	fake := &fakeSource{}
+	r.adapter = fake
 
 	sl := &ledger.Slot{PhaseID: "os1", BeadID: "os1", Status: ledger.SlotRunning}
 	if err := r.store.SetSlot(r.run, sl); err != nil {
@@ -23,14 +26,14 @@ func TestParkForOperatorStop(t *testing.T) {
 	}
 
 	// No stop marker → does not park; the caller proceeds with classification.
-	if r.parkForOperatorStop(sl) {
+	if r.parkForOperatorStop(context.Background(), sl) {
 		t.Fatal("parkForOperatorStop should not park without a stop marker")
 	}
 
 	if err := r.store.RequestStop("os1"); err != nil {
 		t.Fatalf("RequestStop: %v", err)
 	}
-	if !r.parkForOperatorStop(sl) {
+	if !r.parkForOperatorStop(context.Background(), sl) {
 		t.Fatal("parkForOperatorStop should park a stopped phase")
 	}
 	got := r.run.Slots["os1"]
@@ -43,6 +46,11 @@ func TestParkForOperatorStop(t *testing.T) {
 	if r.store.StopRequested("os1") {
 		t.Error("stop marker should be consumed once the phase is parked")
 	}
+	// koryph-84yu: the bd claim must be reconciled to blocked, never left
+	// stranded in_progress with no live agent.
+	if !fakeBlocked(fake, "os1") {
+		t.Errorf("operator-stop did not reconcile the bd claim to blocked; SetStatus calls = %v (the strand this guards)", fake.setStatus)
+	}
 }
 
 // TestParkForDrain pins koryph-z0x (F1b): a death during an operator drain parks
@@ -50,6 +58,8 @@ func TestParkForOperatorStop(t *testing.T) {
 func TestParkForDrain(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
+	fake := &fakeSource{}
+	r.adapter = fake
 
 	sl := &ledger.Slot{PhaseID: "dr1", BeadID: "dr1", Status: ledger.SlotRunning}
 	if err := r.store.SetSlot(r.run, sl); err != nil {
@@ -57,14 +67,14 @@ func TestParkForDrain(t *testing.T) {
 	}
 
 	// No drain → does not park.
-	if r.parkForDrain(sl) {
+	if r.parkForDrain(context.Background(), sl) {
 		t.Fatal("parkForDrain should not park when no drain is active")
 	}
 
 	if err := r.store.RequestDrain(); err != nil {
 		t.Fatalf("RequestDrain: %v", err)
 	}
-	if !r.parkForDrain(sl) {
+	if !r.parkForDrain(context.Background(), sl) {
 		t.Fatal("parkForDrain should park a death that arrives during drain")
 	}
 	got := r.run.Slots["dr1"]
@@ -73,6 +83,9 @@ func TestParkForDrain(t *testing.T) {
 	}
 	if !strings.Contains(got.Note, "drain active") {
 		t.Errorf("parked slot note = %q, want a drain reason", got.Note)
+	}
+	if !fakeBlocked(fake, "dr1") {
+		t.Errorf("drain-park did not reconcile the bd claim to blocked; SetStatus calls = %v", fake.setStatus)
 	}
 }
 

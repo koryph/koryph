@@ -513,7 +513,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// auto-merge of partial commits (which could open a merge racing the
 	// operator's own hand-fix) — before any classification below. This attempt's
 	// cost and tokens above are still recorded.
-	if r.parkForOperatorStop(sl) {
+	if r.parkForOperatorStop(ctx, sl) {
 		return
 	}
 
@@ -582,13 +582,13 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		r.progress("bead %s: blocked (%s, %d attempts)", sl.PhaseID, deathDesc, sl.Attempts)
 		logSlotBlocked(sl.PhaseID, fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts),
 			sl.Model, sl.ModelActual, sl.Attempts)
-		// Failure write-back (koryph-qf6.5): without this comment the attempt
-		// count, model, and death summary are stranded in this machine's
-		// gitignored ledger — invisible to whoever (human or learner) next
-		// picks the bead up. Best-effort; a bd failure never blocks the loop.
-		_ = r.adapter.Comment(ctx, sl.PhaseID, fmt.Sprintf(
-			"engine: blocked after %d attempts on %s — %s (run %s)",
-			sl.Attempts, blockedModelDesc(sl), deathDesc, r.run.RunID))
+		// Failure write-back (koryph-qf6.5, koryph-84yu): reconcile the bd claim
+		// to blocked-with-reason. Without this the attempt count, model, and
+		// death summary are stranded in this machine's gitignored ledger AND the
+		// bead stays in_progress with no live agent — invisible to every future
+		// `bd ready` frontier until an operator resets it by hand. Best-effort; a
+		// bd failure never blocks the loop.
+		r.reconcileBlockedBead(ctx, sl, fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts))
 		return
 	}
 	r.requeueSlot(ctx, sl, "", deathDesc)
@@ -671,12 +671,12 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 	r.reportRateLimit(sl.PhaseID)
 
 	// Drain active: park, don't requeue (koryph-z0x, F1b).
-	if r.parkForDrain(sl) {
+	if r.parkForDrain(ctx, sl) {
 		return
 	}
 	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q), even
 	// though a rate-limit requeue burns no attempt — over the cap is over the cap.
-	if r.parkForRunBudget(sl) {
+	if r.parkForRunBudget(ctx, sl) {
 		return
 	}
 
@@ -690,6 +690,7 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		r.progress("bead %s: blocked (rate-limited %d times; requeue budget exhausted)", sl.PhaseID, sl.RateLimitRequeues)
 		logSlotBlocked(sl.PhaseID, fmt.Sprintf("rate-limited requeues exhausted (%d)", rateLimitedRequeueBudget),
 			sl.Model, sl.ModelActual, sl.Attempts)
+		r.reconcileBlockedBead(ctx, sl, fmt.Sprintf("rate-limited requeues exhausted (%d)", rateLimitedRequeueBudget))
 		return
 	}
 
@@ -835,13 +836,13 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	logBudgetKilled(sl.PhaseID, sl.Attempts, sl.CostUSD, sl.Model, sl.ModelActual)
 
 	// Drain active: park, don't warm-resume requeue (koryph-z0x, F1b).
-	if r.parkForDrain(sl) {
+	if r.parkForDrain(ctx, sl) {
 		return
 	}
 	// Run --budget exhausted: park instead of a warm-resume requeue (koryph-u7q).
 	// The per-agent budget kill already fired; spending another attempt would
 	// also breach the whole-run ceiling.
-	if r.parkForRunBudget(sl) {
+	if r.parkForRunBudget(ctx, sl) {
 		return
 	}
 
@@ -866,11 +867,13 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		r.releaseGlobalSlot(sl.PhaseID) // terminal
 		r.progress("bead %s: blocked, needs-attention (%s)", sl.PhaseID, why)
 		logSlotBlocked(sl.PhaseID, why, sl.Model, sl.ModelActual, sl.Attempts)
-		// Needs-attention write-back (koryph-qf6.5) — see the attempts-
-		// exhausted block's comment for why this lands on the bead itself.
-		_ = r.adapter.Comment(ctx, sl.PhaseID, fmt.Sprintf(
-			"engine: needs-attention — %s on %s; parked with $%.2f accumulated (run %s). Raise the account's per-agent budget or split the bead.",
-			why, blockedModelDesc(sl), sl.CostUSD, r.run.RunID))
+		// Needs-attention write-back (koryph-qf6.5, koryph-84yu): reconcile the
+		// bd claim to blocked so the parked bead is visible, not stranded
+		// in_progress — see the attempts-exhausted block for why this lands on
+		// the bead itself.
+		r.reconcileBlockedBead(ctx, sl, fmt.Sprintf(
+			"needs-attention: %s — parked instead of spending another --max-budget-usd attempt (accumulated cost $%.2f); raise the account's per-agent budget or split the bead",
+			why, sl.CostUSD))
 		return
 	}
 
@@ -1233,8 +1236,13 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 // progress line: no filterable event, no durable cross-run audit. reason is a
 // stable token (gate-failed, unsigned, protected, commit-style, pr-error,
 // merge-error) consumers key on.
-func (r *runner) auditBlocked(sl *ledger.Slot, reason, detail string) {
+func (r *runner) auditBlocked(ctx context.Context, sl *ledger.Slot, reason, detail string) {
 	logSlotBlocked(sl.PhaseID, reason, sl.Model, sl.ModelActual, sl.Attempts)
+	// koryph-84yu: every auditBlocked caller is a TERMINAL block that keeps the
+	// bead claimed (the conflict path, which resets to open instead, never lands
+	// here). Reconcile the bd claim to blocked-with-reason so a merge-refused
+	// bead is visible for operator resolution, not silently stranded in_progress.
+	r.reconcileBlockedBead(ctx, sl, reason)
 	audit := map[string]string{
 		"bead":   sl.PhaseID,
 		"reason": reason,
@@ -1276,7 +1284,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "gate-failed")
 		r.progress("bead %s: blocked (gate failed after requeue)", sl.PhaseID)
-		r.auditBlocked(sl, "gate-failed", res.GateOutput)
+		r.auditBlocked(ctx, sl, "gate-failed", res.GateOutput)
 
 	case merge.StatusCommitStyle:
 		if commitStyleRetryable(sl) {
@@ -1293,7 +1301,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "commit-style")
 		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
-		r.auditBlocked(sl, "commit-style", res.GateOutput)
+		r.auditBlocked(ctx, sl, "commit-style", res.GateOutput)
 
 	case merge.StatusConflict:
 		// A rebase conflict is the most agent-resolvable merge failure: requeue
@@ -1331,7 +1339,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "protected")
 		r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
-		r.auditBlocked(sl, "protected", note)
+		r.auditBlocked(ctx, sl, "protected", note)
 
 	case merge.StatusUnsigned:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -1341,7 +1349,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "unsigned")
 		r.progress("bead %s: blocked (unsigned commits on %s — signing is required; nothing merged)",
 			sl.PhaseID, sl.Branch)
-		r.auditBlocked(sl, "unsigned", res.GateOutput)
+		r.auditBlocked(ctx, sl, "unsigned", res.GateOutput)
 
 	default:
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -1350,7 +1358,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		})
 		r.checkpointSlot(sl, "merge-"+string(res.Status))
 		r.progress("bead %s: merge failed (%s)", sl.PhaseID, string(res.Status))
-		r.auditBlocked(sl, "merge-"+string(res.Status), res.GateOutput)
+		r.auditBlocked(ctx, sl, "merge-"+string(res.Status), res.GateOutput)
 	}
 	return false
 }
@@ -1390,7 +1398,7 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 		r.checkpointSlot(sl, "pr-error")
 		r.releaseGlobalSlot(sl.PhaseID)
 		r.progress("bead %s: blocked (pr error: %v)", sl.PhaseID, err)
-		r.auditBlocked(sl, "pr-error", err.Error())
+		r.auditBlocked(ctx, sl, "pr-error", err.Error())
 		return
 	}
 
@@ -1482,7 +1490,7 @@ func prBody(iss beads.Issue, runID string) string {
 // means the budget still has room and the caller should proceed with the
 // requeue. Mirrors the budget-KILL park (SlotBlocked + note + release), so the
 // bead stays claimed for operator resolution rather than being silently retried.
-func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
+func (r *runner) parkForRunBudget(ctx context.Context, sl *ledger.Slot) bool {
 	if !r.budgetExhausted() {
 		return false
 	}
@@ -1496,6 +1504,7 @@ func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
 	r.releaseGlobalSlot(sl.PhaseID) // terminal: free the reserved/held slot
 	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
 	logSlotBlocked(sl.PhaseID, note, sl.Model, sl.ModelActual, sl.Attempts)
+	r.reconcileBlockedBead(ctx, sl, note) // koryph-84yu: never strand the claim in_progress
 	return true
 }
 
@@ -1505,7 +1514,7 @@ func (r *runner) parkForRunBudget(sl *ledger.Slot) bool {
 // a redispatch (or an auto-merge of half-finished work) can race the operator's
 // own hand-fix on the same files. Consumes the sentinel so a later deliberate
 // re-dispatch (koryph run) is not blocked. Returns true when it parked.
-func (r *runner) parkForOperatorStop(sl *ledger.Slot) bool {
+func (r *runner) parkForOperatorStop(ctx context.Context, sl *ledger.Slot) bool {
 	if !r.store.StopRequested(sl.PhaseID) {
 		return false
 	}
@@ -1518,6 +1527,7 @@ func (r *runner) parkForOperatorStop(sl *ledger.Slot) bool {
 	r.releaseGlobalSlot(sl.PhaseID) // terminal
 	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
 	logSlotBlocked(sl.PhaseID, note, sl.Model, sl.ModelActual, sl.Attempts)
+	r.reconcileBlockedBead(ctx, sl, note) // koryph-84yu: never strand the claim in_progress
 	return true
 }
 
@@ -1527,7 +1537,7 @@ func (r *runner) parkForOperatorStop(sl *ledger.Slot) bool {
 // check, so a death during drain silently admitted a new attempt. finishing an
 // active slot's committed work (finishCandidate) is unaffected; only requeues
 // park here. Returns true when it parked.
-func (r *runner) parkForDrain(sl *ledger.Slot) bool {
+func (r *runner) parkForDrain(ctx context.Context, sl *ledger.Slot) bool {
 	if !r.store.DrainRequested() {
 		return false
 	}
@@ -1539,6 +1549,7 @@ func (r *runner) parkForDrain(sl *ledger.Slot) bool {
 	r.releaseGlobalSlot(sl.PhaseID) // terminal for this run
 	r.progress("bead %s: not requeued — %s", sl.PhaseID, note)
 	logSlotBlocked(sl.PhaseID, note, sl.Model, sl.ModelActual, sl.Attempts)
+	r.reconcileBlockedBead(ctx, sl, note) // koryph-84yu: never strand the claim in_progress
 	return true
 }
 
@@ -1619,11 +1630,11 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	}
 	// Drain active: park, don't requeue (koryph-z0x, F1b) — drain must suppress
 	// retries, not only fresh dispatch.
-	if r.parkForDrain(sl) {
+	if r.parkForDrain(ctx, sl) {
 		return
 	}
 	// Run --budget exhausted: park instead of re-dispatching (koryph-u7q).
-	if r.parkForRunBudget(sl) {
+	if r.parkForRunBudget(ctx, sl) {
 		return
 	}
 	// A resume re-dispatch is not a bead fault (the engine restarted, or a lower

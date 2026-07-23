@@ -84,6 +84,11 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 				s.Status = ledger.SlotBlocked
 				s.Note = d.Reason
 			})
+			// Reconcile the bd claim: an exhausted slot classified terminal on
+			// resume was leaving the bead in_progress with no live agent
+			// (koryph-84yu). Mark it blocked-with-reason so it is visible, not a
+			// silent strand invisible to every future frontier.
+			r.reconcileBlockedBead(ctx, sl, "attempts exhausted on resume: "+d.Reason)
 			r.progress("resume: %s blocked (%s)", d.PhaseID, d.Reason)
 		}
 	}
@@ -220,6 +225,43 @@ func (r *runner) orphanWorktreeKept(ctx context.Context, sl *ledger.Slot) (bool,
 	_ = worktree.Remove(ctx, wt, false)
 	_ = worktree.DeleteBranch(ctx, r.rec.Root, branch)
 	return false, ""
+}
+
+// reconcileBlockedBead writes a terminally-blocked slot's state back to bd so a
+// dead/faulted/stopped slot never strands its claim in_progress with no live
+// agent (koryph-84yu). It sets the bead's bd status to "blocked": excluded from
+// `bd ready` exactly like the in_progress claim it replaces — so a needs-
+// attention block is never auto-redispatched — but VISIBLE, not silently
+// dropped from every future frontier the way an unreconciled in_progress claim
+// is. An operator (or the stale-claim patrol) can find it via `bd list --status
+// blocked` and resolve it. The appended note names the run, attempt count, and
+// any preserved uncommitted worktree so the operator can recover WIP before
+// reopening (the i3b.10 strand, where real doctor auth.go work was only saved
+// because a human happened to notice the orphaned worktree).
+//
+// Best-effort: a bd failure is logged, never fatal — the loop must not wedge on
+// a tracker hiccup. A nil adapter (unit tests that never wire a WorkSource) is
+// a no-op so the terminal-block paths stay panic-free.
+func (r *runner) reconcileBlockedBead(ctx context.Context, sl *ledger.Slot, reason string) {
+	if sl == nil || r.adapter == nil {
+		return
+	}
+	runID := ""
+	if r.run != nil {
+		runID = r.run.RunID
+	}
+	note := fmt.Sprintf("engine: blocked without merge — %s (run %s, %d attempt(s), model %s)",
+		reason, runID, sl.Attempts, blockedModelDesc(sl))
+	if wt := sl.Worktree; wt != "" && fsx.Exists(wt) {
+		if dirty, derr := worktree.IsDirty(ctx, wt); derr == nil && dirty {
+			note += fmt.Sprintf("; uncommitted WIP preserved in worktree %s — recover it before reopening", wt)
+		}
+	}
+	if err := r.adapter.SetStatus(ctx, sl.PhaseID, "blocked"); err != nil {
+		r.progress("bead %s: could not reconcile stranded claim to blocked: %v", sl.PhaseID, err)
+		return
+	}
+	_ = r.adapter.Comment(ctx, sl.PhaseID, note)
 }
 
 // issueFor recovers the bead behind a slot: the in-memory wave item first,

@@ -104,6 +104,18 @@ When you do step in, the engine gets out of the way — and stays out:
 A blocked protected-path merge names its exact resolution command in the
 block note, so the fix is a paste, not an investigation.
 
+**A terminally-blocked bead is never a silent strand.** Whenever the engine
+gives up on a slot without merging it — attempts exhausted, an agent that
+died, an operator stop, a drain, a budget cap, a merge the gate refused — it
+reconciles the bead's tracker status to `blocked` (with a note naming the run,
+attempt count, and any uncommitted worktree it preserved). Previously such a
+bead stayed `in_progress` with no live agent, and because `bd ready` excludes
+`in_progress`, it fell out of every future frontier until an operator reset it
+by hand. Now it is visible — `bd list --status blocked` shows exactly what
+needs a decision — and the health patrol WARNs on any residual `in_progress`
+claim with no live agent (a bead a hard crash left before it could reconcile)
+as a backstop. Reopen a resolved one with `bd update <id> --status open`.
+
 ## The hard lines
 
 Some things never happen automatically, no matter how clean the recovery

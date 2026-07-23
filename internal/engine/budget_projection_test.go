@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -78,6 +79,8 @@ func TestBudgetExhaustedUsesProjected(t *testing.T) {
 func TestParkForRunBudget(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
+	fake := &fakeSource{}
+	r.adapter = fake
 
 	over := &ledger.Slot{PhaseID: "tb1", BeadID: "tb1", Status: ledger.SlotRunning, CostUSD: 12.0}
 	if err := r.store.SetSlot(r.run, over); err != nil {
@@ -85,7 +88,7 @@ func TestParkForRunBudget(t *testing.T) {
 	}
 	r.opts.BudgetUSD = 10 // 12 projected >= 10
 
-	if !r.parkForRunBudget(over) {
+	if !r.parkForRunBudget(context.Background(), over) {
 		t.Fatal("parkForRunBudget should park when over budget")
 	}
 	got := r.run.Slots["tb1"]
@@ -95,6 +98,10 @@ func TestParkForRunBudget(t *testing.T) {
 	if !strings.Contains(got.Note, "run --budget cap reached") {
 		t.Errorf("parked slot note = %q, want a budget-cap reason", got.Note)
 	}
+	// koryph-84yu: reconcile the bd claim so the parked bead is visible.
+	if !fakeBlocked(fake, "tb1") {
+		t.Errorf("budget-park did not reconcile the bd claim to blocked; SetStatus calls = %v", fake.setStatus)
+	}
 
 	// Well under budget → does not park; the caller proceeds with the requeue.
 	r.opts.BudgetUSD = 1000
@@ -102,7 +109,7 @@ func TestParkForRunBudget(t *testing.T) {
 	if err := r.store.SetSlot(r.run, under); err != nil {
 		t.Fatalf("SetSlot: %v", err)
 	}
-	if r.parkForRunBudget(under) {
+	if r.parkForRunBudget(context.Background(), under) {
 		t.Error("parkForRunBudget should not park while budget remains")
 	}
 }
