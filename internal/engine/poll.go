@@ -153,6 +153,10 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 		// docs/designs/2026-07-observability.md §4). rollingLoop does not need
 		// this: its own for-loop IS the tick loop.
 		syncObsConfig()
+		// Refresh the heartbeat's active/ready/wave snapshot every tick (koryph-
+		// lwnq) — cheap in-memory reads, same goroutine that owns r.run, so this
+		// is always safe even though the heartbeat ticker reads it concurrently.
+		r.hb.setCounts(r.activeCount(), r.lastReadyCount, r.run.Wave)
 
 		// liveActiveCount, not activeCount: a resume backlog (SlotQueued) reserves
 		// width but has no agent to poll, so waiting on it here would deadlock —

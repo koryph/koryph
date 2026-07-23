@@ -218,6 +218,32 @@ koryph obs prune --dry-run  # show what would be removed
 
 ## Troubleshooting a running loop
 
+### Liveness heartbeat
+
+Every run emits a single `engine` INFO line roughly once a minute, whether or
+not anything else happened that tick:
+
+```
+engine alive: 2 active, 5 ready, wave 3, last action dispatched koryph-abc 12s ago
+```
+
+This is deliberately quiet-hours-friendly — one line per interval, no matter
+how idle the loop is — so a wedged loop is distinguishable from a genuinely
+quiet one from logs alone: a healthy loop's `last action ... ago` stays small
+relative to your workload's cadence, while a wedged loop's keeps growing
+without bound even though the heartbeat itself keeps ticking. The interval
+defaults to 60s and is overridable for troubleshooting via
+`KORYPH_HEARTBEAT_SEC` (seconds).
+
+Two known silent-wait sites also self-report if they run unusually long:
+
+- A subprocess (`bd`, `git`, `gh`, `make gate`, a dispatched agent's CLI)
+  still running past ~30s logs `execx: still waiting on <cmd> <args> ...`.
+- A blocked ledger reclaim-guard lock wait past ~30s logs
+  `ledger: still waiting on lock guard <path> ...`.
+
+Both are one-shot: a normal-latency call never logs anything.
+
 ### Standard diagnostic flow
 
 ```sh

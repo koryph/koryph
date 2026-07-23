@@ -304,6 +304,10 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			return r.interrupted()
 		}
 		syncObsConfig() // pick up `koryph obs level` changes without a restart
+		// Heartbeat snapshot (koryph-lwnq) — see poll.go's identical call for why
+		// this is safe from the loop goroutine. wave mode also polls to idle
+		// inside pollUntilIdle below, which refreshes this every poll tick too.
+		r.hb.setCounts(r.activeCount(), r.lastReadyCount, r.run.Wave)
 		r.patrolIfDue(ctx)
 		r.applyOperatorOverrides()
 		r.run.Wave++
@@ -389,6 +393,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 				eligible++
 			}
 		}
+		r.lastReadyCount = eligible
 
 		// Drained: nothing eligible, nothing active, nothing batched.
 		if eligible == 0 && len(active) == 0 && len(w.Items) == 0 {

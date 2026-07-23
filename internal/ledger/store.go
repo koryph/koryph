@@ -15,10 +15,20 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/procx"
 	"github.com/koryph/koryph/internal/schemaver"
 )
+
+// log is the ledger component logger.
+var log = obs.For("ledger")
+
+// lockWaitWarnThreshold is how long acquireReclaimGuard's blocking flock may
+// wait before it logs what it is waiting on (koryph-lwnq: a known silent-wait
+// site — see execx.slowWarnThreshold for the identical rationale). A var, not
+// a const, so tests can shrink it.
+var lockWaitWarnThreshold = 30 * time.Second
 
 // File / layout constants.
 const (
@@ -317,11 +327,23 @@ type reclaimGuard struct{ f *os.File }
 // flock anchor, and the kernel releases the flock on process exit even after a
 // crash, so a dead holder never wedges the guard.
 func acquireReclaimGuard(root string) (*reclaimGuard, error) {
-	f, err := os.OpenFile(filepath.Join(root, lockFile+".guard"), os.O_CREATE|os.O_RDWR, 0o644)
+	guardPath := filepath.Join(root, lockFile+".guard")
+	f, err := os.OpenFile(guardPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	// Slow-lock watchdog (koryph-lwnq): this flock blocks indefinitely on a
+	// held guard, so a one-shot timer names what it is waiting on if the wait
+	// exceeds lockWaitWarnThreshold — otherwise a wedged reclaim looks
+	// identical to any other silent wait. stop() fires the moment Flock
+	// returns; the common (uncontended) case never logs.
+	watchdog := time.AfterFunc(lockWaitWarnThreshold, func() {
+		log.Info(fmt.Sprintf("ledger: still waiting on lock guard %s (running %s)", guardPath, lockWaitWarnThreshold),
+			"path", guardPath)
+	})
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	watchdog.Stop()
+	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}

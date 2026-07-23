@@ -15,7 +15,22 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/koryph/koryph/internal/obs"
 )
+
+// slowWarnThreshold is how long a subprocess must run before Run logs one
+// "still waiting on" line (koryph-lwnq: any known silent wait must self-report
+// what it is waiting on once it exceeds ~30s, so a wedged engine loop blocked
+// inside a subprocess call is diagnosable from logs alone, not just from the
+// absence of the periodic engine heartbeat). A package var, not a const, so
+// tests can shrink it rather than sleeping 30s.
+var slowWarnThreshold = 30 * time.Second
+
+// log is the execx component logger. Every koryph subprocess (bd, git, gh,
+// make gate, dispatched-agent claude CLI invocations) runs through Run, so
+// this is the single chokepoint for the slow-subprocess watchdog below.
+var log = obs.For("execx")
 
 // ErrTimeout wraps every error Run returns when a command is killed for
 // exceeding its Timeout, so callers can tell a timeout apart from a genuine
@@ -66,7 +81,19 @@ func Run(ctx context.Context, c Cmd) (Result, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
 	start := time.Now()
+
+	// Slow-subprocess watchdog (koryph-lwnq): a one-shot timer that logs a
+	// single INFO line if this command is still running past slowWarnThreshold
+	// — naming exactly what the caller is blocked on — then never fires again
+	// for this call. stop() is called as soon as cmd.Run() returns, so a
+	// normal-latency command (the overwhelming majority) never logs anything.
+	watchdog := time.AfterFunc(slowWarnThreshold, func() {
+		log.Info(fmt.Sprintf("execx: still waiting on %s %s (running %s)", c.Name, strings.Join(c.Args, " "), slowWarnThreshold),
+			"cmd", c.Name, "dir", c.Dir)
+	})
 	err := cmd.Run()
+	watchdog.Stop()
+
 	res := Result{Stdout: out.String(), Stderr: errb.String(), Duration: time.Since(start)}
 	if err != nil {
 		// A context-deadline kill arrives as *exec.ExitError (signal: killed), so

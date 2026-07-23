@@ -215,6 +215,18 @@ type runner struct {
 	// SIGCHLD wake) so a burst of short-lived subprocess exits cannot trigger a
 	// host-wide process sweep per signal.
 	lastResSampleAt time.Time
+
+	// lastReadyCount is the eligible-frontier count from the most recent
+	// frontier scan (waveLoop/rollingLoop), cached so the heartbeat (below) has
+	// something to report on ticks where no scan ran this iteration. Written
+	// only from the loop goroutine.
+	lastReadyCount int
+
+	// hb is the liveness-heartbeat snapshot (koryph-lwnq) — see heartbeat.go.
+	// Safe for concurrent access by design: the loop goroutine writes it at
+	// iteration checkpoints via setCounts/noteAction, the background heartbeat
+	// goroutine only ever reads it via snapshot().
+	hb heartbeatState
 }
 
 // slotResUsage is one slot's in-memory resource accumulation plus the PID it is
@@ -473,7 +485,13 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	}
 
 	logRunStart(r.run.RunID, r.opts.ProjectID, r.dispatchMode())
+	// Liveness heartbeat (koryph-lwnq): runs on its own ticker for the whole
+	// loop's lifetime, independent of whatever the loop goroutine is doing at
+	// any instant — see heartbeat.go's doc comment for why that independence
+	// is the point.
+	stopHeartbeat := r.startHeartbeat(ctx)
 	outcome, loopErr := r.loop(ctx)
+	stopHeartbeat()
 	logRunEnd(r.run.RunID, r.opts.ProjectID, outcome.Reason, outcome.Drained, outcome.Dispatched, outcome.Merged)
 	return outcome, loopErr
 }
@@ -548,6 +566,12 @@ func (r *runner) quotaName() string {
 // is idempotent on already-redacted text.
 func (r *runner) progress(format string, args ...any) {
 	msg := obs.RedactValue(fmt.Sprintf(format, args...))
+	// Feed the liveness heartbeat (koryph-lwnq): progress is the engine's
+	// existing narration chokepoint — dispatch, merge, governor decisions,
+	// drains, patrol findings all flow through it — so recording the latest
+	// line here gives the heartbeat a "last action <what> <ago>" for free,
+	// with no need to instrument every individual call site.
+	r.hb.noteAction(msg, time.Now())
 	if r.opts.Out != nil {
 		fmt.Fprintln(r.opts.Out, msg)
 		return
