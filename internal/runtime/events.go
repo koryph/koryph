@@ -77,6 +77,18 @@ type Event struct {
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	HasUsage            bool  `json:"has_usage,omitempty"`
 
+	// NumTurns is the cumulative agent-turn count a terminal "result" line
+	// reports (a Claude stream-json result line's "num_turns", koryph-840):
+	// how many user↔assistant turns the session ran before it ended. Valid
+	// only when Kind==EventResult && HasTurns — a result line missing the
+	// field round-trips as "unknown" (HasTurns false) rather than collapsing
+	// into a genuine zero-turn reading, mirroring HasCost/HasUsage. This is
+	// the authoritative post-exit turn count; the engine's live turn-ceiling
+	// enforcement (poll.go) uses a cheaper mid-flight assistant-line proxy
+	// (claude.CountAssistantTurns) since num_turns only appears at exit.
+	NumTurns int64 `json:"num_turns,omitempty"`
+	HasTurns bool  `json:"has_turns,omitempty"`
+
 	// ModelUsage maps a model id to the output tokens it produced in this
 	// result, parsed off a Claude result line's "modelUsage" object
 	// (koryph-qf6.2). Valid only when Kind==EventResult; nil when the line

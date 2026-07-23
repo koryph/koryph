@@ -326,3 +326,38 @@ Plan scored 84/100 (koryph-plan-scorer, one iteration applied: 77r.6→3l1.1
 ChildEnvSpec ordering edge; 3l1.1 footprint reconciled to single-point
 `fp:go:account`). 7 of 13 children are refactor-core — orchestrator-authored
 on main; peak loop-dispatched width ≈3 ({.2, .3, .7} after .1/.5/.6 land).
+
+## Addendum (koryph-840, 2026-07-22): per-bead turn ceiling
+
+Follow-up to §1's cache-read measurements. Three runaway beads (440/392/391
+turns) were ~55% of a run's read tokens: they stayed under the per-turn cost
+cap yet re-read their whole accreted tool-result history every turn for
+hundreds of turns. Two levers were evaluated:
+
+1. **Context editing** (`clear_tool_uses_20250919`) — would prune stale tool
+   results mid-session. **Not reachable** from the current dispatch path: the
+   Claude CLI (v2.1.x) exposes beta features only via `--betas`, which is
+   documented **API-key users only**. koryph dispatches implementer sessions
+   under subscription OAuth, so `--betas` is inert. There is no
+   `--settings`/context flag that enables context editing under subscription.
+   Recorded here so a future runtime/CLI change can revisit it; not built now.
+
+2. **Per-bead turn ceiling** — *built*. The CLI has no `--max-turns` flag and
+   its `--max-budget-usd` cap is a turn-boundary check that only fires once the
+   whole dollar budget is spent (§ the koryph-77r.10 428x-overshoot note), so
+   the engine enforces a turn ceiling itself: `quota.Config.PerAgentMaxTurns`
+   (default 150; negative disables). `poll.go`'s `enforceTurnCeiling` counts a
+   live agent's completed `assistant` turns (`claude.CountAssistantTurns` —
+   `num_turns` only appears on the terminal result line, parsed post-exit as
+   `runtime.Event.NumTurns`) and, past the ceiling, SIGTERMs it (graceful, like
+   the hard-stop path — never SIGKILL, worktree preserved). `completeSlot`
+   routes the `DeathReason: turn-exhausted` stamp to `requeueTurnExhausted`,
+   which re-dispatches with a **fresh session** (no `--resume`) — the one
+   requeue path that deliberately sheds context rather than warm-resuming —
+   bounded before parking needs-attention. Committed work carries forward via
+   the normal rebase.
+
+**Guardrail retained:** the intra-bead prompt-cache TTL stays 1h. A 5m TTL
+would expire mid-bead across slow build/test turns and force a full context
+rewrite, costing more than the 2x-vs-1.25x write premium it would save. The
+turn ceiling changes *how many turns run*, not the cache TTL.

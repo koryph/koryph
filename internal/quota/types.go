@@ -218,14 +218,25 @@ const (
 // Config is per-account governor configuration + calibration state,
 // persisted at ~/.koryph/quota/<account>.json.
 type Config struct {
-	SchemaVersion    int                   `json:"schema_version,omitempty"`
-	Account          string                `json:"account"`
-	WindowCeilingUSD float64               `json:"window_ceiling_usd"`
-	WeeklyCeilingUSD float64               `json:"weekly_ceiling_usd"`
-	PlanTier         string                `json:"plan_tier,omitempty"` // e.g. max20x, teams
-	PerAgentMaxUSD   float64               `json:"per_agent_max_usd"`   // --max-budget-usd kill switch
-	PerTierUSD       map[string]float64    `json:"per_tier_usd"`        // estimator base
-	SizeMultiplier   map[string]float64    `json:"size_multiplier"`     // S/M/L
+	SchemaVersion    int     `json:"schema_version,omitempty"`
+	Account          string  `json:"account"`
+	WindowCeilingUSD float64 `json:"window_ceiling_usd"`
+	WeeklyCeilingUSD float64 `json:"weekly_ceiling_usd"`
+	PlanTier         string  `json:"plan_tier,omitempty"` // e.g. max20x, teams
+	PerAgentMaxUSD   float64 `json:"per_agent_max_usd"`   // --max-budget-usd kill switch
+	// PerAgentMaxTurns is the per-bead turn ceiling (koryph-840): a single
+	// dispatched agent may run at most this many user↔assistant turns before
+	// the engine interrupts it (graceful SIGTERM, worktree preserved) and
+	// requeues it with a FRESH session so it stops re-reading its accreted
+	// tool-result history every turn. It is the honest defense against the
+	// runaway long-tail beads (440/392/391 turns observed) that stay under
+	// the per-turn cost cap yet accrete 90M+ cache-read tokens: the CLI has
+	// no --max-turns flag and its --max-budget-usd cap is a turn-boundary
+	// check that only fires once the whole budget is spent. 0 (or unset) falls
+	// back to the default; a negative value disables the ceiling entirely.
+	PerAgentMaxTurns int                   `json:"per_agent_max_turns,omitempty"`
+	PerTierUSD       map[string]float64    `json:"per_tier_usd"`    // estimator base
+	SizeMultiplier   map[string]float64    `json:"size_multiplier"` // S/M/L
 	SafetyMargin     float64               `json:"safety_margin"`
 	Calibration      map[string]float64    `json:"calibration,omitempty"` // "<tier>:<size>" → EWMA USD
 	ErrorStats       map[string]*ErrorStat `json:"error_stats,omitempty"` // "<tier>:<size>" → accuracy stats (koryph-6bl)
@@ -306,6 +317,16 @@ type Config struct {
 	MaxThreads int `json:"max_threads,omitempty"`
 }
 
+// DefaultPerAgentMaxTurns is the default per-bead turn ceiling (koryph-840):
+// how many user↔assistant turns one dispatched agent may run before the
+// engine interrupts and requeues it with a fresh session. Chosen well above
+// any healthy bead's turn count (most finish in a few dozen turns) yet far
+// below the runaway long-tail observed in production (440/392/391 turns), so
+// it catches genuine thrashing without ever clipping honest work. A documented
+// heuristic, not a proven threshold — tune via Config.PerAgentMaxTurns (or set
+// it negative to disable the ceiling for an account).
+const DefaultPerAgentMaxTurns = 150
+
 // DefaultConfig returns uncalibrated defaults for a new account profile.
 // Equivalent to DefaultConfigForRuntime(account, "claude").
 func DefaultConfig(account string) *Config {
@@ -326,11 +347,12 @@ func DefaultConfigForRuntime(account, runtimeName string) *Config {
 		perTier[k] = v
 	}
 	return &Config{
-		SchemaVersion:  ConfigSchemaVersion,
-		Account:        account,
-		PerAgentMaxUSD: 25,
-		PerTierUSD:     perTier,
-		SizeMultiplier: map[string]float64{"S": 0.5, "M": 1.0, "L": 2.0},
-		SafetyMargin:   1.5,
+		SchemaVersion:    ConfigSchemaVersion,
+		Account:          account,
+		PerAgentMaxUSD:   25,
+		PerAgentMaxTurns: DefaultPerAgentMaxTurns,
+		PerTierUSD:       perTier,
+		SizeMultiplier:   map[string]float64{"S": 0.5, "M": 1.0, "L": 2.0},
+		SafetyMargin:     1.5,
 	}
 }

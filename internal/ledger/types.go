@@ -272,6 +272,17 @@ type Slot struct {
 	// ledger that predates this field unmarshals it to zero.
 	BudgetKillRequeues int `json:"budget_kill_requeues,omitempty"`
 
+	// TurnExhaustedRequeues counts FRESH-session requeues spent on a classified
+	// turn-ceiling death (koryph-840): the engine interrupted the agent for
+	// running past Config.PerAgentMaxTurns turns and re-dispatched it with a
+	// brand-new session (no --resume) so it stops re-reading its accreted
+	// tool-result history every turn. Like BudgetKillRequeues this is
+	// bead-specific (not environmental), so it DOES count toward Attempts too;
+	// this counter only bounds the separate, tighter fresh-restart-then-park
+	// budget (see engine's turnExhaustedRequeueBudget). Additive: a Slot
+	// decoded from a ledger that predates this field unmarshals it to zero.
+	TurnExhaustedRequeues int `json:"turn_exhausted_requeues,omitempty"`
+
 	// DeathReason records completeSlot's classification of this slot's most
 	// recent attempt death when it is not an ordinary crash/no-commit exit
 	// (koryph-77r.10) — e.g. "budget-killed". Snapshotted per attempt (like

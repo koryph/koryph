@@ -99,6 +99,12 @@ func LoadConfig(account string) (*Config, error) {
 	if cfg.PerAgentMaxUSD == 0 {
 		cfg.PerAgentMaxUSD = def.PerAgentMaxUSD
 	}
+	// 0 (unset / every config predating koryph-840) falls back to the default
+	// turn ceiling; a negative value is an explicit "disable the ceiling" and
+	// is left untouched so the engine can distinguish it from unset.
+	if cfg.PerAgentMaxTurns == 0 {
+		cfg.PerAgentMaxTurns = def.PerAgentMaxTurns
+	}
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = ConfigSchemaVersion
 	}

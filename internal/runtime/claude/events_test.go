@@ -318,3 +318,68 @@ func TestParseEventsOpaquePassthrough(t *testing.T) {
 		t.Errorf("second Next() = ok=%v err=%v, want ok=false err=nil", ok, err)
 	}
 }
+
+// TestParseResultTurns proves num_turns is read off the LAST result line with
+// the same last-wins semantics as ParseResultCost, and reports HasTurns=false
+// when no result line carries the field (koryph-840).
+func TestParseResultTurns(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"result","total_cost_usd":0.5,"num_turns":12,"is_error":false}`,
+		`{"type":"assistant","message":{}}`,
+		`{"type":"result","total_cost_usd":2.5,"num_turns":440,"is_error":true}`,
+	}, "\n") + "\n"
+	if turns, ok := ParseResultTurns(strings.NewReader(lines)); !ok || turns != 440 {
+		t.Errorf("ParseResultTurns = %v, %v; want 440, true", turns, ok)
+	}
+
+	// A result line without num_turns round-trips as unknown, not zero.
+	if turns, ok := ParseResultTurns(strings.NewReader(`{"type":"result","total_cost_usd":0.1}` + "\n")); ok || turns != 0 {
+		t.Errorf("ParseResultTurns(no num_turns) = %v, %v; want 0, false", turns, ok)
+	}
+
+	// No result line at all.
+	if turns, ok := ParseResultTurns(strings.NewReader(`{"type":"system"}` + "\n")); ok || turns != 0 {
+		t.Errorf("ParseResultTurns(no result) = %v, %v; want 0, false", turns, ok)
+	}
+}
+
+// TestParseResultTurnsEventField proves classify() surfaces num_turns on the
+// normalized Event (NumTurns/HasTurns), including on a budget-kill result line
+// that also carries num_turns (koryph-840).
+func TestParseResultTurnsEventField(t *testing.T) {
+	ev, ok := classify([]byte(`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"num_turns":1,"total_cost_usd":0.4}`))
+	if !ok {
+		t.Fatal("classify returned ok=false")
+	}
+	if ev.Kind != runtime.EventResult {
+		t.Errorf("Kind = %v, want EventResult", ev.Kind)
+	}
+	if !ev.HasTurns || ev.NumTurns != 1 {
+		t.Errorf("NumTurns/HasTurns = %d/%v, want 1/true", ev.NumTurns, ev.HasTurns)
+	}
+	if !ev.BudgetKilled {
+		t.Error("expected BudgetKilled=true on the same line")
+	}
+}
+
+// TestCountAssistantTurns proves the live turn proxy counts completed
+// "assistant" events and ignores partial stream_event/system/user/result lines
+// and malformed records (koryph-840).
+func TestCountAssistantTurns(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta"}}`,
+		`{"type":"assistant","message":{"stop_reason":"tool_use"}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result"}]}}`,
+		`not json`,
+		`{"type":"assistant","message":{"stop_reason":"end_turn"}}`,
+		`{"type":"result","num_turns":2}`,
+	}, "\n") + "\n"
+	if n := CountAssistantTurns(strings.NewReader(lines)); n != 2 {
+		t.Errorf("CountAssistantTurns = %d, want 2", n)
+	}
+	if n := CountAssistantTurns(strings.NewReader("")); n != 0 {
+		t.Errorf("CountAssistantTurns(empty) = %d, want 0", n)
+	}
+}

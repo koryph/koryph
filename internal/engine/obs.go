@@ -292,6 +292,22 @@ func logBudgetKilled(beadID string, attempt int, costUSD float64, model, modelAc
 	)
 }
 
+// logTurnExhausted emits a WARN record when enforceTurnCeiling interrupts an
+// attempt for running past the per-bead turn ceiling (koryph-840). turns is
+// the completed-turn count observed, ceiling the configured limit it crossed;
+// attempt and model mirror logBudgetKilled so the two runaway-defense events
+// share a dashboard shape.
+func logTurnExhausted(beadID string, turns, ceiling, attempt int, model, modelActual string) {
+	log.Warn("engine.slot.turn_exhausted",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.Int(obs.KeyTurns, turns),
+		slog.Int(obs.KeyTurnCeiling, ceiling),
+		slog.Int(obs.KeyAttempt, attempt),
+		slog.String(obs.KeyModel, model),
+		slog.String(obs.KeyModelActual, modelActual),
+	)
+}
+
 // logCacheRatioTripwire emits a WARN record when one attempt's cache_read
 // share collapses below cacheRatioFloor on a session with material token
 // volume (koryph-77r.1, design §2 I7): the quota-multiplier failure

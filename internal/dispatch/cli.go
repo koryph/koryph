@@ -439,6 +439,36 @@ func ParseBudgetKilled(streamPath string) bool {
 	return claude.ParseBudgetKilled(f)
 }
 
+// ParseResultTurns scans a stream.jsonl for the LAST "result" line and
+// returns its num_turns count (koryph-840) — the authoritative post-exit
+// turn count the engine's turn-ceiling classification consults. Thin
+// path-opening wrapper, matching ParseResultUsage's pattern (the scan lives
+// in internal/runtime/claude). Returns (0, false) when no result line carries
+// num_turns or the file is unreadable.
+func ParseResultTurns(streamPath string) (int64, bool) {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	return claude.ParseResultTurns(f)
+}
+
+// CountTurns scans a still-growing stream.jsonl and returns its completed
+// assistant-turn count (koryph-840) — the mid-flight proxy the engine's live
+// turn-ceiling poll uses while an agent is still running (num_turns only
+// appears on the terminal result line). Returns 0 when the file is unreadable
+// or empty. Thin path-opening wrapper over claude.CountAssistantTurns; see its
+// doc for why this is an approximation, not an exact count.
+func CountTurns(streamPath string) int {
+	f, err := os.Open(streamPath)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	return claude.CountAssistantTurns(f)
+}
+
 // Alive reports whether pid is a live process (signal-0 probe). Retained as a
 // package-local name for existing callers; delegates to procx.Alive.
 func Alive(pid int) bool { return procx.Alive(pid) }

@@ -44,6 +44,12 @@ Retries are bounded, cause-coded, and visible (the TUI Threads tab shows
   budget cap resumes its *own session* — context, plan, and partial work
   intact — rather than starting over; see
   [Budget-killed agents](running-waves.md#budget-killed-agents).
+- **Turn-exhausted agents restart *fresh*.** An agent that runs past the
+  per-bead turn ceiling (`per_agent_max_turns`, default 150) is gracefully
+  interrupted and requeued with a *new* session — the opposite of a warm
+  resume — so it sheds the accreted context that was driving the runaway
+  cache-read cost. Committed work carries forward (the branch is rebased, not
+  discarded); see [Per-agent turn ceiling](billing-and-quota.md#per-agent-turn-ceiling).
 - **Stage timeouts degrade, not park.** A timed-out stage records a
   degraded result and moves on where that's safe, instead of freezing the
   bead.

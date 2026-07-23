@@ -100,6 +100,12 @@ const (
 	// KeyTotalTokens is the attempt's total token volume
 	// (input+cache_read+cache_creation) the cache-ratio tripwire gates on.
 	KeyTotalTokens = "total_tokens"
+
+	// KeyTurns is the number of completed agent turns an attempt ran, and
+	// KeyTurnCeiling the per-bead ceiling it crossed (koryph-840 turn-exhausted
+	// classification).
+	KeyTurns       = "turns"
+	KeyTurnCeiling = "turn_ceiling"
 )
 
 // RunAttrs returns slog attributes for a run context. Pass "" for any field

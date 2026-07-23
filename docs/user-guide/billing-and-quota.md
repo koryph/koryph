@@ -339,6 +339,52 @@ policy so the cap isn't silently re-paid on every retry — see [Budget-killed
 agents](running-waves.md#budget-killed-agents) in Running Waves for the full
 requeue/park semantics.
 
+### Per-agent turn ceiling
+
+The budget cap above bounds *dollars*, but a long-tail bead can stay well
+under its per-turn cost yet still burn enormous **cache-read** tokens by
+re-reading its whole accumulated tool-result history on every turn — a
+runaway that runs hundreds of turns before the dollar cap finally trips. The
+Claude CLI has no `--max-turns` flag, so koryph enforces a per-bead **turn
+ceiling** of its own:
+
+- `per_agent_max_turns` (default **150**) is the maximum number of
+  user↔assistant turns one dispatched agent may run. Set it in the account's
+  quota config; `0` (or unset) uses the default, and a **negative** value
+  disables the ceiling entirely.
+- While an agent is running, the engine counts its completed turns from the
+  live stream. Past the ceiling it **gracefully interrupts** the agent
+  (SIGTERM — the agent checkpoints, and its worktree and committed work are
+  preserved; koryph never SIGKILLs) and classifies the death as
+  `DeathReason: turn-exhausted`.
+- The requeue uses a **fresh session** (no `--resume`): the new attempt starts
+  with an empty context instead of re-reading the bloated one, so it stops
+  accreting. Committed work still carries forward — the worktree is rebased
+  onto `main`, not discarded — so the fresh attempt resumes from real
+  progress. This is the one requeue path that deliberately does *not*
+  warm-resume, precisely because the accreted context is the problem.
+- Fresh restarts are bounded (a couple of tries) before the bead is parked
+  **needs-attention** with a note to split it or raise `per_agent_max_turns`,
+  so a genuinely non-converging bead reaches a human rather than cold-restarting
+  forever.
+
+The default of 150 sits far above a healthy bead (most finish in a few dozen
+turns) yet well below the runaway long-tail (440/392/391 turns observed in
+production), so the ceiling catches thrashing without ever clipping honest
+work. A self-finishing agent is never interrupted regardless of turn count —
+only a *still-running* agent past the ceiling is.
+
+> **Why not context editing instead?** The Anthropic context-editing beta
+> (`clear_tool_uses_20250919`), which would prune stale tool results
+> mid-session, is reachable only through the CLI's `--betas` flag, which is
+> **API-key billing only**. koryph dispatches implementer sessions under
+> subscription OAuth, where `--betas` is inert, so context editing is not
+> available on the `-p` dispatch path today. The turn ceiling is the honest,
+> subscription-compatible defense against runaway accretion. The intra-bead
+> prompt-cache TTL (1h) is retained unchanged — a shorter TTL would expire
+> mid-bead across slow build/test turns and force a full context rewrite,
+> costing more than it saves.
+
 ---
 
 ## Batch mode

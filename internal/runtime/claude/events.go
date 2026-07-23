@@ -60,7 +60,11 @@ type rawLine struct {
 	// see runtime.Event.HasCost's doc for why that distinction must survive.
 	TotalCostUSD *float64 `json:"total_cost_usd"`
 	SessionID    string   `json:"session_id,omitempty"`
-	Error        *struct {
+	// NumTurns is a terminal "result" line's cumulative user↔assistant turn
+	// count (koryph-840). Only a "result" line carries it; every other line
+	// leaves it zero, which classify() reports as HasTurns=false.
+	NumTurns int64 `json:"num_turns,omitempty"`
+	Error    *struct {
 		Type    string `json:"type,omitempty"`
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
@@ -218,6 +222,14 @@ func classify(line []byte) (runtime.Event, bool) {
 			for id, mu := range rl.ModelUsage {
 				ev.ModelUsage[id] = mu.OutputTokens
 			}
+		}
+		// num_turns is present on every real result line (including the
+		// budget-kill line, which carries num_turns:1); its presence is what
+		// HasTurns records, so a hypothetical result line omitting it stays
+		// "unknown" rather than reading as a genuine zero-turn session
+		// (koryph-840).
+		if rl.NumTurns > 0 {
+			ev.NumTurns, ev.HasTurns = rl.NumTurns, true
 		}
 	case errorish:
 		ev.Kind = runtime.EventError
@@ -433,6 +445,65 @@ func ParseRateLimited(r io.Reader) bool {
 		}
 	}
 	return false
+}
+
+// ParseResultTurns scans r for the LAST EventResult, returning its num_turns
+// count (koryph-840) — the turn counterpart to ParseResultCost/
+// ParseResultUsage, sharing their exact last-wins semantics: a later result
+// line with no num_turns resets found to false. This is the authoritative
+// post-exit turn count the engine's turn-ceiling classification consults;
+// CountAssistantTurns is the cheaper mid-flight proxy for a still-running
+// session (num_turns only appears once, on the terminal result line).
+func ParseResultTurns(r io.Reader) (int64, bool) {
+	es, err := (Claude{}).ParseEvents(r)
+	if err != nil {
+		return 0, false
+	}
+	defer es.Close()
+	var turns int64
+	var found bool
+	for {
+		ev, ok, err := es.Next()
+		if err != nil || !ok {
+			break
+		}
+		if ev.Kind == runtime.EventResult {
+			turns, found = ev.NumTurns, ev.HasTurns
+		}
+	}
+	return turns, found
+}
+
+// CountAssistantTurns counts the number of top-level "assistant" events in r
+// (koryph-840): the mid-flight, still-growing-stream proxy for a session's
+// turn count, since the authoritative num_turns is emitted only once on the
+// terminal "result" line. Each completed assistant response the CLI emits is
+// one such line; partial streaming deltas (under --include-partial-messages)
+// arrive as separate "stream_event" lines and are NOT counted, so this tracks
+// completed turns rather than inflating on every token. It scans raw line
+// types directly (assistant events normalize to EventOpaque, which carries no
+// type) and is deliberately tolerant — a malformed or non-'{' line is skipped,
+// matching ParseEvents. It is an APPROXIMATION used only to trip a high
+// turn ceiling, never an exact accounting figure; the ceiling's headroom
+// absorbs any small drift between this proxy and the CLI's own num_turns.
+func CountAssistantTurns(r io.Reader) int {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	n := 0
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var rl rawLine
+		if err := json.Unmarshal(line, &rl); err != nil {
+			continue
+		}
+		if rl.Type == "assistant" {
+			n++
+		}
+	}
+	return n
 }
 
 // ParseBudgetKilled scans r for any event whose text matched a budget-kill

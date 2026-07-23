@@ -372,6 +372,21 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 	}
 
 	if alive {
+		// Turn-ceiling enforcement (koryph-840): a runaway bead that stays under
+		// the per-turn cost cap can still accrete 90M+ cache-read tokens by
+		// re-reading its whole tool-result history every turn for hundreds of
+		// turns. The claude CLI has no --max-turns flag and its --max-budget-usd
+		// cap only fires once the whole budget is spent, so the engine counts
+		// completed turns from the live stream and, past the ceiling, gracefully
+		// interrupts the agent (SIGTERM — it checkpoints, worktree preserved) so
+		// completeSlot can requeue it with a FRESH session. Gated on
+		// probeProgress so the stream is scanned at most once per timer tick, not
+		// on every SIGCHLD wake. This is a deliberate, bounded runaway defense —
+		// distinct from the stuck path just below, which never interrupts a
+		// quietly-working agent.
+		if probeProgress && r.enforceTurnCeiling(sl) {
+			return
+		}
 		// Derive the slot's most-recent activity ONCE and use it for both the
 		// status decision and the last_activity_at stamp (distinct from
 		// updated_at, which only means "we polled"). Re-derived every tick from
@@ -514,6 +529,21 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// operator's own hand-fix) — before any classification below. This attempt's
 	// cost and tokens above are still recorded.
 	if r.parkForOperatorStop(ctx, sl) {
+		return
+	}
+
+	// Turn-ceiling classification (koryph-840) runs upstream of the rate-limit,
+	// budget-kill, and finishCandidate checks below. When enforceTurnCeiling
+	// interrupted this attempt for running past the turn ceiling, that stamp is
+	// the authoritative death reason — it must win even if the SIGTERM'd
+	// agent's final API call happened to 429 (rate-limit) or the cost happened
+	// to cross the budget cap on the same turn, because only the turn-exhausted
+	// path requeues with a FRESH session (the others warm-resume and would
+	// re-accrete the very context this bead exists to shed). A self-finished
+	// agent is never stamped here regardless of turn count, so an honest
+	// long-running bead still flows to finishCandidate below.
+	if sl.DeathReason == deathReasonTurnExhausted {
+		r.requeueTurnExhausted(ctx, sl)
 		return
 	}
 
@@ -721,12 +751,13 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		note:            "rate-limited requeue",
 		// Its own budget increments; every other spent budget carries forward
 		// unchanged (koryph-qf6.1 — see requeueSlot's counter comment).
-		rateLimitRequeues:  requeues,
-		gateRequeues:       sl.GateRequeues,
-		mergeRequeues:      sl.MergeRequeues,
-		conflictRequeues:   sl.ConflictRequeues,
-		budgetKillRequeues: sl.BudgetKillRequeues,
-		wipSnapshotPath:    wipSnapshot,
+		rateLimitRequeues:     requeues,
+		gateRequeues:          sl.GateRequeues,
+		mergeRequeues:         sl.MergeRequeues,
+		conflictRequeues:      sl.ConflictRequeues,
+		budgetKillRequeues:    sl.BudgetKillRequeues,
+		turnExhaustedRequeues: sl.TurnExhaustedRequeues,
+		wipSnapshotPath:       wipSnapshot,
 		// Freeze the model resolution from the first attempt (koryph-ehx) —
 		// see requeueSlot's identical comment. A rate-limit requeue is the
 		// same attempt continuing, so it must re-run the same model.
@@ -794,6 +825,27 @@ const thrashGuardTokenFloor = 150_000
 // completeSlot classifies a death as killed by --max-budget-usd
 // (koryph-77r.10).
 const deathReasonBudgetKilled = "budget-killed"
+
+// deathReasonTurnExhausted is the ledger.Slot.DeathReason value enforceTurnCeiling
+// stamps (BEFORE it SIGTERMs the agent) when a slot runs past the per-bead
+// turn ceiling (koryph-840). Unlike deathReasonBudgetKilled, this stamp is
+// written by the LIVE poll (not by completeSlot's post-mortem classification):
+// it is the mid-flight signal that survives to the next tick's completeSlot,
+// which reads it to route the death to requeueTurnExhausted (a fresh-session
+// requeue) rather than the warm-resume rate-limit/budget paths.
+const deathReasonTurnExhausted = "turn-exhausted"
+
+// turnExhaustedRequeueBudget bounds how many FRESH-session requeues a slot may
+// spend on the turn ceiling before parking needs-attention (koryph-840). A
+// fresh restart drops the accreted in-context history but keeps committed
+// work (via resumeSHA), so a bead that genuinely converges in chunks can make
+// progress across a couple of restarts; but a bead that keeps blowing past the
+// ceiling with a clean context each time is not converging and needs a human
+// (split it, or raise PerAgentMaxTurns), not an endless string of cold
+// restarts. Set slightly above budgetKillRequeueBudget (1) because a fresh
+// session is a genuinely different attempt shape — not the same bloated
+// context re-warmed — so a second try is more likely to help here than there.
+const turnExhaustedRequeueBudget = 2
 
 // totalAttemptTokens sums one attempt's token composition — the thrash
 // guard's volume signal (koryph-77r.10). Deliberately the ATTEMPT's own
@@ -909,11 +961,12 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		// Every other spent budget carries forward unchanged (koryph-qf6.1 —
 		// see requeueSlot's counter comment); only budgetKillRequeues below
 		// increments.
-		conflictRequeues:   sl.ConflictRequeues,
-		rateLimitRequeues:  sl.RateLimitRequeues,
-		note:               "budget-killed requeue",
-		budgetKillRequeues: requeues,
-		wipSnapshotPath:    wipSnapshot,
+		conflictRequeues:      sl.ConflictRequeues,
+		rateLimitRequeues:     sl.RateLimitRequeues,
+		note:                  "budget-killed requeue",
+		budgetKillRequeues:    requeues,
+		turnExhaustedRequeues: sl.TurnExhaustedRequeues,
+		wipSnapshotPath:       wipSnapshot,
 		// Freeze the model resolution from the first attempt (koryph-ehx) —
 		// see requeueSlot's identical comment. A budget-kill warm-resume must
 		// re-run the same model the bead was originally dispatched with.
@@ -936,6 +989,156 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		accumulatedCostUSD: sl.CostUSD,
 		// Carry accumulated token composition forward too (koryph-77r.1) —
 		// same reasoning as accumulatedCostUSD.
+		accumulatedTokens: dispatch.TokenUsage{
+			InputTokens:         sl.InputTokens,
+			OutputTokens:        sl.OutputTokens,
+			CacheReadTokens:     sl.CacheReadTokens,
+			CacheCreationTokens: sl.CacheCreationTokens,
+		},
+	})
+}
+
+// enforceTurnCeiling counts a still-running agent's completed turns and, past
+// the per-bead ceiling, gracefully interrupts it (koryph-840). It returns true
+// when it tripped — the caller then returns, leaving the SIGTERM'd agent to
+// checkpoint and exit so the next tick's completeSlot routes it (via the
+// stamped DeathReason) to requeueTurnExhausted. It returns false (a no-op)
+// when the ceiling is disabled (PerAgentMaxTurns <= 0), not yet reached, or
+// already tripped this attempt — the DeathReason stamp makes the SIGTERM fire
+// exactly once even though the poll re-enters every tick until the process
+// actually dies. Turn count comes from the live stream via dispatch.CountTurns
+// (num_turns is only emitted on the terminal result line, which a running
+// agent has not written yet); it is an approximate completed-turn proxy, which
+// the ceiling's wide headroom (default 150, far above healthy beads) absorbs.
+func (r *runner) enforceTurnCeiling(sl *ledger.Slot) bool {
+	ceiling := r.quotaCfg.PerAgentMaxTurns
+	if ceiling <= 0 {
+		return false // disabled for this account (negative) or unresolved
+	}
+	if sl.DeathReason == deathReasonTurnExhausted {
+		return true // already tripped; the process is on its way down — don't re-signal
+	}
+	if sl.Stream == "" {
+		return false
+	}
+	turns := dispatch.CountTurns(sl.Stream)
+	if turns < ceiling {
+		return false
+	}
+	// Stamp BEFORE signalling so the mark is durable even if this engine process
+	// dies between the SIGTERM and the next tick: completeSlot keys the
+	// fresh-session requeue off DeathReason, so a lost stamp would misroute the
+	// death onto a warm-resume path and re-accrete the very context we are
+	// shedding. Also updated in-memory so a re-entry this same tick short-circuits.
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.DeathReason = deathReasonTurnExhausted })
+	sl.DeathReason = deathReasonTurnExhausted
+	r.progress("bead %s: turn ceiling hit — %d turns >= %d; interrupting for a fresh-session requeue (worktree preserved)",
+		sl.PhaseID, turns, ceiling)
+	logTurnExhausted(sl.PhaseID, turns, ceiling, sl.Attempts, sl.Model, sl.ModelActual)
+	// Graceful SIGTERM only (never SIGKILL) — agents checkpoint on it and their
+	// worktree/branch are preserved, exactly like the hard-stop path
+	// (interruptActiveSlots). A failed signal is non-fatal: the agent may have
+	// already exited, in which case completeSlot reclassifies it on the next
+	// tick off the stamp we just wrote.
+	if err := dispatch.StopGraceful(sl.PID); err != nil {
+		r.progress("bead %s: turn-ceiling SIGTERM failed (%v) — reclassifying on exit", sl.PhaseID, err)
+	}
+	return true
+}
+
+// requeueTurnExhausted re-dispatches (or parks) a slot enforceTurnCeiling
+// interrupted for running past the per-bead turn ceiling (koryph-840). The
+// defining difference from requeueBudgetKilled is the FRESH session: this
+// re-dispatch passes NO resumeSessionID, so the new attempt starts with an
+// empty context instead of --resume-ing the bloated one whose every-turn
+// re-read is exactly what tripped the ceiling. Committed work still survives
+// (resumeSHA = branch head; refreshWorktreeForRequeue rebases the worktree
+// rather than discarding it when commits landed), so a fresh restart resumes
+// from real progress with a clean context. Like requeueBudgetKilled it counts
+// toward Attempts (bead-specific, not environmental) and bounds itself tightly
+// (turnExhaustedRequeueBudget) before parking needs-attention.
+func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
+	// Same closed-bead guard as the other requeue paths: drop cleanly if the
+	// operator retired the bead while the turn-capped agent was winding down.
+	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
+		return
+	}
+
+	// Drain / run-budget parks take precedence over any retry, exactly as in
+	// requeueBudgetKilled.
+	if r.parkForDrain(ctx, sl) {
+		return
+	}
+	if r.parkForRunBudget(ctx, sl) {
+		return
+	}
+
+	if sl.TurnExhaustedRequeues >= turnExhaustedRequeueBudget {
+		why := fmt.Sprintf("hit the turn ceiling %d times — a fresh session still isn't converging",
+			turnExhaustedRequeueBudget+1)
+		note := fmt.Sprintf(
+			"needs-attention: %s — parked instead of another fresh restart (accumulated cost $%.2f); split the bead or raise per_agent_max_turns",
+			why, sl.CostUSD)
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = note
+		})
+		r.checkpointSlot(sl, "turn-exhausted-parked")
+		r.releaseGlobalSlot(sl.PhaseID) // terminal
+		r.progress("bead %s: blocked, needs-attention (%s)", sl.PhaseID, why)
+		logSlotBlocked(sl.PhaseID, why, sl.Model, sl.ModelActual, sl.Attempts)
+		r.reconcileBlockedBead(ctx, sl, note)
+		return
+	}
+
+	requeues := sl.TurnExhaustedRequeues + 1
+	attempt := sl.Attempts + 1
+	r.progress("bead %s: turn-exhausted — fresh-session requeue, attempt %d (turn-exhausted %d/%d)",
+		sl.PhaseID, attempt, requeues, turnExhaustedRequeueBudget)
+	logSlotRequeue(sl.PhaseID, "turn-exhausted requeue", attempt)
+	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, "turn-exhausted requeue", attempt, sl.CostUSD)
+	r.backoffSleep(ctx, sl.Attempts)
+
+	// Rebuild the worktree the ordinary way (preserveNoCommitWorktree=false): a
+	// fresh session must NOT reuse the old checkout's live session, so there is
+	// no warm-resume precondition to protect. Committed work is rebased onto
+	// current main; a zero-commit attempt is snapshotted to WIP and the branch
+	// reset — exactly like the default requeue path.
+	wipSnapshot := r.refreshWorktreeForRequeue(ctx, sl, false)
+
+	r.dispatchBead(ctx, dispatchReq{
+		issue:     r.issueFor(ctx, sl),
+		epicID:    sl.EpicID,
+		attempt:   attempt,
+		resumeSHA: r.branchHead(ctx, sl.Branch),
+		// resumeSessionID deliberately left "" — a FRESH session is the whole
+		// point of this path (koryph-840); a --resume would re-read exactly the
+		// accreted context the turn ceiling exists to shed.
+		reviewIters:           sl.ReviewIters,
+		gateRequeues:          sl.GateRequeues,
+		mergeRequeues:         sl.MergeRequeues,
+		conflictRequeues:      sl.ConflictRequeues,
+		rateLimitRequeues:     sl.RateLimitRequeues,
+		budgetKillRequeues:    sl.BudgetKillRequeues,
+		turnExhaustedRequeues: requeues,
+		note:                  "turn-exhausted requeue",
+		wipSnapshotPath:       wipSnapshot,
+		// Freeze the model resolution from the first attempt (koryph-ehx) — a
+		// requeue re-runs the same model/persona/effort the bead was dispatched
+		// with, exactly like every other requeue path.
+		frozenModel:    sl.Model,
+		frozenPersona:  sl.Agent,
+		frozenModelWhy: sl.ModelWhy,
+		frozenEffort:   sl.Effort,
+		// Carry the frozen footprint/resources/features forward (koryph-2im.3/
+		// 4ql.3/qf6.3) — see requeueRateLimited's identical comments.
+		footprint: sl.Footprint,
+		resources: resourcesFromSlot(sl),
+		features:  featuresFromSlot(sl),
+		// Carry accumulated cost and token composition forward (koryph-6bl/
+		// 77r.1): the turn-capped attempt's spend was already folded into
+		// sl.CostUSD / the slot's token fields at the top of completeSlot.
+		accumulatedCostUSD: sl.CostUSD,
 		accumulatedTokens: dispatch.TokenUsage{
 			InputTokens:         sl.InputTokens,
 			OutputTokens:        sl.OutputTokens,
@@ -1703,12 +1906,13 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		// refills (koryph-2im.6; conflict/rate-limit/budget-kill threading
 		// added by koryph-qf6.1 — causes interleave, so each path preserves
 		// the others' spent budgets, not just its own).
-		gateRequeues:       sl.GateRequeues,
-		mergeRequeues:      sl.MergeRequeues,
-		conflictRequeues:   sl.ConflictRequeues,
-		rateLimitRequeues:  sl.RateLimitRequeues,
-		budgetKillRequeues: sl.BudgetKillRequeues,
-		note:               why,
+		gateRequeues:          sl.GateRequeues,
+		mergeRequeues:         sl.MergeRequeues,
+		conflictRequeues:      sl.ConflictRequeues,
+		rateLimitRequeues:     sl.RateLimitRequeues,
+		budgetKillRequeues:    sl.BudgetKillRequeues,
+		turnExhaustedRequeues: sl.TurnExhaustedRequeues,
+		note:                  why,
 		// Freeze the model resolution from the first attempt (koryph-ehx): a
 		// requeue re-runs the SAME model/persona/effort the bead was dispatched
 		// with, so a `model:*` relabel mid-run (or non-deterministic
