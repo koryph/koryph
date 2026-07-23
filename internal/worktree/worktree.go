@@ -14,6 +14,7 @@ import (
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/textx"
 )
 
 // git runs a git subcommand in dir and returns the raw result (non-zero exit
@@ -180,7 +181,7 @@ func Bootstrap(ctx context.Context, path string, cmds []string, env []string) er
 			return fmt.Errorf("bootstrap %q: %w", c, err)
 		}
 		if res.ExitCode != 0 {
-			return fmt.Errorf("bootstrap %q failed (exit %d): %s", c, res.ExitCode, tail(res.Stdout+res.Stderr, 2000))
+			return fmt.Errorf("bootstrap %q failed (exit %d): %s", c, res.ExitCode, textx.Tail(res.Stdout+res.Stderr, 2000))
 		}
 	}
 	return nil
@@ -242,7 +243,7 @@ func Refresh(ctx context.Context, o RefreshOpts) (RefreshResult, error) {
 	}
 	if rb.ExitCode != 0 {
 		_, _ = git(ctx, o.Path, "rebase", "--abort")
-		md := conflictMarkdown(o.Branch, o.Base, rb.Stdout+rb.Stderr)
+		md := ConflictMarkdown(o.Branch, o.Base, rb.Stdout+rb.Stderr)
 		_ = fsx.WriteAtomic(filepath.Join(o.Path, "CONFLICT.md"), []byte(md), 0o644)
 		result.Action = "conflict"
 		return result, nil
@@ -399,16 +400,16 @@ func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-func conflictMarkdown(branch, base, output string) string {
+// ConflictMarkdown renders the CONFLICT.md breadcrumb written when a
+// rebase-onto-base is aborted on conflict — both at worktree creation (here)
+// and rebase-before-merge (internal/merge, which calls this rather than
+// keeping its own copy: koryph-fiv finding #6). The captured rebase output is
+// fenced as ```text (not a bare ```): a bare fence trips markdownlint MD040
+// (fenced-code-language), and though koryph never commits this file, a project
+// whose gate lints all *.md still flags it.
+func ConflictMarkdown(branch, base, output string) string {
 	return fmt.Sprintf(
-		"# Rebase conflict\n\nRebasing `%s` onto `%s` hit a conflict and was aborted; the worktree is unchanged.\nResolve by rebasing manually, then retry.\n\n```\n%s\n```\n",
-		branch, base, strings.TrimSpace(tail(output, 4000)),
+		"# Rebase conflict\n\nRebasing `%s` onto `%s` hit a conflict and was aborted; the\nworktree is unchanged and nothing was merged. Resolve manually, then retry.\n\n```text\n%s\n```\n",
+		branch, base, strings.TrimSpace(textx.Tail(output, 4000)),
 	)
-}
-
-func tail(s string, n int) string {
-	if len(s) > n {
-		return s[len(s)-n:]
-	}
-	return s
 }

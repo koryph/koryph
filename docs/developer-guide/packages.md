@@ -765,6 +765,16 @@ gate is a safety rail, not a correctness dependency.
 - **`DefaultFloorMB(totalMB)`** — auto-floor sizing, clamped for small/large hosts
 - **`ErrUnsupported`** — platform has no probe; fail open
 
+## textx
+
+Tiny, dependency-free string helpers shared so packages stop each keeping a
+byte-identical copy (koryph-fiv finding #6). Imports nothing outside the
+standard library, so even low-level packages (worktree) can depend on it.
+
+- **`Tail(s, n)`** — last n bytes of s (all when shorter); bounds captured
+  command output and log tails. Previously copied into `merge`, `worktree`, and
+  `agentjson` (the last now re-exports it).
+
 ## timeoutcfg
 
 The single home for koryph's unified agent-facing wall timeout and its override
@@ -818,3 +828,4 @@ Creates and manages per-bead git worktrees (one branch per active issue).
 - **`Refresh(ctx, o)`** — rebase or snapshot an existing worktree
 - **`Remove(ctx, path, force)`** — delete worktree and prune branch
 - **`PatchSnapshot`** / **`DeleteBranch`** — export diff patch, remove remote-tracked branch
+- **`ConflictMarkdown(branch, base, output)`** — renders the `CONFLICT.md` breadcrumb for an aborted rebase-onto-base; shared with `internal/merge` (koryph-fiv finding #6)

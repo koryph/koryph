@@ -15,14 +15,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/koryph/koryph/internal/textx"
 )
 
-// Tail returns the last n bytes of s, for bounding an error/log excerpt.
+// Tail returns the last n bytes of s, for bounding an error/log excerpt. It is
+// a thin re-export of textx.Tail, kept so existing agentjson callers
+// (internal/review, internal/stage, internal/epicreview) need no import churn
+// while the implementation lives in one shared place (koryph-fiv finding #6).
 func Tail(s string, n int) string {
-	if len(s) > n {
-		return s[len(s)-n:]
-	}
-	return s
+	return textx.Tail(s, n)
 }
 
 // FirstJSONBlock extracts the first balanced {...} block from s, respecting

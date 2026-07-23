@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/execx"
+	"github.com/koryph/koryph/internal/textx"
 )
 
 // openPR is the OpenPR divergence of Merge, reached only after the shared
@@ -79,7 +80,7 @@ func pushBranch(ctx context.Context, dir, branch string) error {
 		return err
 	}
 	if forced.ExitCode != 0 {
-		return fmt.Errorf("push %s to origin: %s", branch, strings.TrimSpace(tail(forced.Stderr, 400)))
+		return fmt.Errorf("push %s to origin: %s", branch, strings.TrimSpace(textx.Tail(forced.Stderr, 400)))
 	}
 	return nil
 }
@@ -117,7 +118,7 @@ func (GhCLI) Open(ctx context.Context, dir, branch, base, title, body string) (s
 		return "", 0, err
 	}
 	if res.ExitCode != 0 {
-		return "", 0, fmt.Errorf("gh pr create: %s", strings.TrimSpace(tail(res.Stderr, 400)))
+		return "", 0, fmt.Errorf("gh pr create: %s", strings.TrimSpace(textx.Tail(res.Stderr, 400)))
 	}
 	url := strings.TrimSpace(res.Stdout)
 	return url, prNumberFromURL(url), nil

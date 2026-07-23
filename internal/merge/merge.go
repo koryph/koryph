@@ -14,6 +14,7 @@ import (
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/signing"
+	"github.com/koryph/koryph/internal/textx"
 	"github.com/koryph/koryph/internal/worktree"
 )
 
@@ -188,9 +189,9 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 			return Result{Status: StatusError}, err
 		}
 		if sync.ExitCode != 0 {
-			return Result{Status: StatusError, GateOutput: tail(sync.Stdout+sync.Stderr, 2000)},
+			return Result{Status: StatusError, GateOutput: textx.Tail(sync.Stdout+sync.Stderr, 2000)},
 				fmt.Errorf("local %s cannot fast-forward to origin/%s (diverged); resolve before merging: %s",
-					def, def, strings.TrimSpace(tail(sync.Stderr, 400)))
+					def, def, strings.TrimSpace(textx.Tail(sync.Stderr, 400)))
 		}
 	}
 
@@ -239,7 +240,7 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 			if !healed {
 				_, _ = gitRun(ctx, wt.Path, "rebase", "--abort")
 				mdPath := filepath.Join(wt.Path, conflictBreadcrumb)
-				_ = fsx.WriteAtomic(mdPath, []byte(conflictMarkdown(o.Branch, def, rb.Stdout+rb.Stderr)), 0o644)
+				_ = fsx.WriteAtomic(mdPath, []byte(worktree.ConflictMarkdown(o.Branch, def, rb.Stdout+rb.Stderr)), 0o644)
 				return Result{Status: StatusConflict, ConflictMD: mdPath}, nil
 			}
 			reconciled, reconcileRounds = paths, rounds
@@ -263,7 +264,7 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 			// Discard any partial modification the failing step left, mirroring
 			// the gate-failure cleanup, then requeue.
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
-			return Result{Status: StatusGateFailed, GateOutput: tail(pout, gateOutputCap)}, nil
+			return Result{Status: StatusGateFailed, GateOutput: textx.Tail(pout, gateOutputCap)}, nil
 		}
 		prepared = p
 	}
@@ -290,7 +291,7 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 			// Keep a generous tail: the engine persists this to
 			// <phase-dir>/gate-output.log, so a 2 KB clip was often too small to
 			// see which gate command actually failed on a large build/test run.
-			return Result{Status: StatusGateFailed, GateOutput: tail(out, gateOutputCap)}, nil
+			return Result{Status: StatusGateFailed, GateOutput: textx.Tail(out, gateOutputCap)}, nil
 		}
 	}
 
@@ -346,9 +347,9 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 			return Result{Status: StatusError}, err
 		}
 		if ff.ExitCode != 0 {
-			return Result{Status: StatusError, GateOutput: tail(ff.Stdout+ff.Stderr, 2000)},
+			return Result{Status: StatusError, GateOutput: textx.Tail(ff.Stdout+ff.Stderr, 2000)},
 				fmt.Errorf("ff-only merge of %q failed; the branch is not a fast-forward of %s (rebase or use squash): %s",
-					o.Branch, def, strings.TrimSpace(tail(ff.Stderr, 400)))
+					o.Branch, def, strings.TrimSpace(textx.Tail(ff.Stderr, 400)))
 		}
 	}
 
@@ -485,26 +486,8 @@ func gitRun(ctx context.Context, dir string, args ...string) (execx.Result, erro
 // project's markdownlint rejected it, failing the merge — see mergeAddSpec).
 const conflictBreadcrumb = "CONFLICT.md"
 
-// conflictMarkdown renders the CONFLICT.md breadcrumb. The captured rebase
-// output is fenced as ```text (not a bare ```): a bare fence trips
-// markdownlint MD040 (fenced-code-language), and though koryph never commits
-// this file, a project whose gate lints all *.md still flagged it.
-func conflictMarkdown(branch, base, output string) string {
-	return fmt.Sprintf(
-		"# Merge conflict\n\nRebasing `%s` onto `%s` before merge hit a conflict and was aborted; the\nworktree is unchanged and nothing was merged. Resolve manually, then retry.\n\n```text\n%s\n```\n",
-		branch, base, strings.TrimSpace(tail(output, 4000)),
-	)
-}
-
 // gateOutputCap bounds the gate output carried in Result.GateOutput. It is
 // generous (16 KB) because the engine persists this to <phase-dir>/gate-output.log
 // for post-hoc diagnosis; a small clip lost the actual failing command on large
 // build/test runs.
 const gateOutputCap = 16000
-
-func tail(s string, n int) string {
-	if len(s) > n {
-		return s[len(s)-n:]
-	}
-	return s
-}
