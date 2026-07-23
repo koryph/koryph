@@ -215,6 +215,18 @@ func (p *LedgerProvider) Refresh() (Snapshot, error) {
 		snap.RunStatus = run.Status
 		snap.Wave = run.Wave
 
+		// Run-level liveness (koryph-oixo): a status=running run whose owning
+		// engine pid is dead is a phantom, not a live run. Read-only — LockPID
+		// only peeks koryph.lock; p.alive is the same test-swappable probe the
+		// zombie-slot check uses (dispatch.Alive in production), so this never
+		// depends on real OS process state in tests. A nil p.alive leaves
+		// RunDead false, same as skipping the probe.
+		engineAlive := false
+		if pid, ok := p.ls.LockPID(); ok && p.alive != nil {
+			engineAlive = p.alive(pid)
+		}
+		snap.RunDead = ledger.RunDead(run, engineAlive)
+
 		now := snap.CapturedAt
 		slots := make([]SlotSnapshot, 0, len(run.Slots))
 		for _, sl := range run.Slots {

@@ -603,6 +603,39 @@ false positive where an OS eventually recycles a dead agent's pid for an
 unrelated later process. The slot is still left alone (the report is a hint
 to verify manually, not an automatic reclassification).
 
+### Dead runs render as `dead (unreconciled)`, not `running`
+
+The zombie-slot check above flags a dead *agent* under a live engine. Its
+**run-level** analog catches a dead *engine*: if the whole run loop is killed
+abruptly (a harness group-kill, `kill -9`, a host that sleeps and never wakes
+the process), the engine never finalizes the ledger, which freezes at
+`status=running`. Nothing outside a fresh engine run ever revisits it, so
+`koryph status`, `koryph board`, `koryph roster`, `koryph cockpit`, and the TUI
+would otherwise show a phantom **running** run forever.
+
+These read-only surfaces now derive run liveness from the engine pid recorded in
+`koryph.lock`. A `status=running` run whose lock pid is **not alive** (or whose
+lock is gone entirely) renders as **`dead (unreconciled)`** with the one-command
+fix inline:
+
+```
+⚠ run is marked running but the owning engine is dead (killed without finalizing). Reconcile: koryph ops reconcile
+```
+
+This is purely a read — the surfaces never mutate the ledger or reclaim the lock
+(a reader must not become a writer). Only a `status=running` run is ever flagged:
+intentionally parked runs (`paused-quota`, `hard-stop-quota`) legitimately have
+no live engine and render as themselves. Run `koryph ops reconcile` (above) to
+park the dead slots and finalize the run, or `koryph run --resume` to re-adopt
+the work.
+
+A **graceful** shutdown never produces this state: `koryph run` now converts an
+operator/loop `SIGTERM` (and `Ctrl-C` `SIGINT`) into a clean interrupt — every
+active slot is checkpointed, `engine.run.end` is written, and `koryph.lock` is
+released — leaving the run recoverable by `--resume`. Only an unhandleable
+abrupt `SIGKILL` leaves the phantom, which the read-side derivation above is the
+backstop for.
+
 ## Poll interval
 
 The engine polls each running slot's `status.json` heartbeat every **10 seconds**

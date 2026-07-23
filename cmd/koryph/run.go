@@ -7,7 +7,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/koryph/koryph/internal/dispatch"
@@ -114,7 +117,17 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		DispatchMode:       *dispatchMode,
 		Out:                stdout,
 	}
-	outcome, err := engine.Run(context.Background(), opts)
+	// Convert an operator/loop-harness SIGTERM (and Ctrl-C SIGINT) into ctx
+	// cancellation so the engine takes its graceful `interrupted()` path:
+	// checkpoint every active slot, emit engine.run.end, and release koryph.lock
+	// via the deferred Unlock (koryph-oixo). Without this the default Go signal
+	// disposition abruptly terminates the process, stranding the ledger at
+	// status=running with no run.end — the exact phantom the read-side liveness
+	// derivation exists to catch. An abrupt SIGKILL still can't be handled; that
+	// is what the read-side backstop is for.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	outcome, err := engine.Run(ctx, opts)
 	if err != nil {
 		fmt.Fprintln(stderr, "koryph run:", err)
 	}
@@ -141,6 +154,12 @@ type boardEntry struct {
 	// non-terminal slot): review/stuck/dispatching slots legitimately have a
 	// dead agent PID while the engine drives post-build stages — see zombieSlot.
 	Zombies int `json:"zombies"`
+	// EnginePID is the live engine pid that owns this run (from koryph.lock), or
+	// 0 when no live engine holds the lock. RunDead is true when the run is
+	// status=running but no live engine owns it (koryph-oixo) — a phantom that
+	// survived a killed engine and needs `koryph ops reconcile`.
+	EnginePID int  `json:"engine_pid,omitempty"`
+	RunDead   bool `json:"run_dead,omitempty"`
 }
 
 // cmdBoard prints a one-line-per-project run overview.
@@ -169,9 +188,19 @@ func cmdBoard(args []string, stdout, stderr io.Writer) int {
 			Account:         rec.AccountProfile,
 			Slots:           map[string]int{},
 		}
-		if run, lerr := ledger.NewStore(rec.Root).LoadLatest(); lerr == nil && run != nil {
+		lstore := ledger.NewStore(rec.Root)
+		if run, lerr := lstore.LoadLatest(); lerr == nil && run != nil {
 			e.RunID = run.RunID
 			e.RunStatus = run.Status
+			// Run-level liveness (koryph-oixo): a status=running run whose owning
+			// engine pid is dead is a phantom the operator must reconcile — the
+			// RUN-level analog of the zombie SLOT column. Read-only probe (never
+			// writes): LockHolder peeks koryph.lock without reclaiming it.
+			enginePID, engineAlive, lockOK := lstore.LockHolder()
+			if lockOK && engineAlive {
+				e.EnginePID = enginePID
+			}
+			e.RunDead = ledger.RunDead(run, lockOK && engineAlive)
 			for _, sl := range run.Slots {
 				if sl == nil {
 					continue
@@ -203,13 +232,36 @@ func cmdBoard(args []string, stdout, stderr io.Writer) int {
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "PROJECT\tMIGRATION\tACCOUNT\tRUN\tRUN-STATUS\tSLOTS\tLIVE\tZOMBIES")
+	deadRuns := 0
 	for _, e := range entries {
+		status := orDash(e.RunStatus)
+		if e.RunDead {
+			status = "dead (unreconciled)"
+			deadRuns++
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 			e.ProjectID, e.MigrationStatus, e.Account,
-			orDash(e.RunID), orDash(e.RunStatus), slotSummary(e.Slots), e.LivePIDs, zombieCell(e.Zombies))
+			orDash(e.RunID), status, slotSummary(e.Slots), e.LivePIDs, zombieCell(e.Zombies))
 	}
 	tw.Flush()
+	if deadRuns > 0 {
+		fmt.Fprintf(stdout, "\n%s\n", reconcileHint(deadRuns))
+	}
 	return 0
+}
+
+// reconcileHint is the one-line remediation surfaced whenever a run renders as
+// "dead (unreconciled)" (koryph-oixo): a status=running run whose engine pid is
+// dead was killed without finalizing the ledger and nothing outside a fresh
+// engine run ever revisits it. It points at the dispatch-free fix (koryph-ops
+// reconcile, 6a7c6e5) — never auto-run on these read-only surfaces, per the
+// Observe() lesson that a reader must not become a writer.
+func reconcileHint(n int) string {
+	subject := "run is"
+	if n != 1 {
+		subject = fmt.Sprintf("%d runs are", n)
+	}
+	return fmt.Sprintf("⚠ %s marked running but the owning engine is dead (killed without finalizing). Reconcile: koryph ops reconcile", subject)
 }
 
 // zombieCell renders the board's ZOMBIES column: "-" when clean, else a loud
@@ -277,7 +329,8 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	run, err := ledger.NewStore(rec.Root).LoadLatest()
+	lstore := ledger.NewStore(rec.Root)
+	run, err := lstore.LoadLatest()
 	if err != nil {
 		fmt.Fprintf(stdout, "%s: no runs yet\n", rec.ProjectID)
 		return 0
@@ -291,7 +344,16 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "project %s  run %s  status %s  wave %d\n", rec.ProjectID, run.RunID, run.Status, run.Wave)
+	// Run-level liveness (koryph-oixo): a status=running run whose owning engine
+	// pid is dead renders as "dead (unreconciled)" instead of a phantom
+	// "running". Read-only probe — LockHolder never reclaims the lock.
+	_, engineAlive, lockOK := lstore.LockHolder()
+	runDead := ledger.RunDead(run, lockOK && engineAlive)
+	displayStatus := run.Status
+	if runDead {
+		displayStatus = "dead (unreconciled)"
+	}
+	fmt.Fprintf(stdout, "project %s  run %s  status %s  wave %d\n", rec.ProjectID, run.RunID, displayStatus, run.Wave)
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "PHASE\tSTATUS\tMODEL\tCOST\tATTEMPTS\tBRANCH\tWORKTREE")
 	zombies := 0
@@ -313,7 +375,11 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 			sl.PhaseID, status, orDash(sl.Model), sl.CostUSD, sl.Attempts, orDash(sl.Branch), orDash(sl.Worktree))
 	}
 	tw.Flush()
-	if zombies > 0 {
+	if runDead {
+		// Run-level phantom: the whole engine is gone, not just one agent — the
+		// louder, more actionable signal, so it leads.
+		fmt.Fprintf(stdout, "\n%s\n", reconcileHint(1))
+	} else if zombies > 0 {
 		fmt.Fprintf(stdout, "\n⚠ %d slot(s) marked as live work with a dead pid — the exit was never processed. Reconcile: koryph stop then koryph merge if a slot stays stuck.\n", zombies)
 	}
 	return 0

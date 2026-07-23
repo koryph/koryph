@@ -372,6 +372,16 @@ func (s *Store) LockHolder() (pid int, alive bool, ok bool) {
 	return pid, processAlive(pid), true
 }
 
+// LockPID returns the PID recorded in this project's koryph.lock WITHOUT
+// probing whether it is alive — the caller supplies its own liveness func. This
+// is the injectable-probe counterpart to LockHolder (which bakes in the
+// real signal-0 probe): the cockpit provider passes its test-swappable alive
+// stub so run-level liveness (ledger.RunDead) is unit-testable without real OS
+// process state. ok is false when no lock file exists or it is malformed.
+func (s *Store) LockPID() (pid int, ok bool) {
+	return readLockPID(filepath.Join(s.KoryphRoot, lockFile))
+}
+
 // Unlock releases the lock by removing the lock file.
 func (l *Lock) Unlock() error {
 	if l == nil {

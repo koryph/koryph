@@ -229,3 +229,71 @@ func TestRefresh_ZombieSlot(t *testing.T) {
 		t.Fatalf("Slots = %+v, want exactly one slot with Zombie=true", snap.Slots)
 	}
 }
+
+// seedLock writes a koryph.lock recording pid under repo's KoryphRoot so
+// LockPID has something to read (koryph-oixo run-level liveness).
+func seedLock(t *testing.T, repo, pid string) {
+	t.Helper()
+	root := ledger.NewStore(repo).KoryphRoot
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir KoryphRoot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "koryph.lock"), []byte(pid+" host\n"), 0o644); err != nil {
+		t.Fatalf("seed lock: %v", err)
+	}
+}
+
+// TestRefresh_RunDead: a status=running run whose engine pid is dead surfaces
+// as RunDead in the snapshot the TUI header reads (koryph-oixo).
+func TestRefresh_RunDead(t *testing.T) {
+	repo := seedRunningRun(t) // NewRun leaves Status=running
+	seedLock(t, repo, "2000000000")
+
+	p := NewLedgerProvider("proj", repo, "")
+	p.alive = func(int) bool { return false } // engine pid reported dead
+
+	snap, err := p.Refresh()
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if snap.RunStatus != ledger.RunRunning {
+		t.Fatalf("RunStatus = %q, want %q", snap.RunStatus, ledger.RunRunning)
+	}
+	if !snap.RunDead {
+		t.Errorf("RunDead = false, want true (running run, dead engine pid)")
+	}
+}
+
+// TestRefresh_RunLive: the same run with a live engine pid is NOT flagged dead.
+func TestRefresh_RunLive(t *testing.T) {
+	repo := seedRunningRun(t)
+	seedLock(t, repo, "4242")
+
+	p := NewLedgerProvider("proj", repo, "")
+	p.alive = func(int) bool { return true } // engine pid reported alive
+
+	snap, err := p.Refresh()
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if snap.RunDead {
+		t.Errorf("RunDead = true, want false (running run, live engine pid)")
+	}
+}
+
+// TestRefresh_RunDeadNoLock: a running run with no lock file at all (engine
+// exited/crashed without a lock) is also a phantom — no live engine owns it.
+func TestRefresh_RunDeadNoLock(t *testing.T) {
+	repo := seedRunningRun(t)
+
+	p := NewLedgerProvider("proj", repo, "")
+	p.alive = func(int) bool { return true } // irrelevant: no lock → no pid
+
+	snap, err := p.Refresh()
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if !snap.RunDead {
+		t.Errorf("RunDead = false, want true (running run, no lock holder)")
+	}
+}

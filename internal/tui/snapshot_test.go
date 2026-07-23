@@ -54,6 +54,19 @@ func TestSnapshotUnchanged_RunIDChange(t *testing.T) {
 	}
 }
 
+// TestSnapshotUnchanged_RunDeadFlip guards the run-level liveness repaint
+// (koryph-oixo): when a running run's engine dies, RunDead flips true while
+// RunStatus stays "running", so the header must repaint on RunDead alone.
+func TestSnapshotUnchanged_RunDeadFlip(t *testing.T) {
+	now := time.Now()
+	a := baseSnap(now)
+	b := baseSnap(now)
+	b.RunDead = true // RunStatus unchanged ("running")
+	if snapshotUnchanged(a, b) {
+		t.Fatal("RunDead flip should be detected (header must repaint)")
+	}
+}
+
 func TestSnapshotUnchanged_BurndownEpoch(t *testing.T) {
 	now := time.Now()
 	a := baseSnap(now)

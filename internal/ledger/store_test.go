@@ -469,6 +469,35 @@ func TestLockHolderDeadPID(t *testing.T) {
 	}
 }
 
+// TestLockPID covers the injectable-probe pid reader (koryph-oixo): it returns
+// the recorded pid without any liveness probe, so the caller supplies its own.
+func TestLockPID(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+
+	// No lock file yet → ok=false.
+	if pid, ok := st.LockPID(); ok {
+		t.Errorf("LockPID with no lock file: pid=%d ok=%v, want ok=false", pid, ok)
+	}
+
+	if err := os.MkdirAll(st.KoryphRoot, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	lockPath := filepath.Join(st.KoryphRoot, "koryph.lock")
+	const want = 2000000000
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d ghost-host\n", want)), 0o644); err != nil {
+		t.Fatalf("seed lock: %v", err)
+	}
+	// Returns the pid regardless of whether it is alive (no probe) and leaves
+	// the file untouched.
+	if pid, ok := st.LockPID(); !ok || pid != want {
+		t.Errorf("LockPID = pid=%d ok=%v, want pid=%d ok=true", pid, ok, want)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("LockPID removed the lock file: %v", err)
+	}
+}
+
 func TestRunLockStaleRecovered(t *testing.T) {
 	repo := t.TempDir()
 	st := NewStore(repo)

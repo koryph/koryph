@@ -95,3 +95,30 @@ func TestClassifyNilRun(t *testing.T) {
 		t.Fatalf("Classify(nil) = %v, want nil", got)
 	}
 }
+
+// TestRunDead is the run-level liveness table (koryph-oixo): a status=running
+// run whose engine is dead is a phantom; every other combination is not.
+func TestRunDead(t *testing.T) {
+	cases := []struct {
+		name        string
+		run         *Run
+		engineAlive bool
+		want        bool
+	}{
+		{"running + engine dead → phantom", &Run{Status: RunRunning}, false, true},
+		{"running + engine alive → live", &Run{Status: RunRunning}, true, false},
+		{"done + engine dead → terminal, not phantom", &Run{Status: RunDone}, false, false},
+		{"drained + engine dead → terminal", &Run{Status: RunDrained}, false, false},
+		{"aborted + engine dead → terminal", &Run{Status: RunAborted}, false, false},
+		// Intentionally-parked states are NOT phantoms even with no live engine:
+		// they await resume, they did not crash.
+		{"paused-quota + engine dead → parked, not phantom", &Run{Status: RunPausedQuota}, false, false},
+		{"hard-stop-quota + engine dead → parked", &Run{Status: RunHardStopQuota}, false, false},
+		{"nil run → false", nil, false, false},
+	}
+	for _, c := range cases {
+		if got := RunDead(c.run, c.engineAlive); got != c.want {
+			t.Errorf("%s: RunDead = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -59,14 +59,18 @@ type rosterDeferred struct {
 
 // rosterOutput is the full --json payload.
 type rosterOutput struct {
-	ProjectID string           `json:"project_id"`
-	RunID     string           `json:"run_id"`
-	RunStatus string           `json:"run_status"`
-	Wave      int              `json:"wave"`
-	Merged    []rosterSlot     `json:"merged"`
-	Running   []rosterSlot     `json:"running"`
-	Queued    []rosterItem     `json:"queued"`
-	Deferred  []rosterDeferred `json:"deferred"`
+	ProjectID string `json:"project_id"`
+	RunID     string `json:"run_id"`
+	RunStatus string `json:"run_status"`
+	// RunDead is true when RunStatus is "running" but no live engine owns the
+	// run — its koryph.lock pid is dead (koryph-oixo); render "dead
+	// (unreconciled)" and point at `koryph ops reconcile`.
+	RunDead  bool             `json:"run_dead,omitempty"`
+	Wave     int              `json:"wave"`
+	Merged   []rosterSlot     `json:"merged"`
+	Running  []rosterSlot     `json:"running"`
+	Queued   []rosterItem     `json:"queued"`
+	Deferred []rosterDeferred `json:"deferred"`
 }
 
 // cmdRoster prints a human-readable bead roster grouped by lifecycle state for
@@ -232,10 +236,12 @@ func cmdRoster(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	_, engineAlive, lockOK := ls.LockHolder()
 	out := rosterOutput{
 		ProjectID: rec.ProjectID,
 		RunID:     run.RunID,
 		RunStatus: run.Status,
+		RunDead:   ledger.RunDead(run, lockOK && engineAlive),
 		Wave:      run.Wave,
 		Merged:    merged,
 		Running:   running,
@@ -260,8 +266,12 @@ func printRosterJSON(stdout, stderr io.Writer, out rosterOutput) int {
 
 // printRosterHuman renders the four lifecycle groups in a scannable format.
 func printRosterHuman(w io.Writer, out rosterOutput) {
+	status := out.RunStatus
+	if out.RunDead {
+		status = "dead (unreconciled) — koryph ops reconcile"
+	}
 	fmt.Fprintf(w, "project %s  run %s  status %s  wave %d\n\n",
-		out.ProjectID, out.RunID, out.RunStatus, out.Wave)
+		out.ProjectID, out.RunID, status, out.Wave)
 
 	// MERGED
 	fmt.Fprintf(w, "MERGED (%d)\n", len(out.Merged))

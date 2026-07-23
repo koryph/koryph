@@ -105,6 +105,20 @@ the engine's health patrol also surfaces the same condition as a
 — if it can't run (unreadable /proc, permissions), the slot renders exactly as
 it did before this check existed.
 
+#### Dead runs: running status, dead engine
+
+The zombie check above catches a dead *agent* under a live engine. The header's
+run status catches the **run-level** analog — a dead *engine*. The same
+read-only probe is applied to the engine pid recorded in `koryph.lock`: when a
+run's ledger says `running` but its engine pid is not alive (an abrupt
+`kill -9`/group-kill that never finalized the ledger), the header renders
+`⚠ dead (unreconciled) — koryph ops reconcile` instead of a phantom `[running]`.
+Only a `running` run is flagged; intentionally parked runs (`paused-quota`,
+`hard-stop-quota`) render as themselves. Like the slot probe it never writes —
+run `koryph ops reconcile` to park the dead slots and finalize the run, or
+`koryph run --resume` to re-adopt the work. A graceful `SIGTERM`/`Ctrl-C`
+shutdown checkpoints cleanly and never produces this state.
+
 Press `Enter` on any slot row to open the **Detail** panel for that bead
 (including its per-bead resource usage). Press `Esc` or `Backspace` to return.
 

@@ -45,9 +45,13 @@ func init() {
 // --json`.  The extension MUST consume all agent/project state from this
 // document; it MUST NOT read ledger/govern/quota files directly.
 type CockpitSnapshot struct {
-	ProjectID  string        `json:"project_id"`
-	RunID      string        `json:"run_id,omitempty"`
-	RunStatus  string        `json:"run_status,omitempty"`
+	ProjectID string `json:"project_id"`
+	RunID     string `json:"run_id,omitempty"`
+	RunStatus string `json:"run_status,omitempty"`
+	// RunDead is true when RunStatus is "running" but no live engine owns the
+	// run — its koryph.lock pid is dead (koryph-oixo). Extensions should render
+	// it as "dead (unreconciled)" and surface `koryph ops reconcile`.
+	RunDead    bool          `json:"run_dead,omitempty"`
 	Wave       int           `json:"wave"`
 	Slots      []CockpitSlot `json:"slots"`
 	Governor   CockpitGov    `json:"governor"`
@@ -137,7 +141,11 @@ func cmdCockpit(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "PROJECT\t%s\n", out.ProjectID)
 	if out.RunID != "" {
-		fmt.Fprintf(tw, "RUN\t%s  %s  wave %d\n", out.RunID, out.RunStatus, out.Wave)
+		runStatus := out.RunStatus
+		if out.RunDead {
+			runStatus = "dead (unreconciled) — koryph ops reconcile"
+		}
+		fmt.Fprintf(tw, "RUN\t%s  %s  wave %d\n", out.RunID, runStatus, out.Wave)
 	} else {
 		fmt.Fprintf(tw, "RUN\t(no active run)\n")
 	}
@@ -202,6 +210,7 @@ func snapshotToWire(snap cockpit.Snapshot) CockpitSnapshot {
 		ProjectID:  snap.ProjectID,
 		RunID:      snap.RunID,
 		RunStatus:  snap.RunStatus,
+		RunDead:    snap.RunDead,
 		Wave:       snap.Wave,
 		Slots:      slots,
 		Governor:   CockpitGov{Pools: pools},

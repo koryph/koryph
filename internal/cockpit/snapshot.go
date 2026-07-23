@@ -321,7 +321,13 @@ type Snapshot struct {
 	ProjectID string
 	RunID     string
 	RunStatus string // running/done/drained/…
-	Wave      int
+	// RunDead is true when RunStatus is "running" but no live engine owns this
+	// run — its koryph.lock pid is dead (koryph-oixo). The RUN-level analog of
+	// a zombie SLOT: a phantom left by an engine killed without finalizing the
+	// ledger. The TUI renders it as "dead (unreconciled)" with reconcile
+	// guidance instead of a misleading live "running".
+	RunDead bool
+	Wave    int
 
 	// Slots holds the live and recently-terminal slots for this project's
 	// current (latest) run, ordered by PhaseID for stable display.

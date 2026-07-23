@@ -8,6 +8,23 @@ import (
 	"sort"
 )
 
+// RunDead reports whether run is a phantom "running" run — its status is
+// RunRunning but no live engine owns it — the RUN-level analog of the
+// dead-agent zombie SLOT check (koryph-k6o). engineAlive must be true only when
+// a live engine still holds this project's koryph.lock (Store.LockHolder ok &&
+// alive, or Store.LockPID probed through the caller's own liveness func).
+//
+// The gate is deliberately run.Status == RunRunning, NOT a general
+// !terminal-run check: paused-quota and hard-stop-quota runs also lack a live
+// engine but are intentionally parked awaiting resume, not crashed, so they
+// must render as themselves — only a status=running run whose engine is gone is
+// the phantom a killed engine (SIGKILL, no finalization) leaves behind, frozen
+// at running with nothing left to revisit it. Read-only: this never mutates the
+// run; the remediation is a separate, explicit `koryph ops reconcile`.
+func RunDead(run *Run, engineAlive bool) bool {
+	return run != nil && run.Status == RunRunning && !engineAlive
+}
+
 // Recovery decision actions (mirrors the Decision.Action contract).
 const (
 	ActionSkip          = "skip"

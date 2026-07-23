@@ -105,3 +105,21 @@ func TestZombieCell(t *testing.T) {
 		t.Errorf("zombieCell(2) = %q, want %q", got, "⚠ 2")
 	}
 }
+
+// TestReconcileHint verifies the run-level phantom guidance (koryph-oixo):
+// singular vs plural subject and that it always names `koryph ops reconcile`.
+func TestReconcileHint(t *testing.T) {
+	one := reconcileHint(1)
+	if !strings.Contains(one, "run is") || strings.Contains(one, "runs are") {
+		t.Errorf("reconcileHint(1) subject = %q, want singular", one)
+	}
+	many := reconcileHint(3)
+	if !strings.Contains(many, "3 runs are") {
+		t.Errorf("reconcileHint(3) = %q, want plural count", many)
+	}
+	for n, h := range map[int]string{1: one, 3: many} {
+		if !strings.Contains(h, "koryph ops reconcile") {
+			t.Errorf("reconcileHint(%d) = %q, want it to name `koryph ops reconcile`", n, h)
+		}
+	}
+}

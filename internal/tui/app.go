@@ -444,8 +444,15 @@ func (a App) renderHeader() string {
 	}
 	runInfo := ""
 	if a.snap.RunID != "" {
+		// Run-level liveness (koryph-oixo): a status=running run whose engine pid
+		// is dead is a phantom — render it as "dead (unreconciled)" with the
+		// dispatch-free fix inline, not a misleading live "running".
+		statusCell := a.snap.RunStatus
+		if a.snap.RunDead {
+			statusCell = "⚠ dead (unreconciled) — koryph ops reconcile"
+		}
 		runInfo = fmt.Sprintf("  run %s  wave %d  [%s]",
-			a.snap.RunID, a.snap.Wave, a.snap.RunStatus)
+			a.snap.RunID, a.snap.Wave, statusCell)
 	}
 	title := fmt.Sprintf("koryph tui  project %s%s", projectID, runInfo)
 	if a.notice != "" {
@@ -814,7 +821,8 @@ func (a App) adaptiveTick() tea.Cmd {
 // Burndown/Queue/Efficiency/Graph) is not.
 func snapshotUnchanged(prev, next cockpit.Snapshot) bool {
 	// Top-level run state.
-	if prev.RunID != next.RunID || prev.RunStatus != next.RunStatus || prev.Wave != next.Wave {
+	if prev.RunID != next.RunID || prev.RunStatus != next.RunStatus ||
+		prev.RunDead != next.RunDead || prev.Wave != next.Wave {
 		return false
 	}
 	// Slots: count, identity, and per-slot status fields.
