@@ -15,6 +15,7 @@ import (
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/stage"
+	"github.com/koryph/koryph/internal/timeoutcfg"
 )
 
 // runPipelineStages executes the project's configured post-implement stages
@@ -32,6 +33,10 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 	}
 	issue := r.issueFor(ctx, sl)
 	phaseDir := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
+	// Bead-tier timeout override (koryph-w82i): a bead `timeout:<seconds>` label
+	// applies to every stage this bead runs, above the per-stage timeout_sec and
+	// the machine-wide default. Parsed once — labels are per-bead, not per-stage.
+	beadTimeout, _ := timeoutcfg.BeadTimeout(issue.Labels)
 
 	for _, st := range r.cfg.Pipeline {
 		// Resolve the tier through modelroute so the project allowlist and any
@@ -84,6 +89,12 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		// own rebase still handles it).
 		r.rebaseWorktreeBestEffort(ctx, sl.Worktree)
 
+		// Unified stage timeout (koryph-w82i): bead label > per-stage timeout_sec
+		// > system default > built-in 1200. Resolved per stage because timeout_sec
+		// is per-stage. Also drives the timeout-degradation messages below so the
+		// operator sees the value actually enforced, not the raw config.
+		stageTimeout := timeoutcfg.Resolve(beadTimeout, st.TimeoutSec, r.systemTimeoutSec)
+
 		r.progress("bead %s: stage %q running (persona %s, model %s)", sl.PhaseID, st.Name, persona, res.Model)
 		stageStart := time.Now()
 		sr := stage.Run(ctx, stage.Opts{
@@ -95,7 +106,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			Persona:          persona,
 			Model:            res.Model,
 			Effort:           effort,
-			TimeoutSec:       st.TimeoutSec, // <=0 → stage.DefaultTimeoutSec (koryph-a59)
+			TimeoutSec:       stageTimeout, // bead>project>system>built-in (koryph-w82i)
 			ExtraPrompt:      st.Prompt,
 			BeadID:           sl.PhaseID,
 			BeadTitle:        issue.Title,
@@ -157,10 +168,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			// is not mistaken for broken work, and point the operator at the lever
 			// (its timeout_sec) rather than a phantom failure.
 			if sr.TimedOut {
-				effTimeout := st.TimeoutSec
-				if effTimeout <= 0 {
-					effTimeout = stage.DefaultTimeoutSec
-				}
+				effTimeout := stageTimeout
 				if st.Optional {
 					r.progress("bead %s: optional stage %q timed out after %ds — continuing (raise its timeout_sec)", sl.PhaseID, st.Name, effTimeout)
 					continue

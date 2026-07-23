@@ -19,6 +19,7 @@ import (
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/obs"
+	"github.com/koryph/koryph/internal/timeoutcfg"
 )
 
 // Defaults per the package contract.
@@ -26,18 +27,17 @@ const (
 	defaultPersona    = "koryph-security-reviewer"
 	defaultModel      = "opus"
 	defaultClaudeBin  = "claude"
-	defaultTimeoutSec = 600
 	defaultAttempts   = 4
 	diffStatTailLines = 40
 
-	// MaxTimeoutSec is the HARD ceiling on any single reviewer attempt: 20
-	// minutes. It is the authoritative "cannot be exceeded for any single task"
-	// bound — no per-project review config, KORYPH_REVIEW_TIMEOUT_SEC override,
-	// or adaptive escalation may push a spawn past it; a review that still
-	// times out at the ceiling degrades. internal/project mirrors this value
-	// (project.ReviewTimeoutHardCapSec) for config validation, and an
-	// engine-level drift guard asserts the two stay equal.
-	MaxTimeoutSec = 1200
+	// DefaultTimeoutSec is the reviewer's single wall-clock timeout (20 min)
+	// when no bead/project/system override applies (koryph-w82i). The former
+	// start(600)/escalate-to-1200 two-tier pair collapsed to one unified value,
+	// the built-in default of the timeout hierarchy (timeoutcfg.BuiltinDefaultSec).
+	// There is no longer a hard ceiling: a project/bead/system override may set a
+	// larger value; only the break-glass KORYPH_REVIEW_TIMEOUT_SEC env sits above
+	// the caller-supplied value.
+	DefaultTimeoutSec = timeoutcfg.BuiltinDefaultSec
 )
 
 // Exponential backoff between reviewer attempts: the nth retry waits
@@ -66,14 +66,15 @@ func backoffFor(retry int) time.Duration {
 
 // envTimeoutSec returns KORYPH_REVIEW_TIMEOUT_SEC parsed as a positive integer,
 // or 0 when unset/invalid. It is the break-glass runtime override for the
-// reviewer's STARTING timeout and takes precedence over the per-project review
-// config (same convention as KORYPH_POLL_SEC over project.poll_seconds). The
-// reviewer runs opus at xhigh effort and reads the changed files, so a large
-// diff can need well over the old 240s ceiling; exceeding the deadline
-// signal-kills the process, which previously surfaced as an opaque "reviewer
-// exit -1" (koryph review-timeout fix). Whatever this returns is still clamped
-// by resolveTimeouts to the effective ceiling (the project max, itself <=
-// MaxTimeoutSec) — no override may exceed the 20-minute per-task hard cap.
+// reviewer's wall-clock timeout and sits ABOVE the whole timeout hierarchy
+// (bead > project > system > built-in): whatever value the caller resolved and
+// threaded into Opts.TimeoutSec, a set env var wins (same convention as
+// KORYPH_POLL_SEC over project.poll_seconds). The reviewer runs opus at xhigh
+// effort and reads the changed files, so a large diff can need well over the
+// default; exceeding the deadline signal-kills the process, which previously
+// surfaced as an opaque "reviewer exit -1" (koryph review-timeout fix). There is
+// no longer any hard ceiling clamping this (koryph-w82i removed the 20-minute
+// cap) — the operator is trusted to pick a sane break-glass value.
 func envTimeoutSec() int {
 	if v := strings.TrimSpace(os.Getenv("KORYPH_REVIEW_TIMEOUT_SEC")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -83,42 +84,20 @@ func envTimeoutSec() int {
 	return 0
 }
 
-// resolveTimeouts resolves the starting per-attempt timeout and the escalation
-// ceiling from the caller/project values, applying the env override, defaults,
-// and the 20-minute hard cap. Precedence for the starting timeout:
-// KORYPH_REVIEW_TIMEOUT_SEC env (break-glass) > caller/project value >
-// defaultTimeoutSec. The ceiling defaults to (and is clamped down to)
-// MaxTimeoutSec, and the starting timeout is clamped to the ceiling — so NO
-// source (env, project config, or a directly-constructed Opts) can produce a
-// spawn longer than 20 minutes. Returned values satisfy
-// 0 < start <= max <= MaxTimeoutSec.
-func resolveTimeouts(timeoutSec, maxTimeoutSec int) (start, max int) {
-	max = maxTimeoutSec
-	if max <= 0 || max > MaxTimeoutSec {
-		max = MaxTimeoutSec
-	}
-	start = timeoutSec
+// resolveTimeout resolves the reviewer's single wall-clock timeout (koryph-w82i,
+// collapsing the former start/escalate pair). Precedence:
+// KORYPH_REVIEW_TIMEOUT_SEC env (break-glass) > the caller-supplied value (itself
+// the bead > project > system winner, resolved by timeoutcfg.Resolve at the
+// engine call site) > DefaultTimeoutSec (the built-in 1200). There is no ceiling:
+// an explicit override may exceed the default. The returned value is always > 0.
+func resolveTimeout(timeoutSec int) int {
 	if env := envTimeoutSec(); env > 0 {
-		start = env
-	} else if start <= 0 {
-		start = defaultTimeoutSec
+		return env
 	}
-	if start > max {
-		start = max
+	if timeoutSec > 0 {
+		return timeoutSec
 	}
-	return start, max
-}
-
-// escalateTimeout returns the timeout for the next reviewer attempt after a
-// wall-clock timeout: double the current value, capped at max. It lets a large
-// diff that ran out of thinking time get progressively more room on retry,
-// bounded by the 20-minute ceiling. cur is assumed already <= max.
-func escalateTimeout(cur, max int) int {
-	next := cur * 2
-	if next <= 0 || next > max { // <=0 also absorbs int overflow for huge cur
-		next = max
-	}
-	return next
+	return DefaultTimeoutSec
 }
 
 // Review runs the post-implementation review pass over o.Branch vs o.Base and
@@ -141,7 +120,7 @@ func Review(ctx context.Context, o Opts) Verdict {
 	if o.ClaudeBin == "" {
 		o.ClaudeBin = defaultClaudeBin
 	}
-	o.TimeoutSec, o.MaxTimeoutSec = resolveTimeouts(o.TimeoutSec, o.MaxTimeoutSec)
+	o.TimeoutSec = resolveTimeout(o.TimeoutSec)
 	attempts := o.Attempts
 	if attempts <= 0 {
 		attempts = defaultAttempts
@@ -210,14 +189,10 @@ func Review(ctx context.Context, o Opts) Verdict {
 			return v
 		}
 		history = append(history, attemptDiagnosis{Attempt: i + 1, Reason: v.Reason, TimedOut: v.TimedOut})
-		// Adaptive: when an attempt runs out of wall-clock, give the next one
-		// more room — double the timeout up to MaxTimeoutSec — before retrying.
-		// A rate/usage limit (the other dominant transient failure) leaves the
-		// timeout unchanged; only the backoff grows. Once at the ceiling the
-		// timeout stays put and remaining attempts retry at 20 min.
-		if v.TimedOut && o.TimeoutSec < o.MaxTimeoutSec {
-			o.TimeoutSec = escalateTimeout(o.TimeoutSec, o.MaxTimeoutSec)
-		}
+		// koryph-w82i: the reviewer now runs a single unified timeout with no
+		// per-attempt escalation. A transient failure (timeout, rate/usage
+		// limit, bad reply) is still retried up to Opts.Attempts times with
+		// exponential backoff; each retry reuses the same resolved timeout.
 		last = v
 	}
 	persistDegraded(o, last, history)
@@ -296,10 +271,7 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	if res.ExitCode != 0 {
 		sp.End(0, fmt.Errorf("exit %d (timed_out=%v)", res.ExitCode, res.TimedOut))
 		if res.TimedOut {
-			if o.TimeoutSec >= o.MaxTimeoutSec {
-				return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds — the %d-minute per-task ceiling (opus %s effort on this diff); split the change into smaller beads", o.TimeoutSec, o.MaxTimeoutSec/60, o.Effort))
-			}
-			return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds (opus %s effort on this diff); the loop escalates the timeout on retry up to %ds — tune review.timeout_seconds / review.max_timeout_seconds", o.TimeoutSec, o.Effort, o.MaxTimeoutSec))
+			return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds (opus %s effort on this diff); raise review.timeout_seconds, add a bead `timeout:<seconds>` label, or set the machine-wide default_timeout_seconds — or split the change into smaller beads", o.TimeoutSec, o.Effort))
 		}
 		return degradedReason(fmt.Sprintf("reviewer exit %d: %s", res.ExitCode, strings.TrimSpace(agentjson.Tail(res.Stderr, 300))))
 	}
@@ -337,9 +309,10 @@ func degradedReason(reason string) Verdict {
 }
 
 // degradedTimeout is degradedReason for a wall-clock timeout: it additionally
-// flags TimedOut so the retry loop escalates the timeout before the next
-// attempt (the only degradation the loop responds to by growing the deadline
-// rather than just backing off).
+// flags TimedOut so the per-attempt history records that this attempt was killed
+// for exceeding its deadline (as opposed to a rate limit or bad reply), which the
+// degraded artifact annotates. Since koryph-w82i the loop no longer escalates the
+// timeout on retry — the flag is diagnostic only.
 func degradedTimeout(reason string) Verdict {
 	v := degradedReason(reason)
 	v.TimedOut = true

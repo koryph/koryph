@@ -334,15 +334,13 @@
       "properties": {
         "timeout_seconds": {
           "type": "integer",
-          "maximum": 1200,
           "minimum": 0,
-          "description": "TimeoutSeconds is the STARTING per-attempt reviewer timeout in seconds\n(default DefaultReviewTimeoutSec, 600). Zero/absent resolves to the\ndefault. Must be \u003c= ReviewTimeoutHardCapSec. The break-glass\nKORYPH_REVIEW_TIMEOUT_SEC env override still takes precedence over this\nvalue (same convention as KORYPH_POLL_SEC over poll_seconds)."
+          "description": "TimeoutSeconds is the reviewer's wall-clock timeout in seconds for this\nproject. Zero/absent falls through to the system default and then the\nbuilt-in (DefaultReviewTimeoutSec, 1200). Since koryph-w82i there is no\nupper ceiling — only \u003e0 is validated — so a project may set a value larger\nthan the default. The break-glass KORYPH_REVIEW_TIMEOUT_SEC env override\nstill takes precedence at spawn time (same convention as KORYPH_POLL_SEC\nover poll_seconds)."
         },
         "max_timeout_seconds": {
           "type": "integer",
-          "maximum": 1200,
           "minimum": 0,
-          "description": "MaxTimeoutSeconds caps how far a timed-out review may escalate (default\nand hard ceiling ReviewTimeoutHardCapSec, 1200 = 20 min). A project may\nset a LOWER ceiling; it can never exceed 1200. Zero/absent resolves to\nthe default."
+          "description": "MaxTimeoutSeconds is DEPRECATED (koryph-w82i collapsed the former\nstart/escalate two-tier reviewer timeout into the single TimeoutSeconds\nabove). It is still accepted so existing koryph.project.json files keep\nparsing, but it is IGNORED during resolution; `koryph doctor` emits a NOTE\nwhen it is set, pointing at timeout_seconds. Remove it from your config."
         }
       },
       "additionalProperties": false,
@@ -694,7 +692,7 @@
     },
     "review": {
       "$ref": "#/$defs/ReviewConfig",
-      "description": "Review tunes the post-implementation reviewer's per-attempt wall-clock\nbudget for this project (starting timeout + escalation ceiling, bounded by\nthe 20-minute hard cap). Nil = absent; use EffectiveReview() to get the\nresolved values with defaults."
+      "description": "Review tunes the post-implementation reviewer's single wall-clock timeout\nfor this project — the project tier of the unified timeout hierarchy\n(koryph-w82i). Nil = absent; use EffectiveReview() to get the resolved\nvalue."
     }
   },
   "additionalProperties": false,

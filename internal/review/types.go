@@ -21,10 +21,11 @@
 //     with a prompt containing `git diff --stat <base>...<branch>` (tail 40
 //     lines) + the changed-file list, asking for STRICT JSON
 //     {"blocking": bool, "findings":[{"severity","file","summary"}]}.
-//     Env from account.Env (subscription). Timeout Opts.TimeoutSec (default
-//     600s), escalated toward Opts.MaxTimeoutSec on a wall-clock timeout and
-//     hard-capped at MaxTimeoutSec (20 min). Persist the raw verdict to
-//     Opts.OutPath (review.json).
+//     Env from account.Env (subscription). Timeout Opts.TimeoutSec — a single
+//     unified value (default DefaultTimeoutSec, 1200s), the bead > project >
+//     system > built-in winner resolved by the caller (koryph-w82i); no
+//     escalation, no hard cap. Persist the raw verdict to Opts.OutPath
+//     (review.json).
 package review
 
 import "github.com/koryph/koryph/internal/account"
@@ -69,16 +70,13 @@ type Opts struct {
 	Profile   account.Profile
 	OutPath   string // review.json destination
 	ClaudeBin string // default "claude"
-	// TimeoutSec is the STARTING per-attempt wall-clock timeout in seconds
-	// (<=0 → KORYPH_REVIEW_TIMEOUT_SEC env, else defaultTimeoutSec, 600). On a
-	// wall-clock timeout the retry loop escalates it toward MaxTimeoutSec; it is
-	// always clamped to MaxTimeoutSec (the 20-minute hard cap).
+	// TimeoutSec is the reviewer's single wall-clock timeout in seconds
+	// (koryph-w82i). The caller supplies the bead > project > system winner
+	// (timeoutcfg.Resolve); <=0 falls back to DefaultTimeoutSec (1200). The
+	// break-glass KORYPH_REVIEW_TIMEOUT_SEC env still overrides it. There is no
+	// escalation and no hard ceiling — a large override is honored verbatim.
 	TimeoutSec int
-	// MaxTimeoutSec caps how far a timeout may escalate (<=0 → MaxTimeoutSec,
-	// the 1200s / 20-minute hard ceiling). Values above the hard ceiling are
-	// clamped down: no single review may exceed 20 minutes.
-	MaxTimeoutSec int
-	Attempts      int // reviewer spawn attempts before degrading (default 4)
+	Attempts   int // reviewer spawn attempts before degrading (default 4)
 
 	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
 	// (koryph-3l1.1), threaded from the caller's registry.Record via

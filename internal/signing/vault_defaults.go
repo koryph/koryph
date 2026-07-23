@@ -88,6 +88,16 @@ type GlobalConfig struct {
 	// any command that stores or fetches a secret when no project-level vault
 	// block is configured (signing setup, bot create, …).
 	Vault *VaultDefaults `json:"vault,omitempty"`
+
+	// DefaultTimeoutSeconds is the machine-wide default agent-facing wall
+	// timeout in seconds — the "system" tier of the unified timeout hierarchy
+	// (koryph-w82i): it applies to every project on this machine that does not
+	// set its own review.timeout_seconds / stage timeout_sec /
+	// epic_validation.timeout_seconds, and is itself overridden by a bead's
+	// `timeout:<seconds>` label. Zero/absent means "use the built-in default"
+	// (timeoutcfg.BuiltinDefaultSec, 1200s). Must be > 0 when set; there is no
+	// upper ceiling. The precedence and resolution live in internal/timeoutcfg.
+	DefaultTimeoutSeconds int `json:"default_timeout_seconds,omitempty"`
 }
 
 // LoadGlobalConfig reads ~/.koryph/config.json, returning an empty
@@ -112,6 +122,9 @@ func SaveGlobalConfig(cfg *GlobalConfig) error {
 		if err := cfg.Vault.Validate(); err != nil {
 			return fmt.Errorf("global config: %w", err)
 		}
+	}
+	if cfg.DefaultTimeoutSeconds < 0 {
+		return fmt.Errorf("global config: default_timeout_seconds must be > 0, got %d", cfg.DefaultTimeoutSeconds)
 	}
 	return fsx.WriteJSONAtomic(GlobalConfigPath(), cfg)
 }

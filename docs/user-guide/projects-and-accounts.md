@@ -40,7 +40,7 @@ by `koryph validate`.
 | `dispatch_stagger_seconds` | int | 8 | Seconds between agent launches within a wave. |
 | `poll_seconds` | int | 10 | Poll-tick interval (seconds) for reading slot `status.json` heartbeats. 0 uses the engine default (10 s). Overridden by `KORYPH_POLL_SEC` or `Options.PollSec` at the programmatic call site. |
 | `dispatch_mode` | string | `"wave"` | `"wave"` or `"rolling"`. Rolling continuously refills a slot as it frees up instead of waiting for the whole batch; see [Running Waves](running-waves.md#dispatch-mode-wave-vs-rolling). `--dispatch-mode` on `koryph run` overrides this per run. |
-| `review` | object | — | Post-implementation reviewer timeout budget: `{timeout_seconds?, max_timeout_seconds?}`. See [Reviewer timeout](#reviewer-timeout) below. |
+| `review` | object | — | Post-implementation reviewer timeout: `{timeout_seconds?}`. See [Agent timeouts](#agent-timeouts) below. |
 
 **Conventional commits are enforced by default.** With `commit_style` unset or
 `"conventional"`, the merge and PR paths validate every commit subject in
@@ -52,38 +52,51 @@ nothing non-conventional lands. Set `commit_style` to `"none"` to opt out, or
 `"custom"` (with `commit_template`) to govern messages by a project template
 instead.
 
-### Reviewer timeout
+### Agent timeouts
 
-The optional `review` block tunes how long the post-implementation reviewer
-(`--review`) may run per attempt. The reviewer runs `opus` and reads the changed
-files, so a large diff can need more wall-clock than a small one.
+koryph uses **one** agent-facing wall timeout, defaulting to **1200 s (20
+minutes)**, for every agent it spawns on your behalf: the post-implementation
+reviewer (`--review`), each post-implement pipeline stage, and epic validation.
+(Implementer agents themselves are budget-bound, not wall-bound, and are not
+affected.) That single default is overridable at three levels, in strict
+precedence:
 
-| Field | Type | Default | Purpose |
-|---|---|---|---|
-| `timeout_seconds` | int | 600 | Starting per-attempt wall-clock deadline. Must be ≤ 1200. |
-| `max_timeout_seconds` | int | 1200 | Ceiling the timeout may escalate to. May be **lower** than 1200, never higher. |
+**bead → project → system → built-in (1200)**
 
-**The loop reacts to a timeout by increasing it.** When a review attempt is
-killed for running out of time, the next retry **doubles** the deadline toward
-`max_timeout_seconds` — so an oversized diff gets progressively more room instead
-of failing at a fixed limit. A rate-limit failure (the other transient cause)
-does not grow the timeout; only the retry backoff does.
+| Level | Where | How |
+|---|---|---|
+| **bead** | a bead label | `timeout:<seconds>` — a bare label (like `model:opus`). Applies to that bead's reviewer/stage timeouts. |
+| **project** | `koryph.project.json` | `review.timeout_seconds`, a pipeline stage's `timeout_sec`, `epic_validation.timeout_seconds`. |
+| **system** | `~/.koryph/config.json` | `default_timeout_seconds` — a machine-wide default for every project that sets nothing. |
+| **built-in** | — | 1200 s when nothing above is set. |
 
-**20 minutes is a hard ceiling.** No single review may run longer than 1200 s
-(20 minutes) for any one task — `max_timeout_seconds` cannot be set above it
-(`koryph validate` rejects a larger value), and escalation never exceeds it. A
-review that still times out at the ceiling degrades, and with `--review` a
-degraded verdict blocks the merge (koryph never auto-merges unreviewed work);
-the surfaced reason suggests splitting the change into smaller beads.
+There is **no upper ceiling**: any level may set a value larger than the
+default when a genuinely large change needs more room. Only positive values
+count — `0`/absent means "not set at this level", so the next level down wins.
 
-The break-glass `KORYPH_REVIEW_TIMEOUT_SEC` environment variable overrides the
-**starting** timeout at runtime (it still cannot exceed the ceiling), taking
-precedence over `timeout_seconds` — the same convention as `KORYPH_POLL_SEC`
-over `poll_seconds`.
+The break-glass `KORYPH_REVIEW_TIMEOUT_SEC` environment variable still overrides
+the **reviewer** timeout at runtime, above the whole hierarchy — the same
+convention as `KORYPH_POLL_SEC` over `poll_seconds`.
+
+A review that times out degrades, and with `--review` a degraded verdict blocks
+the merge (koryph never auto-merges unreviewed work); the surfaced reason
+suggests raising the timeout or splitting the change into smaller beads. A
+pipeline stage that times out **after** committing degrades gracefully (its
+completed work lands, a follow-up is flagged) rather than parking the bead.
 
 ```json
-{ "review": { "timeout_seconds": 900, "max_timeout_seconds": 1200 } }
+{ "review": { "timeout_seconds": 1800 } }
 ```
+
+```jsonc
+// ~/.koryph/config.json — a machine-wide default for every project
+{ "default_timeout_seconds": 1800 }
+```
+
+> **Deprecated:** `review.max_timeout_seconds` (the old escalation ceiling) is
+> ignored — koryph now runs a single timeout with no escalation. Existing files
+> still parse; `koryph doctor` NOTEs a lingering value. Remove it and use
+> `review.timeout_seconds`.
 
 ### Minimal example
 
@@ -170,7 +183,7 @@ may add its own commits (docs, tests, changelog, …):
 | `effort` | Reasoning-effort hint. |
 | `prompt` | Extra stage-specific instructions appended to the built stage prompt. |
 | `optional` | `true` → a failed stage logs and continues. Default `false` → a failed stage **blocks the bead** (never auto-merges past incomplete pipeline work). |
-| `timeout_sec` | Per-stage wall-clock deadline in seconds. `≤ 0` (or omitted) uses the built-in default (600 s). Raise it for a legitimately slow stage rather than letting it time out. |
+| `timeout_sec` | Per-stage wall-clock deadline in seconds — the project level of the [agent-timeout hierarchy](#agent-timeouts). `≤ 0` (or omitted) falls through to the machine-wide `default_timeout_seconds` and then the built-in default (1200 s); a bead `timeout:<seconds>` label overrides it. Raise it for a legitimately slow stage rather than letting it time out. |
 
 ```json
 { "pipeline": [ { "name": "docs", "timeout_sec": 1200 } ] }

@@ -129,7 +129,7 @@ default. The block is optional; all fields below show their defaults.
 | `persona` | `"koryph-epic-validator"` | Agent file used as the validator. |
 | `max_rounds` | `2` | Validation rounds before the epic is parked. Must be ≥ 1 when set. |
 | `auto_close` | `true` | Close the epic automatically after a passing validation (and after the docs bead merges, when `docs_update` is enabled). `false` leaves closure a manual act. |
-| `timeout_seconds` | `420` | Per-run wall-clock timeout. Exceeded → `validation:degraded` with a reason naming the timeout (e.g. `validator timed out after 420s (timeout_seconds=420; large epics commonly need more)`). The default does not scale with epic size — it was sized for small epics. 6+ child epics commonly need 900s+ at opus effort; projects whose epics regularly exceed ~5 children should raise this explicitly. |
+| `timeout_seconds` | `1200` | Per-run wall-clock timeout — the project level of the unified [agent-timeout hierarchy](projects-and-accounts.md#agent-timeouts). Unset falls through to the machine-wide `default_timeout_seconds` and then the built-in 1200 s; a `timeout:<seconds>` label on the epic overrides it. Exceeded → `validation:degraded` with a reason naming the timeout. Large epics (6+ children) at opus effort can still need more — raise this (or the epic's `timeout:` label) explicitly. |
 | `structural_parent` | _(absent)_ | Bead id of the epic or container under which structural findings are filed. Empty means standalone. |
 
 ### The docs update stage

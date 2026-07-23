@@ -19,15 +19,18 @@ import (
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
+	"github.com/koryph/koryph/internal/timeoutcfg"
 )
 
 // Defaults per the package contract.
 const (
 	defaultClaudeBin = "claude"
-	// DefaultTimeoutSec bounds a stage agent when the pipeline stage sets no
-	// explicit TimeoutSec. Exported so the engine can name it when a stage times
-	// out (koryph-a59).
-	DefaultTimeoutSec = 600
+	// DefaultTimeoutSec bounds a stage agent when neither the bead
+	// (`timeout:<seconds>` label), the pipeline stage (timeout_sec), nor the
+	// system default sets one. Unified to the built-in 1200s
+	// (timeoutcfg.BuiltinDefaultSec) by koryph-w82i, up from the former 600s.
+	// Exported so the engine can name it when a stage times out (koryph-a59).
+	DefaultTimeoutSec = timeoutcfg.BuiltinDefaultSec
 	changedFilesTail  = 60
 )
 

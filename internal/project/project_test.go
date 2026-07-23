@@ -645,46 +645,50 @@ func TestEpicValidationConfig_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestReviewConfig_Defaults covers ReviewConfig.Effective(): the absent block,
-// a zero-value block, an explicit lower ceiling, and clamping of over-cap or
-// mis-ordered values to the 20-minute hard ceiling.
+// TestReviewConfig_Defaults covers ReviewConfig.Effective() under the unified
+// single-timeout model (koryph-w82i): a configured TimeoutSeconds passes through
+// verbatim, zero/absent stays zero (the engine resolves it through the timeout
+// hierarchy), and the deprecated MaxTimeoutSeconds is always cleared.
 func TestReviewConfig_Defaults(t *testing.T) {
 	cases := []struct {
-		name                        string
-		in                          *ReviewConfig
-		wantTimeout, wantMaxTimeout int
+		name        string
+		in          *ReviewConfig
+		wantTimeout int
 	}{
-		{"nil block", nil, DefaultReviewTimeoutSec, ReviewTimeoutHardCapSec},
-		{"zero-value block", &ReviewConfig{}, DefaultReviewTimeoutSec, ReviewTimeoutHardCapSec},
-		{"explicit start", &ReviewConfig{TimeoutSeconds: 300}, 300, ReviewTimeoutHardCapSec},
-		{"lower ceiling", &ReviewConfig{MaxTimeoutSeconds: 900}, DefaultReviewTimeoutSec, 900},
-		{"over-cap ceiling clamped", &ReviewConfig{MaxTimeoutSeconds: 5000}, DefaultReviewTimeoutSec, ReviewTimeoutHardCapSec},
-		{"over-cap start clamped to hard cap", &ReviewConfig{TimeoutSeconds: 5000}, ReviewTimeoutHardCapSec, ReviewTimeoutHardCapSec},
-		{"start above configured ceiling", &ReviewConfig{TimeoutSeconds: 800, MaxTimeoutSeconds: 500}, 500, 500},
+		{"nil block", nil, 0},
+		{"zero-value block", &ReviewConfig{}, 0},
+		{"explicit timeout", &ReviewConfig{TimeoutSeconds: 300}, 300},
+		{"timeout may exceed built-in default", &ReviewConfig{TimeoutSeconds: 5000}, 5000},
+		{"deprecated max ignored", &ReviewConfig{TimeoutSeconds: 300, MaxTimeoutSeconds: 900}, 300},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.in.Effective()
-			if got.TimeoutSeconds != tc.wantTimeout || got.MaxTimeoutSeconds != tc.wantMaxTimeout {
-				t.Errorf("Effective() = {timeout:%d max:%d}, want {timeout:%d max:%d}",
-					got.TimeoutSeconds, got.MaxTimeoutSeconds, tc.wantTimeout, tc.wantMaxTimeout)
+			if got.TimeoutSeconds != tc.wantTimeout {
+				t.Errorf("Effective().TimeoutSeconds = %d, want %d", got.TimeoutSeconds, tc.wantTimeout)
 			}
-			if got.MaxTimeoutSeconds > ReviewTimeoutHardCapSec || got.TimeoutSeconds > got.MaxTimeoutSeconds {
-				t.Errorf("Effective() violates invariants: %+v", got)
+			if got.MaxTimeoutSeconds != 0 {
+				t.Errorf("Effective().MaxTimeoutSeconds = %d, want 0 (deprecated/ignored)", got.MaxTimeoutSeconds)
 			}
 		})
 	}
 
-	// EffectiveReview() on a Config with no review block resolves to defaults.
+	// EffectiveReview() on a Config with no review block returns the unset (0)
+	// project value — the engine resolves the default through the hierarchy.
 	c := Default("proj")
-	if got := c.EffectiveReview(); got.TimeoutSeconds != DefaultReviewTimeoutSec || got.MaxTimeoutSeconds != ReviewTimeoutHardCapSec {
-		t.Errorf("EffectiveReview() default = %+v", got)
+	if got := c.EffectiveReview(); got.TimeoutSeconds != 0 || got.MaxTimeoutSeconds != 0 {
+		t.Errorf("EffectiveReview() default = %+v, want zero", got)
+	}
+	// The unified built-in default is 20 minutes (mirrors review.DefaultTimeoutSec).
+	if DefaultReviewTimeoutSec != 1200 {
+		t.Errorf("DefaultReviewTimeoutSec = %d, want 1200", DefaultReviewTimeoutSec)
 	}
 }
 
-// TestReviewConfig_Validation covers the review block contract: timeouts are
-// non-negative, neither exceeds the 20-minute hard cap, and the start must not
-// exceed the ceiling. Absent/zero fields are always valid.
+// TestReviewConfig_Validation covers the review block contract under koryph-w82i:
+// timeouts are non-negative and there is no upper ceiling (a project may exceed
+// the built-in default). The deprecated max_timeout_seconds is still accepted
+// (validated non-negative, otherwise ignored). Absent/zero fields are valid.
 func TestReviewConfig_Validation(t *testing.T) {
 	base := func(rc *ReviewConfig) *Config {
 		c := Default("proj")
@@ -699,12 +703,11 @@ func TestReviewConfig_Validation(t *testing.T) {
 		{"nil block is fine", nil, ""},
 		{"zero-value block is fine", &ReviewConfig{}, ""},
 		{"in-range values are valid", &ReviewConfig{TimeoutSeconds: 300, MaxTimeoutSeconds: 900}, ""},
-		{"start at hard cap is valid", &ReviewConfig{TimeoutSeconds: ReviewTimeoutHardCapSec}, ""},
-		{"start over hard cap is rejected", &ReviewConfig{TimeoutSeconds: 1201}, "timeout_seconds must be <= 1200"},
-		{"max over hard cap is rejected", &ReviewConfig{MaxTimeoutSeconds: 1800}, "max_timeout_seconds must be <= 1200"},
+		{"timeout above old cap is valid (no ceiling)", &ReviewConfig{TimeoutSeconds: 1201}, ""},
+		{"large timeout is valid (no ceiling)", &ReviewConfig{TimeoutSeconds: 5000}, ""},
+		{"deprecated max above old cap is accepted", &ReviewConfig{MaxTimeoutSeconds: 1800}, ""},
 		{"negative start is rejected", &ReviewConfig{TimeoutSeconds: -1}, "timeout_seconds must be >= 0"},
 		{"negative max is rejected", &ReviewConfig{MaxTimeoutSeconds: -1}, "max_timeout_seconds must be >= 0"},
-		{"start above max is rejected", &ReviewConfig{TimeoutSeconds: 900, MaxTimeoutSeconds: 500}, "must be <= review.max_timeout_seconds"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

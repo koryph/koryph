@@ -116,6 +116,14 @@ type runner struct {
 	owner    string
 	width    int
 
+	// systemTimeoutSec is the machine-wide default agent-facing wall timeout
+	// (~/.koryph/config.json default_timeout_seconds) — the "system" tier of the
+	// unified timeout hierarchy (koryph-w82i). 0 = unset (falls through to the
+	// built-in 1200 in timeoutcfg.Resolve). Loaded once at Run() setup; read by
+	// the review/stage/epic-validation call sites below the bead label and the
+	// project config.
+	systemTimeoutSec int
+
 	dispatched         int
 	govWarned          bool
 	uncalibratedWarned bool // koryph-grz: loud uncalibrated-governor warning fired once this run
@@ -365,6 +373,15 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	}
 	defer func() { _ = lock.Unlock() }()
 
+	// System-tier timeout default (koryph-w82i): the machine-wide
+	// ~/.koryph/config.json default_timeout_seconds, resolved once. An absent or
+	// unreadable global config is a non-fatal 0 — timeoutcfg falls through to the
+	// built-in 1200.
+	systemTimeoutSec := 0
+	if gc, gerr := signing.LoadGlobalConfig(); gerr == nil {
+		systemTimeoutSec = gc.DefaultTimeoutSeconds
+	}
+
 	r := &runner{
 		opts:             opts,
 		reg:              reg,
@@ -383,6 +400,7 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		gov:              govern.NewStore(),
 		owner:            fmt.Sprintf("koryph@%s:%d", hostName(), os.Getpid()),
 		width:            effectiveWidth(opts.Max, cfg.MaxConcurrentSlots),
+		systemTimeoutSec: systemTimeoutSec,
 		issues:           map[string]beads.Issue{},
 		billing:          account.BillingSubscription,
 	}

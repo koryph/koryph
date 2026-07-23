@@ -587,23 +587,20 @@ to `ps` (no per-process disk I/O there), other platforms report unavailable.
 
 Runs a read-only post-implementation review pass before a branch is merged.
 
-- **`Opts`** — branch, project root, model, and the timeout budget
-  (`TimeoutSec` starting deadline, `MaxTimeoutSec` escalation ceiling)
+- **`Opts`** — branch, project root, model, and the single `TimeoutSec`
 - **`Finding`** — one review comment (file, line, severity, message)
 - **`Verdict`** — pass/fail + `[]Finding` (`TimedOut` flags a deadline kill)
 - **`Review(ctx, o)`** — launch reviewer agent, collect `Verdict`
 
-**Timeout budget.** Each attempt runs under a wall-clock deadline. It starts at
-`Opts.TimeoutSec` (resolved: `KORYPH_REVIEW_TIMEOUT_SEC` env > project
-`review.timeout_seconds` > 600s default) and, when an attempt is killed for
-running out of time, the retry loop **doubles** the deadline toward
-`Opts.MaxTimeoutSec` before the next attempt — so a large diff gets
-progressively more room. `review.MaxTimeoutSec` (1200s / 20 min) is the hard
-ceiling: no env override, project config, or escalation may exceed it, and every
-resolved value is clamped to it (`resolveTimeouts`). `internal/project` mirrors
-the ceiling as `project.ReviewTimeoutHardCapSec`; an `internal/engine` drift
-guard asserts the two stay equal. A rate/usage limit (the other transient
-failure) leaves the timeout unchanged — only the exponential backoff grows.
+**Timeout (koryph-w82i).** Each attempt runs under one wall-clock deadline —
+`Opts.TimeoutSec`, the caller-resolved bead > project > system > built-in winner
+(see [`timeoutcfg`](#timeoutcfg)). The former start/escalate two-tier pair and
+the 20-minute hard cap were removed: there is no escalation and no ceiling. The
+package resolves `Opts.TimeoutSec` <= 0 to `review.DefaultTimeoutSec`
+(`timeoutcfg.BuiltinDefaultSec`, 1200) and lets the break-glass
+`KORYPH_REVIEW_TIMEOUT_SEC` env override win at spawn time (`resolveTimeout`). A
+persistent timeout degrades after all attempts; retries reuse the same deadline
+with exponential backoff.
 
 ## runtime
 
@@ -716,8 +713,8 @@ Runs one post-implement pipeline stage: a write-capable persona agent executed
 synchronously in the implementer's worktree (before review/merge) under the same
 account/billing/identity guarantees as a dispatch.
 
-- **`Opts`** — worktree, branch, resolved persona + model, per-stage prompt, profile/billing
-- **`Result`** — `Ran` / `OK` / `CostUSD` / `Note`
+- **`Opts`** — worktree, branch, resolved persona + model, per-stage prompt, profile/billing, and `TimeoutSec` (the caller-resolved bead > project > system > built-in winner; `<= 0` → `DefaultTimeoutSec`, 1200)
+- **`Result`** — `Ran` / `OK` / `TimedOut` / `CostUSD` / `Note`
 - **`Run(ctx, o)`** — verify identity, run the `dontAsk` claude one-shot, persist the envelope, report cost
 
 ## sysdeps
@@ -745,6 +742,27 @@ gate is a safety rail, not a correctness dependency.
 - **`Available()`** — current `Stat` (`TotalBytes`, `AvailableBytes`)
 - **`DefaultFloorMB(totalMB)`** — auto-floor sizing, clamped for small/large hosts
 - **`ErrUnsupported`** — platform has no probe; fail open
+
+## timeoutcfg
+
+The single home for koryph's unified agent-facing wall timeout and its override
+hierarchy (koryph-w82i). One built-in default governs every agent koryph spawns
+on the operator's behalf — the post-implementation reviewer, each pipeline
+stage, and epic validation — overridable at three levels in strict precedence:
+**bead > project > system > built-in (1200)**.
+
+- **`BuiltinDefaultSec`** — the built-in 20-minute (1200s) default; `review` and
+  `stage` both anchor their `DefaultTimeoutSec` to it, and an `internal/engine`
+  drift guard asserts they stay equal.
+- **`BeadTimeout(labels)`** — parses a bead's bare `timeout:<seconds>` label
+  (mirrors `modelroute`'s `model:<tier>` grammar); returns `(sec, ok)`.
+- **`Resolve(bead, project, system)`** — the precedence walk; each arg `<= 0`
+  means "unset at that level", always returns a positive value, and imposes no
+  ceiling (an explicit override may exceed the default).
+
+The system tier lives in `signing.GlobalConfig.DefaultTimeoutSeconds`
+(`~/.koryph/config.json`); `internal/engine` loads it once and threads it,
+alongside the bead label and the project config, into `Resolve` at each spawn.
 
 ## tui
 

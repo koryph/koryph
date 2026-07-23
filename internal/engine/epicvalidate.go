@@ -12,6 +12,7 @@ import (
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/modelroute"
+	"github.com/koryph/koryph/internal/timeoutcfg"
 )
 
 // Epic validation — the in-loop trigger (design §2/§4/§4b,
@@ -172,6 +173,19 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 				validateEffort = metaEffort
 			}
 		}
+		// Unified epic-validation timeout (koryph-w82i): wire epicreview into the
+		// bead > project > system > built-in hierarchy. Use the RAW project value
+		// (0 when the block omits timeout_seconds) rather than the Effective
+		// default, so the machine-wide default and the built-in 1200 can win when
+		// the project sets nothing — and so this does not touch epicreview's own
+		// default constant (owned by koryph-hwlw). A bead `timeout:<seconds>`
+		// label on the epic overrides all of them.
+		rawEpicTimeout := 0
+		if r.cfg.EpicValidation != nil {
+			rawEpicTimeout = r.cfg.EpicValidation.TimeoutSeconds
+		}
+		epicBeadTimeout, _ := timeoutcfg.BeadTimeout(epic.Labels)
+		epicTimeout := timeoutcfg.Resolve(epicBeadTimeout, rawEpicTimeout, r.systemTimeoutSec)
 		opts := epicreview.Opts{
 			EpicID:          epicID,
 			EpicTitle:       epic.Title,
@@ -185,7 +199,7 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 			Persona:         evcfg.Persona,
 			Model:           evcfg.Model,
 			Effort:          validateEffort,
-			TimeoutSec:      evcfg.TimeoutSeconds,
+			TimeoutSec:      epicTimeout,
 			OutDir:          outDir,
 			// Deliberately the project's live config, NOT a bead-scoped arm
 			// lookup (koryph-3l1.3): epic validation spans every child of the

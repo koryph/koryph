@@ -21,6 +21,8 @@ import (
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/review"
+	"github.com/koryph/koryph/internal/signing"
+	"github.com/koryph/koryph/internal/timeoutcfg"
 )
 
 // PRMeta is the pull-request metadata review-pr needs.
@@ -314,19 +316,26 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	if _, metaEffort, _, err := modelroute.PersonaMeta(rec.Root, prReviewPersona); err == nil {
 		prReviewEffort = metaEffort
 	}
+	// Unified reviewer timeout (koryph-w82i): project > system > built-in. This
+	// path reviews arbitrary open PRs on operator demand (no ledger.Slot, no
+	// bead labels), so there is no bead tier to consult here.
+	sysTimeout := 0
+	if gc, gerr := signing.LoadGlobalConfig(); gerr == nil {
+		sysTimeout = gc.DefaultTimeoutSeconds
+	}
 	rc := cfg.EffectiveReview()
+	reviewTimeout := timeoutcfg.Resolve(0, rc.TimeoutSeconds, sysTimeout)
 	v := reviewer(ctx, review.Opts{
-		RepoRoot:      rec.Root,
-		Worktree:      wt,
-		Branch:        ref,
-		Base:          rec.DefaultBranch,
-		Persona:       prReviewPersona,
-		Model:         modelroute.TierOpus,
-		Effort:        prReviewEffort,
-		Profile:       account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
-		ClaudeBin:     os.Getenv(envClaudeBin),
-		TimeoutSec:    rc.TimeoutSeconds,
-		MaxTimeoutSec: rc.MaxTimeoutSeconds,
+		RepoRoot:   rec.Root,
+		Worktree:   wt,
+		Branch:     ref,
+		Base:       rec.DefaultBranch,
+		Persona:    prReviewPersona,
+		Model:      modelroute.TierOpus,
+		Effort:     prReviewEffort,
+		Profile:    account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
+		ClaudeBin:  os.Getenv(envClaudeBin),
+		TimeoutSec: reviewTimeout,
 		// Deliberately the project's live config, not a bead-scoped arm
 		// (koryph-3l1.3): `koryph review-pr`/review-queue reviews arbitrary
 		// open GitHub PRs on operator demand — outside the wave/rolling

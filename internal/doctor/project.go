@@ -285,6 +285,7 @@ const (
 	checkNameStalledRuns     = "stalled-runs"
 	checkNameOrphanWorktrees = "orphan-worktrees"
 	checkNameAssetDrift      = "asset-drift"
+	checkNameReviewTimeout   = "review-timeout-config"
 )
 
 // RunProject executes project-scoped health checks and returns the report.
@@ -310,6 +311,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	if cfg != nil {
 		r.addAll(checkSigning(cfg))
 		r.add(checkProtectedPaths(cfg))
+		r.add(checkReviewTimeoutConfig(cfg))
 	}
 	r.addAll(checkStalledRuns(opts, repoRoot))
 	r.addAll(checkOrphanWorktrees(opts, repoRoot, cfg))
@@ -604,6 +606,28 @@ func checkProtectedPaths(cfg *project.Config) Finding {
 		Check:   checkNameProtectedPaths,
 		Level:   LevelOK,
 		Message: fmt.Sprintf("%d extra protected path(s)", len(cfg.ProtectedPaths)),
+	}
+}
+
+// checkReviewTimeoutConfig surfaces the deprecated review.max_timeout_seconds
+// field (koryph-w82i collapsed the two-tier reviewer timeout into a single
+// review.timeout_seconds). The field is still accepted so existing project files
+// keep parsing, but it is ignored during resolution — so a lingering value is a
+// silent no-op the operator should clean up. Absent field = OK.
+func checkReviewTimeoutConfig(cfg *project.Config) Finding {
+	if cfg.Review == nil || cfg.Review.MaxTimeoutSeconds == 0 {
+		return Finding{
+			Check:   checkNameReviewTimeout,
+			Level:   LevelOK,
+			Message: "review timeout config uses the unified single timeout",
+		}
+	}
+	return Finding{
+		Check: checkNameReviewTimeout,
+		Level: LevelWarn,
+		Message: fmt.Sprintf(
+			"review.max_timeout_seconds (%d) is DEPRECATED and ignored (koryph-w82i unified the reviewer timeout into a single value); remove it and use review.timeout_seconds",
+			cfg.Review.MaxTimeoutSeconds),
 	}
 }
 

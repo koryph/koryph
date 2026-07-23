@@ -335,6 +335,32 @@ func TestSigningConfiguredOK(t *testing.T) {
 	}
 }
 
+// --- review-timeout deprecation ---
+
+func TestCheckReviewTimeoutConfig(t *testing.T) {
+	cases := []struct {
+		name  string
+		cfg   *project.Config
+		want  Level
+		msgIn string
+	}{
+		{"no review block", &project.Config{}, LevelOK, "unified"},
+		{"only timeout_seconds", &project.Config{Review: &project.ReviewConfig{TimeoutSeconds: 900}}, LevelOK, "unified"},
+		{"deprecated max set", &project.Config{Review: &project.ReviewConfig{MaxTimeoutSeconds: 1200}}, LevelWarn, "DEPRECATED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := checkReviewTimeoutConfig(tc.cfg)
+			if f.Level != tc.want {
+				t.Errorf("Level = %s, want %s", f.Level, tc.want)
+			}
+			if !strings.Contains(f.Message, tc.msgIn) {
+				t.Errorf("Message %q missing %q", f.Message, tc.msgIn)
+			}
+		})
+	}
+}
+
 // --- protected-paths ---
 
 func TestProtectedPathsEmpty(t *testing.T) {

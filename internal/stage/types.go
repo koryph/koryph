@@ -16,7 +16,7 @@
 //     claude -p --agent <persona> --permission-mode dontAsk --model <model>
 //     [--effort <e>] [--max-budget-usd <n>] --fallback-model sonnet
 //     --output-format json
-//     with the prompt on stdin and a Timeout (default 600s). The raw result
+//     with the prompt on stdin and a Timeout (default 1200s). The raw result
 //     envelope is persisted to <PhaseDir>/stage-<name>.json and its
 //     total_cost_usd surfaced on Result.CostUSD.
 //   - Result.OK is true only on a clean exit; identity failure, spawn/timeout,
@@ -46,7 +46,7 @@ type Opts struct {
 	MaxBudgetUSD     float64
 	PhaseDir         string // where stage-<name>.json is written
 	ClaudeBin        string // default "claude"
-	TimeoutSec       int    // default 600
+	TimeoutSec       int    // default DefaultTimeoutSec (1200); bead>project>system winner resolved by caller
 
 	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
 	// (koryph-3l1.1), threaded from the caller's registry.Record via
