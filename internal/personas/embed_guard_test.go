@@ -4,6 +4,7 @@
 package personas
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/agents"
@@ -43,6 +44,30 @@ func TestDispatchDefaultPersonasAreEmbedded(t *testing.T) {
 		if _, err := agents.FS.ReadFile(name + ".md"); err != nil {
 			t.Errorf("persona %q is a hardcoded dispatch default but is not in the embedded agents/ corpus (%v); "+
 				"add agents/%s.md so personas.Install ships it to every managed project", name, err, name)
+		}
+	}
+}
+
+func TestPlanningPersonasRequireCanonicalGateEvidence(t *testing.T) {
+	for name, wants := range map[string][]string{
+		"koryph-architect.md": {
+			"decision ledger",
+			"koryph plan --epic <id> --strict --json",
+		},
+		"koryph-plan-scorer.md": {
+			"canonical pre-file graph snapshot",
+			"Semantic contradictions",
+			"strict --json",
+		},
+	} {
+		data, err := agents.FS.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s missing quality-gate contract %q", name, want)
+			}
 		}
 	}
 }

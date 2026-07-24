@@ -65,8 +65,15 @@ build, ...).
    `--description` must stand alone (the loop's agents see only the bead
    text, never the design doc) and state:
    - **why** the work exists,
-   - **acceptance criteria** ("done" looks like X),
-   - a pointer back to the design doc path/section it came from.
+   - what concrete scope it owns,
+   - an exact `docs/designs/*.md` path/section (incident bugs filed through
+     `/koryph-issue` may instead cite a concrete run/commit),
+   - no architectural choice that the design's decision ledger should have
+     resolved.
+   Put observable completion criteria in the bead's dedicated
+   `--acceptance` field. After drafting, compare description and acceptance
+   against the design decision ledger; stale or contradictory architecture is
+   a hard stop, not an implementer problem.
 
 3. **Discover footprints — do not guess.** For every bead, enumerate the
    concrete files/packages/dirs it will touch by *inspecting the
@@ -128,8 +135,13 @@ build, ...).
    members are pairwise write-disjoint.
 
 7. **Route + guard.**
-   - `model:<tier>` per bead by difficulty; state a one-line rationale for
-     every non-default choice.
+   - Routine implementation inherits the project's **standard** default and
+     needs no routing label. Add a portable `model:<tier>` only for a
+     non-default route, with a one-line rationale. Frontier is reserved for
+     design, decomposition/scoring, security review, recovery analysis, and
+     final eligible hard-block escalation — never routine implementation just
+     because it touches important code. Do not emit runtime-specific or
+     legacy `equiv:*` labels.
    - `refactor-core` on any bead touching the engine's own
      dispatch/merge/governor loop, or a protected path — these are never
      loop-dispatched (self-hosting safety rule); file them for the
@@ -137,8 +149,20 @@ build, ...).
    - `no-dispatch` plus a `HUMAN:` title prefix for operator-only steps
      (credentials, external approvals, anything no agent can do).
 
-8. **File.** Create the epic, then each child with `--parent <epic-id>`,
-   its labels, and `--validate`; wire dependencies per step 5. This part is
+8. **Score the exact graph before filing.** Materialize the proposed graph as
+   canonical JSON under `.plan-logs/koryph-plan/<slug>.json` with:
+   `schema_version`, design path, epic title/description/acceptance, every
+   child title/type/description/acceptance/labels, every dependency edge, and
+   predicted parallel width. This is scratch review evidence, not task state.
+   Have `koryph-plan-scorer` read the design and this exact snapshot. Apply at
+   most one correction iteration and require `SHIP` before any bead becomes
+   visible. The scorer is pinned `tier: frontier` at `effort: xhigh`; never
+   downgrade it.
+
+9. **File.** Create the epic with explicit `--acceptance`/success criteria and
+   `--validate`, then each child with `--parent <epic-id>`, dedicated
+   `--acceptance`, labels, and `--validate`; wire dependencies per step 5.
+   Mechanical filing must reproduce the scored snapshot exactly. This part is
    mechanical — running already-decided commands is fine at any model
    tier.
    **If a wave loop is RUNNING against this project, dependency edges
@@ -148,18 +172,22 @@ build, ...).
    atomically at create time (`bd create --deps blocked-by:<producer-id>`)
    or create dependent children `--status deferred` and flip them open
    only after all edges are wired. Foundation/root beads (no incoming
-   edges) are safe to create normally. Then have the `koryph-plan-scorer` persona (installed in
-   `.claude/agents`) score the plan and apply one iteration of its
-   findings. `koryph-plan-scorer` is pinned `tier: frontier` at `effort:
-   xhigh` in its own frontmatter — plan validation is scheduler-correctness
-   work, so NEVER spawn it with a model downgrade; if the project has
-   swapped in its own scorer persona, respect whatever tier that persona
-   pins.
+   edges) are safe to create normally.
 
-9. **Report.** The epic id, total bead count, dependency edge count,
+10. **Two-key post-file gate.**
+    1. Run `koryph plan --project <project-id> --epic <epic-id> --strict
+       --json`. Persist the exact JSON beside the pre-file snapshot. Any
+       non-zero exit blocks dispatch; repair the graph and rerun.
+    2. Have the frontier `koryph-plan-scorer` compare the design, pre-file
+       snapshot, and post-file JSON. It must check semantic consistency across
+       the decision ledger, descriptions, and acceptance fields, then return
+       `SHIP`. Apply at most one correction iteration; otherwise leave the
+       epic blocked for design revision.
+
+11. **Report.** The epic id, total bead count, dependency edge count,
    achievable parallel width from step 6, and any residual serialization
    with the reason (shared write token, `refactor-core`, `domain:unknown`,
-   or `no-dispatch`).
+   or `no-dispatch`), plus the strict-gate result and semantic score.
 
 ## Worked example
 
@@ -174,7 +202,9 @@ Decomposition (labels drawn from this hypothetical project's own
 # Epic (umbrella; the loop never dispatches this one)
 bd create --type epic --title "Add rate limiting to API server" \
   --description "Why: unbounded per-client request rate risks noisy-neighbor
-outages. Design: docs/designs/2026-06-rate-limiting.md." --silent
+outages. Design: docs/designs/2026-06-rate-limiting.md." \
+  --acceptance "Every API route enforces configured per-client limits; unit,
+integration, and documentation gates pass." --validate --silent
 # -> EPIC=proj-101
 
 # Bead A: middleware — writes area:api only
@@ -223,4 +253,11 @@ write-disjoint — they co-run. C depends on both, so it never races them. D
 only reads `api`/`config` and depends on C. Achievable parallel width: **2**
 (the antichain `{A, B}`); C and D serialize behind their producers, which
 is the correct, dependency-driven serialization — not accidental
-footprint collision.
+footprint collision. After filing, run:
+
+```bash
+koryph plan --project <project-id> --epic proj-101 --strict --json
+```
+
+and give that report plus the pre-file snapshot and design to the frontier
+scorer before releasing the epic to the loop.

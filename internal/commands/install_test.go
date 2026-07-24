@@ -67,6 +67,31 @@ func TestInstallForCodexLinksCanonicalWorkflows(t *testing.T) {
 	}
 }
 
+func TestPlanningWorkflowsCarryTwoKeyQualityGate(t *testing.T) {
+	for name, wants := range map[string][]string{
+		"koryph-design.md": {
+			"decision ledger",
+			"koryph plan --epic <id> --strict",
+		},
+		"koryph-plan.md": {
+			"Score the exact graph before filing",
+			"--acceptance",
+			"koryph plan --project <project-id> --epic <epic-id> --strict",
+			"Routine implementation inherits the project's **standard** default",
+		},
+	} {
+		data, err := commands.FS.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s missing planning quality contract %q", name, want)
+			}
+		}
+	}
+}
+
 // TestInstallIdempotent verifies a second identical install is a silent no-op.
 func TestInstallIdempotent(t *testing.T) {
 	root := t.TempDir()

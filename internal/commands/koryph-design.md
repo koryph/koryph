@@ -56,7 +56,12 @@ only the mechanical file-writing and reporting yourself.
    foundation (a registry, a file-per-unit structure, the shared dep bump)
    that lets siblings ADD files rather than edit shared ones — the
    seam-first rule of `/koryph-plan` step 2 starts here, not at filing
-   time.
+   time. Produce a **decision ledger** before the implementation outline:
+   each stable decision, the rejected alternative, the invariant/failure
+   posture it establishes, and the units that consume it. A choice affecting
+   architecture, security, persistence, compatibility, or public behavior may
+   not be delegated to an implementation bead. If it remains unresolved, keep
+   it in Open questions and block decomposition.
 
 4. **Write the doc** to `docs/designs/<YYYY-MM>-<slug>.md` (create the
    directory if the project lacks one; match the project's existing
@@ -65,16 +70,23 @@ only the mechanical file-writing and reporting yourself.
    - **Goals / non-goals** — scope edges, stated bluntly.
    - **Current state** — the relevant files/symbols, with paths.
    - **Design** — the decisions, the alternatives considered, the seam.
+   - **Decision ledger** — stable decisions and invariants that every child
+     description and acceptance field must preserve.
    - **Implementation outline** — numbered, single-agent-sized units of
      work. For each unit: the concrete files/dirs it touches (the raw
      material for `area:*`/`fp:*` footprints), anything that must be
      *running* for its acceptance (the raw material for `res:*` labels),
-     and which earlier units it consumes (the raw material for dependency
-     edges).
+     which earlier units it consumes (the raw material for dependency
+     edges), and its observable acceptance. Prefer a table so the designer
+     can compare sibling write sets before decomposition.
    - **Acceptance criteria** — observable, per-unit where possible.
    - **Open questions / assumptions** — everything step 1 could not settle.
    Keep the doc self-contained: dispatched agents see only bead text plus
    this doc, never this conversation.
+
+   Before review, perform a contradiction pass: every implementation unit
+   must agree with the decision ledger, and no acceptance criterion may
+   require an explicitly rejected or removed mechanism.
 
 5. **Review gate.** Report the doc path and a one-screen summary: the
    problem, the chosen approach, the unit count, and the expected parallel
@@ -88,7 +100,9 @@ only the mechanical file-writing and reporting yourself.
    `commands/koryph-plan.md` directly — to decompose it into one
    epic plus child beads with footprint labels (`area:*`, `fp:*`,
    `fp:read:*`), resource labels (`res:*`), model routing, and dependency
-   edges, validated conflict-free.
+   edges. The planner must score the exact graph before filing, then pass both
+   `koryph plan --epic <id> --strict` and the semantic frontier scorer after
+   filing.
 
 Do **not** start implementing — this command designs and files; the wave
 loop builds.
