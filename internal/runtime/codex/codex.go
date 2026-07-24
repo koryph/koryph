@@ -153,24 +153,15 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	// as of Codex 0.145. Keep it before the subcommand so a dispatched agent
 	// never falls back to an interactive approval prompt or exits on argument
 	// parsing before it sees the task.
-	args := []string{"--ask-for-approval", "never", "exec", "--json", "--sandbox", "workspace-write", "--dangerously-bypass-hook-trust", "--add-dir", spec.PhaseDir}
+	args := []string{"--ask-for-approval", "never", "exec", "--json"}
+	args = append(args, sandboxArgs(spec.SSHAuthSock)...)
+	args = append(args, "--dangerously-bypass-hook-trust", "--add-dir", spec.PhaseDir)
 	// A linked worktree's .git is a pointer file whose writable metadata lives
 	// in the primary repository's .git directory. Permit precisely that
 	// directory so normal agent commits work without widening the sandbox to
 	// the primary checkout.
 	if spec.RepoRoot != "" {
 		args = append(args, "--add-dir", filepath.Join(spec.RepoRoot, ".git"))
-	}
-	// Codex's workspace-write sandbox denies access to Unix sockets outside
-	// the worktree unless their parent directory is an explicit writable
-	// root. SSH_AUTH_SOCK alone is therefore insufficient: the scoped koryph
-	// signing agent is reachable by Claude (which has no CLI sandbox) but not
-	// by Codex. Grant only the directory containing koryph's signing-only
-	// socket, never the operator's ambient agent. The generic DispatchSpec
-	// keeps this transport runtime-neutral; this adapter owns the Codex-
-	// specific sandbox projection.
-	if spec.SSHAuthSock != "" {
-		args = append(args, "--add-dir", filepath.Dir(spec.SSHAuthSock))
 	}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
@@ -189,14 +180,11 @@ func (c Codex) CommandJSON(spec runtime.JSONSpec) ([]string, []string, error) {
 	// Deliberately omit --json here: JSONSpec callers need the final model text
 	// itself (a strict verdict JSON object), while the long-lived dispatch path
 	// above needs lifecycle JSONL for polling.
-	args := []string{"--ask-for-approval", "never", "exec", "--sandbox", "workspace-write", "--dangerously-bypass-hook-trust"}
+	args := []string{"--ask-for-approval", "never", "exec"}
+	args = append(args, sandboxArgs(spec.SSHAuthSock)...)
+	args = append(args, "--dangerously-bypass-hook-trust")
 	if spec.RepoRoot != "" {
 		args = append(args, "--add-dir", filepath.Join(spec.RepoRoot, ".git"))
-	}
-	// Mutating JSON spawns (post-implementation stages) may create commits too.
-	// Apply the same scoped signing transport as the long-lived dispatch.
-	if spec.SSHAuthSock != "" {
-		args = append(args, "--add-dir", filepath.Dir(spec.SSHAuthSock))
 	}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
@@ -216,6 +204,34 @@ func (c Codex) childEnv(profile runtime.Profile, billing runtime.BillingMode, ap
 		AccountEnv: c.AccountEnv(profile), APIKeyEnvVar: apiKeyEnv, APIKey: apiKey,
 		CredentialEnvVar: credentialEnv, Credential: credential, SSHAuthSock: sshAuthSock, Passthrough: passthrough,
 	})
+}
+
+// sandboxArgs selects Codex's least-privilege command sandbox. A plain
+// workspace-write launch is sufficient when signing is not requested. SSH
+// signing needs one additional capability that --add-dir does not grant:
+// connecting to the agent's Unix-domain socket. Codex permission profiles
+// model that capability directly, so use an invocation-local profile that:
+//   - keeps writes limited to the workspace roots (the worktree plus add-dir);
+//   - enables no public network destinations; and
+//   - allowlists exactly the koryph scoped signing socket.
+//
+// --ignore-user-config prevents a user's legacy sandbox_mode setting from
+// silently overriding default_permissions; Codex authentication still uses
+// CODEX_HOME, per the CLI contract. The operator's ambient SSH agent is never
+// passed into this function or the child environment.
+func sandboxArgs(sshAuthSock string) []string {
+	if sshAuthSock == "" {
+		return []string{"--sandbox", "workspace-write"}
+	}
+	socketRule := "permissions.koryph_signing.network.unix_sockets={" +
+		tomlString(sshAuthSock) + `="allow"}`
+	return []string{
+		"--ignore-user-config",
+		"-c", `default_permissions="koryph_signing"`,
+		"-c", `permissions.koryph_signing.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}`,
+		"-c", "permissions.koryph_signing.network.enabled=true",
+		"-c", socketRule,
+	}
 }
 
 func tomlString(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }

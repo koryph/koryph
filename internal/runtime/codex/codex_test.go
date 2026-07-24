@@ -39,7 +39,17 @@ func TestCommandRendersSafeCodexExec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "--ask-for-approval", "never", "exec", "--json", "--sandbox", "workspace-write", "--dangerously-bypass-hook-trust", "--add-dir", "/phase", "--add-dir", "/repo/.git", "--add-dir", "/run/koryph-signing", "--model", "gpt-5.6-terra", "-c", `model_reasoning_effort="high"`, "--output-last-message", "/phase/SUMMARY.md"}
+	want := []string{
+		"codex", "--ask-for-approval", "never", "exec", "--json",
+		"--ignore-user-config",
+		"-c", `default_permissions="koryph_signing"`,
+		"-c", `permissions.koryph_signing.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}`,
+		"-c", "permissions.koryph_signing.network.enabled=true",
+		"-c", `permissions.koryph_signing.network.unix_sockets={"/run/koryph-signing/signing.sock"="allow"}`,
+		"--dangerously-bypass-hook-trust", "--add-dir", "/phase", "--add-dir", "/repo/.git",
+		"--model", "gpt-5.6-terra", "-c", `model_reasoning_effort="high"`,
+		"--output-last-message", "/phase/SUMMARY.md",
+	}
 	if !reflect.DeepEqual(argv, want) {
 		t.Errorf("argv = %q\nwant = %q", argv, want)
 	}
@@ -52,9 +62,33 @@ func TestCommandJSONAllowsOnlySharedGitMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "--ask-for-approval", "never", "exec", "--sandbox", "workspace-write", "--dangerously-bypass-hook-trust", "--add-dir", "/repo/.git", "--add-dir", "/run/koryph-signing"}
+	want := []string{
+		"codex", "--ask-for-approval", "never", "exec",
+		"--ignore-user-config",
+		"-c", `default_permissions="koryph_signing"`,
+		"-c", `permissions.koryph_signing.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}`,
+		"-c", "permissions.koryph_signing.network.enabled=true",
+		"-c", `permissions.koryph_signing.network.unix_sockets={"/run/koryph-signing/signing.sock"="allow"}`,
+		"--dangerously-bypass-hook-trust", "--add-dir", "/repo/.git",
+	}
 	if !reflect.DeepEqual(argv, want) {
 		t.Errorf("argv = %q\\nwant = %q", argv, want)
+	}
+}
+
+func TestCommandWithoutSigningKeepsWorkspaceWriteSandbox(t *testing.T) {
+	argv, _, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+		RepoRoot: "/repo", PhaseDir: "/phase",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--sandbox workspace-write") {
+		t.Fatalf("argv = %q, want ordinary workspace-write sandbox", argv)
+	}
+	if strings.Contains(joined, "koryph_signing") {
+		t.Fatalf("argv = %q, signing profile must be absent without a scoped socket", argv)
 	}
 }
 
