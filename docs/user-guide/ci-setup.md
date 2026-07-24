@@ -57,8 +57,9 @@ the gate and scanner assets. Your repository must provide `mkdocs.yml` and a
 
 GitHub uses the artifact-based Pages flow (`configure-pages`,
 `upload-pages-artifact`, and `deploy-pages`); it never creates a `gh-pages`
-branch. Configure the repository's Pages source as **GitHub Actions** before
-the first deployment.
+branch. It publishes only on the managed project's configured default branch.
+Configure the repository's Pages source as **GitHub Actions** before the first
+deployment.
 
 ---
 

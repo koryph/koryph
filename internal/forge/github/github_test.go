@@ -270,6 +270,19 @@ func TestCIRender_Docs(t *testing.T) {
 	}
 }
 
+// TestCIRender_DocsDefaultBranch verifies the configured project branch is
+// used for the Pages publish trigger instead of assuming main.
+func TestCIRender_DocsDefaultBranch(t *testing.T) {
+	p := githubforge.New(githubforge.WithDefaultBranch("trunk"))
+	got, err := p.CI().Render("docs")
+	if err != nil {
+		t.Fatalf("Render(\"docs\"): %v", err)
+	}
+	if !strings.Contains(string(got), `branches: ["trunk"]`) {
+		t.Errorf("Render(\"docs\") did not use configured default branch:\n%s", got)
+	}
+}
+
 // TestCIRender_UnknownKind verifies that an unknown kind wraps ErrUnsupported.
 func TestCIRender_UnknownKind(t *testing.T) {
 	p := githubforge.New(githubforge.WithReleaseConfig(goreleaserRC()))

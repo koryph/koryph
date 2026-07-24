@@ -113,7 +113,7 @@ func cmdCISetup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Build a provider with the gate-cmd override when specified.
-	ci := buildCIService(f, cfg, *flagGateCmd)
+	ci := buildCIService(f, cfg, rec.DefaultBranch, *flagGateCmd)
 
 	anyInstalled := false
 	anyUnsupported := false
@@ -214,7 +214,7 @@ func cmdCICheck(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("ci check: unknown forge %q", cfg.ResolvedForge()))
 	}
 
-	ci := buildCIService(f, cfg, *flagGateCmd)
+	ci := buildCIService(f, cfg, rec.DefaultBranch, *flagGateCmd)
 
 	hasDrift := false
 	for _, kind := range kinds {
@@ -257,18 +257,21 @@ func resolveKinds(cmd, kindFlag string, stderr io.Writer) ([]string, int) {
 }
 
 // buildCIService constructs a forge.CIService from the project's forge provider
-// with optional gate-command override. For GitHub and GitLab providers, a
-// project-scoped provider instance is built with the gate command wired; for
-// other providers the base CI() service is returned unchanged.
-func buildCIService(f forge.Forge, cfg *project.Config, gateCmd string) forge.CIService {
+// with optional gate-command override. GitHub receives the registered default
+// branch for its docs workflow; both GitHub and GitLab receive other
+// project-scoped settings. Other providers return their base CI() service.
+func buildCIService(f forge.Forge, cfg *project.Config, defaultBranch, gateCmd string) forge.CIService {
 	// Nothing project-scoped to inject (no gate override, no per-project
 	// copyright) → the base provider service, unchanged.
-	if gateCmd == "" && cfg.Copyright == nil {
+	if gateCmd == "" && cfg.Copyright == nil && (f.Name() != "github" || defaultBranch == "") {
 		return f.CI()
 	}
 	switch f.Name() {
 	case "github":
 		var opts []github.Option
+		if defaultBranch != "" {
+			opts = append(opts, github.WithDefaultBranch(defaultBranch))
+		}
 		if gateCmd != "" {
 			opts = append(opts, github.WithGateCommand(gateCmd))
 		}

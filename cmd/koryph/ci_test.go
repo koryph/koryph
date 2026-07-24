@@ -17,8 +17,14 @@ import (
 // registerProjectForCI registers a project with a GitHub forge and a minimal
 // koryph.project.json pointing at the given root.
 func registerProjectForCI(t *testing.T, id, root string) {
+	registerProjectForCIWithDefaultBranch(t, id, root, "main")
+}
+
+// registerProjectForCIWithDefaultBranch adds a GitHub project with the given
+// registered default branch.
+func registerProjectForCIWithDefaultBranch(t *testing.T, id, root, defaultBranch string) {
 	t.Helper()
-	registerProjectForCIJSON(t, id, root, `{
+	registerProjectForCIJSONWithDefaultBranch(t, id, root, defaultBranch, `{
   "schema_version": 1,
   "project_id": "`+id+`",
   "work_source": "bd",
@@ -32,6 +38,10 @@ func registerProjectForCI(t *testing.T, id, root string) {
 // registerProjectForCIJSON is registerProjectForCI with a caller-supplied
 // koryph.project.json body, so tests can add blocks like "copyright".
 func registerProjectForCIJSON(t *testing.T, id, root, projJSON string) {
+	registerProjectForCIJSONWithDefaultBranch(t, id, root, "main", projJSON)
+}
+
+func registerProjectForCIJSONWithDefaultBranch(t *testing.T, id, root, defaultBranch, projJSON string) {
 	t.Helper()
 	ctx := context.Background()
 	store := registry.NewStore()
@@ -43,6 +53,7 @@ func registerProjectForCIJSON(t *testing.T, id, root, projJSON string) {
 		Name:             id,
 		Root:             root,
 		Remote:           "https://github.com/acme/widgets.git",
+		DefaultBranch:    defaultBranch,
 		AccountProfile:   "personal",
 		ExpectedIdentity: "me@example.com",
 	}
@@ -123,6 +134,27 @@ func TestCISetupInstallsDocsWorkflow(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "actions/deploy-pages") {
 		t.Errorf("installed docs workflow lacks Pages deployment:\n%s", b)
+	}
+}
+
+// TestCISetupDocsWorkflowUsesRegisteredDefaultBranch ensures project setup
+// respects a valid non-main branch when rendering the GitHub Pages workflow.
+func TestCISetupDocsWorkflowUsesRegisteredDefaultBranch(t *testing.T) {
+	isolate(t)
+	root := gitRepo(t)
+	registerProjectForCIWithDefaultBranch(t, "citestdocstrunk", root, "trunk")
+
+	code, out, errb := runCmd("ci", "setup", "--project", "citestdocstrunk", "--kind", "docs")
+	if code != 0 {
+		t.Fatalf("ci setup docs: code = %d (stdout=%s stderr=%s)", code, out, errb)
+	}
+
+	b, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "koryph-docs.yml"))
+	if err != nil {
+		t.Fatalf("read docs workflow: %v", err)
+	}
+	if !strings.Contains(string(b), `branches: ["trunk"]`) {
+		t.Errorf("docs workflow did not use registered default branch:\n%s", b)
 	}
 }
 

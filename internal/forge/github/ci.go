@@ -31,9 +31,10 @@ var embeddedDocsWorkflowTmpl string
 // templates. The rc field must be non-nil for the "caller" kind; gateCmd is
 // optional (defaults to [forge.DefaultGateCommand]) for the "gate" kind.
 type githubCISvc struct {
-	rc        *project.ReleaseConfig
-	gateCmd   string                   // empty means use forge.DefaultGateCommand
-	copyright *project.CopyrightConfig // nil ⇒ built-in default SPDX header
+	rc            *project.ReleaseConfig
+	gateCmd       string                   // empty means use forge.DefaultGateCommand
+	defaultBranch string                   // empty means "main"
+	copyright     *project.CopyrightConfig // nil ⇒ built-in default SPDX header
 }
 
 // callerWorkflowData is the view-model passed to the caller-workflow template.
@@ -204,8 +205,12 @@ func (s *githubCISvc) renderGate() ([]byte, error) {
 // not require a ReleaseConfig.
 func (s *githubCISvc) renderDocs() ([]byte, error) {
 	td := pipelineHeaderData{
-		Copyright: s.copyright.FileCopyrightText(),
-		License:   s.copyright.LicenseID(),
+		Copyright:     s.copyright.FileCopyrightText(),
+		License:       s.copyright.LicenseID(),
+		DefaultBranch: s.defaultBranch,
+	}
+	if td.DefaultBranch == "" {
+		td.DefaultBranch = "main"
 	}
 	tmpl, err := template.New("docs-workflow.yml").Parse(embeddedDocsWorkflowTmpl)
 	if err != nil {
@@ -221,6 +226,7 @@ func (s *githubCISvc) renderDocs() ([]byte, error) {
 // pipelineHeaderData carries the SPDX header fields for templates (like the
 // docs workflow) that have no other view-model.
 type pipelineHeaderData struct {
-	Copyright string
-	License   string
+	Copyright     string
+	License       string
+	DefaultBranch string
 }

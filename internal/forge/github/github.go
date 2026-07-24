@@ -46,9 +46,10 @@ func init() {
 // The zero value is valid and satisfies all interface methods; methods that
 // need a project config (CI().Render("caller")) return an error when rc is nil.
 type Provider struct {
-	rc        *project.ReleaseConfig   // optional; required for CI().Render("caller")
-	gateCmd   string                   // optional; gate command for CI().Render("gate"), default "make gate"
-	copyright *project.CopyrightConfig // optional; SPDX header for generated assets (nil ⇒ built-in default)
+	rc            *project.ReleaseConfig   // optional; required for CI().Render("caller")
+	gateCmd       string                   // optional; gate command for CI().Render("gate"), default "make gate"
+	defaultBranch string                   // optional; docs workflow branch, default "main"
+	copyright     *project.CopyrightConfig // optional; SPDX header for generated assets (nil ⇒ built-in default)
 }
 
 // Option is a functional option for [New].
@@ -64,6 +65,12 @@ func WithReleaseConfig(rc *project.ReleaseConfig) Option {
 // The default when this option is not supplied is "make gate".
 func WithGateCommand(cmd string) Option {
 	return func(p *Provider) { p.gateCmd = cmd }
+}
+
+// WithDefaultBranch sets the branch on which the docs workflow publishes the
+// Pages site. An empty value retains the conventional "main" default.
+func WithDefaultBranch(branch string) Option {
+	return func(p *Provider) { p.defaultBranch = branch }
 }
 
 // WithCopyright attaches the project's copyright/license config so generated CI
@@ -129,7 +136,12 @@ func (p *Provider) Releases() forge.ReleaseService { return &githubReleaseSvc{} 
 // CI returns a [forge.CIService] that renders GitHub Actions pipeline assets
 // using internal/release templates.
 func (p *Provider) CI() forge.CIService {
-	return &githubCISvc{rc: p.rc, gateCmd: p.gateCmd, copyright: p.copyright}
+	return &githubCISvc{
+		rc:            p.rc,
+		gateCmd:       p.gateCmd,
+		defaultBranch: p.defaultBranch,
+		copyright:     p.copyright,
+	}
 }
 
 // Bot returns a [forge.BotService] backed by the GitHub App API.
