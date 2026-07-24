@@ -250,9 +250,6 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 		if sl.Status == ledger.SlotQueued {
 			continue
 		}
-		if procs != nil {
-			r.sampleSlotResources(sl, procs)
-		}
 		r.pollSlot(ctx, sl, probeProgress, procs)
 	}
 	_ = r.store.SaveRun(r.run)
@@ -339,6 +336,37 @@ func (r *runner) slotProcessMatches(ctx context.Context, sl *ledger.Slot) bool {
 		r.processIdentity(ctx, sl.PID) == sl.ProcessIdentity
 }
 
+// slotProcessAlive returns the identity-aware liveness of a running slot.
+// known is false only when a live numeric PID cannot currently be
+// authenticated (for example, a transient process-table probe failure). The
+// poller leaves such a slot alone and retries next pass: treating uncertainty
+// as either death or authenticated life could race a still-running agent or
+// let a recycled PID retain the slot.
+//
+// Slots without a recorded identity retain legacy numeric liveness. Resume
+// never reattaches those slots, so this compatibility path only covers a fresh
+// dispatch whose platform probe could not capture an identity.
+func (r *runner) slotProcessAlive(ctx context.Context, sl *ledger.Slot, procs *resmon.ProcTable) (alive, known bool) {
+	if sl == nil || !slotAlive(sl.PID) {
+		return false, true
+	}
+	if sl.ProcessIdentity == "" {
+		return true, true
+	}
+	if procs != nil {
+		got, ok := procs.ProcessIdentity(sl.PID)
+		if !ok {
+			return false, false
+		}
+		return got == sl.ProcessIdentity, true
+	}
+	got := r.processIdentity(ctx, sl.PID)
+	if got == "" {
+		return false, false
+	}
+	return got == sl.ProcessIdentity, true
+}
+
 // sampleSlotResources folds this pass's resource reading for sl's agent process
 // cohort into the slot's running Usage and mirrors the derived aggregates onto
 // the ledger slot. A slot whose process has already exited (Aggregate not
@@ -420,7 +448,13 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 	// liveness so the command can return while the agent is still running.
 	phaseRequestPending := r.processPhaseRequests(ctx, sl)
 
-	alive := slotAlive(sl.PID)
+	alive, livenessKnown := r.slotProcessAlive(ctx, sl, procs)
+	// Authenticate before attributing process-tree resources. Otherwise a PID
+	// recycled after an adopted agent exits could charge unrelated CPU/I/O to
+	// the slot even if the liveness path rejects it later in this pass.
+	if alive && procs != nil {
+		r.sampleSlotResources(sl, procs)
+	}
 
 	// Batch per-tick progress in memory; pollUntilIdle flushes once per tick.
 	if probeProgress {
@@ -475,10 +509,15 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 				r.progress("bead %s: activity resumed — clearing stuck", sl.PhaseID)
 			}
 		}
-		if status == ledger.SlotStuck && r.recoverStaleHeartbeat(sl, procs) {
+		if status == ledger.SlotStuck && r.recoverStaleHeartbeat(ctx, sl, procs) {
 			return
 		}
 		r.checkpointSlot(sl, "running")
+		return
+	}
+
+	if !livenessKnown {
+		r.checkpointSlot(sl, "process-identity-unavailable")
 		return
 	}
 
@@ -499,17 +538,18 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 }
 
 // recoverStaleHeartbeat terminates an agent that has crossed the ordinary
-// stuck threshold only when a current process-table snapshot proves its cohort
-// has no child or other peer work in flight. A gate or test can legitimately
-// leave both the stream and agent-written status quiet for many minutes; its
-// live process is therefore a hard veto. The recovery marker is durable before
-// SIGTERM so the next poll requeues this same frozen model/session without
-// charging a fault.
+// stuck threshold only when both this pass's process-table snapshot and the
+// stable-handle stop prove its cohort has no child or other peer work in
+// flight. The stable-handle stop freezes the leader before its second snapshot,
+// closing the child-spawn race. A gate or test can legitimately leave both the
+// stream and agent-written status quiet for many minutes; its live process is
+// therefore a hard veto. The recovery marker is durable before SIGTERM so the
+// next poll requeues this same frozen model/session without charging a fault.
 //
 // A missing or raced process snapshot fails closed. Stuck detection still
 // surfaces the condition to the operator, but automatic recovery waits for a
 // snapshot that can distinguish an inert leader from a waiting agent.
-func (r *runner) recoverStaleHeartbeat(sl *ledger.Slot, procs *resmon.ProcTable) bool {
+func (r *runner) recoverStaleHeartbeat(ctx context.Context, sl *ledger.Slot, procs *resmon.ProcTable) bool {
 	if sl.DeathReason == deathReasonStaleHeartbeat {
 		return true // already signalled; do not send repeated SIGTERMs per tick
 	}
@@ -526,19 +566,39 @@ func (r *runner) recoverStaleHeartbeat(sl *ledger.Slot, procs *resmon.ProcTable)
 	if !eligible {
 		return false
 	}
-	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-		s.DeathReason = deathReasonStaleHeartbeat
-	})
-	sl.DeathReason = deathReasonStaleHeartbeat
-	r.progress("bead %s: stale heartbeat with no live cohort peer — interrupting for same-tier resume", sl.PhaseID)
-	logStaleHeartbeatRecovery(sl.PhaseID, sl.Attempts, sl.Model, sl.ModelActual)
 	stop := r.staleRecoveryStop
 	if stop == nil {
-		stop = dispatch.StopGraceful
+		stop = resmon.StopChildless
 	}
-	if err := stop(sl.PID); err != nil {
-		r.progress("bead %s: stale-heartbeat SIGTERM failed (%v) — reclassifying on exit", sl.PhaseID, err)
+	markRecovery := func() error {
+		if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.DeathReason = deathReasonStaleHeartbeat
+		}); err != nil {
+			return err
+		}
+		sl.DeathReason = deathReasonStaleHeartbeat
+		return nil
 	}
+	signalled, err := stop(ctx, sl.PID, sl.ProcessIdentity, markRecovery)
+	if err != nil {
+		msg := fmt.Sprintf("stale-heartbeat recovery deferred: %v", err)
+		if signalled {
+			msg = fmt.Sprintf("stale-heartbeat recovery signalled with warning: %v", err)
+		}
+		if sl.Note != msg {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Note = msg })
+			sl.Note = msg
+			r.progress("bead %s: %s", sl.PhaseID, msg)
+		}
+	}
+	if !signalled {
+		// A stable-handle stop rechecks the cohort after freezing the leader.
+		// A child may have appeared since this poll's snapshot; that fresh veto
+		// is authoritative and leaves the marker untouched.
+		return false
+	}
+	r.progress("bead %s: stale heartbeat with no live cohort peer — interrupting for same-tier resume", sl.PhaseID)
+	logStaleHeartbeatRecovery(sl.PhaseID, sl.Attempts, sl.Model, sl.ModelActual)
 	return true
 }
 

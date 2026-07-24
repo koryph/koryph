@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -198,14 +199,17 @@ func TestRecoverStaleHeartbeatRequiresChildlessProcess(t *testing.T) {
 		}
 		stops := 0
 		r.staleRecoveryEligible = func(*ledger.Slot, *resmon.ProcTable) bool { return true }
-		r.staleRecoveryStop = func(pid int) error {
+		r.staleRecoveryStop = func(_ context.Context, pid int, _ string, beforeSignal func() error) (bool, error) {
 			if pid != sl.PID {
 				t.Errorf("stop pid = %d, want %d", pid, sl.PID)
 			}
+			if err := beforeSignal(); err != nil {
+				return false, err
+			}
 			stops++
-			return nil
+			return true, nil
 		}
-		if !r.recoverStaleHeartbeat(sl, nil) {
+		if !r.recoverStaleHeartbeat(t.Context(), sl, nil) {
 			t.Fatal("childless stale agent was not selected for recovery")
 		}
 		if sl.DeathReason != deathReasonStaleHeartbeat {
@@ -214,7 +218,7 @@ func TestRecoverStaleHeartbeatRequiresChildlessProcess(t *testing.T) {
 		if stops != 1 {
 			t.Errorf("stops = %d, want 1", stops)
 		}
-		if !r.recoverStaleHeartbeat(sl, nil) || stops != 1 {
+		if !r.recoverStaleHeartbeat(t.Context(), sl, nil) || stops != 1 {
 			t.Errorf("repeat recovery = stops %d, want no second signal", stops)
 		}
 	})
@@ -228,8 +232,11 @@ func TestRecoverStaleHeartbeatRequiresChildlessProcess(t *testing.T) {
 		}
 		r.staleRecoveryEligible = func(*ledger.Slot, *resmon.ProcTable) bool { return false }
 		stops := 0
-		r.staleRecoveryStop = func(int) error { stops++; return nil }
-		if r.recoverStaleHeartbeat(sl, nil) {
+		r.staleRecoveryStop = func(context.Context, int, string, func() error) (bool, error) {
+			stops++
+			return true, nil
+		}
+		if r.recoverStaleHeartbeat(t.Context(), sl, nil) {
 			t.Fatal("agent with a live child was incorrectly selected for recovery")
 		}
 		if stops != 0 {
@@ -239,4 +246,44 @@ func TestRecoverStaleHeartbeatRequiresChildlessProcess(t *testing.T) {
 			t.Errorf("DeathReason = %q, want empty when a child is live", sl.DeathReason)
 		}
 	})
+
+	t.Run("child appearing before stable stop vetoes recovery", func(t *testing.T) {
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		sl := &ledger.Slot{PhaseID: "raced-child", PID: 789, Status: ledger.SlotStuck}
+		if err := r.store.SetSlot(r.run, sl); err != nil {
+			t.Fatal(err)
+		}
+		r.staleRecoveryEligible = func(*ledger.Slot, *resmon.ProcTable) bool { return true }
+		r.staleRecoveryStop = func(context.Context, int, string, func() error) (bool, error) {
+			return false, nil
+		}
+		if r.recoverStaleHeartbeat(t.Context(), sl, nil) {
+			t.Fatal("late child veto was ignored")
+		}
+		if sl.DeathReason != "" {
+			t.Errorf("DeathReason = %q, want empty after late child veto", sl.DeathReason)
+		}
+	})
+}
+
+func TestSlotProcessAliveRevalidatesRecordedIdentity(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	sl := &ledger.Slot{PID: os.Getpid(), ProcessIdentity: "agent-birth"}
+
+	r.processIdentityProbe = func(context.Context, int) string { return "agent-birth" }
+	if alive, known := r.slotProcessAlive(t.Context(), sl, nil); !known || !alive {
+		t.Errorf("matching identity = alive %v known %v, want true/true", alive, known)
+	}
+
+	r.processIdentityProbe = func(context.Context, int) string { return "recycled-birth" }
+	if alive, known := r.slotProcessAlive(t.Context(), sl, nil); !known || alive {
+		t.Errorf("recycled identity = alive %v known %v, want false/true", alive, known)
+	}
+
+	r.processIdentityProbe = func(context.Context, int) string { return "" }
+	if alive, known := r.slotProcessAlive(t.Context(), sl, nil); known || alive {
+		t.Errorf("unavailable identity = alive %v known %v, want false/false", alive, known)
+	}
 }

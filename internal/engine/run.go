@@ -163,9 +163,10 @@ type runner struct {
 
 	// staleRecoveryEligible and staleRecoveryStop are test seams for the
 	// child-aware stale-heartbeat recovery. Nil uses the production process
-	// table predicate and graceful process-group SIGTERM, respectively.
+	// table prefilter and stable-handle stop, respectively. beforeSignal must
+	// run after the process is frozen and revalidated but before SIGTERM.
 	staleRecoveryEligible func(*ledger.Slot, *resmon.ProcTable) bool
-	staleRecoveryStop     func(int) error
+	staleRecoveryStop     func(context.Context, int, string, func() error) (bool, error)
 	// processIdentityProbe is the narrow test seam for PID authentication. Nil
 	// takes a bounded platform process-table snapshot through processIdentity.
 	processIdentityProbe func(context.Context, int) string

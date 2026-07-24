@@ -44,7 +44,16 @@
 // implements the same ProcTable and everything above it is unchanged.
 package resmon
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrStableProcessHandleUnavailable reports that the host cannot safely
+// freeze and signal a previously recorded process without relying on its
+// reusable numeric PID. Automatic stale-heartbeat recovery fails closed on
+// such hosts; ordinary monitoring remains available.
+var ErrStableProcessHandleUnavailable = errors.New("stable process handle unavailable")
 
 // procInfo is one process's contribution to the table. All fields are absolute
 // (cumulative-since-start for CPU and I/O; instantaneous for RSS).

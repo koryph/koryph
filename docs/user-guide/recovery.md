@@ -19,10 +19,12 @@ notes are in [Architecture](../architecture.md).
   its stage through a status file heartbeat. A running agent whose heartbeat
   goes silent for 15+ minutes is flagged **stalled** — visible in the
   [TUI](tui.md) Threads tab (`⚠ stalled <age>`) and the status bar tallies.
-  If its transcript, commits, and cohort CPU are also quiet *and* its current
-  process snapshot has no child or other process in its cohort, koryph
-  gracefully interrupts it for recovery; a live gate/test child is deliberately
-  left alone.
+  If its transcript, commits, and cohort CPU are also quiet, koryph attempts
+  deterministic recovery. On Linux it freezes the authenticated agent through
+  a stable kernel process handle, resnapshots the cohort, and gracefully
+  interrupts it only when no gate/test child or peer is live. A child that
+  appears during recovery vetoes the interrupt. Hosts without a stable process
+  handle fail closed: they surface the stall but do not signal a reusable PID.
 - **The health patrol.** On a fixed cadence the engine sweeps for dead
   agents on running slots, stuck claims, stale worktrees, and suspected
   resource leaks. Warn-level findings surface in the Events feed; what can
@@ -50,10 +52,11 @@ Retries are bounded, cause-coded, and visible (the TUI Threads tab shows
   without a coding-agent retry or model escalation. A legacy generic worker
   self-block gets a same-tier classification-correction retry; it never
   spends the final frontier escalation.
-- **Inert live-PID recovery is not a fault.** A stale, childless agent is
-  SIGTERMed and resumed on its frozen tier/session without consuming an
-  attempt; its no-commit worktree is retained so the session can resume.
-  `engine.slot.stale_heartbeat_recovery` records the action.
+- **Inert live-PID recovery is not a fault.** On a host with safe process-handle
+  support, a stale, childless agent is SIGTERMed and resumed on its frozen
+  tier/session without consuming an attempt; its no-commit worktree is retained
+  so the session can resume. `engine.slot.stale_heartbeat_recovery` records the
+  action.
 - **Budget-killed agents warm-resume.** An agent stopped by a per-bead
   budget cap resumes its *own session* — context, plan, and partial work
   intact — rather than starting over; see
@@ -194,7 +197,8 @@ path looks:
 - **Operator actions are terminal.** A bead you stopped stays parked until
   you say otherwise.
 - **Identity is fail-closed.** A recovery path never re-dispatches under an
-  unverified account.
+  unverified account, reattaches a recycled PID, or signals a process through
+  an unauthenticated reusable numeric PID.
 
 ## See also
 
