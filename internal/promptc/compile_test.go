@@ -226,6 +226,21 @@ func TestPreambleUsesPhaseControlInsteadOfSharedBeadsMutations(t *testing.T) {
 	}
 }
 
+func TestPreambleClassifiesHostBlocks(t *testing.T) {
+	p := Preamble("v1")
+	for _, want := range []string{
+		"sandbox, host, or environment",
+		"ssh-agent",
+		"generic state=blocked heartbeat",
+		"--capability <lowercase-token>",
+		"terminal host-capability recovery",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preamble missing host-block guidance %q", want)
+		}
+	}
+}
+
 // TestPreambleInboxCheckedAtStartAndFinish is the koryph-o72 leg-3 regression
 // test: the preamble must tell the agent to read INBOX.md at the start and
 // again before finishing, not just "between steps" — a nudge landed after

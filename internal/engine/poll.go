@@ -73,6 +73,15 @@ const resumeRequeueNote = "resume: width-gated re-dispatch"
 // environment reason once the attempt budget is spent rather than looping.
 const cleanNoCommitExitNote = "agent exited cleanly with no new commits"
 
+// genericCompletionBlockRequeueNote marks a clean, committed worker that
+// self-blocked without the structured host-capability fields. The worker
+// contract instructs the next attempt to report any sandbox/host denial with
+// `phase block`; therefore this is a deterministic classification-correction
+// retry, not evidence that a stronger coding tier is needed. It still consumes
+// the normal attempt, but the final correction attempt stays on the frozen
+// tier so a repeated generic host block cannot spend the frontier escalation.
+const genericCompletionBlockRequeueNote = "agent reported unstructured completion block"
+
 // gateRequeueBudget and mergeRequeueBudget are the per-slot requeue budgets
 // for a post-rebase gate failure and a merge error, respectively — each
 // raised from a single-shot Note-marker dedup to 2 (koryph-2im.6). A rare
@@ -1318,8 +1327,8 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 			return
 		}
 		if assessment.retryableBlock {
-			r.progress("bead %s: clean committed candidate self-blocked; retrying within attempt budget", sl.PhaseID)
-			r.requeueSlot(ctx, sl, "", "agent reported recoverable completion block")
+			r.progress("bead %s: clean committed candidate self-blocked without structured capability fields; retrying for classification correction", sl.PhaseID)
+			r.requeueSlot(ctx, sl, "", genericCompletionBlockRequeueNote)
 			return
 		}
 		r.parkIncompleteCandidate(ctx, sl, assessment.reason)
@@ -2048,8 +2057,11 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	// which never reach this function. RecoveryModel resolves the selected
 	// runtime's concrete frontier model and enforces the same fail-closed
 	// policy as initial routing; the frozen-model path otherwise bypasses it.
+	// A generic worker self-block is deliberately excluded: its retry exists to
+	// correct the portable host-capability classification, not to retry coding
+	// on a stronger tier.
 	frozenModel, frozenWhy := sl.Model, sl.ModelWhy
-	if fault && attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote && why != cleanNoCommitExitNote {
+	if fault && attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote && why != cleanNoCommitExitNote && why != genericCompletionBlockRequeueNote {
 		runtimeName := sl.Runtime
 		if runtimeName == "" {
 			runtimeName = "claude"

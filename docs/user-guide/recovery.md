@@ -40,6 +40,12 @@ Retries are bounded, cause-coded, and visible (the TUI Threads tab shows
 - **Environment noise is not a fault.** Rate limits and transient merge
   errors requeue without consuming the bead's attempts — the governor's
   circuit breakers and settle windows handle the backoff instead.
+- **Host blocks are structured.** A sandbox or host denial — such as an
+  unavailable `ssh-agent`, credential, filesystem, network, tool, or host
+  resource — is reported with `koryph phase block`, which parks the bead
+  without a coding-agent retry or model escalation. A legacy generic worker
+  self-block gets a same-tier classification-correction retry; it never
+  spends the final frontier escalation.
 - **Budget-killed agents warm-resume.** An agent stopped by a per-bead
   budget cap resumes its *own session* — context, plan, and partial work
   intact — rather than starting over; see

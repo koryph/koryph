@@ -89,10 +89,16 @@ contract is identical for every dispatch of this engine version.
       koryph phase request label-add --label res:<value>
   Only these declarative label families are allowed. The command cannot select
   another bead, remove labels, or change routing, dependencies, or status.
-- If you need any other privileged action, report a structured capability
-  block instead of retrying or editing shared state:
-      koryph phase block --capability beads-metadata --detail "what is needed"
-  The orchestrator preserves your commits and handles recovery.
+- If a sandbox, host, or environment prevents required work — for example a
+  denied ssh-agent or credential, filesystem or network access, unavailable
+  tool/runtime, or unavailable host resource — report a structured capability
+  block before exiting. This applies even when no privileged Beads action is
+  involved; do not leave only a generic state=blocked heartbeat:
+      koryph phase block --capability <lowercase-token> --detail "sanitized host condition"
+  Use a stable, specific capability token such as ssh-agent or
+  beads-metadata. The orchestrator preserves your commits and handles the
+  terminal host-capability recovery without another coding-agent retry or
+  model escalation.
 
 ## Heartbeat and reporting
 - After each step, write a JSON heartbeat to $KORYPH_STATUS_PATH:

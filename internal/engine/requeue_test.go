@@ -285,6 +285,29 @@ func TestEscalationSkipsCleanNoCommitExit(t *testing.T) {
 	}
 }
 
+// TestEscalationSkipsGenericCompletionBlock proves a clean worker that only
+// wrote state=blocked gets a same-tier classification-correction retry, not a
+// frontier retry. The corrected worker prompt tells it to report the actual
+// sandbox/host capability through `koryph phase block` on that attempt.
+func TestEscalationSkipsGenericCompletionBlock(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "esc-generic-block", ledger.MaxAttempts-1)
+
+	r.requeueSlot(t.Context(), sl, "", genericCompletionBlockRequeueNote)
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	got := r.run.Slots["esc-generic-block"]
+	if got.Model != "sonnet" || strings.Contains(got.ModelWhy, "escalat") {
+		t.Errorf("generic-block final retry model/why = %q/%q, want frozen sonnet with no escalation", got.Model, got.ModelWhy)
+	}
+	if backend.specs[0].Model != "sonnet" {
+		t.Errorf("dispatched model = %q, want frozen sonnet", backend.specs[0].Model)
+	}
+}
+
 // TestEscalationRespectsAllowlist proves the allowlist gate the frozen-model
 // path otherwise bypasses: a project that never allowed opus keeps its final
 // attempt on the frozen tier.
