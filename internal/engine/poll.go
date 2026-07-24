@@ -253,7 +253,7 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 		if procs != nil {
 			r.sampleSlotResources(sl, procs)
 		}
-		r.pollSlot(ctx, sl, probeProgress)
+		r.pollSlot(ctx, sl, probeProgress, procs)
 	}
 	_ = r.store.SaveRun(r.run)
 }
@@ -377,7 +377,7 @@ func progressProbeDue(tick int) bool {
 // pollSlot refreshes one slot: liveness (always), commit progress (only when
 // probeProgress — see progressProbeDue), stuck detection, and — on death —
 // completion handling.
-func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bool) {
+func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bool, procs *resmon.ProcTable) {
 	// A worker may be blocked inside `koryph phase request` waiting for an
 	// orchestrator-owned action. Service its typed request before checking
 	// liveness so the command can return while the agent is still running.
@@ -429,7 +429,7 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 			r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = status })
 			switch {
 			case status == ledger.SlotStuck:
-				r.progress("bead %s: silent — no heartbeat, commit, stream, or CPU activity for >%ds (process alive; still polling — koryph never interrupts a running agent)",
+				r.progress("bead %s: silent — no heartbeat, commit, stream, or CPU activity for >%ds (process alive; checking for child work before recovery)",
 					sl.PhaseID, int(r.stuckThreshold(sl).Seconds()))
 			case prev == ledger.SlotStuck:
 				// Re-derived from ground truth, not latched: the agent resumed
@@ -437,6 +437,9 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 				// staying on the board after recovery.
 				r.progress("bead %s: activity resumed — clearing stuck", sl.PhaseID)
 			}
+		}
+		if status == ledger.SlotStuck && r.recoverStaleHeartbeat(sl, procs) {
+			return
 		}
 		r.checkpointSlot(sl, "running")
 		return
@@ -456,6 +459,47 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 	// Stamp the wall-clock stop time if completeSlot drove the slot terminal
 	// (as opposed to requeuing it) — one place covering every terminal path.
 	r.stampFinishedAt(sl.PhaseID)
+}
+
+// recoverStaleHeartbeat terminates an agent that has crossed the ordinary
+// stuck threshold only when a current process-table snapshot proves its cohort
+// has no child or other peer work in flight. A gate or test can legitimately
+// leave both the stream and agent-written status quiet for many minutes; its
+// live process is therefore a hard veto. The recovery marker is durable before
+// SIGTERM so the next poll requeues this same frozen model/session without
+// charging a fault.
+//
+// A missing or raced process snapshot fails closed. Stuck detection still
+// surfaces the condition to the operator, but automatic recovery waits for a
+// snapshot that can distinguish an inert leader from a waiting agent.
+func (r *runner) recoverStaleHeartbeat(sl *ledger.Slot, procs *resmon.ProcTable) bool {
+	if sl.DeathReason == deathReasonStaleHeartbeat {
+		return true // already signalled; do not send repeated SIGTERMs per tick
+	}
+	eligible := false
+	if r.staleRecoveryEligible != nil {
+		eligible = r.staleRecoveryEligible(sl, procs)
+	} else {
+		hasPeer, found := procs.HasCohortPeer(sl.PID)
+		eligible = found && !hasPeer
+	}
+	if !eligible {
+		return false
+	}
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.DeathReason = deathReasonStaleHeartbeat
+	})
+	sl.DeathReason = deathReasonStaleHeartbeat
+	r.progress("bead %s: stale heartbeat with no live cohort peer — interrupting for same-tier resume", sl.PhaseID)
+	logStaleHeartbeatRecovery(sl.PhaseID, sl.Attempts, sl.Model, sl.ModelActual)
+	stop := r.staleRecoveryStop
+	if stop == nil {
+		stop = dispatch.StopGraceful
+	}
+	if err := stop(sl.PID); err != nil {
+		r.progress("bead %s: stale-heartbeat SIGTERM failed (%v) — reclassifying on exit", sl.PhaseID, err)
+	}
+	return true
 }
 
 // slotAlive reports whether the agent process is still running. The engine is
@@ -645,6 +689,14 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// operator's own hand-fix) — before any classification below. This attempt's
 	// cost and tokens above are still recorded.
 	if r.parkForOperatorStop(ctx, sl) {
+		return
+	}
+
+	// A stale, childless agent was deliberately interrupted by the live poll.
+	// This is an engine recovery, not a bead fault: keep its frozen model/tier,
+	// resume its native session, and do not consume an attempt.
+	if sl.DeathReason == deathReasonStaleHeartbeat {
+		r.requeueSlot(ctx, sl, "", staleHeartbeatRequeueNote)
 		return
 	}
 
@@ -950,6 +1002,13 @@ const deathReasonBudgetKilled = "budget-killed"
 // which reads it to route the death to requeueTurnExhausted (a fresh-session
 // requeue) rather than the warm-resume rate-limit/budget paths.
 const deathReasonTurnExhausted = "turn-exhausted"
+
+// deathReasonStaleHeartbeat is stamped before the engine interrupts a live
+// agent that is silent past its stuck window and has no live cohort peer. It
+// routes completion into a no-fault, same-tier session resume.
+const deathReasonStaleHeartbeat = "stale-heartbeat"
+
+const staleHeartbeatRequeueNote = "stale heartbeat recovery"
 
 // turnExhaustedRequeueBudget bounds how many FRESH-session requeues a slot may
 // spend on the turn ceiling before parking needs-attention (koryph-840). A
@@ -2036,9 +2095,9 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	}
 	// A resume re-dispatch is not a bead fault (the engine restarted, or a lower
 	// width deferred the bead), so it must neither consume an attempt nor drive
-	// the escalation ladder — track faults, not dispatches (D4). Every other
-	// requeue reason IS a fault and increments as before.
-	fault := why != resumeRequeueNote
+	// the escalation ladder — as does stale-heartbeat recovery. Track faults,
+	// not dispatches (D4); every other requeue reason increments as before.
+	fault := why != resumeRequeueNote && why != staleHeartbeatRequeueNote
 	attempt := sl.Attempts
 	if fault {
 		attempt = sl.Attempts + 1
@@ -2081,11 +2140,12 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	// Never re-run an agent against a checkout that predates a main-side fix
 	// (koryph-137): rebuild a no-commit worktree from current main, or rebase
 	// one with landed work onto the advanced base, before re-dispatch. This
-	// path never preserves a no-commit worktree (that is reserved for a
-	// budget-kill death — see requeueBudgetKilled, koryph-77r.10); the WIP
-	// snapshot is still captured and threaded through so a rebuilt worktree's
-	// resume can cite it.
-	wipSnapshot := r.refreshWorktreeForRequeue(ctx, sl, false)
+	// A stale-heartbeat recovery preserves even a no-commit worktree so the
+	// manifest session remains resumable. The normal crash path rebuilds a
+	// no-commit worktree; that would turn this same-tier resume into a fresh
+	// session and discard the inert agent's uncommitted checkpoint.
+	preserveNoCommitWorktree := why == staleHeartbeatRequeueNote
+	wipSnapshot := r.refreshWorktreeForRequeue(ctx, sl, preserveNoCommitWorktree)
 
 	resumeSession := ""
 	if m, err := r.store.LoadManifest(r.run.RunID, sl.PhaseID); err == nil &&

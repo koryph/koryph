@@ -295,13 +295,37 @@ func TestEscalationSkipsGenericCompletionBlock(t *testing.T) {
 	sl := escalationSlot(t, r, "esc-generic-block", ledger.MaxAttempts-1)
 
 	r.requeueSlot(t.Context(), sl, "", genericCompletionBlockRequeueNote)
-
 	if len(backend.specs) != 1 {
 		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
 	}
 	got := r.run.Slots["esc-generic-block"]
 	if got.Model != "sonnet" || strings.Contains(got.ModelWhy, "escalat") {
 		t.Errorf("generic-block final retry model/why = %q/%q, want frozen sonnet with no escalation", got.Model, got.ModelWhy)
+	}
+	if backend.specs[0].Model != "sonnet" {
+		t.Errorf("dispatched model = %q, want frozen sonnet", backend.specs[0].Model)
+	}
+}
+
+// TestStaleHeartbeatRequeueKeepsSameTierAndAttempt pins live-PID recovery:
+// unlike a crash, a childless stale heartbeat is engine/environment recovery,
+// so it must neither consume the final attempt nor promote the frozen model.
+func TestStaleHeartbeatRequeueKeepsSameTierAndAttempt(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "stale1", ledger.MaxAttempts)
+
+	r.requeueSlot(t.Context(), sl, "", staleHeartbeatRequeueNote)
+
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	got := r.run.Slots["stale1"]
+	if got.Attempts != ledger.MaxAttempts {
+		t.Errorf("Attempts = %d, want unchanged %d", got.Attempts, ledger.MaxAttempts)
+	}
+	if got.Model != "sonnet" || strings.Contains(got.ModelWhy, "escalat") {
+		t.Errorf("model/why = %q/%q, want frozen sonnet with no escalation", got.Model, got.ModelWhy)
 	}
 	if backend.specs[0].Model != "sonnet" {
 		t.Errorf("dispatched model = %q, want frozen sonnet", backend.specs[0].Model)

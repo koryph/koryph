@@ -105,7 +105,10 @@ tail -F -n0 "$LOG" 2>/dev/null |
 
 # C: stall probe — a "running" slot whose agent pid is dead, or whose
 # stream.jsonl (the ground-truth heartbeat; status.json can idle during long
-# tool calls) has been silent >15 min. One line per newly-stalled slot.
+# tool calls) has been silent >15 min. A live child means a gate/test may be
+# running, so it is deliberately not called inert. One line per newly-stalled
+# slot. The engine separately SIGTERMs a stale, childless agent and resumes it
+# on the same tier; the WARN telemetry in B makes that recovery visible.
 (
   while true; do
     koryph cockpit --project <id> --json 2>/dev/null |
@@ -114,9 +117,9 @@ tail -F -n0 "$LOG" 2>/dev/null |
         pid=$(echo "$s" | jq -r .pid); bead=$(echo "$s" | jq -r .bead_id)
         if [ -n "$pid" ] && [ "$pid" != "null" ] && ! kill -0 "$pid" 2>/dev/null; then
           echo "STALL dead-pid bead=$bead pid=$pid"
-        else
+        elif [ -n "$pid" ] && [ "$pid" != "null" ] && ! pgrep -P "$pid" >/dev/null 2>&1; then
           st=$(find "$REPO/.plan-logs/koryph" -maxdepth 3 -path "*/$bead/stream.jsonl" -mmin +15 2>/dev/null | head -1)
-          [ -n "$st" ] && echo "STALL stale-stream bead=$bead (>15m quiet)"
+          [ -n "$st" ] && echo "STALL stale-heartbeat bead=$bead pid=$pid (>15m quiet, no child)"
         fi
       done | sort -u
     sleep 60
@@ -143,13 +146,12 @@ vocabulary: `/koryph-ops`.
   strands `in_progress` with no live slot: capture any dirty-worktree WIP
   first (`git -C <worktree> diff HEAD > <run-dir>/<bead>/wip-operator.patch`),
   then `bd update <bead> --status open` — the loop re-dispatches it.
-- **`STALL stale-stream`** — check before killing: a live child running a
-  long gate/test (`pgrep -P <agent-pid>`) means slow, not stuck — leave it.
-  Also check the engine's children: an implementer that just finished spawns
-  a reviewer (a quiet handoff that LOOKS stalled). Truly hung agent:
-  `koryph stop <bead> --project <id>`, then note: an operator-stopped slot is
-  **not** auto-resumed — re-arm it with `koryph inject <bead> --project <id>`
-  (and `bd update <bead> --status open` if the claim stuck).
+- **`STALL stale-heartbeat`** — the engine automatically sends a graceful
+  SIGTERM only after its process snapshot also finds no child process, then
+  requeues the frozen same-tier session without charging an attempt. Check the
+  matching `engine.slot.stale_heartbeat_recovery` WARN; intervene only if it
+  repeats or the engine is not running. A live child running a long gate/test
+  is slow, not stuck, and is deliberately left alone.
 - **`engine.slot.blocked` (WARN)** — read the reason. `operator-stopped` →
   inject to re-arm (above). Drain-parked → expected during drain.
 - **Ready work not dispatching / width starved** — the frontier verdict is

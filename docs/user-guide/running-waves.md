@@ -27,9 +27,9 @@ run's spend, pass `--budget <USD>`: once the run's **projected** cost reaches th
 ceiling, no new agents are dispatched (active ones finish) and the run pauses
 with a `budget-cap` reason. Projected cost is settled spend **plus each in-flight
 agent's dispatch-time estimate** — including an agent flagged silent/stuck
-(process still alive, no heartbeat/commit/CPU activity; koryph never
-interrupts a running agent on its own) — so a wide wave, a retry, or a stalled
-agent cannot slip past the cap and only settle over it afterward. The check is re-evaluated per bead within
+(process still alive, no heartbeat/commit/CPU activity). A stale agent is
+only interrupted when its process snapshot has no child, so a long gate/test
+still counts as live work. The check is re-evaluated per bead within
 a wave (dispatch stops mid-wave the moment the projection crosses the cap), and a
 requeue is refused once the budget is exhausted (the slot parks needs-attention
 rather than spending another attempt). This is a per-run ceiling, separate from

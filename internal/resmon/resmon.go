@@ -157,6 +157,17 @@ func (t *ProcTable) Aggregate(rootPID int) (Sample, bool) {
 	return s, true
 }
 
+// HasCohortPeer reports whether rootPID has another live process in its agent
+// cohort. found is false when the root is absent, so callers can fail closed
+// when a process table races an agent exit. Aggregate includes both ordinary
+// descendants and a reparented process that remains in the agent's Setsid
+// process group; that latter case is still live tool work and must veto a
+// recovery SIGTERM.
+func (t *ProcTable) HasCohortPeer(rootPID int) (has, found bool) {
+	s, found := t.Aggregate(rootPID)
+	return found && s.PIDs > 1, found
+}
+
 // Usage is the lifetime aggregate of a slot's resource usage, updated
 // incrementally as samples arrive over the slot's run. It is the shape the
 // engine persists to the ledger and the cockpit renders.

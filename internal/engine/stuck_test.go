@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/resmon"
 )
 
 // silentSlot returns a slot that trips every pre-koryph-2rf stuck signal:
@@ -156,7 +157,7 @@ func TestPollSlotClearsStuckOnActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r.pollSlot(t.Context(), r.run.Slots["p1"], false)
+	r.pollSlot(t.Context(), r.run.Slots["p1"], false, nil)
 
 	got := r.run.Slots["p1"]
 	if got.Status != ledger.SlotRunning {
@@ -185,4 +186,57 @@ func TestStuckThresholdScalesForResources(t *testing.T) {
 	if !r.isStuck(t.Context(), silentSlot(t, "e2e2", 5*time.Hour, []string{"kind-cluster"})) {
 		t.Error("a declared-resource slot past the scaled threshold must still trip stuck")
 	}
+}
+
+func TestRecoverStaleHeartbeatRequiresChildlessProcess(t *testing.T) {
+	t.Run("childless agent is interrupted once", func(t *testing.T) {
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		sl := &ledger.Slot{PhaseID: "inert", PID: 123, Status: ledger.SlotStuck}
+		if err := r.store.SetSlot(r.run, sl); err != nil {
+			t.Fatal(err)
+		}
+		stops := 0
+		r.staleRecoveryEligible = func(*ledger.Slot, *resmon.ProcTable) bool { return true }
+		r.staleRecoveryStop = func(pid int) error {
+			if pid != sl.PID {
+				t.Errorf("stop pid = %d, want %d", pid, sl.PID)
+			}
+			stops++
+			return nil
+		}
+		if !r.recoverStaleHeartbeat(sl, nil) {
+			t.Fatal("childless stale agent was not selected for recovery")
+		}
+		if sl.DeathReason != deathReasonStaleHeartbeat {
+			t.Errorf("DeathReason = %q, want %q", sl.DeathReason, deathReasonStaleHeartbeat)
+		}
+		if stops != 1 {
+			t.Errorf("stops = %d, want 1", stops)
+		}
+		if !r.recoverStaleHeartbeat(sl, nil) || stops != 1 {
+			t.Errorf("repeat recovery = stops %d, want no second signal", stops)
+		}
+	})
+
+	t.Run("gate or test child vetoes recovery", func(t *testing.T) {
+		f := newFixture(t, fixOpts{})
+		r := runnerFromFixture(t, f)
+		sl := &ledger.Slot{PhaseID: "gate", PID: 456, Status: ledger.SlotStuck}
+		if err := r.store.SetSlot(r.run, sl); err != nil {
+			t.Fatal(err)
+		}
+		r.staleRecoveryEligible = func(*ledger.Slot, *resmon.ProcTable) bool { return false }
+		stops := 0
+		r.staleRecoveryStop = func(int) error { stops++; return nil }
+		if r.recoverStaleHeartbeat(sl, nil) {
+			t.Fatal("agent with a live child was incorrectly selected for recovery")
+		}
+		if stops != 0 {
+			t.Errorf("stops = %d, want 0 for a live child", stops)
+		}
+		if sl.DeathReason != "" {
+			t.Errorf("DeathReason = %q, want empty when a child is live", sl.DeathReason)
+		}
+	})
 }

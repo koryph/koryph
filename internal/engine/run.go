@@ -161,6 +161,12 @@ type runner struct {
 	// ledger fields. Mirrors memProbe's seam.
 	resProbe func(context.Context) (*resmon.ProcTable, error)
 
+	// staleRecoveryEligible and staleRecoveryStop are test seams for the
+	// child-aware stale-heartbeat recovery. Nil uses the production process
+	// table predicate and graceful process-group SIGTERM, respectively.
+	staleRecoveryEligible func(*ledger.Slot, *resmon.ProcTable) bool
+	staleRecoveryStop     func(int) error
+
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time
 	patrolSeen     map[string]time.Time // finding key → last logged; throttles repeat findings

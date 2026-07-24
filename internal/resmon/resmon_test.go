@@ -75,6 +75,24 @@ func TestAggregate_ChildInOwnGroupViaTree(t *testing.T) {
 	}
 }
 
+func TestHasCohortPeerIncludesDescendantsAndReparentedTools(t *testing.T) {
+	tbl := tree(false,
+		[5]int{500, 1, 500, 10, 1},
+		[5]int{700, 1, 500, 40, 4}, // same process group, but reparented
+		[5]int{800, 500, 800, 25, 2},
+		[5]int{900, 1, 900, 25, 2}, // unrelated singleton process group
+	)
+	if has, found := tbl.HasCohortPeer(500); !found || !has {
+		t.Errorf("HasCohortPeer(500) = (%v, %v), want (true, true)", has, found)
+	}
+	if has, found := tbl.HasCohortPeer(900); !found || has {
+		t.Errorf("HasCohortPeer(900) = (%v, %v), want (false, true)", has, found)
+	}
+	if has, found := tbl.HasCohortPeer(999); found || has {
+		t.Errorf("HasCohortPeer(999) = (%v, %v), want (false, false)", has, found)
+	}
+}
+
 func TestAggregate_MissingRoot(t *testing.T) {
 	tbl := tree(false, [5]int{1, 0, 0, 1, 1})
 	if _, ok := tbl.Aggregate(4242); ok {

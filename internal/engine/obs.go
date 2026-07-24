@@ -341,6 +341,18 @@ func logTurnExhausted(beadID string, turns, ceiling, attempt int, model, modelAc
 	)
 }
 
+// logStaleHeartbeatRecovery records the narrow auto-recovery path for a live
+// but inert agent. It is WARN so a zero-token watcher wakes for the recovery,
+// while the paired requeue event retains its normal accounting shape.
+func logStaleHeartbeatRecovery(beadID string, attempt int, model, modelActual string) {
+	log.Warn("engine.slot.stale_heartbeat_recovery",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.Int(obs.KeyAttempt, attempt),
+		slog.String(obs.KeyModel, model),
+		slog.String(obs.KeyModelActual, modelActual),
+	)
+}
+
 // logCacheRatioTripwire emits a WARN record when one attempt's cache_read
 // share collapses below cacheRatioFloor on a session with material token
 // volume (koryph-77r.1, design §2 I7): the quota-multiplier failure

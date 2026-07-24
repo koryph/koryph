@@ -731,8 +731,8 @@ func (r *runner) runCostUSD() float64 {
 //
 // "Live" is SlotRunning OR SlotStuck: pollSlot (poll.go) flips a running
 // slot's status to SlotStuck when it goes quiet, but the process (and its
-// spend) is still alive — koryph never interrupts a running agent on its
-// own. A stuck-but-alive slot dropping out of this sum the moment it is
+// spend) is still alive until the narrow childless stale-heartbeat recovery
+// terminates it. A stuck-but-alive slot dropping out of this sum the moment it is
 // flagged would let projected cost fall back below the cap while the agent
 // keeps accruing real spend, breaching --budget silently.
 func (r *runner) projectedRunCostUSD() float64 {
