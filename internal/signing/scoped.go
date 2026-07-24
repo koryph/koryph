@@ -32,6 +32,9 @@ func EnsureScopedAgent(ctx context.Context, v *VaultConfig, cfg *Config) error {
 	if cfg.EffectiveMode() != ModeSSH {
 		return nil
 	}
+	if err := paths.EnsureSigningDir(); err != nil {
+		return fmt.Errorf("signing: secure scoped agent dir: %w", err)
+	}
 	sock := paths.SigningAgentSock()
 	if !scopedSockLive(ctx, sock) {
 		pid, err := startScopedAgent(ctx, sock)
@@ -61,6 +64,9 @@ func EnsureScopedAgent(ctx context.Context, v *VaultConfig, cfg *Config) error {
 // ScopedAgentReady reports whether the koryph scoped signing agent holds pubKey.
 // Used by the engine's run-time signing preflight (never touches the vault).
 func ScopedAgentReady(ctx context.Context, pubKey string) bool {
+	if err := paths.EnsureSigningDir(); err != nil {
+		return false
+	}
 	return agentHasKeyOn(ctx, paths.SigningAgentSock(), pubKey)
 }
 
@@ -72,6 +78,9 @@ func scopedPIDPath() string { return filepath.Join(paths.SigningDir(), "agent.pi
 // EnsureScopedAgent, if any. Best-effort: a missing pidfile or dead process is
 // not an error.
 func StopScopedAgent() error {
+	if err := paths.EnsureSigningDir(); err != nil {
+		return fmt.Errorf("signing: secure scoped agent dir: %w", err)
+	}
 	data, err := os.ReadFile(scopedPIDPath())
 	if err != nil {
 		return nil
@@ -113,7 +122,7 @@ var scopedPIDRe = regexp.MustCompile(`SSH_AGENT_PID=([0-9]+)`)
 // clearing a stale socket file first. It returns the agent pid (0 if it could
 // not be parsed) so callers/tests can terminate it.
 func startScopedAgent(ctx context.Context, sock string) (int, error) {
-	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+	if err := paths.EnsureSocketPathDir(filepath.Dir(sock)); err != nil {
 		return 0, fmt.Errorf("signing: scoped agent dir: %w", err)
 	}
 	if _, err := os.Stat(sock); err == nil {

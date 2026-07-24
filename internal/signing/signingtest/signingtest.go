@@ -81,7 +81,7 @@ func spawnAgentOutput(t *testing.T) ([]byte, error) {
 		if socket == "" {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		if err := paths.EnsureSocketPathDir(filepath.Dir(socket)); err != nil {
 			return nil, err
 		}
 		out, err := exec.Command("ssh-agent", "-a", socket, "-s").CombinedOutput()
@@ -104,8 +104,8 @@ func spawnAgentOutput(t *testing.T) ([]byte, error) {
 // dispatches use the deterministic, explicitly allowlisted pool above.
 func spawnFallbackAgent(t *testing.T) ([]byte, error) {
 	t.Helper()
-	root := paths.SocketDir("signing-test-fixtures")
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	root, err := paths.EnsureSocketDir("signing-test-fixtures")
+	if err != nil {
 		return nil, err
 	}
 	dir, err := os.MkdirTemp(root, "agent-")

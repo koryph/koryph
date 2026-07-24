@@ -4,6 +4,7 @@
 package paths
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,5 +29,36 @@ func TestSigningDirUsesShortSocketRoot(t *testing.T) {
 	t.Setenv("KORYPH_HOME", "/a/koryph/home")
 	if got, want := SigningDir(), SocketDir("signing"); got != want {
 		t.Errorf("SigningDir = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureSocketDirRepairsExistingMode(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	dir := SocketDir("mode-test")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if got, err := EnsureSocketDir("mode-test"); err != nil || got != dir {
+		t.Fatalf("EnsureSocketDir = %q, %v; want %q, nil", got, err, dir)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("socket directory mode = %04o, want 0700", got)
+	}
+}
+
+func TestEnsureSocketDirRejectsSymlink(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	dir := SocketDir("symlink-test")
+	if err := os.Symlink(t.TempDir(), dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(dir) })
+	if _, err := EnsureSocketDir("symlink-test"); err == nil {
+		t.Fatal("EnsureSocketDir accepted a symlink")
 	}
 }

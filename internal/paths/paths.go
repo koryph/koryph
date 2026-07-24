@@ -11,7 +11,11 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 )
+
+const socketTempRoot = "/tmp"
 
 // KoryphHome returns the central state directory. Override with
 // KORYPH_HOME (used by tests and fixtures).
@@ -42,7 +46,62 @@ func SocketDir(scope string) string {
 	_, _ = h.Write([]byte(KoryphHome()))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(scope))
-	return filepath.Join("/tmp", fmt.Sprintf("koryph-%d-%08x", os.Getuid(), h.Sum32()))
+	return filepath.Join(socketTempRoot, fmt.Sprintf("koryph-%d-%08x", os.Getuid(), h.Sum32()))
+}
+
+// EnsureSocketDir creates SocketDir(scope), or validates an existing one, with
+// the ownership and mode needed for private Unix-domain sockets. A predictable
+// name under /tmp is safe only when a different local user cannot pre-create
+// it, nor read socket-adjacent state such as the scoped agent pidfile.
+func EnsureSocketDir(scope string) (string, error) {
+	dir := SocketDir(scope)
+	return dir, ensureSocketDir(dir)
+}
+
+// EnsureSocketPathDir applies the SocketDir ownership and mode checks to a
+// caller-provided socket directory. It accepts only koryph-named direct
+// children of the host temporary root, so a test environment cannot ask this
+// helper to chmod an unrelated path.
+func EnsureSocketPathDir(dir string) error {
+	dir = filepath.Clean(dir)
+	if filepath.Dir(dir) != socketTempRoot || !strings.HasPrefix(filepath.Base(dir), "koryph-") {
+		return fmt.Errorf("socket directory %q is outside the koryph socket root", dir)
+	}
+	return ensureSocketDir(dir)
+}
+
+// EnsureSigningDir secures the deterministic directory that holds the
+// production scoped signing-agent socket and pidfile.
+func EnsureSigningDir() error { return EnsureSocketPathDir(SigningDir()) }
+
+func ensureSocketDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("create socket directory %q: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("stat socket directory %q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("socket directory %q is not a directory", dir)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("socket directory %q is not owned by the current user", dir)
+	}
+	// Mkdir honors umask and an earlier run may have left the directory more
+	// permissive, so explicitly repair and then verify its exact mode.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("secure socket directory %q: %w", dir, err)
+	}
+	info, err = os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("restat socket directory %q: %w", dir, err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("socket directory %q is not private", dir)
+	}
+	return nil
 }
 
 // SigningDir holds koryph's scoped signing-agent socket. It is ephemeral IPC
