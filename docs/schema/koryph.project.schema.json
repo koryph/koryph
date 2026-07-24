@@ -21,6 +21,25 @@
       ],
       "description": "AdaptiveEscalation configures the learned-model auto-apply (koryph-qf6.6) — see Config.AdaptiveEscalation."
     },
+    "ContainerConfig": {
+      "properties": {
+        "registry": {
+          "type": "string",
+          "description": "Registry is the OCI registry hostname. It must be \"ghcr.io\" for the\nGitHub container workflow renderer."
+        },
+        "image": {
+          "type": "string",
+          "description": "Image is the registry-relative image name, for example \"acme/widget\".\nDo not include a registry hostname, tag, or digest."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "registry",
+        "image"
+      ],
+      "description": "ContainerConfig configures an optional container image release alongside the project's ordinary release train."
+    },
     "CopyrightConfig": {
       "properties": {
         "holder": {
@@ -309,6 +328,10 @@
         "provenance": {
           "type": "boolean",
           "description": "Provenance enables SLSA provenance via\nslsa-framework/slsa-github-generator (generic, level 3)."
+        },
+        "container": {
+          "$ref": "#/$defs/ContainerConfig",
+          "description": "Container optionally enables the GitHub Container Registry release\nworkflow. The workflow builds and pushes the image by digest, then uses\nthat immutable digest for its cosign signature, Syft SBOM, and SLSA\nprovenance subject."
         }
       },
       "additionalProperties": false,

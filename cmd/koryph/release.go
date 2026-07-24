@@ -144,6 +144,9 @@ func cmdReleaseSetup(args []string, stdout, stderr io.Writer) int {
 		return rel
 	}
 	fmt.Fprintf(stdout, "installed: %s\n", relPath(res.WorkflowPath))
+	if res.ContainerWorkflowPath != "" {
+		fmt.Fprintf(stdout, "installed: %s\n", relPath(res.ContainerWorkflowPath))
+	}
 	fmt.Fprintf(stdout, "installed: %s\n", relPath(res.ConfigPath))
 	if res.ManifestCreated {
 		fmt.Fprintf(stdout, "installed: %s (initial version %s)\n", relPath(res.ManifestPath), *flagVersion)

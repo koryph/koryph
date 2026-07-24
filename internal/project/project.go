@@ -154,6 +154,20 @@ type ReleaseBuildConfig struct {
 	Commands []string `json:"commands,omitempty"`
 }
 
+// ContainerConfig configures an optional container image release alongside the
+// project's ordinary release train. The GitHub renderer currently supports
+// GitHub Container Registry only: it builds and pushes the immutable image by
+// digest, then signs, SBOMs, and attests that digest.
+type ContainerConfig struct {
+	// Registry is the OCI registry hostname. It must be "ghcr.io" for the
+	// GitHub container workflow renderer.
+	Registry string `json:"registry"`
+
+	// Image is the registry-relative image name, for example "acme/widget".
+	// Do not include a registry hostname, tag, or digest.
+	Image string `json:"image"`
+}
+
 // ReleaseConfig is the optional release sub-block of koryph.project.json. It
 // drives `koryph release setup`, which renders and installs the caller GitHub
 // Actions workflow (pointing at koryph/koryph's reusable release-train.yml)
@@ -184,6 +198,12 @@ type ReleaseConfig struct {
 	// Provenance enables SLSA provenance via
 	// slsa-framework/slsa-github-generator (generic, level 3).
 	Provenance bool `json:"provenance,omitempty"`
+
+	// Container optionally enables the GitHub Container Registry release
+	// workflow. The workflow builds and pushes the image by digest, then uses
+	// that immutable digest for its cosign signature, Syft SBOM, and SLSA
+	// provenance subject.
+	Container *ContainerConfig `json:"container,omitempty"`
 }
 
 // Built-in defaults applied when a CopyrightConfig field is omitted. An
@@ -1116,6 +1136,7 @@ func validateIntake(sources []IntakeSource) error {
 // validateRelease enforces the release block contract when non-nil:
 //   - Type must be non-empty.
 //   - Exactly one of Build.Goreleaser or Build.Commands must be set.
+//   - Container releases target GHCR with a registry-relative image name.
 func validateRelease(r *ReleaseConfig) error {
 	if r == nil {
 		return nil
@@ -1130,6 +1151,19 @@ func validateRelease(r *ReleaseConfig) error {
 		return fmt.Errorf("release.build: only one build mode may be set (goreleaser or commands, not both)")
 	case !hasGoreleaser && !hasCommands:
 		return fmt.Errorf("release.build: exactly one build mode is required (goreleaser or commands)")
+	}
+	if r.Container == nil {
+		return nil
+	}
+	if r.Container.Registry != "ghcr.io" {
+		return fmt.Errorf("release.container.registry must be \"ghcr.io\", got %q", r.Container.Registry)
+	}
+	image := strings.TrimSpace(r.Container.Image)
+	if image == "" {
+		return fmt.Errorf("release.container.image is required")
+	}
+	if image != r.Container.Image || strings.ContainsAny(image, "@:") || strings.HasPrefix(image, "/") || strings.Contains(image, "//") {
+		return fmt.Errorf("release.container.image must be a registry-relative image name without a tag or digest, got %q", r.Container.Image)
 	}
 	return nil
 }

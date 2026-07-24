@@ -14,6 +14,7 @@
 //
 //   - .github/workflows/release.yml     — caller workflow rendered by the
 //     GitHub forge provider
+//   - .github/workflows/container.yml   — optional GHCR image-release workflow
 //   - release-please-config.json        — release-please package config
 //   - .release-please-manifest.json     — initial version manifest (only when
 //     the file does not yet exist, never overwritten)
@@ -85,6 +86,10 @@ var templateFuncs = template.FuncMap{
 type SetupResult struct {
 	// WorkflowPath is the absolute path to the installed caller workflow.
 	WorkflowPath string
+	// ContainerWorkflowPath is the absolute path to the installed GHCR image
+	// workflow when the release block has a container stanza. It is empty when
+	// container releases are not configured.
+	ContainerWorkflowPath string
 	// ConfigPath is the absolute path to the release-please config.
 	ConfigPath string
 	// ManifestPath is the absolute path to the release-please manifest.
@@ -102,9 +107,10 @@ type SetupResult struct {
 //
 //  1. Validates that rc is non-nil.
 //  2. Renders the caller workflow via the GitHub forge CI service.
-//  3. Renders release-please-config.json from the embedded template.
-//  4. Creates .release-please-manifest.json only if it does not exist yet.
-//  5. Returns a SetupResult with paths and remaining HUMAN steps.
+//  3. Renders the optional GHCR container workflow when configured.
+//  4. Renders release-please-config.json from the embedded template.
+//  5. Creates .release-please-manifest.json only if it does not exist yet.
+//  6. Returns a SetupResult with paths and remaining HUMAN steps.
 //
 // All files are written atomically (write-then-rename). The manifest is
 // never overwritten — the human operator manages it from the first release
@@ -151,6 +157,13 @@ func SetupForge(repoRoot string, rc *project.ReleaseConfig, initialVersion strin
 	if err != nil {
 		return nil, fmt.Errorf("release: forge CI render workflow: %w", err)
 	}
+	var containerWFBytes []byte
+	if rc.Container != nil {
+		containerWFBytes, err = ci.Render("container")
+		if err != nil {
+			return nil, fmt.Errorf("release: forge CI render container workflow: %w", err)
+		}
+	}
 
 	cfgBytes, err := renderTemplate("release-please-config.json", EmbeddedConfigTmpl, td)
 	if err != nil {
@@ -172,12 +185,21 @@ func SetupForge(repoRoot string, rc *project.ReleaseConfig, initialVersion strin
 
 	// Install paths.
 	wfPath := filepath.Join(repoRoot, ".github", "workflows", "release.yml")
+	containerWFPath := ""
+	if rc.Container != nil {
+		containerWFPath = filepath.Join(repoRoot, ".github", "workflows", "container.yml")
+	}
 	cfgPath := filepath.Join(repoRoot, "release-please-config.json")
 	mfPath := filepath.Join(repoRoot, ".release-please-manifest.json")
 
 	// Write workflow and config unconditionally (idempotent overwrite).
 	if err := fsx.WriteAtomic(wfPath, wfBytes, 0o644); err != nil {
 		return nil, fmt.Errorf("release: write %s: %w", wfPath, err)
+	}
+	if containerWFPath != "" {
+		if err := fsx.WriteAtomic(containerWFPath, containerWFBytes, 0o644); err != nil {
+			return nil, fmt.Errorf("release: write %s: %w", containerWFPath, err)
+		}
 	}
 	if err := fsx.WriteAtomic(cfgPath, cfgBytes, 0o644); err != nil {
 		return nil, fmt.Errorf("release: write %s: %w", cfgPath, err)
@@ -193,11 +215,12 @@ func SetupForge(repoRoot string, rc *project.ReleaseConfig, initialVersion strin
 	}
 
 	res := &SetupResult{
-		WorkflowPath:    wfPath,
-		ConfigPath:      cfgPath,
-		ManifestPath:    mfPath,
-		ManifestCreated: mfCreated,
-		HumanSteps:      humanSteps(rc),
+		WorkflowPath:          wfPath,
+		ContainerWorkflowPath: containerWFPath,
+		ConfigPath:            cfgPath,
+		ManifestPath:          mfPath,
+		ManifestCreated:       mfCreated,
+		HumanSteps:            humanSteps(rc),
 	}
 	return res, nil
 }
@@ -273,6 +296,15 @@ func RenderCallerWorkflow(rc *project.ReleaseConfig) ([]byte, error) {
 	return githubforge.New(githubforge.WithReleaseConfig(rc)).CI().Render("caller")
 }
 
+// RenderContainerWorkflow renders the optional GHCR container-release workflow
+// for doctor drift checks and callers that need to preview setup output.
+func RenderContainerWorkflow(rc *project.ReleaseConfig) ([]byte, error) {
+	if rc == nil || rc.Container == nil {
+		return nil, fmt.Errorf("release: RenderContainerWorkflow: release container config is required")
+	}
+	return githubforge.New(githubforge.WithReleaseConfig(rc)).CI().Render("container")
+}
+
 // humanSteps returns the ordered list of actions a human operator must
 // complete before the release pipeline can run end-to-end. These are printed
 // by the CLI after setup so the operator knows what remains.
@@ -281,7 +313,13 @@ func humanSteps(rc *project.ReleaseConfig) []string {
 		"Bootstrap GitHub App: if no release-bot app exists, provision one and note its App ID + private key (see docs/user-guide/signing.md).",
 		"Set repository secrets: RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY (required by release-train.yml).",
 		"Review branch-protection rulesets: ensure the release bot's GitHub App identity is in the 'Bypass pull request requirements' list on main.",
-		"Commit and push the generated files (.github/workflows/release.yml, release-please-config.json" +
+		"Commit and push the generated files (.github/workflows/release.yml" +
+			func() string {
+				if rc.Container != nil {
+					return ", .github/workflows/container.yml"
+				}
+				return ""
+			}() + ", release-please-config.json" +
 			func() string {
 				if true { // manifest path
 					return ", .release-please-manifest.json"
@@ -295,6 +333,11 @@ func humanSteps(rc *project.ReleaseConfig) []string {
 	if rc.Provenance {
 		steps = append(steps,
 			"Confirm the repository has 'id-token: write' permission available (required by slsa-framework/slsa-github-generator).",
+		)
+	}
+	if rc.Container != nil {
+		steps = append(steps,
+			"Ensure the GitHub Actions token may write GitHub Packages and publish attestations for GHCR image releases.",
 		)
 	}
 	return steps

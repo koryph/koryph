@@ -96,6 +96,7 @@ func fullConfig() *Config {
 			},
 			SBOM:       true,
 			Provenance: true,
+			Container:  &ContainerConfig{Registry: "ghcr.io", Image: "acme/koryph"},
 		},
 		Copyright: &CopyrightConfig{
 			Holder:  "Acme, Inc.",
@@ -430,6 +431,10 @@ func TestReleaseConfig_Validation(t *testing.T) {
 		{"both modes set is rejected", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser, Commands: []string{"make build"}}}, "only one build mode"},
 		{"no mode set is rejected", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{}}, "exactly one build mode is required"},
 		{"missing type is rejected", &ReleaseConfig{Build: ReleaseBuildConfig{Goreleaser: goreleaser}}, "release.type is required"},
+		{"GHCR container release is valid", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "ghcr.io", Image: "acme/widget"}}, ""},
+		{"container registry must be GHCR", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "registry.example", Image: "acme/widget"}}, "release.container.registry"},
+		{"container image is required", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "ghcr.io"}}, "release.container.image is required"},
+		{"container image excludes tags", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "ghcr.io", Image: "acme/widget:latest"}}, "without a tag or digest"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

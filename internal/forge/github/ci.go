@@ -16,6 +16,9 @@ import (
 //go:embed caller-workflow.yml.tmpl
 var embeddedCallerWorkflowTmpl string
 
+//go:embed container-workflow.yml.tmpl
+var embeddedContainerWorkflowTmpl string
+
 //go:embed gate-workflow.yml.tmpl
 var embeddedGateWorkflowTmpl string
 
@@ -72,16 +75,52 @@ type callerWorkflowData struct {
 //     project's gate command on every push and pull_request. The gate command
 //     defaults to "make gate"; override it with [WithGateCommand].
 //
+//   - "container" — the GHCR image-release workflow
+//     (.github/workflows/container.yml). Requires a release config with a
+//     container block.
+//
 // All other kinds return [forge.ErrUnsupported].
 func (s *githubCISvc) Render(kind string) ([]byte, error) {
 	switch kind {
 	case "caller":
 		return s.renderCaller()
+	case "container":
+		return s.renderContainer()
 	case "gate":
 		return s.renderGate()
 	default:
 		return nil, fmt.Errorf("github CI: Render(%q): %w", kind, forge.ErrUnsupported)
 	}
+}
+
+// renderContainer renders the GHCR workflow for an optional release container
+// block. The workflow deliberately promotes tags from the immutable pushed
+// digest, making the digest the shared subject for signing, SBOM, and
+// provenance.
+func (s *githubCISvc) renderContainer() ([]byte, error) {
+	if s.rc == nil || s.rc.Container == nil {
+		return nil, fmt.Errorf("github CI: Render(\"container\"): release container config required")
+	}
+	td := struct {
+		Registry  string
+		Image     string
+		Copyright string
+		License   string
+	}{
+		Registry:  s.rc.Container.Registry,
+		Image:     s.rc.Container.Image,
+		Copyright: s.copyright.FileCopyrightText(),
+		License:   s.copyright.LicenseID(),
+	}
+	tmpl, err := template.New("container-workflow.yml").Parse(embeddedContainerWorkflowTmpl)
+	if err != nil {
+		return nil, fmt.Errorf("github CI: parse container workflow template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, td); err != nil {
+		return nil, fmt.Errorf("github CI: render container workflow: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // renderCaller renders the release-train caller workflow from the embedded

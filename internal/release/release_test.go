@@ -36,6 +36,12 @@ func commandsConfig() *project.ReleaseConfig {
 	}
 }
 
+func containerConfig() *project.ReleaseConfig {
+	rc := goreleaserConfig()
+	rc.Container = &project.ContainerConfig{Registry: "ghcr.io", Image: "acme/widget"}
+	return rc
+}
+
 // TestSetup_GoreleaserMode verifies Setup installs all three files in
 // goreleaser (mode A) configuration.
 func TestSetup_GoreleaserMode(t *testing.T) {
@@ -116,6 +122,26 @@ func TestSetup_CommandsMode(t *testing.T) {
 	// Goreleaser version input must be absent.
 	if strings.Contains(string(wf), "goreleaser_version") {
 		t.Error("workflow must not contain goreleaser_version in commands mode")
+	}
+}
+
+func TestSetup_ContainerModeInstallsGHCRWorkflow(t *testing.T) {
+	root := t.TempDir()
+	res, err := release.Setup(root, containerConfig(), "0.3.0")
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if res.ContainerWorkflowPath == "" {
+		t.Fatal("ContainerWorkflowPath is empty")
+	}
+	wf, err := os.ReadFile(res.ContainerWorkflowPath)
+	if err != nil {
+		t.Fatalf("read container workflow: %v", err)
+	}
+	for _, frag := range []string{"ghcr.io", "acme/widget", "push-by-digest=true", "cosign sign --yes", "subject-digest:"} {
+		if !strings.Contains(string(wf), frag) {
+			t.Errorf("container workflow missing %q", frag)
+		}
 	}
 }
 

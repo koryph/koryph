@@ -105,6 +105,12 @@ func commandsRC() *project.ReleaseConfig {
 	}
 }
 
+func containerRC() *project.ReleaseConfig {
+	rc := goreleaserRC()
+	rc.Container = &project.ContainerConfig{Registry: "ghcr.io", Image: "acme/widget"}
+	return rc
+}
+
 // TestCIRender_CallerWorkflow_Goreleaser is a fixture-locked test for the
 // caller-workflow rendered in goreleaser mode. The exact content must remain
 // identical across refactors of the forge seam — any divergence means the
@@ -152,6 +158,43 @@ func TestCIRender_CallerWorkflow_Commands(t *testing.T) {
 	// goreleaser_version must NOT appear in commands mode.
 	if strings.Contains(s, "goreleaser_version") {
 		t.Error("commands mode: goreleaser_version must be absent")
+	}
+}
+
+// TestCIRender_ContainerWorkflow verifies the GHCR renderer preserves the
+// digest as the common signing, SBOM, and provenance subject.
+func TestCIRender_ContainerWorkflow(t *testing.T) {
+	p := githubforge.New(githubforge.WithReleaseConfig(containerRC()))
+	got, err := p.CI().Render("container")
+	if err != nil {
+		t.Fatalf("Render(\"container\"): %v", err)
+	}
+	s := string(got)
+	for _, frag := range []string{
+		"REGISTRY: ghcr.io",
+		"IMAGE: acme/widget",
+		"branches: [main]",
+		"Detect a release-PR merge",
+		"needs.detect-release.outputs.version",
+		"push-by-digest=true",
+		"steps.build.outputs.digest",
+		"cosign sign --yes",
+		"syft \"$REGISTRY/$IMAGE@$DIGEST\"",
+		"cosign attest --yes",
+		"actions/attest-build-provenance",
+		"subject-digest:",
+	} {
+		if !strings.Contains(s, frag) {
+			t.Errorf("Render(\"container\") missing %q\ngot:\n%s", frag, s)
+		}
+	}
+}
+
+func TestCIRender_ContainerWithoutConfig(t *testing.T) {
+	p := githubforge.New(githubforge.WithReleaseConfig(goreleaserRC()))
+	_, err := p.CI().Render("container")
+	if err == nil || !strings.Contains(err.Error(), "container config required") {
+		t.Fatalf("Render(\"container\") error = %v, want container-config error", err)
 	}
 }
 
