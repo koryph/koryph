@@ -131,7 +131,12 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 
 	if len(reasons) > 0 {
 		return candidateAssessment{
-			retryableBlock:   reportedBlock && !capabilityBlock && !structuredBlockMalformed && commits > 0 && clean && sl.Attempts < ledger.MaxAttempts,
+			// A generic clean self-block receives exactly one same-tier retry so
+			// the updated worker contract can correct it to a structured host
+			// capability block. A second generic block is terminal: another
+			// dispatch cannot add classification evidence and must not reach the
+			// final frontier escalation.
+			retryableBlock:   reportedBlock && !capabilityBlock && !structuredBlockMalformed && commits > 0 && clean && sl.Attempts == 1,
 			capabilityBlock:  capabilityBlock,
 			capability:       capability,
 			capabilityDetail: capabilityDetail,

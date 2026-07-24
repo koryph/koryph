@@ -12,10 +12,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/worktree"
 )
 
 func candidateFixture(t *testing.T) (*runner, *ledger.Slot, string) {
@@ -116,6 +119,69 @@ func TestAssessCandidateRetriesOnlyCleanCommittedSelfBlocksWithinBudget(t *testi
 	a = r.assessCandidate(context.Background(), sl)
 	if a.retryableBlock {
 		t.Fatalf("assessment at max attempts = %+v, want terminal", a)
+	}
+
+	sl.Attempts = 2
+	a = r.assessCandidate(context.Background(), sl)
+	if a.retryableBlock {
+		t.Fatalf("assessment after one correction retry = %+v, want terminal", a)
+	}
+}
+
+// TestGenericCompletionBlockGetsOnlyOneCorrectionRetry reproduces the host
+// block sequence: attempt 1 emits an old generic state=blocked heartbeat,
+// attempt 2 repeats it, and the engine parks rather than dispatching an
+// unhelpful third worker or escalating to the frontier tier.
+func TestGenericCompletionBlockGetsOnlyOneCorrectionRetry(t *testing.T) {
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "preserved\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): preserve work")
+	if err := os.WriteFile(sl.StatusPath, []byte(`{"state":"blocked"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// candidateFixture keeps its narrow assessment fixture at <root>/candidate,
+	// while dispatches use the production branch-derived name. Re-home this
+	// test worktree so the correction retry exercises the real dispatch path.
+	r.rec.WorktreeRoot = filepath.Dir(wt)
+	runGit(t, r.rec.Root, "worktree", "remove", "--force", wt)
+	reattached, err := worktree.Ensure(context.Background(), worktree.EnsureOpts{
+		RepoRoot: r.rec.Root, WorktreeRoot: r.rec.WorktreeRoot,
+		Branch: sl.Branch, Base: r.rec.DefaultBranch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sl.Worktree = reattached.Path
+
+	backend := &capturingBackend{}
+	r.adapter = &fakeSource{}
+	r.backend = backend
+	r.reg = registry.NewStore()
+	r.cfg = &project.Config{}
+	r.quotaCfg = &quota.Config{}
+	r.issues = map[string]beads.Issue{sl.PhaseID: {ID: sl.PhaseID, Title: "candidate"}}
+	sl.Model, sl.Agent, sl.ModelWhy = "sonnet", "koryph-implementer", "test frozen"
+
+	r.finishCandidate(context.Background(), sl)
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches after first generic block = %d, want 1 correction retry", len(backend.specs))
+	}
+	next := r.run.Slots[sl.PhaseID]
+	if next == nil || next.Attempts != 2 || next.Model != "sonnet" {
+		t.Fatalf("correction slot = %+v, want attempt 2 on frozen sonnet", next)
+	}
+	next.StatusPath = filepath.Join(t.TempDir(), "second-status.json")
+	if err := os.WriteFile(next.StatusPath, []byte(`{"state":"blocked"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.finishCandidate(context.Background(), next)
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches after repeated generic block = %d, want no third dispatch", len(backend.specs))
+	}
+	if next.Status != ledger.SlotBlocked {
+		t.Errorf("repeated generic block status = %s, want blocked", next.Status)
 	}
 }
 
