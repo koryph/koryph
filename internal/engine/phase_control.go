@@ -48,7 +48,16 @@ func (r *runner) processPhaseRequests(ctx context.Context, sl *ledger.Slot) {
 			continue
 		}
 
-		resp := r.handlePhaseRequest(ctx, sl, req, digest)
+		var resp phasecontrol.Response
+		if req.Operation == phasecontrol.OperationRuntimeCanary {
+			var ready bool
+			resp, ready = r.pollRuntimeCanaryRequest(ctx, sl, req, digest)
+			if !ready {
+				continue
+			}
+		} else {
+			resp = r.handlePhaseRequest(ctx, sl, req, digest)
+		}
 		if err := phasecontrol.WriteResponseDir(journalDir, resp, 0o600); err != nil {
 			logPhaseRequest(r.run.RunID, r.opts.ProjectID, sl.PhaseID, req.ID, req.Operation, phasecontrol.ResponseFailed, "cannot persist response journal")
 			continue

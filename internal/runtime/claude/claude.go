@@ -379,6 +379,9 @@ func buildJSONArgs(spec runtime.JSONSpec) []string {
 	if spec.Fallback {
 		args = append(args, "--fallback-model", FallbackModel)
 	}
+	if spec.ScratchDir != "" {
+		args = append(args, "--add-dir", spec.ScratchDir)
+	}
 	args = append(args, "--output-format", "json")
 	return args
 }

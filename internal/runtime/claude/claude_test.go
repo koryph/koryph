@@ -249,6 +249,18 @@ func TestCommandJSONDefaultsPermissionModeToPlan(t *testing.T) {
 	}
 }
 
+func TestCommandJSONAllowsInvocationScratch(t *testing.T) {
+	argv, _, err := (Claude{Bin: "claude"}).CommandJSON(runtime.JSONSpec{
+		Persona: "koryph-implementer", Model: "sonnet", ScratchDir: "/phase",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(argv, " "); !strings.Contains(joined, "--add-dir /phase") {
+		t.Fatalf("argv missing invocation scratch: %q", argv)
+	}
+}
+
 // TestCommandEnvSubscriptionOmitsAPIKey mirrors the env assertions from
 // dispatch/cli_test.go's TestDispatchLaunchesDetachedAgent: subscription
 // billing never carries ANTHROPIC_API_KEY, and a work profile's ConfigDir

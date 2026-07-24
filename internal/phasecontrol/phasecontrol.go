@@ -42,6 +42,7 @@ const (
 var (
 	idRE         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	capabilityRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
+	runtimeRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	labelRE      = regexp.MustCompile(`^(area|fp|res):[a-z0-9][a-z0-9._:/-]{0,126}$`)
 )
 
@@ -128,6 +129,14 @@ func ValidateSchedulingLabel(label string) error {
 func ValidateCapability(capability string) error {
 	if !capabilityRE.MatchString(capability) {
 		return errors.New("capability must be a lowercase hyphenated token")
+	}
+	return nil
+}
+
+// ValidateRuntimeName accepts only registry-shaped runtime identifiers.
+func ValidateRuntimeName(name string) error {
+	if !runtimeRE.MatchString(name) {
+		return errors.New("runtime must be a lowercase registry name")
 	}
 	return nil
 }

@@ -98,12 +98,33 @@ func cmdPhaseLabelAdd(args []string, stdout, stderr io.Writer) int {
 	return submitPhaseRequest(req, phaseDir, timeout, stdout, stderr)
 }
 
-// cmdPhaseRuntimeCanary is completed by the runtime-canary implementation
-// unit. Keeping the stable command route in the protocol foundation makes old
-// binaries fail explicitly rather than silently accepting an unknown request.
-func cmdPhaseRuntimeCanary(_ []string, _ io.Writer, stderr io.Writer) int {
-	fmt.Fprintln(stderr, "koryph phase request runtime-canary: this binary does not provide the runtime-canary handler")
-	return engine.ExitFatal
+func cmdPhaseRuntimeCanary(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("phase request runtime-canary", stderr)
+	var runtimeName, requestID string
+	var timeout time.Duration
+	fs.StringVar(&runtimeName, "runtime", "", "registered target runtime name")
+	fs.StringVar(&requestID, "request-id", "", "stable idempotency key (normally generated)")
+	fs.DurationVar(&timeout, "timeout", 3*time.Minute, "maximum wait for the orchestrator response")
+	setUsage(fs, stdout, "run the fixed authenticated canary under a target runtime", "--runtime NAME [flags]")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if len(pos) != 0 || runtimeName == "" || timeout <= 0 {
+		fmt.Fprintln(stderr, "koryph phase request runtime-canary: --runtime and a positive --timeout are required")
+		return engine.ExitUsage
+	}
+	if err := phasecontrol.ValidateRuntimeName(runtimeName); err != nil {
+		fmt.Fprintf(stderr, "koryph phase request runtime-canary: %v\n", err)
+		return engine.ExitUsage
+	}
+	req, phaseDir, err := phaseRequest(phasecontrol.OperationRuntimeCanary, requestID)
+	if err != nil {
+		fmt.Fprintf(stderr, "koryph phase request runtime-canary: %v\n", err)
+		return engine.ExitFatal
+	}
+	req.Runtime = runtimeName
+	return submitPhaseRequest(req, phaseDir, timeout, stdout, stderr)
 }
 
 func cmdPhaseBlock(args []string, stdout, stderr io.Writer) int {

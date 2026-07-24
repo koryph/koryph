@@ -27,6 +27,7 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtimecanary"
 	"github.com/koryph/koryph/internal/runtimeconfig"
 	"github.com/koryph/koryph/internal/signing"
 	"github.com/koryph/koryph/internal/sysmem"
@@ -221,6 +222,12 @@ type runner struct {
 	// metrics per-attempt and consistent with the per-attempt wall window the
 	// cockpit divides CPU seconds by. Lazily initialised by sampleSlotResources.
 	resUsage map[string]*slotResUsage
+
+	// phaseCanaries holds non-blocking cross-runtime capability probes keyed
+	// by request id. The poll loop owns the map; each worker goroutine sends
+	// exactly one sanitized result on its buffered channel.
+	phaseCanaries    map[string]<-chan phaseCanaryCompletion
+	runtimeCanaryRun func(context.Context, runtimecanary.Options) runtimecanary.Result
 
 	// lastResSampleAt throttles resource sampling to at most once per poll
 	// interval, decoupling it from pollPass frequency (which also fires on every
