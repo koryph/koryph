@@ -17,6 +17,10 @@ with Cloudflare's automatic TTL:
 It does not delete records, and it does not expose general Cloudflare account
 administration.
 
+For a hostname such as `docs.example.com`, koryph looks for its Cloudflare
+zone and then each parent in order, so it normally uses the `example.com`
+zone. The token must have access to that selected parent zone.
+
 ## Prerequisites
 
 Create a Cloudflare API token scoped only to the target zone, with `Zone:Read`

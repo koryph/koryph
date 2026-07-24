@@ -24,6 +24,9 @@ func TestEnsureGitHubPages_CreatesAllDNSOnlyRecords(t *testing.T) {
 		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			if got := r.URL.Query().Get("per_page"); got != "5" {
+				t.Errorf("zone per_page = %q, want 5", got)
+			}
 			writeCF(t, w, []map[string]string{{"id": "zone-id"}})
 		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-id/dns_records":
 			writeCF(t, w, []dnsRecord{})
@@ -52,6 +55,38 @@ func TestEnsureGitHubPages_CreatesAllDNSOnlyRecords(t *testing.T) {
 	}
 	if got := created[len(created)-1]; got.Type != "CNAME" || got.Name != "www.example.com" || got.Content != "octo.github.io" {
 		t.Errorf("CNAME = %+v", got)
+	}
+}
+
+func TestEnsureGitHubPages_FindsClosestParentZone(t *testing.T) {
+	tokenFile := writeToken(t, "token")
+	var lookedUp []string
+	c := newTestCloudflareClient(t, tokenFile, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			if got := r.URL.Query().Get("per_page"); got != "5" {
+				t.Errorf("zone per_page = %q, want 5", got)
+			}
+			name := r.URL.Query().Get("name")
+			lookedUp = append(lookedUp, name)
+			if name == "example.com" {
+				writeCF(t, w, []map[string]string{{"id": "zone-id"}})
+				return
+			}
+			writeCF(t, w, []dnsRecord{})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-id/dns_records":
+			writeCF(t, w, []dnsRecord{})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-id/dns_records":
+			writeCF(t, w, map[string]string{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	if err := c.EnsureGitHubPages(context.Background(), "docs.example.com", "octo.github.io"); err != nil {
+		t.Fatalf("EnsureGitHubPages: %v", err)
+	}
+	if got, want := strings.Join(lookedUp, ","), "docs.example.com,example.com"; got != want {
+		t.Errorf("zone lookups = %q, want %q", got, want)
 	}
 }
 

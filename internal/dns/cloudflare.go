@@ -161,17 +161,36 @@ func (c *CloudflareClient) resolveToken(ctx context.Context) ([]byte, error) {
 }
 
 func (c *CloudflareClient) zoneID(ctx context.Context, token []byte, name string) (string, error) {
-	query := url.Values{"name": {name}, "status": {"active"}, "per_page": {"1"}}
-	var result []struct {
-		ID string `json:"id"`
+	for _, candidate := range zoneCandidates(name) {
+		// Cloudflare permits a per_page value from 5 through 50. The name
+		// filter is exact, so five is sufficient while remaining valid.
+		query := url.Values{"name": {candidate}, "status": {"active"}, "per_page": {"5"}}
+		var result []struct {
+			ID string `json:"id"`
+		}
+		if err := c.call(ctx, token, http.MethodGet, "/zones?"+query.Encode(), nil, &result); err != nil {
+			return "", fmt.Errorf("dns: find Cloudflare zone %q: %w", candidate, err)
+		}
+		if len(result) > 0 && result[0].ID != "" {
+			return result[0].ID, nil
+		}
 	}
-	if err := c.call(ctx, token, http.MethodGet, "/zones?"+query.Encode(), nil, &result); err != nil {
-		return "", fmt.Errorf("dns: find Cloudflare zone %q: %w", name, err)
+	return "", fmt.Errorf("dns: active Cloudflare zone containing %q was not found", name)
+}
+
+// zoneCandidates returns a name and each parent in order, so a delegated
+// hostname such as docs.example.com resolves to the closest accessible zone
+// (normally example.com) without needing a public-suffix dependency.
+func zoneCandidates(name string) []string {
+	labels := strings.Split(normalizeName(name), ".")
+	candidates := make([]string, 0, len(labels))
+	for i := range labels {
+		candidate := strings.Join(labels[i:], ".")
+		if candidate != "" {
+			candidates = append(candidates, candidate)
+		}
 	}
-	if len(result) == 0 || result[0].ID == "" {
-		return "", fmt.Errorf("dns: active Cloudflare zone %q was not found", name)
-	}
-	return result[0].ID, nil
+	return candidates
 }
 
 func (c *CloudflareClient) ensureRecord(ctx context.Context, token []byte, zoneID string, wanted dnsRecord) error {
