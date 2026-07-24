@@ -50,7 +50,7 @@
        "codex": {
          "enabled": true,
          "model_map": {
-           "frontier": "gpt-5.6-sol",
+           "frontier": "gpt-5.6-terra",
            "standard": "gpt-5.6-terra",
            "light": "gpt-5.6-terra"
          },
@@ -85,6 +85,12 @@ Beads can express either concrete runtime choices or a portable equivalency:
   frontier mapping and translates portable `xhigh` through
   `runtimes.codex.effort_map` (the shipped default preserves it as `xhigh`).
 
+The shipped Codex map deliberately keeps ordinary implementation work on
+`gpt-5.6-terra`, including `equiv:frontier`. Koryph reserves
+`gpt-5.6-sol` for plan/design/score stages and a final eligible hard-block
+retry. An explicit native model or project model-map override remains an
+operator choice.
+
 Do not combine `equiv:` with `model:` on one bead. Existing
 `model:opus|sonnet|haiku` labels remain compatible Claude selections.
 
@@ -114,7 +120,7 @@ policies when an operator needs to constrain that normal routing:
 
 For example, a Claude bead carrying `runtime:claude`, `model:opus`, and
 `effort:xhigh` becomes Codex's `frontier:xhigh` mapping under
-`--runtime-equivalent codex` (currently `gpt-5.6-sol` with native `xhigh`
+`--runtime-equivalent codex` (currently `gpt-5.6-terra` with native `xhigh`
 effort). Prefer an explicit `equiv:frontier:xhigh` whenever a bead must remain
 portable across runtimes.
 

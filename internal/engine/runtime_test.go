@@ -104,7 +104,7 @@ func TestRuntimeEquivalentMapsNormalSourceModelToTargetRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve equivalent: %v", err)
 	}
-	if res.Model != "gpt-5.6-sol" || res.Effort != "xhigh" || !strings.Contains(res.Rationale, "runtime equivalent codex") {
+	if res.Model != "gpt-5.6-terra" || res.Effort != "xhigh" || !strings.Contains(res.Rationale, "runtime equivalent codex") {
 		t.Errorf("resolution = %+v, want Codex equivalent provenance", res)
 	}
 }

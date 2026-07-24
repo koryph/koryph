@@ -59,13 +59,15 @@ var ClaudeModelMap = ModelMap{
 	TierLight:    "haiku",
 }
 
-// CodexModelMap is the default capability mapping for Codex. Frontier work is
-// deliberately routed to the strongest supported reasoning model: planning,
-// review, and final-attempt recovery all rely on it to avoid poisoning later
-// automation. Standard and light work retain Terra's balanced profile.
+// CodexSolModel is the deliberately scarce top reasoning model. Normal
+// implementation routing stays on Terra; modelroute selects Sol only for
+// advanced planning/design/scoring stages and final hard-block recovery.
+const CodexSolModel = "gpt-5.6-sol"
+
+// CodexModelMap is the default capability mapping for ordinary portable work.
 // Projects may overlay individual entries in runtimes.codex.model_map.
 var CodexModelMap = ModelMap{
-	TierFrontier: "gpt-5.6-sol",
+	TierFrontier: "gpt-5.6-terra",
 	TierStandard: "gpt-5.6-terra",
 	TierLight:    "gpt-5.6-terra",
 }

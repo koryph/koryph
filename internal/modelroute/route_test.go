@@ -6,6 +6,8 @@ package modelroute
 import (
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/runtime"
 )
 
 // fableAllowed is the allowlist a fable-enabled project would declare.
@@ -280,7 +282,7 @@ func TestRecoveryModelUsesSelectedRuntimeFrontier(t *testing.T) {
 	}{
 		{"codex terra to frontier", "gpt-5.6-terra", "codex", nil, nil, "gpt-5.6-sol"},
 		{"codex already frontier", "gpt-5.6-sol", "codex", nil, nil, ""},
-		{"codex project frontier override", "gpt-5.6-terra", "codex", map[string]string{"frontier": "codex-top"}, []string{"codex-top"}, "codex-top"},
+		{"codex recovery stays on dedicated Sol target", "gpt-5.6-terra", "codex", map[string]string{"frontier": "codex-top"}, []string{"codex-top"}, runtime.CodexSolModel},
 		{"unknown custom model is not ordered", "custom", "codex", nil, []string{"custom"}, ""},
 		{"claude lower tier", TierSonnet, "claude", nil, nil, TierOpus},
 		{"claude fable never downgrades", TierFable, "claude", nil, fableAllowed, ""},

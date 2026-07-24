@@ -73,6 +73,10 @@ func TestResolveCodexExactAndPortableEquivalency(t *testing.T) {
 	if name != "codex" || !strings.Contains(rationale, "implies runtime codex") {
 		t.Fatalf("ResolveRuntimeName(model:gpt-5.6-terra) = (%q, %q), want codex inference", name, rationale)
 	}
+	name, rationale = ResolveRuntimeName([]string{"model:" + runtime.CodexSolModel}, "claude")
+	if name != "codex" || !strings.Contains(rationale, "implies runtime codex") {
+		t.Fatalf("ResolveRuntimeName(model:%s) = (%q, %q), want codex inference", runtime.CodexSolModel, name, rationale)
+	}
 
 	got, err := Resolve(Req{
 		Runtime: "codex", Stage: StageImplement,
@@ -84,8 +88,8 @@ func TestResolveCodexExactAndPortableEquivalency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(Codex equivalency): %v", err)
 	}
-	if got.Model != "gpt-5.6-sol" || got.Effort != "xhigh" || got.Equivalent != "frontier:xhigh" {
-		t.Errorf("Codex equivalency = %+v, want model gpt-5.6-sol, effort xhigh, portable frontier:xhigh", got)
+	if got.Model != "gpt-5.6-terra" || got.Effort != "xhigh" || got.Equivalent != "frontier:xhigh" {
+		t.Errorf("Codex equivalency = %+v, want model gpt-5.6-terra, effort xhigh, portable frontier:xhigh", got)
 	}
 }
 
@@ -98,8 +102,8 @@ func TestResolveEquivalentTranslatesNativeAndStageSelections(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ResolveEquivalent: %v", err)
 		}
-		if got.Model != "gpt-5.6-sol" || got.Effort != "xhigh" || got.Equivalent != "frontier:xhigh" {
-			t.Errorf("resolution = %+v, want Codex frontier/xhigh equivalent", got)
+		if got.Model != "gpt-5.6-terra" || got.Effort != "xhigh" || got.Equivalent != "frontier:xhigh" {
+			t.Errorf("resolution = %+v, want Codex Terra/xhigh equivalent", got)
 		}
 		if !strings.Contains(got.Rationale, "runtime equivalent codex") {
 			t.Errorf("rationale = %q, want runtime-equivalent provenance", got.Rationale)
@@ -128,6 +132,24 @@ func TestResolveEquivalentTranslatesNativeAndStageSelections(t *testing.T) {
 			t.Fatalf("ResolveEquivalent error = %v, want exact-model equiv remediation", err)
 		}
 	})
+}
+
+func TestCodexAdvancedPlanningUsesSolUnlessOverridden(t *testing.T) {
+	got, err := Resolve(Req{Runtime: "codex", Stage: StagePlan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != runtime.CodexSolModel {
+		t.Errorf("plan model = %q, want %q", got.Model, runtime.CodexSolModel)
+	}
+
+	got, err = Resolve(Req{Runtime: "codex", Stage: StagePlan, Labels: []string{"equiv:frontier:xhigh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "gpt-5.6-terra" {
+		t.Errorf("explicit plan equivalency model = %q, want Terra", got.Model)
+	}
 }
 
 func TestRunEquivalentIsProjectDefaultAndLosesToBeadModel(t *testing.T) {

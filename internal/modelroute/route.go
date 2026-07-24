@@ -52,6 +52,9 @@ func ResolveRuntimeName(labels []string, defaultRuntime string) (name, rationale
 }
 
 func inferRuntimeForModel(model string) (string, bool) {
+	if model == runtime.CodexSolModel {
+		return "codex", true
+	}
 	owners := make([]string, 0, 2)
 	for _, candidate := range []struct {
 		name string
@@ -140,6 +143,14 @@ func Resolve(r Req) (Resolution, error) {
 	tier, rationale, explicit, err := resolveTier(r, runtimeName)
 	if err != nil {
 		return Resolution{}, err
+	}
+	// Sol is intentionally scarce: ordinary implementation work, including a
+	// bead's equiv:frontier request, stays on Terra. Advanced planning stages
+	// select it unless an operator made an explicit model/equivalency or
+	// run-default choice. Final hard-block retries use RecoveryModel below.
+	if runtimeName == "codex" && advancedPlanningStage(r.Stage) && !hasEquiv && !explicit && r.RunDefault == "" {
+		tier = runtime.CodexSolModel
+		rationale += " (Codex advanced-planning policy)"
 	}
 	equivalent := ""
 	if hasEquiv {
@@ -340,6 +351,9 @@ func hasExplicitModelSource(r Req) bool {
 }
 
 func uniqueTierForModel(model, runtimeName string, override map[string]string) string {
+	if runtimeName == "codex" && model == runtime.CodexSolModel {
+		return runtime.TierFrontier
+	}
 	var matches []string
 	for tier, candidate := range effectiveModelMapFor(runtimeName, override) {
 		if candidate == model {
@@ -373,6 +387,9 @@ func isPortableTier(tier string) bool {
 }
 
 func declaredModelForRuntime(model, runtimeName string, override map[string]string) bool {
+	if runtimeName == "codex" && model == runtime.CodexSolModel {
+		return true
+	}
 	if runtimeName == "claude" {
 		return false
 	}
@@ -518,6 +535,9 @@ func effectiveEffortMapFor(runtimeName string, override map[string]string) map[s
 // aliases remain valid for compatibility.
 func validModelForRuntime(model, runtimeName string, override map[string]string, allowed []string) bool {
 	if runtimeName == "claude" && validTier(model) {
+		return true
+	}
+	if runtimeName == "codex" && model == runtime.CodexSolModel {
 		return true
 	}
 	for _, id := range effectiveModelMapFor(runtimeName, override) {
@@ -728,8 +748,10 @@ func RecoveryUpgrade(current string) string {
 
 // RecoveryModel returns the concrete model to use for a FINAL bead-fault
 // retry. Unlike the legacy Claude-only escalation policy, it resolves the
-// selected runtime's effective frontier mapping. This keeps recovery portable
-// while preserving the frozen first-attempt model for every non-final retry.
+// selected runtime's recovery target. Codex uses its dedicated Sol target;
+// other runtimes use their effective frontier mapping. This keeps recovery
+// portable while preserving the frozen first-attempt model for every
+// non-final retry.
 //
 // A declared runtime model is itself a fail-closed policy decision, matching
 // Resolve's treatment of runtime model maps. An explicit project allowlist is
@@ -751,6 +773,9 @@ func RecoveryModel(current, runtimeName string, override map[string]string, allo
 		return ""
 	}
 	target := effectiveModelMapFor(runtimeName, override)[runtime.TierFrontier]
+	if runtimeName == "codex" {
+		target = runtime.CodexSolModel
+	}
 	if target == "" || target == current || (runtimeName == "claude" && target == TierFable) {
 		return ""
 	}
@@ -766,6 +791,15 @@ func RecoveryModel(current, runtimeName string, override map[string]string, allo
 		}
 	}
 	return target
+}
+
+func advancedPlanningStage(stage string) bool {
+	switch stage {
+	case StagePlan, StageDesign, StageScore:
+		return true
+	default:
+		return false
+	}
 }
 
 // EscalationTier remains the Claude compatibility facade for callers and
