@@ -5,7 +5,9 @@ package engine
 
 import (
 	"context"
-	"flag"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,29 +101,28 @@ func TestProtectedResolutionHint(t *testing.T) {
 
 	liftable := r.protectedResolutionHint([]string{"Makefile", ".github/workflows/ci.yml"}, "feat/x", "b1")
 	const commandPrefix = "routine CI/build paths — land with: "
-	const command = "koryph merge --project proj --allow-protected --push --close-bead b1 --reason <why> feat/x"
+	const command = "koryph merge --project proj --allow-protected --push --close-bead b1 --reason 'operator-approved protected-path landing' feat/x"
 	if got := strings.TrimPrefix(liftable, commandPrefix); got != command {
 		t.Errorf("all-liftable command = %q, want %q", got, command)
 	}
 
-	// The hint is intended to be pasted into a command line. Parse its command
-	// portion with Go's standard flag parser, which stops at a positional token:
-	// keeping feat/x last proves every advertised flag is consumable.
-	args := strings.Fields(command)
-	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
-	projectID := fs.String("project", "", "")
-	allowProtected := fs.Bool("allow-protected", false, "")
-	push := fs.Bool("push", false, "")
-	closeBead := fs.String("close-bead", "", "")
-	reason := fs.String("reason", "", "")
-	if err := fs.Parse(args[2:]); err != nil {
-		t.Fatalf("parse advertised command: %v", err)
+	// The hint is meant to be pasted into a shell. Run it through sh with a
+	// stand-in koryph executable so redirections, quoting, and Go flag order
+	// are exercised exactly as an operator would use the displayed command.
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "koryph")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("write koryph stub: %v", err)
 	}
-	if *projectID != "proj" || !*allowProtected || !*push || *closeBead != "b1" || *reason != "<why>" {
-		t.Errorf("advertised command flags: project=%q allow=%t push=%t close=%q reason=%q", *projectID, *allowProtected, *push, *closeBead, *reason)
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Env = append(os.Environ(), "PATH="+binDir)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run advertised command in shell: %v", err)
 	}
-	if got := fs.Args(); len(got) != 1 || got[0] != "feat/x" {
-		t.Errorf("advertised command branch = %q, want [feat/x]", got)
+	const wantArgs = "merge\n--project\nproj\n--allow-protected\n--push\n--close-bead\nb1\n--reason\noperator-approved protected-path landing\nfeat/x\n"
+	if got := string(out); got != wantArgs {
+		t.Errorf("advertised command arguments = %q, want %q", got, wantArgs)
 	}
 
 	manual := r.protectedResolutionHint([]string{"Makefile", "CLAUDE.md"}, "feat/x", "b1")
