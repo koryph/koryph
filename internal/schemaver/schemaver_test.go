@@ -4,7 +4,9 @@
 package schemaver
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +71,61 @@ func TestSurfacesCoversAll(t *testing.T) {
 		if !want[s] {
 			t.Errorf("unexpected surface %q", s)
 		}
+	}
+}
+
+func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
+	original, hadOriginal := migrations[Registry]
+	migrations[Registry] = []Migration{func(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		state["renamed"] = state["old_name"]
+		delete(state, "old_name")
+		return state, nil
+	}}
+	t.Cleanup(func() {
+		if hadOriginal {
+			migrations[Registry] = original
+		} else {
+			delete(migrations, Registry)
+		}
+	})
+
+	raw, err := Migrate(Registry, []byte(`{"old_name":"value","unknown":{"keep":true}}`))
+	if err != nil {
+		t.Fatalf("Migrate = %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode migrated state: %v", err)
+	}
+	if got["schema_version"] != float64(1) || got["renamed"] != "value" {
+		t.Errorf("migrated state = %#v, want schema_version=1 and renamed=value", got)
+	}
+	if unknown, ok := got["unknown"].(map[string]any); !ok || unknown["keep"] != true {
+		t.Errorf("unknown field was not preserved: %#v", got["unknown"])
+	}
+
+	again, err := Migrate(Registry, raw)
+	if err != nil {
+		t.Fatalf("second Migrate = %v", err)
+	}
+	if string(again) != string(raw) {
+		t.Errorf("Migrate must be idempotent: first %s, second %s", raw, again)
+	}
+}
+
+func TestMigrateRejectsUnknownSurfaceAndMissingStep(t *testing.T) {
+	if _, err := Migrate(Surface("unknown"), []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "unknown surface") {
+		t.Fatalf("Migrate(unknown) error = %v, want unknown-surface error", err)
+	}
+	if _, err := Migrate(Quota, []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "no migration") {
+		t.Fatalf("Migrate(missing step) error = %v, want missing-step error", err)
+	}
+}
+
+func TestMigrateRefusesNewerState(t *testing.T) {
+	_, err := Migrate(SigningVault, []byte(`{"schema_version":2}`))
+	var tooNew *TooNewError
+	if !errors.As(err, &tooNew) {
+		t.Fatalf("Migrate(newer) error = %v, want *TooNewError", err)
 	}
 }
