@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 The Koryph Developers
+
 # surface schema-version persisted-shape-sha256
 ledger_manifest 2 f95f6e75cb22956964abb5183c39540276722740bcbd792aabe2d5a907d221cf
 ledger_run 2 a370e7c1e30f78d61100253904776852cc948832dce376796dbe9c6ff86b9478
