@@ -17,6 +17,8 @@ import (
 
 const socketTempRoot = "/tmp"
 
+var currentUID = os.Getuid
+
 // KoryphHome returns the central state directory. Override with
 // KORYPH_HOME (used by tests and fixtures).
 func KoryphHome() string {
@@ -86,7 +88,7 @@ func ensureSocketDir(dir string) error {
 		return fmt.Errorf("socket directory %q is not a directory", dir)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Getuid()) {
+	if !ok || stat.Uid != uint32(currentUID()) {
 		return fmt.Errorf("socket directory %q is not owned by the current user", dir)
 	}
 	// Mkdir honors umask and an earlier run may have left the directory more

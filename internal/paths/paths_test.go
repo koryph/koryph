@@ -62,3 +62,20 @@ func TestEnsureSocketDirRejectsSymlink(t *testing.T) {
 		t.Fatal("EnsureSocketDir accepted a symlink")
 	}
 }
+
+func TestEnsureSocketDirRejectsForeignOwner(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	dir := SocketDir("foreign-owner-test")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	originalUID := currentUID
+	currentUID = func() int { return os.Getuid() + 1 }
+	t.Cleanup(func() { currentUID = originalUID })
+
+	if _, err := EnsureSocketDir("foreign-owner-test"); err == nil {
+		t.Fatal("EnsureSocketDir accepted a foreign-owned directory")
+	}
+}
