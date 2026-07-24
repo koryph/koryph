@@ -83,6 +83,7 @@ nav:
           - Posture profiles: user-guide/postures.md
           - CI pipeline setup: user-guide/ci-setup.md
       - Shipping:
+          - GitHub Pages custom domains: user-guide/github-pages.md
           - Releasing projects: user-guide/releasing-projects.md
           - Release pipeline setup: user-guide/release.md
           - "Release bot: GitHub App provisioning": user-guide/release-bot.md

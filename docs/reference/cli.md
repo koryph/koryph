@@ -95,6 +95,8 @@ koryph — central multi-project orchestrator for autonomous AI coding agents.
 | ↳ [`koryph ci setup`](#koryph-ci-setup) | render and install CI assets into the project |
 | ↳ [`koryph ci check`](#koryph-ci-check) | report drift between installed CI assets and current Render output |
 | [`koryph cockpit`](#koryph-cockpit) | emit a cockpit snapshot for the VS Code extension |
+| [`koryph dns`](#koryph-dns) | reconcile narrowly scoped DNS records for hosted pages |
+| ↳ [`koryph dns github-pages`](#koryph-dns-github-pages) | reconcile Cloudflare DNS-only records for a GitHub Pages domain |
 | [`koryph epic`](#koryph-epic) | on-demand epic validation: completeness + structural health review |
 | [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
 | [`koryph inject`](#koryph-inject) | add a bead to a running loop even if it is outside the run's scope |
@@ -1160,6 +1162,31 @@ emit a cockpit snapshot for the VS Code extension
 |------|------|---------|-------------|
 | `--json` | bool |  | emit snapshot as JSON (used by the VS Code extension) |
 | `--project` | string |  | project id (required) |
+
+
+---
+
+## `koryph dns` { #koryph-dns }
+
+reconcile narrowly scoped DNS records for hosted pages
+
+**See also:** [Github pages](../user-guide/github-pages)
+
+Run `koryph dns <subcommand> -h` for subcommand flags.
+
+## `koryph dns github-pages` { #koryph-dns-github-pages }
+
+reconcile Cloudflare DNS-only records for a GitHub Pages domain
+
+**See also:** [Github pages](../user-guide/github-pages)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--domain` | string |  | apex custom domain to configure (for example, docs.example.com) |
+| `--pages-domain` | string |  | GitHub Pages default domain (for example, owner.github.io) |
+| `--project` | string |  | project id |
+| `--vault-provider` | string |  | vault provider for --vault-ref (uses the project/global fallback ladder when omitted) |
+| `--vault-ref` | string |  | reference to the scoped Cloudflare API token in the selected vault |
 
 
 ---

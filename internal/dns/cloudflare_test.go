@@ -18,7 +18,7 @@ import (
 func TestEnsureGitHubPages_CreatesAllDNSOnlyRecords(t *testing.T) {
 	tokenFile := writeToken(t, "scoped-token\n")
 	var created []dnsRecord
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestCloudflareClient(t, tokenFile, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer scoped-token" {
 			t.Errorf("Authorization = %q", got)
 		}
@@ -38,12 +38,6 @@ func TestEnsureGitHubPages_CreatesAllDNSOnlyRecords(t *testing.T) {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
 	}))
-	defer srv.Close()
-
-	c, err := NewCloudflareClient(CloudflareConfig{VaultProvider: "file", VaultRef: tokenFile, APIBaseURL: srv.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := c.EnsureGitHubPages(context.Background(), "example.com", "octo.github.io"); err != nil {
 		t.Fatalf("EnsureGitHubPages: %v", err)
 	}
@@ -65,7 +59,7 @@ func TestEnsureGitHubPages_ReconcilesProxiedRecordWithoutDuplicates(t *testing.T
 	tokenFile := writeToken(t, "token")
 	var patched dnsRecord
 	posts := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestCloudflareClient(t, tokenFile, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/zones":
 			writeCF(t, w, []map[string]string{{"id": "zone-id"}})
@@ -88,12 +82,6 @@ func TestEnsureGitHubPages_ReconcilesProxiedRecordWithoutDuplicates(t *testing.T
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
 	}))
-	defer srv.Close()
-
-	c, err := NewCloudflareClient(CloudflareConfig{VaultProvider: "file", VaultRef: tokenFile, APIBaseURL: srv.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := c.EnsureGitHubPages(context.Background(), "example.com", "octo.github.io"); err != nil {
 		t.Fatalf("EnsureGitHubPages: %v", err)
 	}
@@ -113,7 +101,7 @@ func TestEnsureGitHubPages_UsesProjectVaultFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	var authorization string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestCloudflareClient(t, tokenFile, project, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authorization = r.Header.Get("Authorization")
 		if r.URL.Path == "/zones" {
 			writeCF(t, w, []map[string]string{{"id": "zone-id"}})
@@ -121,12 +109,6 @@ func TestEnsureGitHubPages_UsesProjectVaultFallback(t *testing.T) {
 		}
 		writeCF(t, w, []dnsRecord{})
 	}))
-	defer srv.Close()
-
-	c, err := NewCloudflareClient(CloudflareConfig{ProjectRoot: project, VaultRef: tokenFile, APIBaseURL: srv.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := c.EnsureGitHubPages(context.Background(), "example.com", "octo.github.io"); err != nil {
 		t.Fatalf("EnsureGitHubPages: %v", err)
 	}
@@ -138,6 +120,30 @@ func TestEnsureGitHubPages_UsesProjectVaultFallback(t *testing.T) {
 func TestNewCloudflareClient_RequiresVaultRef(t *testing.T) {
 	if _, err := NewCloudflareClient(CloudflareConfig{}); err == nil || !strings.Contains(err.Error(), "vault_ref") {
 		t.Fatalf("NewCloudflareClient error = %v, want vault_ref error", err)
+	}
+}
+
+func TestCloudflareClient_RejectsOversizedResponse(t *testing.T) {
+	tokenFile := writeToken(t, "token")
+	c := newTestCloudflareClient(t, tokenFile, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"success":true,"result":"`))
+		w.Write(make([]byte, maxCloudflareResponseBytes))
+		w.Write([]byte(`"}`))
+	}))
+
+	err := c.EnsureGitHubPages(context.Background(), "example.com", "octo.github.io")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("EnsureGitHubPages error = %v, want response limit error", err)
+	}
+}
+
+func TestNewCloudflareClient_UsesCloudflareHTTPSAPI(t *testing.T) {
+	c, err := NewCloudflareClient(CloudflareConfig{VaultRef: "ref"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.baseURL != cloudflareAPIBase {
+		t.Errorf("baseURL = %q, want %q", c.baseURL, cloudflareAPIBase)
 	}
 }
 
@@ -157,3 +163,28 @@ func writeCF(t *testing.T, w http.ResponseWriter, result any) {
 		t.Fatal(err)
 	}
 }
+
+func newTestCloudflareClient(t *testing.T, vaultRef, projectRoot string, handler http.Handler) *CloudflareClient {
+	t.Helper()
+	c, err := NewCloudflareClient(CloudflareConfig{ProjectRoot: projectRoot, VaultProvider: "file", VaultRef: vaultRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.httpClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme != "https" || r.URL.Host != "api.cloudflare.com" {
+			t.Errorf("request URL = %s, want Cloudflare HTTPS API", r.URL)
+		}
+		request := r.Clone(r.Context())
+		requestURL := *r.URL
+		requestURL.Path = strings.TrimPrefix(requestURL.Path, "/client/v4")
+		request.URL = &requestURL
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Result(), nil
+	})}
+	return c
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

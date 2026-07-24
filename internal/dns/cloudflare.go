@@ -21,6 +21,12 @@ import (
 
 const cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
 
+// maxCloudflareResponseBytes bounds a response before decoding it. The
+// Cloudflare endpoints used here return small JSON documents; accepting an
+// unlimited response would let a faulty or hostile intermediary exhaust the
+// process's memory.
+const maxCloudflareResponseBytes = 1 << 20
+
 // GitHubPagesARecords and GitHubPagesAAAARecords are GitHub's published
 // addresses for apex custom domains. Keep them in one place so callers cannot
 // accidentally configure only a subset of the required records.
@@ -46,13 +52,11 @@ var (
 //
 // VaultProvider is optional. When absent, the normal vault fallback ladder is
 // used: project vault, legacy project signing vault, global vault, then the OS
-// default provider. APIBaseURL and HTTPClient are primarily useful for tests.
+// default provider.
 type CloudflareConfig struct {
 	ProjectRoot   string
 	VaultProvider string
 	VaultRef      string
-	APIBaseURL    string
-	HTTPClient    *http.Client
 }
 
 // CloudflareClient manages exactly the DNS record shapes GitHub Pages needs.
@@ -72,20 +76,12 @@ func NewCloudflareClient(cfg CloudflareConfig) (*CloudflareClient, error) {
 	if strings.TrimSpace(cfg.VaultRef) == "" {
 		return nil, fmt.Errorf("dns: Cloudflare vault_ref is required")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.APIBaseURL), "/")
-	if baseURL == "" {
-		baseURL = cloudflareAPIBase
-	}
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
 	return &CloudflareClient{
 		projectRoot: cfg.ProjectRoot,
 		provider:    strings.TrimSpace(cfg.VaultProvider),
 		vaultRef:    strings.TrimSpace(cfg.VaultRef),
-		baseURL:     baseURL,
-		httpClient:  client,
+		baseURL:     cloudflareAPIBase,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
@@ -250,9 +246,12 @@ func (c *CloudflareClient) call(ctx context.Context, token []byte, method, endpo
 		return fmt.Errorf("%s %s: %w", method, path.Clean(endpoint), err)
 	}
 	defer resp.Body.Close()
-	raw, readErr := io.ReadAll(resp.Body)
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxCloudflareResponseBytes+1))
 	if readErr != nil {
 		return fmt.Errorf("read response: %w", readErr)
+	}
+	if len(raw) > maxCloudflareResponseBytes {
+		return fmt.Errorf("read response: exceeds %d-byte limit", maxCloudflareResponseBytes)
 	}
 	var envelope cloudflareEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
