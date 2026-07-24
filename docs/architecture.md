@@ -78,8 +78,9 @@ flowchart LR
 | `cmd/koryph` | CLI entry point — key verbs: `run`, `project`, `init`, `onboard`, `validate`, `quota`, `batch`, `stop`, `tail`, `nudge`, `merge`, `land`, `review-pr`, `pr-sync`, `signing`, `governor`, `doctor`, `metrics`, `agents`, `commands`, `rules` (non-exhaustive; `ops.go` is a source file, not a command) |
 | `internal/engine` | wave loop (scan → batch → preflight → dispatch → poll → stages → review → merge → record) |
 | `internal/registry` | multi-project registry + audit log (`~/.koryph`, git-backed) |
-| `internal/account` | Claude env construction + fail-closed identity verification |
-| `internal/dispatch` | dispatch backend (headless `claude` CLI, subscription-first) |
+| `internal/account` | credential-minimal child environments + fail-closed account identity verification |
+| `internal/runtime` | pluggable AI runtime contract, capability registry, model equivalence, and normalized events |
+| `internal/dispatch` | runtime-neutral headless dispatch lifecycle and process artifacts |
 | `internal/anthro` | direct Anthropic API + Message Batches (explicit only) |
 | `internal/beads` | bd adapter (ready graph, labels, merge slot, children) |
 | `internal/sched` | footprint conflict coloring + wave building |
@@ -96,11 +97,11 @@ flowchart LR
 | `internal/version` | `engine_version` pinning (semver-minimum satisfaction) |
 | `internal/project` | per-project adapter config (`koryph.project.json`) |
 | `internal/onboard` | project onboarding/migration (dry-run first) |
-| `internal/scaffold` | hash-aware installer for embedded `.claude` assets (force-guarded) |
-| `internal/commands` | embedded `koryph-*` Claude slash commands + installer |
-| `internal/rules` | hook scripts + additive `.claude/settings.json` merge (enforcement wiring) |
-| `hooks/` | shipped Claude Code hooks (agent-boundary guard, worktree guard) |
-| `agents/` | global fallback personas for projects with no local `.claude/agents/*` |
+| `internal/scaffold` | hash-aware installer for embedded runtime assets (force-guarded) |
+| `internal/commands` | canonical `koryph-*` workflow prompts + per-runtime projections |
+| `internal/rules` | canonical guard hooks + capability-gated runtime-native enforcement wiring |
+| `hooks/` | runtime-neutral enforcement hooks projected into adapters that support lifecycle hooks |
+| `agents/` | canonical runtime-neutral personas projected into each adapter's native format |
 
 ## One wave, end-to-end
 
@@ -138,7 +139,7 @@ sequenceDiagram
       else granted
         E->>D: promptc.Compile + backend.Dispatch(spec)
         D->>A: re-verify identity (belt-and-braces)
-        D->>W: launch headless claude in worktree branch
+        D->>W: launch selected AI runtime in worktree branch
         E->>B: adapter.Claim(bead) · write ledger slot + manifest v2
       end
     end
