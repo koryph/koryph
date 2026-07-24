@@ -145,6 +145,28 @@ func TestSetup_ContainerModeInstallsGHCRWorkflow(t *testing.T) {
 	}
 }
 
+func TestSetup_ContainerWorkflowRemovedWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+	containerRes, err := release.Setup(root, containerConfig(), "0.3.0")
+	if err != nil {
+		t.Fatalf("container setup: %v", err)
+	}
+	if _, err := os.Stat(containerRes.ContainerWorkflowPath); err != nil {
+		t.Fatalf("container workflow missing after setup: %v", err)
+	}
+
+	res, err := release.Setup(root, goreleaserConfig(), "0.3.0")
+	if err != nil {
+		t.Fatalf("non-container setup: %v", err)
+	}
+	if res.ContainerWorkflowPath != "" {
+		t.Errorf("ContainerWorkflowPath = %q, want empty when disabled", res.ContainerWorkflowPath)
+	}
+	if _, err := os.Stat(containerRes.ContainerWorkflowPath); !os.IsNotExist(err) {
+		t.Fatalf("stale container workflow still exists or could not be statted: %v", err)
+	}
+}
+
 // TestSetup_NilReleaseConfig verifies Setup returns an error when called
 // without a release block.
 func TestSetup_NilReleaseConfig(t *testing.T) {
