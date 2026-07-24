@@ -91,7 +91,7 @@ fi
 
 overall=0
 test_fixture_dir=""
-trap 'rm -rf "$test_fixture_dir"' EXIT
+trap '[[ -z "$test_fixture_dir" ]] || rm -rf "$test_fixture_dir"' EXIT
 
 # run_test_stage executes the gate's package tests without the dispatch
 # contract inherited by this wrapper.  Hook and Beads tests intentionally
@@ -104,14 +104,27 @@ trap 'rm -rf "$test_fixture_dir"' EXIT
 # and KORYPH_BD_BIN point at disposable fixtures so an unisolated test fails
 # safely instead of observing an operator's real koryph home or Beads DB.
 run_test_stage() {
-  test_fixture_dir="$(mktemp -d "$log_dir/gate-test-env.XXXXXX")"
-  mkdir -p "$test_fixture_dir/home"
-  cat >"$test_fixture_dir/bd" <<'EOF'
+  if ! test_fixture_dir="$(mktemp -d "$log_dir/gate-test-env.XXXXXX")"; then
+    echo "gate-agent: cannot create isolated test fixture" >&2
+    return 1
+  fi
+  if ! mkdir -p "$test_fixture_dir/home"; then
+    echo "gate-agent: cannot create isolated test home" >&2
+    return 1
+  fi
+  if ! cat >"$test_fixture_dir/bd" <<'EOF'
 #!/bin/sh
 echo "gate-agent test fixture refuses bd invocation: $*" >&2
 exit 97
 EOF
-  chmod 755 "$test_fixture_dir/bd"
+  then
+    echo "gate-agent: cannot write isolated bd fixture" >&2
+    return 1
+  fi
+  if ! chmod 755 "$test_fixture_dir/bd"; then
+    echo "gate-agent: cannot make isolated bd fixture executable" >&2
+    return 1
+  fi
 
   env \
     -u KORYPH_RUN_ID \

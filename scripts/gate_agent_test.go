@@ -163,6 +163,41 @@ func TestGateAgentTestStageSanitizesDispatchEnvironment(t *testing.T) {
 	}
 }
 
+func TestGateAgentFixtureSetupFailureFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		script  string
+	}{
+		{name: "mktemp", command: "mktemp", script: "#!/bin/sh\nexit 61\n"},
+		{name: "mkdir", command: "mkdir", script: "#!/bin/sh\ncase \"$*\" in\n  *gate-test-env.*) exit 61 ;;\nesac\nexec /bin/mkdir \"$@\"\n"},
+		{name: "cat", command: "cat", script: "#!/bin/sh\nexit 61\n"},
+		{name: "chmod", command: "chmod", script: "#!/bin/sh\nexit 61\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(fakeBin, tc.command), []byte(tc.script), 0o755); err != nil {
+				t.Fatalf("write failing %s fixture command: %v", tc.command, err)
+			}
+
+			logDir := t.TempDir()
+			cmd := exec.Command("bash", "gate-agent.sh", logDir)
+			cmd.Env = gateAgentEnv(map[string]string{
+				"KORYPH_GATE_AGENT_STAGES": "test|echo test-command-ran",
+				"PATH":                     fakeBin + ":" + os.Getenv("PATH"),
+			})
+			out, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if err == nil || !ok || exitErr.ExitCode() == 0 {
+				t.Fatalf("gate-agent succeeded after %s setup failure:\n%s", tc.command, out)
+			}
+			if strings.Contains(string(out), "test-command-ran") {
+				t.Fatalf("test command ran after %s setup failure:\n%s", tc.command, out)
+			}
+		})
+	}
+}
+
 func TestGateAgentFailingTestStagePreservesExitCode(t *testing.T) {
 	out, code, logDir := runGateAgent(t, "test|echo sanitized-test-failure; exit 23")
 	if code != 23 {

@@ -123,7 +123,9 @@ there via `Read` if you need to diagnose a failure.
 The package-test stage deliberately runs in a neutral environment: dispatch
 metadata is removed and `KORYPH_HOME` plus `KORYPH_BD_BIN` point at disposable
 fixtures. The wrapper retains `$KORYPH_PHASE_DIR`, so gate logs still land with
-the dispatch artifacts.
+the dispatch artifacts. If it cannot prepare either fixture, the stage fails
+before package tests begin rather than falling back to the operator's Beads
+configuration.
 
 **Lint output** is additionally quieted in `gate-agent` (via `make
 lint-agent`) by passing `--output.text.print-issued-lines=false` to
