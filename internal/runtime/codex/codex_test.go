@@ -46,7 +46,7 @@ func TestCommandRendersSafeCodexExec(t *testing.T) {
 		"-c", `default_permissions="koryph_signing"`,
 		"-c", signingFilesystemRule("/repo"),
 		"-c", "permissions.koryph_signing.network.enabled=true",
-		"-c", `permissions.koryph_signing.network.unix_sockets={"/run/koryph-signing/signing.sock"="allow"}`,
+		"-c", unixSocketRule(append([]string{"/run/koryph-signing/signing.sock"}, testAgentSockets("/phase")...)...),
 		"--dangerously-bypass-hook-trust", "--add-dir", "/phase", "--add-dir", "/repo/.git",
 		"--model", "gpt-5.6-terra", "-c", `model_reasoning_effort="high"`,
 		"--output-last-message", "/phase/SUMMARY.md",
@@ -69,7 +69,7 @@ func TestCommandJSONAllowsOnlySharedGitMetadata(t *testing.T) {
 		"-c", `default_permissions="koryph_signing"`,
 		"-c", signingFilesystemRule("/repo"),
 		"-c", "permissions.koryph_signing.network.enabled=true",
-		"-c", `permissions.koryph_signing.network.unix_sockets={"/run/koryph-signing/signing.sock"="allow"}`,
+		"-c", unixSocketRule("/run/koryph-signing/signing.sock"),
 		"--dangerously-bypass-hook-trust", "--add-dir", "/repo/.git",
 	}
 	if !reflect.DeepEqual(argv, want) {
@@ -132,10 +132,27 @@ func TestCommandSigningCachesAreNarrowlyScoped(t *testing.T) {
 		"TEST_TELEMETRY_DIR=/phase/go-telemetry",
 		"XDG_CACHE_HOME=/phase/cache",
 		"TMPDIR=/phase",
+		testAgentSocketsEnv + "=" + strings.Join(testAgentSockets("/phase"), string(filepath.ListSeparator)),
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env missing %q:\n%s", want, joined)
 		}
+	}
+}
+
+func TestSigningSocketRuleKeepsProductionAndTestSocketsExact(t *testing.T) {
+	production := "/run/koryph-signing/signing.sock"
+	rule := unixSocketRule(append([]string{production}, testAgentSockets("/phase")...)...)
+	if !strings.Contains(rule, tomlString(production)+`="allow"`) {
+		t.Fatalf("rule = %q, missing exact production socket", rule)
+	}
+	for _, socket := range testAgentSockets("/phase") {
+		if !strings.Contains(rule, tomlString(socket)+`="allow"`) {
+			t.Errorf("rule = %q, missing exact test socket %q", rule, socket)
+		}
+	}
+	if strings.Contains(rule, "dangerously_allow_all_unix_sockets") {
+		t.Fatalf("rule = %q, must not enable all Unix sockets", rule)
 	}
 }
 

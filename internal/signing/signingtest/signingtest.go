@@ -7,6 +7,7 @@
 package signingtest
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -31,12 +32,14 @@ var (
 	pidRe  = regexp.MustCompile(`SSH_AGENT_PID=([0-9]+);`)
 )
 
+const testAgentSocketsEnv = "KORYPH_TEST_SSH_AGENT_SOCKS"
+
 // SpawnAgent starts a REAL ssh-agent for the test, exports
 // SSH_AUTH_SOCK/SSH_AGENT_PID via t.Setenv, and kills the agent in cleanup.
 func SpawnAgent(t *testing.T) {
 	t.Helper()
 	RequireTools(t, "ssh-agent")
-	out, err := exec.Command("ssh-agent", "-s").Output()
+	out, err := spawnAgentOutput()
 	if err != nil {
 		t.Fatalf("ssh-agent -s: %v", err)
 	}
@@ -52,6 +55,35 @@ func SpawnAgent(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", strings.TrimSpace(sockM[1]))
 	t.Setenv("SSH_AGENT_PID", pidM[1])
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
+}
+
+// spawnAgentOutput starts an agent at one of the explicit test-only sockets
+// injected by the Codex runtime. The small pool lets Go run independent
+// packages in parallel without sharing agent state. Outside a Codex dispatch,
+// keep ssh-agent's normal temporary-socket behavior.
+func spawnAgentOutput() ([]byte, error) {
+	sockets := filepath.SplitList(os.Getenv(testAgentSocketsEnv))
+	if len(sockets) == 0 {
+		return exec.Command("ssh-agent", "-s").Output()
+	}
+	var lastErr error
+	for _, socket := range sockets {
+		if socket == "" {
+			continue
+		}
+		out, err := exec.Command("ssh-agent", "-a", socket, "-s").CombinedOutput()
+		if err == nil {
+			return out, nil
+		}
+		if !strings.Contains(string(out), "Address already in use") {
+			return out, err
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return exec.Command("ssh-agent", "-s").Output()
 }
 
 // GenKey generates an unencrypted ed25519 keypair in a temp dir and returns

@@ -155,7 +155,7 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	// never falls back to an interactive approval prompt or exits on argument
 	// parsing before it sees the task.
 	args := []string{"--ask-for-approval", "never", "exec", "--json"}
-	args = append(args, sandboxArgs(spec.SSHAuthSock, spec.RepoRoot)...)
+	args = append(args, sandboxArgs(spec.SSHAuthSock, spec.RepoRoot, spec.PhaseDir)...)
 	args = append(args, "--dangerously-bypass-hook-trust", "--add-dir", spec.PhaseDir)
 	// A linked worktree's .git is a pointer file whose writable metadata lives
 	// in the primary repository's .git directory. Permit precisely that
@@ -184,7 +184,7 @@ func (c Codex) CommandJSON(spec runtime.JSONSpec) ([]string, []string, error) {
 	// itself (a strict verdict JSON object), while the long-lived dispatch path
 	// above needs lifecycle JSONL for polling.
 	args := []string{"--ask-for-approval", "never", "exec"}
-	args = append(args, sandboxArgs(spec.SSHAuthSock, spec.RepoRoot)...)
+	args = append(args, sandboxArgs(spec.SSHAuthSock, spec.RepoRoot, spec.ScratchDir)...)
 	args = append(args, "--dangerously-bypass-hook-trust")
 	if spec.RepoRoot != "" {
 		args = append(args, "--add-dir", filepath.Join(spec.RepoRoot, ".git"))
@@ -221,25 +221,60 @@ func (c Codex) childEnv(profile runtime.Profile, billing runtime.BillingMode, ap
 // model that capability directly, so use an invocation-local profile that:
 //   - keeps writes limited to the workspace roots (the worktree plus add-dir);
 //   - enables no public network destinations; and
-//   - allowlists exactly the koryph scoped signing socket.
+//   - allowlists exactly the koryph scoped signing socket; and
+//   - allowlists a fixed, phase-local pool for signing integration tests.
 //
 // --ignore-user-config prevents a user's legacy sandbox_mode setting from
 // silently overriding default_permissions; Codex authentication still uses
 // CODEX_HOME, per the CLI contract. The operator's ambient SSH agent is never
 // passed into this function or the child environment.
-func sandboxArgs(sshAuthSock, repoRoot string) []string {
+func sandboxArgs(sshAuthSock, repoRoot, testSocketDir string) []string {
 	if sshAuthSock == "" {
 		return []string{"--sandbox", "workspace-write"}
 	}
-	socketRule := "permissions.koryph_signing.network.unix_sockets={" +
-		tomlString(sshAuthSock) + `="allow"}`
+	sockets := append([]string{sshAuthSock}, testAgentSockets(testSocketDir)...)
 	return []string{
 		"--ignore-user-config",
 		"-c", `default_permissions="koryph_signing"`,
 		"-c", signingFilesystemRule(repoRoot),
 		"-c", "permissions.koryph_signing.network.enabled=true",
-		"-c", socketRule,
+		"-c", unixSocketRule(sockets...),
 	}
+}
+
+const (
+	testAgentSocketsEnv  = "KORYPH_TEST_SSH_AGENT_SOCKS"
+	testAgentSocketCount = 8
+)
+
+// testAgentSockets returns the only sockets that signing integration tests may
+// bind during this dispatch. The compact names preserve macOS's short Unix
+// socket path limit even for the deeply nested phase directories koryph uses.
+// A pool keeps independent Go test packages from sharing a test agent when
+// `go test ./...` runs them in parallel.
+func testAgentSockets(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	sockets := make([]string, testAgentSocketCount)
+	for i := range sockets {
+		sockets[i] = filepath.Join(dir, fmt.Sprintf("s%x", i))
+	}
+	return sockets
+}
+
+// unixSocketRule renders an exact Codex Unix-socket allowlist. Unlike domain
+// rules, Unix sockets do not support patterns, so every permitted test socket
+// is named explicitly and the production signing socket remains a distinct,
+// exact entry.
+func unixSocketRule(sockets ...string) string {
+	parts := make([]string, 0, len(sockets))
+	for _, socket := range sockets {
+		if socket != "" {
+			parts = append(parts, tomlString(socket)+`="allow"`)
+		}
+	}
+	return "permissions.koryph_signing.network.unix_sockets={" + strings.Join(parts, ",") + "}"
 }
 
 // signingFilesystemRule preserves the normal command toolchain without
@@ -332,6 +367,9 @@ func sandboxCacheEnv(sshAuthSock, scratchDir string) []string {
 	}
 	if sshAuthSock != "" {
 		env = append(env, "PRE_COMMIT_HOME="+filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"))
+		if sockets := testAgentSockets(scratchDir); len(sockets) > 0 {
+			env = append(env, testAgentSocketsEnv+"="+strings.Join(sockets, string(filepath.ListSeparator)))
+		}
 	}
 	return env
 }
