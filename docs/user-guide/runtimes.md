@@ -124,6 +124,39 @@ current Codex default model, which intentionally serves several tiers. Replace
 that source selection with `equiv:<tier>:<effort>` (or the project's
 `default_equivalent`) before using `--runtime-equivalent`.
 
+## Codex equivalent-model canary
+
+After authenticating Codex and configuring an unambiguous portable equivalent,
+run one eligible bead as a Codex-only canary:
+
+```sh
+koryph run --project <project-id> --once --max 1 \
+  --runtime-equivalent codex --allow-unvalidated
+```
+
+`--runtime-equivalent codex` preserves the bead's requested capability tier
+and effort while selecting that project's Codex mapping; it does not relabel
+the bead. `--max 1` limits the canary to one slot. Remove
+`--allow-unvalidated` once the project has reached the `validated` lifecycle
+state. This shared runtime policy does not replace Claude: Claude remains
+fully supported and can be selected normally for later runs.
+
+Inspect the completed slot with `koryph status --project <project-id>`, then
+confirm the landed tip has a good Git signature:
+
+```sh
+git log -1 --format='%H %G?'
+```
+
+The status must be `G`. For a candidate branch before it lands, use
+`koryph signing verify --project <project-id> --branch <branch>`; koryph also
+verifies signatures immediately before merging.
+
+Blocked candidates are not discarded. Koryph records the block and preserves
+the branch and worktree for inspection and recovery. In particular, a dirty
+candidate is blocked with its uncommitted changes intact; commit the intended
+work in that worktree before retrying rather than recreating the canary.
+
 Projects may set defaults in either place below; native and portable defaults
 are mutually exclusive at each scope:
 
