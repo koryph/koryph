@@ -377,7 +377,7 @@ refused and the phase is **blocked** — and the block reason now names the way 
 
 - If every touched path is in the liftable subset (`.github/`, `Makefile`), the reason
   prints the exact one-command landing to run yourself:
-  `koryph merge --project <p> <branch> --allow-protected --push --close-bead <id> --reason <why>`.
+  `koryph merge --project <p> --allow-protected --push --close-bead <id> --reason <why> <branch>`.
 - If the touch includes a governance default (`.claude/`, `CLAUDE.md`, `hooks/`, …) or a
   project-declared `protected_paths` entry, the reason says manual review is required and
   that `--allow-protected` **will not** lift it — so you don't waste an attempt on a flag

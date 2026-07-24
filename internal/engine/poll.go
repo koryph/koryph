@@ -2118,8 +2118,8 @@ func (r *runner) parkForDrain(ctx context.Context, sl *ledger.Slot) bool {
 func (r *runner) protectedResolutionHint(hits []string, branch, phaseID string) string {
 	if merge.AllLiftable(hits) {
 		return fmt.Sprintf(
-			"routine CI/build paths — land with: koryph merge --project %s %s --allow-protected --push --close-bead %s --reason <why>",
-			r.opts.ProjectID, branch, phaseID)
+			"routine CI/build paths — land with: koryph merge --project %s --allow-protected --push --close-bead %s --reason <why> %s",
+			r.opts.ProjectID, phaseID, branch)
 	}
 	return "includes governance or project-policy paths — requires manual review; --allow-protected will not lift these"
 }

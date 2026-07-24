@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"flag"
 	"strings"
 	"testing"
 
@@ -97,8 +98,30 @@ func TestProtectedResolutionHint(t *testing.T) {
 	r := runnerFromFixture(t, f)
 
 	liftable := r.protectedResolutionHint([]string{"Makefile", ".github/workflows/ci.yml"}, "feat/x", "b1")
-	if !strings.Contains(liftable, "--allow-protected") {
-		t.Errorf("all-liftable hint = %q, want an --allow-protected command", liftable)
+	const commandPrefix = "routine CI/build paths — land with: "
+	const command = "koryph merge --project proj --allow-protected --push --close-bead b1 --reason <why> feat/x"
+	if got := strings.TrimPrefix(liftable, commandPrefix); got != command {
+		t.Errorf("all-liftable command = %q, want %q", got, command)
+	}
+
+	// The hint is intended to be pasted into a command line. Parse its command
+	// portion with Go's standard flag parser, which stops at a positional token:
+	// keeping feat/x last proves every advertised flag is consumable.
+	args := strings.Fields(command)
+	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
+	projectID := fs.String("project", "", "")
+	allowProtected := fs.Bool("allow-protected", false, "")
+	push := fs.Bool("push", false, "")
+	closeBead := fs.String("close-bead", "", "")
+	reason := fs.String("reason", "", "")
+	if err := fs.Parse(args[2:]); err != nil {
+		t.Fatalf("parse advertised command: %v", err)
+	}
+	if *projectID != "proj" || !*allowProtected || !*push || *closeBead != "b1" || *reason != "<why>" {
+		t.Errorf("advertised command flags: project=%q allow=%t push=%t close=%q reason=%q", *projectID, *allowProtected, *push, *closeBead, *reason)
+	}
+	if got := fs.Args(); len(got) != 1 || got[0] != "feat/x" {
+		t.Errorf("advertised command branch = %q, want [feat/x]", got)
 	}
 
 	manual := r.protectedResolutionHint([]string{"Makefile", "CLAUDE.md"}, "feat/x", "b1")
