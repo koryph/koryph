@@ -464,6 +464,23 @@ runtimes fail-closed. See
 - **`InstallForRuntime(root, force, runtimeName)`** — tier-mapped render; also
   reports untiered personas
 
+## phasecontrol
+
+Defines the versioned, file-based bridge between an isolated worker phase and
+the orchestrator that owns privileged host actions. Requests have explicit
+operation fields rather than arbitrary commands or payloads; responses are
+digest-bound, sanitized, replay-safe, and journaled outside worker-writable
+state.
+
+- **`Request` / `Response`** — portable protocol records for `label-add` and
+  `runtime-canary`
+- **`Submit` / `WaitResponse`** — worker-side atomic request and authenticated
+  response flow
+- **`ListRequests` / `PublishResponse`** — orchestrator-side polling and
+  worker-visible response publication
+- **`ValidateSchedulingLabel`** — permits only `area:*`, `fp:*`, and `res:*`
+- **`ValidateCapability`** — validates structured host-capability block tokens
+
 ## plan
 
 Corpus-level plan analysis. `Audit` performs a deterministic, read-only
@@ -640,6 +657,21 @@ conformance fixtures.
 - **`Capabilities`** — feature flags (`Personas`, `ModelSelect`, `EffortFlag`, `Resume`, `BudgetFlag`, …)
 - **`DispatchSpec`** / **`Profile`** / **`BillingMode`** — runtime-neutral request mirrors
 - **`NewRegistry()`** — named-runtime registry; each runtime carries its own model map
+
+## runtimecanary
+
+Runs the fixed authenticated cross-runtime capability probe used by phase
+control. The orchestrator supplies the target runtime's verified profile,
+standard-tier model, and scratch directory; requester-authored prompts,
+commands, environments, and expected output are not accepted.
+
+- **`Options`** — orchestrator-resolved runtime, profile, credential, model,
+  identity verifier, and execution seams
+- **`Run(ctx, opts)`** — verifies target identity, executes the fixed headless
+  tool contract, and checks an unpredictable phase-local proof file
+- **`Result`** — credential-free result classification safe for worker-visible
+  output (`ok`, `configuration`, `identity`, `spawn`, `transient`,
+  `execution`, `tool`, or `protocol`)
 
 ## runtimeconfig
 
