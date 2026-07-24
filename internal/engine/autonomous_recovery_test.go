@@ -115,7 +115,13 @@ func TestProtectedResolutionHint(t *testing.T) {
 		t.Fatalf("write koryph stub: %v", err)
 	}
 	cmd := exec.Command("sh", "-c", command)
-	cmd.Env = append(os.Environ(), "PATH="+binDir)
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "PATH=") {
+			env = append(env, entry)
+		}
+	}
+	cmd.Env = append(env, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("run advertised command in shell: %v", err)
