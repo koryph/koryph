@@ -147,6 +147,9 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 
 	tick := 0
 	for {
+		if r.capabilityBlocked {
+			return nil
+		}
 		// A wave can sit inside this loop for many minutes while its slots run —
 		// waveLoop's own syncObsConfig() call only fires once, BEFORE this loop is
 		// entered, so without a call here a mid-wave `koryph obs level` change
@@ -369,7 +372,7 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 	// A worker may be blocked inside `koryph phase request` waiting for an
 	// orchestrator-owned action. Service its typed request before checking
 	// liveness so the command can return while the agent is still running.
-	r.processPhaseRequests(ctx, sl)
+	phaseRequestPending := r.processPhaseRequests(ctx, sl)
 
 	alive := slotAlive(sl.PID)
 
@@ -427,6 +430,16 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 			}
 		}
 		r.checkpointSlot(sl, "running")
+		return
+	}
+
+	if phaseRequestPending {
+		const note = "agent exited while an orchestrator-owned capability request is still running"
+		if sl.Note != note {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Note = note })
+			r.progress("bead %s: waiting for pending capability request before completion classification", sl.PhaseID)
+		}
+		r.checkpointSlot(sl, "capability-request-pending")
 		return
 	}
 
@@ -1300,6 +1313,10 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	// the unchanged base commit for agent work.
 	assessment := r.assessCandidate(ctx, sl)
 	if !assessment.eligible {
+		if assessment.capabilityBlock {
+			r.parkCapabilityBlock(ctx, sl, assessment.capability, assessment.capabilityDetail)
+			return
+		}
 		if assessment.retryableBlock {
 			r.progress("bead %s: clean committed candidate self-blocked; retrying within attempt budget", sl.PhaseID)
 			r.requeueSlot(ctx, sl, "", "agent reported recoverable completion block")

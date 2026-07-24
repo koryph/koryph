@@ -5,12 +5,16 @@ package engine
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/obs"
+	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -112,5 +116,94 @@ func TestAssessCandidateRetriesOnlyCleanCommittedSelfBlocksWithinBudget(t *testi
 	a = r.assessCandidate(context.Background(), sl)
 	if a.retryableBlock {
 		t.Fatalf("assessment at max attempts = %+v, want terminal", a)
+	}
+}
+
+func TestAssessCandidateCapabilityBlockNeverRetries(t *testing.T) {
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "preserved\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): preserve work")
+	if err := os.WriteFile(sl.StatusPath, []byte(
+		`{"state":"blocked","block_kind":"capability","capability":"runtime-canary","detail":"profile unavailable"}`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := r.assessCandidate(context.Background(), sl)
+	if a.eligible || a.retryableBlock || !a.capabilityBlock {
+		t.Fatalf("assessment = %+v, want terminal capability block", a)
+	}
+	if a.capability != "runtime-canary" || a.capabilityDetail != "profile unavailable" {
+		t.Fatalf("assessment detail = %+v", a)
+	}
+}
+
+func TestFinishCandidateCapabilityBlockWakesWithoutAttemptOrModelChange(t *testing.T) {
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "preserved\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): preserve work")
+	if err := os.WriteFile(sl.StatusPath, []byte(
+		`{"state":"blocked","block_kind":"capability","capability":"beads-metadata","detail":"dependency mutation required"}`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sl.Model = "sonnet"
+	beforeAttempts := sl.Attempts
+	source := &fakeSource{}
+	r.adapter = source
+	r.cfg = &project.Config{}
+	r.opts.ProjectID = "demo"
+
+	capH := &capturingHandler{}
+	obs.ReInitRaw(obs.Config{DefaultLevel: "info"}, capH)
+	log = obs.For("engine")
+	defer func() {
+		obs.ReInitRaw(obs.Config{DefaultLevel: "info"}, slog.NewTextHandler(io.Discard, nil))
+		log = obs.For("engine")
+	}()
+
+	r.finishCandidate(context.Background(), sl)
+	if sl.Status != ledger.SlotBlocked || sl.Attempts != beforeAttempts || sl.Model != "sonnet" {
+		t.Fatalf("slot = %+v", sl)
+	}
+	if !r.capabilityBlocked || r.capabilityBlockBead != sl.PhaseID {
+		t.Fatalf("handoff state = blocked:%v bead:%q", r.capabilityBlocked, r.capabilityBlockBead)
+	}
+	if !fakeBlocked(source, sl.PhaseID) {
+		t.Fatalf("tracker was not reconciled to blocked: %+v", source.setStatus)
+	}
+	var wakeEvent bool
+	for _, rec := range capH.recs {
+		if rec.Message == "engine.slot.capability_blocked" && rec.Level == slog.LevelError {
+			wakeEvent = true
+		}
+		if rec.Message == "engine.slot.escalated" || rec.Message == "engine.slot.requeued" {
+			t.Fatalf("capability block emitted retry/escalation event: %s", rec.Message)
+		}
+	}
+	if !wakeEvent {
+		t.Fatalf("missing ERROR capability wake event: %+v", capH.recs)
+	}
+	outcome, err := r.capabilityHandoff()
+	if err != nil || outcome.Code != ExitFatal || !strings.Contains(outcome.Reason, sl.PhaseID) {
+		t.Fatalf("handoff outcome=%+v err=%v", outcome, err)
+	}
+}
+
+func TestMalformedStructuredBlockDoesNotEscalate(t *testing.T) {
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "preserved\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): preserve work")
+	if err := os.WriteFile(sl.StatusPath, []byte(
+		`{"state":"blocked","block_kind":"capability","capability":"INVALID VALUE"}`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := r.assessCandidate(context.Background(), sl)
+	if a.eligible || a.retryableBlock || a.capabilityBlock {
+		t.Fatalf("assessment = %+v, want terminal malformed block", a)
 	}
 }

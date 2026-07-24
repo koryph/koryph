@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,17 @@ func TestCLIRefDrift(t *testing.T) {
 			"First difference:\n%s",
 		firstDiff(want, got.String()),
 	)
+}
+
+func TestRenderNestedGroupingUsesFullCommandPath(t *testing.T) {
+	var got bytes.Buffer
+	renderCommandSection(&got, io.Discard, &command{
+		name: "request",
+		subs: []command{{name: "label-add"}},
+	}, "phase")
+	if !strings.Contains(got.String(), "koryph phase request <subcommand> -h") {
+		t.Fatalf("nested grouping help lost its parent path:\n%s", got.String())
+	}
 }
 
 // firstDiff returns a compact description of the first differing line between

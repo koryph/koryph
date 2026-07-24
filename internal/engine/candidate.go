@@ -11,37 +11,55 @@ import (
 	"strings"
 
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/obs"
+	"github.com/koryph/koryph/internal/phasecontrol"
+	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/worktree"
 )
 
 // portableCompletion is the runtime-neutral status.json subset agents update
 // through KORYPH_STATUS_PATH. Unknown fields remain forwards-compatible.
 type portableCompletion struct {
-	State string `json:"state"`
+	State      string `json:"state"`
+	BlockKind  string `json:"block_kind,omitempty"`
+	Capability string `json:"capability,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 type candidateAssessment struct {
-	eligible       bool
-	retryableBlock bool
-	reason         string
+	eligible         bool
+	retryableBlock   bool
+	capabilityBlock  bool
+	capability       string
+	capabilityDetail string
+	reason           string
 }
 
-func completionState(path string) (string, error) {
+func readCompletion(path string) (portableCompletion, error) {
 	if path == "" {
-		return "", nil
+		return portableCompletion{}, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", nil
+			return portableCompletion{}, nil
 		}
-		return "", err
+		return portableCompletion{}, err
 	}
 	var status portableCompletion
 	if err := json.Unmarshal(data, &status); err != nil {
-		return "", err
+		return portableCompletion{}, err
 	}
-	return strings.TrimSpace(status.State), nil
+	status.State = strings.TrimSpace(status.State)
+	status.BlockKind = strings.TrimSpace(status.BlockKind)
+	status.Capability = strings.TrimSpace(status.Capability)
+	status.Detail = phasecontrol.SanitizeDetail(status.Detail)
+	return status, nil
+}
+
+func completionState(path string) (string, error) {
+	status, err := readCompletion(path)
+	return status.State, err
 }
 
 // assessCandidate validates the portable output contract before any pipeline,
@@ -51,18 +69,38 @@ func completionState(path string) (string, error) {
 func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidateAssessment {
 	var reasons []string
 	reportedBlock := false
+	capabilityBlock := false
+	structuredBlockMalformed := false
+	capability := ""
+	capabilityDetail := ""
 	commits := 0
 	clean := false
 
 	if sl.StatusPath != "" {
-		state, err := completionState(sl.StatusPath)
+		completion, err := readCompletion(sl.StatusPath)
 		if err != nil {
 			reasons = append(reasons, "completion status is malformed or unreadable: "+err.Error())
 		} else {
-			switch strings.ToLower(state) {
+			switch strings.ToLower(completion.State) {
 			case "blocked", "failed", "error", "cancelled", "canceled":
 				reportedBlock = true
-				reasons = append(reasons, "agent reported completion state "+state)
+				reasons = append(reasons, "agent reported completion state "+completion.State)
+				switch completion.BlockKind {
+				case "":
+				case "capability":
+					if err := phasecontrol.ValidateCapability(completion.Capability); err != nil {
+						structuredBlockMalformed = true
+						reasons = append(reasons, "capability block is malformed: "+err.Error())
+					} else {
+						capabilityBlock = true
+						capability = completion.Capability
+						capabilityDetail = obs.RedactValue(completion.Detail)
+						reasons = append(reasons, "host capability "+capability+" is unavailable")
+					}
+				default:
+					structuredBlockMalformed = true
+					reasons = append(reasons, "completion block_kind is unsupported: "+completion.BlockKind)
+				}
 			}
 		}
 	}
@@ -93,8 +131,11 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 
 	if len(reasons) > 0 {
 		return candidateAssessment{
-			retryableBlock: reportedBlock && commits > 0 && clean && sl.Attempts < ledger.MaxAttempts,
-			reason:         strings.Join(reasons, "; "),
+			retryableBlock:   reportedBlock && !capabilityBlock && !structuredBlockMalformed && commits > 0 && clean && sl.Attempts < ledger.MaxAttempts,
+			capabilityBlock:  capabilityBlock,
+			capability:       capability,
+			capabilityDetail: capabilityDetail,
+			reason:           strings.Join(reasons, "; "),
 		}
 	}
 	return candidateAssessment{eligible: true}
@@ -118,4 +159,37 @@ func (r *runner) parkIncompleteCandidate(ctx context.Context, sl *ledger.Slot, r
 	r.releaseGlobalSlot(sl.PhaseID)
 	r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
 	r.auditBlocked(ctx, sl, "candidate-incomplete", reason)
+}
+
+func (r *runner) parkCapabilityBlock(ctx context.Context, sl *ledger.Slot, capability, detail string) {
+	capability = strings.TrimSpace(capability)
+	detail = obs.RedactValue(phasecontrol.SanitizeDetail(detail))
+	note := fmt.Sprintf(
+		"host capability %s is unavailable: %s — no coding-agent retry or model escalation; branch/worktree preserved",
+		capability, detail,
+	)
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotBlocked
+		s.Note = note
+	})
+	r.checkpointSlot(sl, "capability-blocked")
+	r.releaseGlobalSlot(sl.PhaseID)
+	r.capabilityBlocked = true
+	r.capabilityBlockBead = sl.PhaseID
+	r.progress("ERROR: bead %s capability-blocked (%s)", sl.PhaseID, note)
+	logCapabilityBlocked(r.run.RunID, r.opts.ProjectID, sl.PhaseID, capability, detail, sl.Model, sl.Attempts)
+	r.reconcileBlockedBead(ctx, sl, "capability "+capability+": "+detail)
+	if r.reg != nil {
+		_ = r.reg.Audit(registry.Event{
+			Kind:      "capability-blocked",
+			ProjectID: r.opts.ProjectID,
+			Actor:     r.owner,
+			Detail: map[string]string{
+				"bead":       sl.PhaseID,
+				"capability": capability,
+				"detail":     detail,
+				"branch":     sl.Branch,
+			},
+		})
+	}
 }

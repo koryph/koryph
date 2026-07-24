@@ -19,13 +19,14 @@ import (
 // processPhaseRequests is the orchestrator side of the worker control bridge.
 // The worker-authored phase directory is untrusted; an authoritative response
 // journal lives one level above worker access and makes restart replay safe.
-func (r *runner) processPhaseRequests(ctx context.Context, sl *ledger.Slot) {
+func (r *runner) processPhaseRequests(ctx context.Context, sl *ledger.Slot) bool {
 	phaseDir := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
 	requests, err := phasecontrol.ListRequests(phaseDir)
 	if err != nil {
 		logPhaseRequest(r.run.RunID, r.opts.ProjectID, sl.PhaseID, "", "", phasecontrol.ResponseFailed, "invalid phase control directory")
-		return
+		return false
 	}
+	pending := false
 	journalDir := r.phaseControlJournalDir(sl.PhaseID)
 	for _, envelope := range requests {
 		if envelope.Err != nil {
@@ -53,6 +54,7 @@ func (r *runner) processPhaseRequests(ctx context.Context, sl *ledger.Slot) {
 			var ready bool
 			resp, ready = r.pollRuntimeCanaryRequest(ctx, sl, req, digest)
 			if !ready {
+				pending = true
 				continue
 			}
 		} else {
@@ -68,6 +70,7 @@ func (r *runner) processPhaseRequests(ctx context.Context, sl *ledger.Slot) {
 		}
 		logPhaseRequest(r.run.RunID, r.opts.ProjectID, sl.PhaseID, req.ID, req.Operation, resp.State, resp.Detail)
 	}
+	return pending
 }
 
 func (r *runner) handlePhaseRequest(ctx context.Context, sl *ledger.Slot, req phasecontrol.Request, digest string) phasecontrol.Response {

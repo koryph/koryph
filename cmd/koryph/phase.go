@@ -26,12 +26,21 @@ func init() {
 			{
 				name:    "request",
 				summary: "submit a typed phase request",
+				DocLinks: []string{
+					"user-guide/running-waves.md",
+				},
 				subs: []command{
 					{name: "label-add", summary: "add an allowlisted scheduling label"},
 					{name: "runtime-canary", summary: "run a fixed authenticated runtime canary"},
 				},
 			},
-			{name: "block", summary: "report a structured capability block"},
+			{
+				name:    "block",
+				summary: "report a structured capability block",
+				DocLinks: []string{
+					"user-guide/running-waves.md",
+				},
+			},
 		},
 		DocLinks: []string{"user-guide/running-waves.md"},
 	})

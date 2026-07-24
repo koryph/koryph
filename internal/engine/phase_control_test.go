@@ -130,3 +130,32 @@ func TestPhaseControlRunsTargetCanaryAsynchronouslyAndReplays(t *testing.T) {
 		t.Fatalf("canary calls = %d, want one durable execution", calls)
 	}
 }
+
+func TestRuntimeCanaryRetriesTransientInsideOrchestratorBudget(t *testing.T) {
+	r, _, sl, _ := phaseControlRunner(t)
+	sl.Worktree = t.TempDir()
+	r.rec = &registry.Record{
+		Name:             "demo",
+		Root:             sl.Worktree,
+		AccountProfile:   "work",
+		ClaudeConfigDir:  "/target/claude",
+		ExpectedIdentity: "owner@example.com",
+	}
+	r.cfg = &project.Config{}
+	calls := 0
+	r.runtimeCanaryRun = func(_ context.Context, _ runtimecanary.Options) runtimecanary.Result {
+		calls++
+		if calls == 1 {
+			return runtimecanary.Result{Runtime: "claude", Kind: "transient", Detail: "temporary timeout"}
+		}
+		return runtimecanary.Result{OK: true, Runtime: "claude", Kind: "ok", Detail: "passed"}
+	}
+	oldBackoff := runtimeCanaryRetryBackoff
+	runtimeCanaryRetryBackoff = time.Millisecond
+	defer func() { runtimeCanaryRetryBackoff = oldBackoff }()
+
+	result := r.executeRuntimeCanary(context.Background(), sl, "claude")
+	if !result.OK || calls != runtimeCanaryAttempts {
+		t.Fatalf("result=%+v calls=%d", result, calls)
+	}
+}

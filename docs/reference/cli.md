@@ -109,6 +109,9 @@ koryph — central multi-project orchestrator for autonomous AI coding agents.
 | ↳ [`koryph obs prune`](#koryph-obs-prune) | remove telemetry files older than the retention window |
 | [`koryph ops`](#koryph-ops) | dispatch-free operator maintenance (reconcile dead runs) |
 | ↳ [`koryph ops reconcile`](#koryph-ops-reconcile) | park zombie slots of a dead run blocked, release their leases, finalize the run |
+| [`koryph phase`](#koryph-phase) | request orchestrator-owned actions from the current worker phase |
+| ↳ [`koryph phase request`](#koryph-phase-request) | submit a typed phase request |
+| ↳ [`koryph phase block`](#koryph-phase-block) | report a structured capability block |
 | [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
 
 ---
@@ -1316,6 +1319,31 @@ park zombie slots of a dead run blocked, release their leases, finalize the run
 |------|------|---------|-------------|
 | `--dry-run` | bool |  | report what would change without mutating the ledger or releasing leases |
 | `--project` | string |  | project id (default: the project containing the current directory) |
+
+
+---
+
+## `koryph phase` { #koryph-phase }
+
+request orchestrator-owned actions from the current worker phase
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+Run `koryph phase <subcommand> -h` for subcommand flags.
+
+## `koryph phase request` { #koryph-phase-request }
+
+submit a typed phase request
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+Run `koryph phase request <subcommand> -h` for subcommand flags.
+
+## `koryph phase block` { #koryph-phase-block }
+
+report a structured capability block
+
+**See also:** [Running waves](../user-guide/running-waves)
 
 
 ---

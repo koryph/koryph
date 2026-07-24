@@ -229,6 +229,12 @@ type runner struct {
 	phaseCanaries    map[string]<-chan phaseCanaryCompletion
 	runtimeCanaryRun func(context.Context, runtimecanary.Options) runtimecanary.Result
 
+	// capabilityBlocked requests an immediate engine-boundary handoff after a
+	// structured host-capability block. It never interrupts another worker;
+	// their checkpoints remain resumable by the outer recovery loop.
+	capabilityBlocked   bool
+	capabilityBlockBead string
+
 	// lastResSampleAt throttles resource sampling to at most once per poll
 	// interval, decoupling it from pollPass frequency (which also fires on every
 	// SIGCHLD wake) so a burst of short-lived subprocess exits cannot trigger a
@@ -688,6 +694,22 @@ func (r *runner) interrupted() (Outcome, error) {
 	_ = r.store.SaveRun(r.run)
 	r.progress("interrupted: run %s left running for --resume", r.run.RunID)
 	return r.outcome(ExitOK, "interrupted", false), nil
+}
+
+// capabilityHandoff leaves unrelated live workers resumable and exits
+// non-zero so the zero-token outer watcher wakes immediately. Unlike an agent
+// retry, this does not increment any slot attempt or select another model.
+func (r *runner) capabilityHandoff() (Outcome, error) {
+	for _, id := range r.activePhaseIDs() {
+		r.checkpointSlot(r.run.Slots[id], "capability-block-handoff")
+	}
+	_ = r.store.SaveRun(r.run)
+	r.dropDemand()
+	reason := "capability-blocked"
+	if r.capabilityBlockBead != "" {
+		reason += ":" + r.capabilityBlockBead
+	}
+	return r.outcome(ExitFatal, reason, false), nil
 }
 
 // activeIDs returns the set of non-terminal slot phase ids.

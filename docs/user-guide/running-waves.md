@@ -212,6 +212,49 @@ model rationale records `escalated from <tier> …`, the TUI marks the row with
 `↑`, and a bead that merges this way gains a `model-observed:<tier>` label as
 durable provenance.
 
+### Capability requests and capability blocks
+
+A dispatched worker does not receive the shared `BEADS_DIR`. When it discovers
+that its own scheduling metadata is incomplete, it asks the orchestrator to
+apply one narrowly scoped addition:
+
+```sh
+koryph phase request label-add --label area:docs
+koryph phase request label-add --label fp:docs-nav
+koryph phase request label-add --label res:kind-cluster
+```
+
+The request cannot select another bead, remove labels, or mutate dependencies,
+status, routing, or policy labels. The engine validates the current phase and
+performs the update through its Beads adapter.
+
+A worker may also ask the orchestrator to validate another registered runtime
+without receiving that runtime's credentials:
+
+```sh
+koryph phase request runtime-canary --runtime claude
+```
+
+The engine projects the target runtime's registered profile only into a fixed
+standard-tier canary process. The canary verifies identity and proves a
+headless shell action with an unpredictable phase-local proof file; requester
+text cannot change its prompt, command, environment, or expected result.
+
+If a required host action has no supported bridge, the worker reports it
+structurally:
+
+```sh
+koryph phase block --capability beads-metadata \
+  --detail "dependency edge required before implementation can continue"
+```
+
+Capability blocks are not implementation failures. Koryph preserves the
+branch/worktree, marks the bead visibly blocked, emits the ERROR-level
+`engine.slot.capability_blocked` event, and exits the current engine boundary
+so an outer watcher wakes. It does **not** consume another implementation
+attempt, re-dispatch a coding agent, or promote the task to a frontier model.
+Transient runtime-canary failures use a separate bounded orchestrator retry.
+
 ### Learned model labels (adaptive escalation)
 
 Escalations are also a training signal. `koryph models` (the two-word `models

@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"time"
 
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/ledger"
@@ -13,6 +14,10 @@ import (
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtimecanary"
 )
+
+const runtimeCanaryAttempts = 2
+
+var runtimeCanaryRetryBackoff = time.Second
 
 type phaseCanaryCompletion struct {
 	resp phasecontrol.Response
@@ -116,7 +121,7 @@ func (r *runner) executeRuntimeCanary(ctx context.Context, sl *ledger.Slot, runt
 	if runCanary == nil {
 		runCanary = runtimecanary.Run
 	}
-	result := runCanary(ctx, runtimecanary.Options{
+	opts := runtimecanary.Options{
 		Runtime:          rt,
 		RepoRoot:         r.rec.Root,
 		Worktree:         sl.Worktree,
@@ -129,7 +134,19 @@ func (r *runner) executeRuntimeCanary(ctx context.Context, sl *ledger.Slot, runt
 		Credential:       credential,
 		CredentialEnvVar: credentialEnvVar,
 		Verify:           verify,
-	})
+	}
+	var result runtimecanary.Result
+	for attempt := 1; attempt <= runtimeCanaryAttempts; attempt++ {
+		result = runCanary(ctx, opts)
+		if result.Kind != "transient" || attempt == runtimeCanaryAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return runtimecanary.Result{Runtime: runtimeName, Kind: "transient", Detail: "target runtime canary was interrupted"}
+		case <-time.After(runtimeCanaryRetryBackoff):
+		}
+	}
 	if result.Runtime == "" {
 		result.Runtime = runtimeName
 	}

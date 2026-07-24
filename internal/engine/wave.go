@@ -579,6 +579,9 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		if err := r.pollUntilIdle(ctx); err != nil {
 			return r.interrupted()
 		}
+		if r.capabilityBlocked {
+			return r.capabilityHandoff()
+		}
 
 		if r.opts.Once {
 			_ = r.store.FinalizeRun(r.run)

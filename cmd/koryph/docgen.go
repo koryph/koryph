@@ -266,7 +266,7 @@ func renderCommandSection(w io.Writer, warnOut io.Writer, c *command, parent str
 		}
 	} else if len(c.subs) > 0 {
 		// No run function and no flags — just a grouping node.
-		p("Run `koryph %s <subcommand> -h` for subcommand flags.\n\n", c.name)
+		p("Run `koryph %s <subcommand> -h` for subcommand flags.\n\n", fullName)
 	}
 }
 

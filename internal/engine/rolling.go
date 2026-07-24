@@ -48,6 +48,9 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		if ctx.Err() != nil {
 			return r.interrupted()
 		}
+		if r.capabilityBlocked {
+			return r.capabilityHandoff()
+		}
 		syncObsConfig() // pick up `koryph obs level` changes without a restart
 		// Heartbeat snapshot (koryph-lwnq) — see poll.go's identical call for why
 		// this is safe from the loop goroutine.
@@ -304,5 +307,8 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			probeProgress = progressProbeDue(tick)
 		}
 		r.pollPass(ctx, probeProgress)
+		if r.capabilityBlocked {
+			return r.capabilityHandoff()
+		}
 	}
 }

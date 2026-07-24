@@ -193,6 +193,18 @@ func logPhaseRequest(runID, project, beadID, requestID, operation, state, detail
 	log.Info("engine.phase.request", attrs...)
 }
 
+func logCapabilityBlocked(runID, project, beadID, capability, detail, model string, attempt int) {
+	log.Error("engine.slot.capability_blocked",
+		slog.String(obs.KeyRunID, runID),
+		slog.String(obs.KeyProject, project),
+		slog.String(obs.KeyBeadID, beadID),
+		slog.String("capability", capability),
+		slog.String("detail", obs.RedactValue(detail)),
+		slog.String(obs.KeyModel, model),
+		slog.Int(obs.KeyAttempt, attempt),
+	)
+}
+
 // logModelFallback emits a WARN record when an attempt's actual model
 // (result-line modelUsage) diverges from the requested tier (koryph-qf6.2) —
 // the CLI's hardcoded --fallback-model silently downgraded the session.
