@@ -29,6 +29,12 @@ func TestEnsureGitHubPages_CreatesAllDNSOnlyRecords(t *testing.T) {
 			}
 			writeCF(t, w, []map[string]string{{"id": "zone-id"}})
 		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-id/dns_records":
+			if got := r.URL.Query().Get("name.exact"); got == "" {
+				t.Error("DNS record lookup omitted name.exact")
+			}
+			if got := r.URL.Query().Get("name"); got != "" {
+				t.Errorf("DNS record lookup name = %q, want no legacy name filter", got)
+			}
 			writeCF(t, w, []dnsRecord{})
 		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-id/dns_records":
 			var record dnsRecord
@@ -99,7 +105,7 @@ func TestEnsureGitHubPages_ReconcilesProxiedRecordWithoutDuplicates(t *testing.T
 		case r.Method == http.MethodGet && r.URL.Path == "/zones":
 			writeCF(t, w, []map[string]string{{"id": "zone-id"}})
 		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-id/dns_records":
-			name, kind := r.URL.Query().Get("name"), r.URL.Query().Get("type")
+			name, kind := r.URL.Query().Get("name.exact"), r.URL.Query().Get("type")
 			if name == "example.com" && kind == "A" {
 				writeCF(t, w, []dnsRecord{{ID: "a-id", Type: "A", Name: name, Content: "185.199.108.153", TTL: 120, Proxied: true}})
 				return

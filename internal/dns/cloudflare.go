@@ -194,7 +194,7 @@ func zoneCandidates(name string) []string {
 }
 
 func (c *CloudflareClient) ensureRecord(ctx context.Context, token []byte, zoneID string, wanted dnsRecord) error {
-	query := url.Values{"type": {wanted.Type}, "name": {wanted.Name}, "per_page": {"100"}}
+	query := url.Values{"type": {wanted.Type}, "name.exact": {wanted.Name}, "per_page": {"100"}}
 	var existing []dnsRecord
 	endpoint := "/zones/" + url.PathEscape(zoneID) + "/dns_records"
 	if err := c.call(ctx, token, http.MethodGet, endpoint+"?"+query.Encode(), nil, &existing); err != nil {
