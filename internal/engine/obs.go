@@ -19,6 +19,7 @@ import (
 	"log/slog"
 
 	"github.com/koryph/koryph/internal/obs"
+	"github.com/koryph/koryph/internal/phasecontrol"
 )
 
 // log is the package-level logger for the engine component. Safe to use at
@@ -170,6 +171,26 @@ func logSlotBlocked(beadID, reason, model, modelActual string, attempt int) {
 		slog.String(obs.KeyModelActual, modelActual),
 		slog.Int(obs.KeyAttempt, attempt),
 	)
+}
+
+// logPhaseRequest records a sanitized phase-control outcome. Rejected and
+// failed operations are WARN so a zero-token watcher sees missing host
+// capability without waiting for a coding-agent retry.
+func logPhaseRequest(runID, project, beadID, requestID, operation, state, detail string) {
+	attrs := []any{
+		slog.String(obs.KeyRunID, runID),
+		slog.String(obs.KeyProject, project),
+		slog.String(obs.KeyBeadID, beadID),
+		slog.String("request_id", requestID),
+		slog.String("operation", operation),
+		slog.String("state", state),
+		slog.String("detail", obs.RedactValue(detail)),
+	}
+	if state == phasecontrol.ResponseRejected || state == phasecontrol.ResponseFailed {
+		log.Warn("engine.phase.request", attrs...)
+		return
+	}
+	log.Info("engine.phase.request", attrs...)
 }
 
 // logModelFallback emits a WARN record when an attempt's actual model

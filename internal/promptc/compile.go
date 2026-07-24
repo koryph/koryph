@@ -80,30 +80,24 @@ contract is identical for every dispatch of this engine version.
   work is invisible to recovery and may be lost.
 
 ## When you are blocked
-bd ready unconditionally excludes in_progress issues — that is by design,
-so your claimed bead is never handed to a second agent. But it also means
-that if you leave this bead in_progress and simply walk away, NOTHING will
-ever re-check it: there is no event, no re-scan, no expiry. Before you exit
-a task you cannot finish, do ONE of the following — never just leave it
-in_progress with a note and stop:
-
-- Blocked on another bead that will eventually close: wire a real
-  dependency edge, then release your claim so bd ready's dependency engine
-  re-surfaces this bead automatically once that bead closes —
-      bd dep add <this-id> --blocked-by <blocker-id>
-      bd update <this-id> --status open
-- Blocked on something no bead represents (an operator action, an
-  unscoped future decision): in_progress is not a "don't touch" signal.
-  Label the bead no-dispatch, reset it to open the same way, and explain
-  the blocker in a note so it stays visible and accurately tracked while
-  the label alone keeps it out of dispatch:
-      bd update <this-id> --add-label no-dispatch
-      bd update <this-id> --status open
-      bd update <this-id> --append-notes "why this is blocked"
+- You do not have direct authority over the shared Beads database. Do not run
+  bd mutation commands from this sandbox.
+- If implementation reveals a missing scheduling footprint or resource, ask
+  the orchestrator to add it to THIS bead:
+      koryph phase request label-add --label area:<value>
+      koryph phase request label-add --label fp:<value>
+      koryph phase request label-add --label res:<value>
+  Only these declarative label families are allowed. The command cannot select
+  another bead, remove labels, or change routing, dependencies, or status.
+- If you need any other privileged action, report a structured capability
+  block instead of retrying or editing shared state:
+      koryph phase block --capability beads-metadata --detail "what is needed"
+  The orchestrator preserves your commits and handles recovery.
 
 ## Heartbeat and reporting
-- After each step, write a JSON heartbeat to $KORYPH_STATUS_PATH: an object
-  with exactly these keys: {"state","step","pct"}.
+- After each step, write a JSON heartbeat to $KORYPH_STATUS_PATH:
+  {"state","step","pct"}. Use koryph phase block for a terminal capability
+  block; it safely adds the portable block fields.
 - Append human-readable progress lines to $KORYPH_LOG_PATH as you work.
 - Before you finish, write your summary to $KORYPH_SUMMARY_PATH (SUMMARY.md)
   with these sections, in this order:

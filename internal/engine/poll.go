@@ -366,6 +366,11 @@ func progressProbeDue(tick int) bool {
 // probeProgress — see progressProbeDue), stuck detection, and — on death —
 // completion handling.
 func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bool) {
+	// A worker may be blocked inside `koryph phase request` waiting for an
+	// orchestrator-owned action. Service its typed request before checking
+	// liveness so the command can return while the agent is still running.
+	r.processPhaseRequests(ctx, sl)
+
 	alive := slotAlive(sl.PID)
 
 	// Batch per-tick progress in memory; pollUntilIdle flushes once per tick.

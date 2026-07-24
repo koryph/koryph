@@ -203,22 +203,25 @@ func TestPreambleTerseOutputContract(t *testing.T) {
 	}
 }
 
-// TestPreambleBlockedOnAnotherBead is the 2026-07-15/16 stampede-games
-// handoff regression test: the preamble must tell a stuck agent to wire a
-// formal `bd dep add`/`--blocked-by` edge and release its claim (reset to
-// open) rather than leaving the bead in_progress with only a prose note —
-// bd ready excludes in_progress unconditionally, so a self-parked bead left
-// that way is otherwise invisible to bd's dependency engine forever.
-func TestPreambleBlockedOnAnotherBead(t *testing.T) {
+// TestPreambleUsesPhaseControlInsteadOfSharedBeadsMutations proves sandboxed
+// workers request narrow orchestrator-owned changes instead of receiving the
+// shared database path and trying to self-park.
+func TestPreambleUsesPhaseControlInsteadOfSharedBeadsMutations(t *testing.T) {
 	p := Preamble("v1")
 	for _, want := range []string{
-		"bd dep add",
-		"--blocked-by",
-		"bd update <this-id> --status open",
-		"no-dispatch",
+		"koryph phase request label-add",
+		"area:<value>",
+		"fp:<value>",
+		"res:<value>",
+		"koryph phase block",
 	} {
 		if !strings.Contains(p, want) {
-			t.Errorf("preamble missing self-park guidance %q", want)
+			t.Errorf("preamble missing phase-control guidance %q", want)
+		}
+	}
+	for _, forbidden := range []string{"bd dep add", "bd update <this-id>", "--add-label no-dispatch"} {
+		if strings.Contains(p, forbidden) {
+			t.Errorf("preamble still recommends shared Beads mutation %q", forbidden)
 		}
 	}
 }

@@ -171,15 +171,18 @@ func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 		"KORYPH_RUN_ID='" + spec.RunID + "'",
 		"KORYPH_PHASE_ID='" + spec.PhaseID + "'",
 		"KORYPH_DIR='" + spec.PhaseDir + "'",
+		"KORYPH_PHASE_DIR='" + spec.PhaseDir + "'",
 		"KORYPH_LOG_PATH='" + filepath.Join(spec.PhaseDir, "session.log") + "'",
 		"KORYPH_STATUS_PATH='" + filepath.Join(spec.PhaseDir, "status.json") + "'",
 		"KORYPH_SUMMARY_PATH='" + filepath.Join(spec.PhaseDir, "SUMMARY.md") + "'",
 		"KORYPH_SESSION_ID='" + spec.SessionID + "'",
-		"BEADS_DIR='" + spec.BeadsDir + "'",
 	} {
 		if !strings.Contains(launch, want) {
 			t.Errorf("launch.sh missing %q:\n%s", want, launch)
 		}
+	}
+	if strings.Contains(launch, "BEADS_DIR=") {
+		t.Errorf("launch.sh leaked shared BEADS_DIR:\n%s", launch)
 	}
 
 	// prompt.md + seeded status.json + INBOX.md.
@@ -254,12 +257,16 @@ func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 	for _, kv := range []string{
 		"KORYPH_RUN_ID=" + spec.RunID,
 		"KORYPH_PHASE_ID=" + spec.PhaseID,
+		"KORYPH_DIR=" + spec.PhaseDir,
+		"KORYPH_PHASE_DIR=" + spec.PhaseDir,
 		"KORYPH_SESSION_ID=" + spec.SessionID,
-		"BEADS_DIR=" + spec.BeadsDir,
 	} {
 		if !strings.Contains(env, kv+"\n") {
 			t.Errorf("child env missing %q", kv)
 		}
+	}
+	if strings.Contains(env, "BEADS_DIR=") {
+		t.Errorf("child env leaked shared BEADS_DIR:\n%s", env)
 	}
 
 	// ParseResultCost reads the fake's result line off stream.jsonl.

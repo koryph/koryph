@@ -34,7 +34,8 @@
 //     --add-dir <phaseDir> --output-format stream-json
 //     --include-partial-messages --verbose  < prompt.md
 //     cwd = worktree; env = account.Env(profile, billing, key) +
-//     KORYPH_* contract vars + BEADS_DIR + KORYPH_PHASE_ID.
+//     KORYPH_* contract vars. The shared BEADS_DIR is deliberately not
+//     exported; privileged metadata changes use `koryph phase request`.
 //     Refuse any path containing a single quote.
 //     4. nohup + detach (Setsid), redirect stream.jsonl / stderr.log,
 //     record PID. Return Handle.
@@ -49,8 +50,9 @@
 //
 // Env contract exported to agents (read by koryph-log tooling and hooks):
 //
-//	KORYPH_RUN_ID, KORYPH_PHASE_ID, KORYPH_DIR, KORYPH_LOG_PATH,
-//	KORYPH_STATUS_PATH, KORYPH_SUMMARY_PATH, KORYPH_SESSION_ID, BEADS_DIR.
+//	KORYPH_RUN_ID, KORYPH_PHASE_ID, KORYPH_DIR, KORYPH_PHASE_DIR,
+//	KORYPH_LOG_PATH, KORYPH_STATUS_PATH, KORYPH_SUMMARY_PATH,
+//	KORYPH_SESSION_ID.
 package dispatch
 
 import (
@@ -102,7 +104,7 @@ type Spec struct {
 	SessionID       string // fresh uuid (deterministic transcript path)
 	SessionName     string
 	ResumeSessionID string // non-empty → native --resume --fork-session
-	BeadsDir        string
+	BeadsDir        string // deprecated: retained for wire compatibility; never exported
 	Attempt         int
 
 	// SSHAuthSock is the koryph-managed signing-agent socket (holds ONLY the

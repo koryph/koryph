@@ -229,12 +229,12 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		" KORYPH_RUN_ID=" + sq(s.RunID) +
 		" KORYPH_PHASE_ID=" + sq(s.PhaseID) +
 		" KORYPH_DIR=" + sq(s.PhaseDir) +
+		" KORYPH_PHASE_DIR=" + sq(s.PhaseDir) +
 		" KORYPH_HOME=" + sq(koryphHome) +
 		" KORYPH_LOG_PATH=" + sq(logPath) +
 		" KORYPH_STATUS_PATH=" + sq(statusPath) +
 		" KORYPH_SUMMARY_PATH=" + sq(summaryPath) +
-		" KORYPH_SESSION_ID=" + sq(s.SessionID) +
-		" BEADS_DIR=" + sq(s.BeadsDir) + "\n")
+		" KORYPH_SESSION_ID=" + sq(s.SessionID) + "\n")
 	sb.WriteString("cd " + sq(s.Worktree) + " || exit 97\n")
 	sb.WriteString("exec " + strings.Join(quotedArgv, " ") + " < " + sq(promptPath) + "\n")
 

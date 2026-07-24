@@ -57,7 +57,7 @@ type DispatchSpec struct {
 	SessionName  string
 	// ResumeSessionID is gated by Capabilities.Resume.
 	ResumeSessionID string
-	BeadsDir        string
+	BeadsDir        string // deprecated: the runtime child never receives BEADS_DIR
 	Attempt         int
 
 	// SSHAuthSock is the koryph-managed signing-agent socket (holds ONLY the
