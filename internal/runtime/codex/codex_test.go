@@ -225,7 +225,11 @@ func TestCommandJSONUsesScratchLocalMutableCaches(t *testing.T) {
 func TestSandboxCacheEnvRedirectsGoTelemetryForActualSubprocess(t *testing.T) {
 	scratch := t.TempDir()
 	cmd := exec.Command("go", "env", "GOTELEMETRYDIR")
-	cmd.Env = append(os.Environ(), sandboxCacheEnv("", scratch)...)
+	// Go may launch a detached telemetry sidecar that outlives this command and
+	// races TempDir cleanup. Mark this assertion subprocess as a sidecar child
+	// so it reports the configured telemetry directory without launching one.
+	cmd.Env = append(os.Environ(), "GO_TELEMETRY_CHILD=2")
+	cmd.Env = append(cmd.Env, sandboxCacheEnv("", scratch)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go env GOTELEMETRYDIR: %v\n%s", err, output)
