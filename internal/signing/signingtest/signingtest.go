@@ -56,7 +56,14 @@ func SpawnAgent(t *testing.T) {
 	}
 	t.Setenv("SSH_AUTH_SOCK", strings.TrimSpace(sockM[1]))
 	t.Setenv("SSH_AGENT_PID", pidM[1])
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
+	t.Cleanup(func() { stopAgent(pid, strings.TrimSpace(sockM[1])) })
+}
+
+// stopAgent bounds test-fixture cleanup: stop the daemon and remove its exact
+// socket path so a later test cannot inherit a stale configured-pool entry.
+func stopAgent(pid int, socket string) {
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	_ = os.Remove(socket)
 }
 
 // spawnAgentOutput starts an agent at one of the explicit test-only sockets

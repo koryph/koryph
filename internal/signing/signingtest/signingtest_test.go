@@ -4,6 +4,7 @@
 package signingtest
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,35 @@ func TestSpawnAgentUsesConfiguredSocket(t *testing.T) {
 	SpawnAgent(t)
 	if got := os.Getenv("SSH_AUTH_SOCK"); got != socket {
 		t.Errorf("SSH_AUTH_SOCK = %q, want configured test socket %q", got, socket)
+	}
+}
+
+func TestConfiguredSocketBindsConnectsAndCleansUp(t *testing.T) {
+	RequireTools(t, "ssh-agent")
+	socket := filepath.Join(shortSocketDir(t), "s0")
+	t.Setenv(testAgentSocketsEnv, socket)
+	out, err := spawnAgentOutput(t)
+	if err != nil {
+		t.Fatalf("start configured agent: %v", err)
+	}
+	pidM := pidRe.FindStringSubmatch(string(out))
+	if pidM == nil {
+		t.Fatalf("cannot parse agent output: %q", out)
+	}
+	pid, err := strconv.Atoi(pidM[1])
+	if err != nil {
+		t.Fatalf("parse agent pid %q: %v", pidM[1], err)
+	}
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatalf("connect configured socket %q: %v", socket, err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close configured socket connection: %v", err)
+	}
+	stopAgent(pid, socket)
+	if _, err := os.Lstat(socket); !os.IsNotExist(err) {
+		t.Errorf("configured socket remains after cleanup: stat error = %v", err)
 	}
 }
 

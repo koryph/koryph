@@ -156,6 +156,37 @@ func TestSigningSocketRuleKeepsProductionAndTestSocketsExact(t *testing.T) {
 	}
 }
 
+func TestCommandKeepsTestSocketsShortForDeepPhaseDir(t *testing.T) {
+	phaseDir := "/private/tmp/" + strings.Repeat("deep-phase/", 16)
+	argv, _, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+		RepoRoot: "/repo", PhaseDir: phaseDir, SSHAuthSock: "/run/koryph-signing/signing.sock",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rule string
+	for _, arg := range argv {
+		if strings.HasPrefix(arg, "permissions.koryph_signing.network.unix_sockets=") {
+			rule = arg
+			break
+		}
+	}
+	if rule == "" {
+		t.Fatal("rendered dispatch lacks Unix-socket permission rule")
+	}
+	for _, socket := range testAgentSockets(phaseDir) {
+		if len(socket) >= 104 {
+			t.Errorf("test socket = %q, exceeds macOS socket path limit", socket)
+		}
+		if !strings.Contains(rule, tomlString(socket)+`="allow"`) {
+			t.Errorf("rendered dispatch lacks exact socket allowlist entry %q", socket)
+		}
+	}
+	if strings.Contains(rule, phaseDir) {
+		t.Errorf("rendered dispatch leaked deep phase path into socket rule: %q", rule)
+	}
+}
+
 func TestCommandWithoutSigningStillUsesPhaseLocalMutableCaches(t *testing.T) {
 	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{RepoRoot: "/repo", PhaseDir: "/phase"})
 	if err != nil {
