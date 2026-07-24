@@ -1261,6 +1261,10 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		r.blockSlot(beadID, q, fmt.Sprintf("runtime %s is not enabled for this project (resolved via %s)", runtimeName, runtimeWhy))
 		return
 	}
+	if err := scopedSigningTransportError(rt, r.sshAuthSock); err != nil {
+		r.blockSlot(beadID, q, err.Error())
+		return
+	}
 	ra := r.rec.AccountFor(runtimeName)
 	profile := account.Profile{Name: r.rec.AccountProfile, ConfigDir: ra.ConfigDir}
 	expectedIdentity := ra.ExpectedIdentity

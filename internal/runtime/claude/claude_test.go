@@ -5,6 +5,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,10 +17,14 @@ import (
 )
 
 func TestClaudeConformsToSharedRuntimeContract(t *testing.T) {
+	setHostGOOS(t, "darwin")
+	dispatch := goldenSpec()
+	dispatch.SSHAuthSock = "/run/koryph-signing/signing.sock"
 	runtimetest.AssertConforms(t, Claude{Bin: "claude"}, runtimetest.ConformanceFixture{
-		Dispatch: goldenSpec(),
+		Dispatch: dispatch,
 		JSON: runtime.JSONSpec{
 			RepoRoot: "/repo", Persona: "reviewer", Model: "opus", Effort: "high",
+			ScratchDir:     "/scratch",
 			PermissionMode: "plan", Profile: runtime.Profile{ConfigDir: "/cfg/work"},
 			SSHAuthSock: "/run/koryph-signing/signing.sock",
 		},
@@ -54,7 +59,6 @@ func goldenSpec() runtime.DispatchSpec {
 		SessionName:      "koryph/proj/bead-42/a1",
 		BeadsDir:         "/repo/.beads",
 		Attempt:          1,
-		SSHAuthSock:      "/run/koryph-signing/signing.sock",
 	}
 }
 
@@ -302,24 +306,26 @@ func TestCommandEnvPersonalProfileOmitsConfigDir(t *testing.T) {
 	}
 }
 
-// TestCapabilitiesAllTrueExceptSandbox pins the capability matrix so a future
+// TestCapabilities pins the capability matrix so a future
 // change to this adapter must consciously edit this test. UsageSource was
 // added true (koryph-v8u.5): claude has a real ccusage/transcript usage
 // source, so the governor's fail-closed enforcement stays unaffected by the
 // new capability-gated advisory path (which is for a future runtime without
 // one).
-func TestCapabilitiesAllTrueExceptSandbox(t *testing.T) {
+func TestCapabilities(t *testing.T) {
+	setHostGOOS(t, "darwin")
 	got := (Claude{}).Capabilities()
 	want := runtime.Capabilities{
-		JSONStream:  true,
-		Personas:    true,
-		Hooks:       true,
-		Resume:      true,
-		EffortFlag:  true,
-		BudgetFlag:  true,
-		Sandbox:     false,
-		ModelSelect: true,
-		UsageSource: true,
+		JSONStream:          true,
+		Personas:            true,
+		Hooks:               true,
+		Resume:              true,
+		EffortFlag:          true,
+		BudgetFlag:          true,
+		Sandbox:             true,
+		ScopedSigningSocket: true,
+		ModelSelect:         true,
+		UsageSource:         true,
 	}
 	if got != want {
 		t.Errorf("Capabilities() = %+v, want %+v", got, want)
@@ -420,8 +426,10 @@ func TestVerifyIdentity(t *testing.T) {
 // var, and only the koryph-managed signing socket (never the operator's
 // ambient one) is injected.
 func TestCommandEnvAllowlistAndSigningSocket(t *testing.T) {
+	setHostGOOS(t, "darwin")
 	t.Setenv("GH_TOKEN", "ghp_should_not_leak_through_command")
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/operator-ambient-agent.sock")
+	t.Setenv("KORYPH_SIGNING_PRIVATE_KEY", "private-key-material-must-not-leak")
 	t.Setenv("KORYPH_ALLOWED_VAR", "forwarded-by-prefix")
 	t.Setenv("MY_PROJECT_VAR", "forwarded-by-passthrough")
 
@@ -442,6 +450,9 @@ func TestCommandEnvAllowlistAndSigningSocket(t *testing.T) {
 	if strings.Contains(joined, "/tmp/operator-ambient-agent.sock") {
 		t.Errorf("operator's ambient SSH_AUTH_SOCK leaked through Command's env:\n%s", joined)
 	}
+	if strings.Contains(joined, "private-key-material-must-not-leak") {
+		t.Errorf("private signing key material leaked through Command's env:\n%s", joined)
+	}
 	if !strings.Contains(joined, "SSH_AUTH_SOCK=/koryph/signing/agent.sock") {
 		t.Errorf("scoped signing socket missing from Command's env:\n%s", joined)
 	}
@@ -451,6 +462,73 @@ func TestCommandEnvAllowlistAndSigningSocket(t *testing.T) {
 	if !strings.Contains(joined, "MY_PROJECT_VAR=forwarded-by-passthrough") {
 		t.Errorf("registry EnvPassthrough entry missing from Command's env:\n%s", joined)
 	}
+}
+
+func TestSigningSandboxPolicyIsExactAndFailClosed(t *testing.T) {
+	setHostGOOS(t, "darwin")
+	spec := goldenSpec()
+	spec.SSHAuthSock = "/private/koryph/signing.sock"
+	spec.PhaseDir = "/private/koryph/phase"
+
+	argv, env, err := (Claude{Bin: "claude"}).Command(spec)
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if len(argv) < 5 || argv[1] != "--setting-sources" || argv[2] != "project" || argv[3] != "--settings" {
+		t.Fatalf("argv missing isolated project-only settings prefix: %q", argv)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(argv[4]), &settings); err != nil {
+		t.Fatalf("decode --settings: %v", err)
+	}
+	sandbox := settings["sandbox"].(map[string]any)
+	if sandbox["enabled"] != true || sandbox["failIfUnavailable"] != true ||
+		sandbox["allowUnsandboxedCommands"] != false {
+		t.Fatalf("sandbox policy is not fail-closed: %#v", sandbox)
+	}
+	network := sandbox["network"].(map[string]any)
+	if network["allowAllUnixSockets"] != false {
+		t.Fatalf("all Unix sockets unexpectedly allowed: %#v", network)
+	}
+	sockets := network["allowUnixSockets"].([]any)
+	if len(sockets) != 1 || sockets[0] != spec.SSHAuthSock {
+		t.Fatalf("Unix socket allowlist = %#v, want only %q", sockets, spec.SSHAuthSock)
+	}
+	if !containsEnv(env, "SSH_AUTH_SOCK="+spec.SSHAuthSock) {
+		t.Fatalf("scoped signing socket absent from env: %q", env)
+	}
+}
+
+func TestSigningSandboxPolicyRejectsWeakerPlatforms(t *testing.T) {
+	setHostGOOS(t, "linux")
+	spec := goldenSpec()
+	spec.SSHAuthSock = "/run/koryph/signing.sock"
+	_, _, err := (Claude{Bin: "claude"}).Command(spec)
+	if err == nil || !strings.Contains(err.Error(), "exact Unix-socket sandboxing") {
+		t.Fatalf("Command error = %v, want exact-socket fail-closed diagnostic", err)
+	}
+
+	// Non-signing dispatches remain compatible on every host.
+	spec.SSHAuthSock = ""
+	if _, _, err := (Claude{Bin: "claude"}).Command(spec); err != nil {
+		t.Fatalf("non-signing Command changed on linux: %v", err)
+	}
+}
+
+func setHostGOOS(t *testing.T, goos string) {
+	t.Helper()
+	old := hostGOOS
+	hostGOOS = goos
+	t.Cleanup(func() { hostGOOS = old })
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCommandEnvProxyBaseURL is the koryph-3l1.1 main-dispatch acceptance

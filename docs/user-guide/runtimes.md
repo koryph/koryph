@@ -12,8 +12,8 @@
 
 | Runtime | Status | What works today |
 |---|---|---|
-| **Claude Code** (`claude`) | **Supported** | Everything in this book: dispatch, personas, hooks, session resume, identity verification, quota measurement, activity streaming |
-| **Codex** (`codex`) | **Supported, advisory metering** | `codex exec --json`, `CODEX_HOME` account isolation, ChatGPT/API-key CLI login, `AGENTS.md`, native `.codex/hooks.json`, native agent projections, workspace-write sandbox, exact-model and portable-equivalency routing |
+| **Claude Code** (`claude`) | **Supported** | Dispatch, personas, hooks, session resume, identity verification, quota measurement, activity streaming; exact-socket signing sandbox on macOS |
+| **Codex** (`codex`) | **Supported, advisory metering** | `codex exec --json`, `CODEX_HOME` account isolation, ChatGPT/API-key CLI login, `AGENTS.md`, native `.codex/hooks.json`, native agent projections, workspace-write sandbox, exact-socket signing profile, exact-model and portable-equivalency routing |
 | Cursor | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |
 | Gemini CLI | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |
 | Grok Builder | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |

@@ -156,6 +156,6 @@ func claudeCapabilities() runtime.Capabilities {
 	}
 	return runtime.Capabilities{
 		JSONStream: true, Personas: true, Hooks: true, Resume: true,
-		EffortFlag: true, BudgetFlag: true, Sandbox: false, ModelSelect: true, UsageSource: true,
+		EffortFlag: true, BudgetFlag: true, Sandbox: true, ModelSelect: true, UsageSource: true,
 	}
 }

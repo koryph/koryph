@@ -15,6 +15,8 @@ import (
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/runtimetest"
 	"github.com/koryph/koryph/internal/sched"
 )
 
@@ -111,6 +113,29 @@ func TestRuntimeExecutionFlagsAreMutuallyExclusive(t *testing.T) {
 	got, err := Run(context.Background(), Options{RuntimeOnly: "claude", RuntimeEquivalent: "codex"})
 	if err == nil || got.Code != ExitUsage || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("Run() = (%+v, %v), want usage mutual-exclusion error", got, err)
+	}
+}
+
+func TestScopedSigningTransportFailsBeforeRuntimeLaunch(t *testing.T) {
+	unsupported := runtimetest.Stub{
+		StubName: "future-runtime",
+		Caps:     runtime.Capabilities{ScopedSigningSocket: false},
+	}
+	err := scopedSigningTransportError(unsupported, "/private/koryph/signing.sock")
+	if err == nil || !strings.Contains(err.Error(), "cannot isolate") ||
+		!strings.Contains(err.Error(), "no private key") {
+		t.Fatalf("scopedSigningTransportError = %v, want actionable fail-closed diagnostic", err)
+	}
+
+	supported := runtimetest.Stub{
+		StubName: "safe-runtime",
+		Caps:     runtime.Capabilities{ScopedSigningSocket: true},
+	}
+	if err := scopedSigningTransportError(supported, "/private/koryph/signing.sock"); err != nil {
+		t.Fatalf("supported runtime refused: %v", err)
+	}
+	if err := scopedSigningTransportError(unsupported, ""); err != nil {
+		t.Fatalf("non-signing runtime changed: %v", err)
 	}
 }
 

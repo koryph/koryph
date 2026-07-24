@@ -5,6 +5,11 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -128,9 +133,10 @@ func (c Claude) CurrentIdentity(ctx context.Context, profile runtime.Profile) (s
 }
 
 // Capabilities implements runtime.Runtime. Every flag Claude's CLI actually
-// supports today is true; Sandbox is false because Claude has no filesystem/
-// network sandbox flag of its own (worktree isolation stands in — see the
-// epic's design doc). UsageSource is true: Claude has a real, fail-closed
+// supports today is true. Sandbox is true because signing-enabled dispatches
+// use Claude Code's native OS sandbox with an exact Unix-socket allowlist on
+// macOS; hosts that cannot enforce that exact boundary fail closed before
+// launch. UsageSource is true: Claude has a real, fail-closed
 // usage-measurement source (ccusage / local *.jsonl transcripts, see
 // internal/quota), so the governor's existing warn/drain/stop enforcement
 // stays fully in force for this runtime (koryph-v8u.5) — the
@@ -138,15 +144,16 @@ func (c Claude) CurrentIdentity(ctx context.Context, profile runtime.Profile) (s
 // without one, never for claude.
 func (c Claude) Capabilities() runtime.Capabilities {
 	return runtime.Capabilities{
-		JSONStream:  true,
-		Personas:    true,
-		Hooks:       true,
-		Resume:      true,
-		EffortFlag:  true,
-		BudgetFlag:  true,
-		Sandbox:     false,
-		ModelSelect: true,
-		UsageSource: true,
+		JSONStream:          true,
+		Personas:            true,
+		Hooks:               true,
+		Resume:              true,
+		EffortFlag:          true,
+		BudgetFlag:          true,
+		Sandbox:             true,
+		ScopedSigningSocket: hostGOOS == "darwin",
+		ModelSelect:         true,
+		UsageSource:         true,
 	}
 }
 
@@ -191,7 +198,12 @@ var _ runtime.IdentityProber = Claude{}
 // Claude's Capabilities() above, so no gated-field error path is reachable
 // here today; the checks are omitted rather than written as dead code.
 func (c Claude) Command(spec runtime.DispatchSpec) (argv []string, env []string, err error) {
-	argv = append([]string{c.bin()}, buildArgs(spec)...)
+	sandboxArgs, sandboxEnv, err := signingSandboxPolicy(spec.SSHAuthSock, spec.RepoRoot, spec.PhaseDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	argv = append([]string{c.bin()}, sandboxArgs...)
+	argv = append(argv, buildArgs(spec)...)
 	env = account.ChildEnv(account.ChildEnvSpec{
 		Profile:          toAccountProfile(spec.Profile),
 		Billing:          toAccountBilling(spec.Billing),
@@ -202,6 +214,7 @@ func (c Claude) Command(spec runtime.DispatchSpec) (argv []string, env []string,
 		Credential:       spec.Credential,
 		CredentialEnvVar: spec.CredentialEnvVar,
 	})
+	env = append(env, sandboxEnv...)
 	return argv, env, nil
 }
 
@@ -211,7 +224,12 @@ func (c Claude) Command(spec runtime.DispatchSpec) (argv []string, env []string,
 // this seam. env is built through the same account.ChildEnv contract as
 // Command.
 func (c Claude) CommandJSON(spec runtime.JSONSpec) (argv []string, env []string, err error) {
-	argv = append([]string{c.bin()}, buildJSONArgs(spec)...)
+	sandboxArgs, sandboxEnv, err := signingSandboxPolicy(spec.SSHAuthSock, spec.RepoRoot, spec.ScratchDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	argv = append([]string{c.bin()}, sandboxArgs...)
+	argv = append(argv, buildJSONArgs(spec)...)
 	env = account.ChildEnv(account.ChildEnvSpec{
 		Profile:          toAccountProfile(spec.Profile),
 		Billing:          toAccountBilling(spec.Billing),
@@ -223,7 +241,117 @@ func (c Claude) CommandJSON(spec runtime.JSONSpec) (argv []string, env []string,
 		CredentialEnvVar: spec.CredentialEnvVar,
 		SpawnKind:        spec.SpawnKind,
 	})
+	env = append(env, sandboxEnv...)
 	return argv, env, nil
+}
+
+var hostGOOS = goruntime.GOOS
+
+// signingSandboxPolicy returns invocation-local Claude Code settings for a
+// signing-enabled spawn. The private key and its storage reference never enter
+// this adapter: the only signing capability supplied to Claude is the path of
+// the one-key koryph ssh-agent socket. Claude may run git/ssh commands, which
+// ask that agent to sign; it cannot read or export private key material.
+//
+// Claude Code can path-filter Unix sockets only on macOS. Linux/WSL exposes an
+// all-or-nothing allowAllUnixSockets switch, which would also make an
+// operator's ambient agents and service sockets reachable if their paths were
+// discovered. Refuse that weaker posture rather than silently broadening the
+// signing capability. Non-signing Claude dispatches are unchanged.
+func signingSandboxPolicy(socket, repoRoot, scratchDir string) ([]string, []string, error) {
+	if socket == "" {
+		return nil, nil, nil
+	}
+	if hostGOOS != "darwin" {
+		return nil, nil, fmt.Errorf("claude: secure SSH signing requires exact Unix-socket sandboxing, unavailable on %s; no private key or broad socket access was given to Claude", hostGOOS)
+	}
+	if !filepath.IsAbs(socket) {
+		return nil, nil, fmt.Errorf("claude: scoped signing socket must be an absolute path")
+	}
+
+	gitDir := ""
+	if repoRoot != "" {
+		gitDir = filepath.Join(repoRoot, ".git")
+	}
+	allowWrite := compactPaths(scratchDir, gitDir, preCommitHome())
+	sensitiveReadPaths := []string{
+		"~/.ssh",
+		"~/.aws",
+		"~/.azure",
+		"~/.config/gcloud",
+		"~/.config/gh",
+		"~/.docker",
+		"~/.kube",
+	}
+	settings := map[string]any{
+		"permissions": map[string]any{
+			"deny": readDenyRules(sensitiveReadPaths),
+		},
+		"sandbox": map[string]any{
+			"enabled":                  true,
+			"failIfUnavailable":        true,
+			"autoAllowBashIfSandboxed": true,
+			"allowUnsandboxedCommands": false,
+			"filesystem": map[string]any{
+				"allowWrite": allowWrite,
+				"denyRead":   sensitiveReadPaths,
+			},
+			"network": map[string]any{
+				"allowAllUnixSockets": false,
+				"allowUnixSockets":    []string{socket},
+			},
+		},
+	}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return nil, nil, fmt.Errorf("claude: encode signing sandbox settings: %w", err)
+	}
+
+	env := []string{}
+	if scratchDir != "" {
+		cacheRoot := filepath.Join(scratchDir, ".koryph-cache")
+		env = append(env,
+			"GOCACHE="+filepath.Join(cacheRoot, "go-build"),
+			"XDG_CACHE_HOME="+cacheRoot,
+		)
+	}
+	if home := preCommitHome(); home != "" {
+		env = append(env, "PRE_COMMIT_HOME="+home)
+	}
+	// Project settings retain koryph's deterministic hooks and permissions.
+	// Excluding user/local sources prevents an untrusted per-user array entry
+	// from widening allowUnixSockets; managed policy still applies above this
+	// invocation and may only be administered outside the project.
+	return []string{"--setting-sources", "project", "--settings", string(raw)}, env, nil
+}
+
+func compactPaths(paths ...string) []string {
+	out := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if path == "" || path == "." || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
+}
+
+func preCommitHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "pre-commit")
+}
+
+func readDenyRules(paths []string) []string {
+	rules := make([]string, 0, len(paths))
+	for _, path := range paths {
+		rules = append(rules, "Read("+path+"/**)")
+	}
+	return rules
 }
 
 // buildJSONArgs constructs the claude CLI flag sequence for a one-shot JSON

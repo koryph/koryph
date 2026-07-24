@@ -5,7 +5,9 @@
 
 Koryph supports vault-backed SSH signing for commits and cosign blob
 signing for artifacts. The private key **never leaves the vault or SSH
-agent** — it is held in memory only, never written to disk, never logged.
+agent** — it is held in memory only, never written to disk, never logged,
+and never placed in an AI runtime's prompt, arguments, launch artifact, or
+environment.
 
 Signing is opt-in per project. When `signing.required` is `true` the engine
 enforces it at three points: repo git config is applied before dispatch, the
@@ -30,7 +32,34 @@ use to push or authenticate anywhere. Instead, each dispatched agent's
 built from a credential-free allowlist (see
 [IDE integration](../ide-integration.md#3-how-plugin-issued-commands-interoperate-with-koryph-accounts)):
 tokens like `GH_TOKEN`, `VAULT_TOKEN`, `AWS_*` and the ambient socket are
-dropped. The agent can sign its commits with the signing key and nothing else.
+dropped. Secret-shaped variables are rejected even when they use a normally
+allowed namespace such as `KORYPH_*`.
+
+The runtime can only run a command such as `git commit`; Git's SSH subprocess
+then asks the scoped agent for a signature. The runtime receives the socket
+capability, not the private key or its vault/file reference. The scoped agent
+does not provide an API for exporting private keys.
+
+For defense in depth, each runtime adapter must also isolate that socket:
+
+- **Codex** uses an invocation-local permission profile that permits exactly
+  the scoped Unix socket and no public network destination.
+- **Claude Code on macOS** uses its native OS sandbox with exactly that socket
+  in `sandbox.network.allowUnixSockets`. Koryph disables unsandboxed-command
+  fallback and fails the dispatch if the sandbox is unavailable. User and
+  local settings are excluded from the headless signing invocation so their
+  array settings cannot broaden the socket allowlist; project hooks and
+  deterministic guards remain active.
+- **Claude Code on Linux/WSL** currently offers only an all-Unix-sockets
+  switch. Koryph refuses SSH-signing dispatch there rather than expose every
+  discoverable local service socket. Non-signing Claude dispatches continue
+  to work normally.
+- Any other adapter must declare exact scoped-socket support or the engine
+  blocks it before implementation starts.
+
+Claude Code's platform behavior follows its
+[sandbox settings contract](https://code.claude.com/docs/en/sandboxing);
+the exact-path `allowUnixSockets` option is macOS-only.
 
 **One deliberate exception.** A project registered under the `api-key` or
 `oauth-token` [auth mode](authentication-modes.md) does inject exactly one

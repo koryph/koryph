@@ -258,6 +258,11 @@ type Capabilities struct {
 	// (e.g. Codex's --sandbox workspace-write) independent of worktree
 	// isolation.
 	Sandbox bool `json:"sandbox"`
+	// ScopedSigningSocket: the adapter can expose exactly the one-key koryph
+	// SSH-agent socket to command subprocesses without exposing private-key
+	// material, the operator's ambient agent, or unrelated Unix sockets.
+	// Signing-required dispatches fail before launch when this is false.
+	ScopedSigningSocket bool `json:"scoped_signing_socket"`
 	// ModelSelect: the runtime accepts an explicit model/tier selector
 	// (DispatchSpec.Model, e.g. Claude's --model).
 	ModelSelect bool `json:"model_select"`

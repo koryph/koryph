@@ -187,11 +187,29 @@ func AllowEnv(allow []string, prefixes []string) []string {
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			key = kv[:i]
 		}
-		if keep[key] || hasAnyPrefix(key, prefixes) {
+		// Prefix allowlists are convenience namespaces, not authority to pass
+		// credential-shaped values. A variable explicitly named in allow still
+		// wins (the caller has consciously opted it in), but an ambient
+		// KORYPH_* / XDG_* variable whose name looks secret must not cross into
+		// an untrusted child merely because of its prefix.
+		if keep[key] || (hasAnyPrefix(key, prefixes) && !secretShapedEnvName(key)) {
 			env = append(env, kv)
 		}
 	}
 	return env
+}
+
+func secretShapedEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range []string{
+		"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASSPHRASE",
+		"_CREDENTIAL", "_PRIVATE",
+	} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // GateEnvAllow is the allowlist of environment variable names forwarded to a

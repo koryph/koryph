@@ -61,9 +61,11 @@ type DispatchSpec struct {
 	Attempt         int
 
 	// SSHAuthSock is the koryph-managed signing-agent socket (holds ONLY the
-	// signing key), injected so agent commits sign without the operator's
-	// ambient socket (and its other keys) ever reaching the agent. Empty
-	// when signing is not required.
+	// signing key), injected so command subprocesses can request signatures
+	// without private-key bytes/references or the operator's ambient socket
+	// ever reaching the runtime. Adapters must expose exactly this socket
+	// through their native sandbox and advertise ScopedSigningSocket; empty
+	// means signing is not required.
 	SSHAuthSock string
 	// EnvPassthrough forwards extra operator env vars into the agent (the
 	// registry-declared escape hatch for projects that genuinely need one).

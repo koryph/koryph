@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -61,6 +62,9 @@ func TestRunSigningAgentNotReadyFailsClosed(t *testing.T) {
 // automatically via the shared repo config, and the merge verifies + lands
 // it on main with a good signature.
 func TestRunSigningEndToEndSignedMerge(t *testing.T) {
+	if goruntime.GOOS != "darwin" {
+		t.Skip("Claude Code cannot path-isolate one Unix socket on this host; adapter fails signing closed")
+	}
 	signingtest.RequireTools(t, "ssh-agent", "ssh-add", "ssh-keygen", "git")
 	signingtest.IsolateGit(t)
 	f := newFixture(t, fixOpts{})

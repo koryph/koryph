@@ -122,7 +122,7 @@ func (c Codex) Capabilities() runtime.Capabilities {
 	return runtime.Capabilities{
 		JSONStream: true, Personas: true, Hooks: true, Resume: false,
 		EffortFlag: true, BudgetFlag: false, Sandbox: true, ModelSelect: true,
-		UsageSource: false,
+		ScopedSigningSocket: true, UsageSource: false,
 	}
 }
 

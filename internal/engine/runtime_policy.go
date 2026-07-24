@@ -9,6 +9,7 @@ import (
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/modelroute"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/sched"
 )
 
@@ -129,4 +130,14 @@ func (r *runner) validateEquivalentModels(items []sched.Item) error {
 		}
 	}
 	return nil
+}
+
+func scopedSigningTransportError(rt runtime.Runtime, socket string) error {
+	if socket == "" || rt.Capabilities().ScopedSigningSocket {
+		return nil
+	}
+	return fmt.Errorf(
+		"runtime %s cannot isolate the koryph scoped signing socket on this host; no private key, operator SSH agent, or broad Unix-socket access was exposed",
+		rt.Name(),
+	)
 }

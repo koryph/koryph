@@ -37,6 +37,10 @@ func AssertConforms(t testing.TB, rt runtime.Runtime, f ConformanceFixture) {
 	if strings.TrimSpace(rt.InstructionFile()) == "" {
 		t.Error("runtime instruction file is empty")
 	}
+	caps := rt.Capabilities()
+	if (f.Dispatch.SSHAuthSock != "" || f.JSON.SSHAuthSock != "") && !caps.ScopedSigningSocket {
+		t.Error("fixture requests scoped signing but runtime does not advertise ScopedSigningSocket")
+	}
 
 	argv, env, err := rt.Command(f.Dispatch)
 	if err != nil {
@@ -77,7 +81,6 @@ func AssertConforms(t testing.TB, rt runtime.Runtime, f ConformanceFixture) {
 		}
 	}
 
-	caps := rt.Capabilities()
 	if !caps.Resume {
 		bad := f.Dispatch
 		bad.ResumeSessionID = "resume"
