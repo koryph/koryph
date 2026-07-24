@@ -183,6 +183,11 @@ func TestCIRender_ContainerWorkflow(t *testing.T) {
 		"cosign attest --yes",
 		"actions/attest-build-provenance",
 		"subject-digest:",
+		"docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f",
+		"docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772",
+		"docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804",
+		"docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83",
+		"actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd",
 	} {
 		if !strings.Contains(s, frag) {
 			t.Errorf("Render(\"container\") missing %q\ngot:\n%s", frag, s)

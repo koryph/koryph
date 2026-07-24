@@ -44,22 +44,22 @@ jobs:
     if: ${{"{{"}} needs.detect-release.outputs.release == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ${{"{{"}} env.REGISTRY }}
           username: ${{"{{"}} github.actor }}
           password: ${{"{{"}} secrets.GITHUB_TOKEN }}
       - name: Resolve image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
         with:
           images: ${{"{{"}} env.REGISTRY }}/${{"{{"}} env.IMAGE }}
           tags: |
             type=raw,value=v${{"{{"}} needs.detect-release.outputs.version }}
       - name: Build and push image by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           push: true
@@ -90,7 +90,7 @@ jobs:
           syft "$REGISTRY/$IMAGE@$DIGEST" --output spdx-json=image.sbom.spdx.json
           cosign attest --yes --type spdxjson --predicate image.sbom.spdx.json "$REGISTRY/$IMAGE@$DIGEST"
       - name: Attest build provenance for the image digest
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2.3.0
         with:
           subject-name: ${{"{{"}} env.REGISTRY }}/${{"{{"}} env.IMAGE }}
           subject-digest: ${{"{{"}} steps.build.outputs.digest }}

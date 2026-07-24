@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -23,6 +24,11 @@ import (
 
 // ConfigFileName is the adapter file at each managed repo's root.
 const ConfigFileName = "koryph.project.json"
+
+// ociRepositoryComponent is the grammar for one registry-relative OCI
+// repository-path component. Registry hostnames are deliberately excluded by
+// validateRelease, which owns the registry separately in ContainerConfig.
+var ociRepositoryComponent = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$`)
 
 // Policy is how a bead's finished branch lands. It is the merge_policy default
 // (an epic's merge:<policy> label overrides it). The constants are the whole
@@ -1162,10 +1168,26 @@ func validateRelease(r *ReleaseConfig) error {
 	if image == "" {
 		return fmt.Errorf("release.container.image is required")
 	}
-	if image != r.Container.Image || strings.ContainsAny(image, "@:") || strings.HasPrefix(image, "/") || strings.Contains(image, "//") {
+	if image != r.Container.Image || strings.ContainsAny(image, "@:") || !isRegistryRelativeOCIPath(image) {
 		return fmt.Errorf("release.container.image must be a registry-relative image name without a tag or digest, got %q", r.Container.Image)
 	}
 	return nil
+}
+
+// isRegistryRelativeOCIPath rejects registry hostnames because the container
+// workflow combines this path with ContainerConfig.Registry. A hostname here
+// would otherwise render a malformed image such as ghcr.io/ghcr.io/acme/app.
+func isRegistryRelativeOCIPath(image string) bool {
+	components := strings.Split(image, "/")
+	if len(components) == 0 || components[0] == "localhost" || strings.Contains(components[0], ".") {
+		return false
+	}
+	for _, component := range components {
+		if !ociRepositoryComponent.MatchString(component) {
+			return false
+		}
+	}
+	return true
 }
 
 // PostureApplyCmd returns the exact shell command that would bring the live

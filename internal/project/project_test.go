@@ -435,6 +435,8 @@ func TestReleaseConfig_Validation(t *testing.T) {
 		{"container registry must be GHCR", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "registry.example", Image: "acme/widget"}}, "release.container.registry"},
 		{"container image is required", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "ghcr.io"}}, "release.container.image is required"},
 		{"container image excludes tags", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "ghcr.io", Image: "acme/widget:latest"}}, "without a tag or digest"},
+		{"container image excludes registry hostname", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "ghcr.io", Image: "ghcr.io/acme/widget"}}, "registry-relative image name"},
+		{"container image requires OCI path components", &ReleaseConfig{Type: "go", Build: ReleaseBuildConfig{Goreleaser: goreleaser}, Container: &ContainerConfig{Registry: "ghcr.io", Image: "acme/Widget"}}, "registry-relative image name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
