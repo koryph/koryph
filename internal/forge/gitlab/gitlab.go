@@ -18,6 +18,7 @@
 // Services stubbed (returning [forge.ErrUnsupported]) — to be extracted in
 // later beads:
 //   - [forge.ReleaseService] — future bead
+//   - [forge.PagesService]   — GitLab-native custom-domain model
 //
 // # Authentication
 //
@@ -47,6 +48,7 @@ package gitlab
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/project"
@@ -139,6 +141,10 @@ func (p *Provider) PRs() forge.PRService { return &gitlabPRSvc{} }
 // token with api scope.
 func (p *Provider) Secrets() forge.SecretsService { return &gitlabSecretsSvc{} }
 
+// Pages returns an unsupported stub. GitLab Pages custom domains use a
+// different DNS model from GitHub Pages and will be implemented separately.
+func (p *Provider) Pages() forge.PagesService { return &stubPagesSvc{} }
+
 // Releases returns a stub; to be implemented in a future bead.
 func (p *Provider) Releases() forge.ReleaseService { return &stubReleaseSvc{} }
 
@@ -156,6 +162,24 @@ func (p *Provider) Bot() forge.BotService { return &gitlabBotSvc{} }
 // ---------- stubs for not-yet-implemented services ----------------------------
 
 type stubReleaseSvc struct{}
+
+type stubPagesSvc struct{}
+
+func (s *stubPagesSvc) Get(_ context.Context, _, _ string) (*forge.PagesSite, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s *stubPagesSvc) SetCustomDomain(_ context.Context, _, _, _ string) error {
+	return forge.ErrUnsupported
+}
+func (s *stubPagesSvc) CheckHealth(_ context.Context, _, _ string) (*forge.PagesHealth, bool, error) {
+	return nil, false, forge.ErrUnsupported
+}
+func (s *stubPagesSvc) WaitForHealth(_ context.Context, _, _ string, _ time.Duration) (*forge.PagesHealth, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s *stubPagesSvc) SetHTTPSEnforced(_ context.Context, _, _ string, _ bool) error {
+	return forge.ErrUnsupported
+}
 
 func (s *stubReleaseSvc) Create(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", forge.ErrUnsupported
@@ -178,6 +202,7 @@ var (
 	_ forge.ProtectionService = (*gitlabProtectionSvc)(nil)
 	_ forge.PRService         = (*gitlabPRSvc)(nil)
 	_ forge.SecretsService    = (*gitlabSecretsSvc)(nil)
+	_ forge.PagesService      = (*stubPagesSvc)(nil)
 	_ forge.ReleaseService    = (*stubReleaseSvc)(nil)
 	_ forge.CIService         = (*gitlabCISvc)(nil)
 )

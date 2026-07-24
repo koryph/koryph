@@ -16,6 +16,7 @@
 //   - [forge.RepoService]       — gh-backed settings (repo flags, security, vuln alerts, actions)
 //   - [forge.ProtectionService] — gh-backed rulesets (repo-level and org-level)
 //   - [forge.SecretsService]    — gh-backed secrets (repo and org)
+//   - [forge.PagesService]      — custom domain, DNS health, and HTTPS settings
 //
 // # Project-specific configuration
 //
@@ -116,6 +117,10 @@ func (p *Provider) PRs() forge.PRService { return &githubPRSvc{} }
 // Secrets returns the [forge.SecretsService] backed by the gh CLI — repository
 // and org-level CI secrets.
 func (p *Provider) Secrets() forge.SecretsService { return &githubSecretsSvc{} }
+
+// Pages returns the [forge.PagesService] backed by the gh CLI — custom-domain
+// configuration, DNS health polling, and HTTPS enforcement.
+func (p *Provider) Pages() forge.PagesService { return &githubPagesSvc{} }
 
 // Releases returns a [forge.ReleaseService] backed by the gh CLI using the
 // draft-until-complete strategy (CreateDraft → UploadAsset(s) → Publish).

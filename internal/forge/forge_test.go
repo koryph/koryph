@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/koryph/koryph/internal/forge"
 )
@@ -145,9 +146,28 @@ func (s *stubForge) Repo() forge.RepoService             { return &stubRepoSvc{}
 func (s *stubForge) Protection() forge.ProtectionService { return &stubProtectionSvc{} }
 func (s *stubForge) PRs() forge.PRService                { return &stubPRSvc{} }
 func (s *stubForge) Secrets() forge.SecretsService       { return &stubSecretsSvc{} }
+func (s *stubForge) Pages() forge.PagesService           { return &stubPagesSvc{} }
 func (s *stubForge) Releases() forge.ReleaseService      { return &stubReleaseSvc{} }
 func (s *stubForge) CI() forge.CIService                 { return &stubCISvc{} }
 func (s *stubForge) Bot() forge.BotService               { return &stubBotSvc{} }
+
+type stubPagesSvc struct{}
+
+func (s *stubPagesSvc) Get(context.Context, string, string) (*forge.PagesSite, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s *stubPagesSvc) SetCustomDomain(context.Context, string, string, string) error {
+	return forge.ErrUnsupported
+}
+func (s *stubPagesSvc) CheckHealth(context.Context, string, string) (*forge.PagesHealth, bool, error) {
+	return nil, false, forge.ErrUnsupported
+}
+func (s *stubPagesSvc) WaitForHealth(context.Context, string, string, time.Duration) (*forge.PagesHealth, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s *stubPagesSvc) SetHTTPSEnforced(context.Context, string, string, bool) error {
+	return forge.ErrUnsupported
+}
 
 type stubRepoSvc struct{}
 

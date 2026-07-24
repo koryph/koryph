@@ -42,6 +42,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 )
 
 // ErrUnsupported is returned by service methods that have no equivalent on
@@ -72,6 +73,9 @@ type Forge interface {
 
 	// Secrets returns the CI secrets / variables service.
 	Secrets() SecretsService
+
+	// Pages returns the static-site hosting service.
+	Pages() PagesService
 
 	// Releases returns the release publishing service.
 	Releases() ReleaseService
@@ -155,6 +159,36 @@ type CheckRun struct {
 	// Conclusion is "success", "failure", "cancelled", "skipped", or "" when
 	// the run has not yet completed.
 	Conclusion string `json:"conclusion"`
+}
+
+// PagesSite is the provider-neutral subset of a hosted static site that
+// koryph manages while setting up documentation publishing.
+type PagesSite struct {
+	URL           string `json:"url"`
+	CustomDomain  string `json:"custom_domain,omitempty"`
+	HTTPSEnforced bool   `json:"https_enforced"`
+}
+
+// PagesDomainHealth is the useful, provider-neutral portion of a custom
+// domain's DNS and HTTPS health check.
+type PagesDomainHealth struct {
+	Host            string `json:"host"`
+	DNSResolves     bool   `json:"dns_resolves"`
+	Valid           bool   `json:"valid"`
+	ServedByPages   bool   `json:"served_by_pages"`
+	RespondsToHTTPS bool   `json:"responds_to_https"`
+	EnforcesHTTPS   bool   `json:"enforces_https"`
+	HTTPSEligible   bool   `json:"https_eligible"`
+	Reason          string `json:"reason,omitempty"`
+	HTTPSError      string `json:"https_error,omitempty"`
+	CAAError        string `json:"caa_error,omitempty"`
+}
+
+// PagesHealth is the custom-domain health result. AltDomain is present when
+// the provider checked the domain's conventional alternate host as well.
+type PagesHealth struct {
+	Domain    PagesDomainHealth  `json:"domain"`
+	AltDomain *PagesDomainHealth `json:"alt_domain,omitempty"`
 }
 
 // ListPROptions filters a [PRService.List] request.
@@ -331,6 +365,29 @@ type SecretsService interface {
 	// to the named repositories. nil or empty repos means "all selected
 	// repositories" per the provider's default.
 	SetOrg(ctx context.Context, org, name, value string, repos []string) error
+}
+
+// PagesService manages custom domains and HTTPS for a forge-hosted static
+// site. Providers return [ErrUnsupported] when their Pages implementation
+// cannot use GitHub's CNAME/DNS-health model.
+type PagesService interface {
+	// Get returns the current Pages-site settings.
+	Get(ctx context.Context, owner, repo string) (*PagesSite, error)
+
+	// SetCustomDomain associates domain with the Pages site. An empty domain
+	// removes the current custom-domain configuration.
+	SetCustomDomain(ctx context.Context, owner, repo, domain string) error
+
+	// CheckHealth requests the custom-domain DNS health result. pending is true
+	// while the provider is calculating the result; health is then nil.
+	CheckHealth(ctx context.Context, owner, repo string) (health *PagesHealth, pending bool, err error)
+
+	// WaitForHealth polls CheckHealth until it produces a result or ctx ends.
+	// interval must be positive.
+	WaitForHealth(ctx context.Context, owner, repo string, interval time.Duration) (*PagesHealth, error)
+
+	// SetHTTPSEnforced enables or disables redirects from HTTP to HTTPS.
+	SetHTTPSEnforced(ctx context.Context, owner, repo string, enabled bool) error
 }
 
 // ReleaseService manages published releases and their binary assets.
