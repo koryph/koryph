@@ -217,7 +217,8 @@ func TestCIRender_Docs(t *testing.T) {
 	// REUSE-IgnoreStart
 	wantFragments := []string{
 		"pages:",
-		"mkdocs build",
+		"zensical build --strict",
+		"rm -rf docs/designs",
 		"public",
 		"CI_PAGES_URL",
 		"SPDX-License-Identifier: " + "Apache-2.0",

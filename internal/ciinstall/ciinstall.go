@@ -17,11 +17,13 @@
 //
 //	gate    → .github/workflows/koryph-gate.yml
 //	scanner → .github/workflows/koryph-scanner.yml
+//	docs    → .github/workflows/koryph-docs.yml
 //
 // GitLab kinds are written as includable fragments under .koryph/ci/:
 //
 //	gate    → .koryph/ci/koryph-gate.yml
 //	scanner → .koryph/ci/koryph-scanner.yml
+//	docs    → .koryph/ci/koryph-docs.yml
 //
 // The GitLab installer prints guidance to add an `include:` entry to
 // .gitlab-ci.yml so the fragment takes effect.
@@ -55,7 +57,7 @@ const (
 // AllKinds is the ordered set of CI asset kinds the ci setup verb installs
 // when --kind all is specified. Append new kinds here when they are added to
 // the forge CIService contract.
-var AllKinds = []string{"gate", "scanner"}
+var AllKinds = []string{"gate", "scanner", "docs"}
 
 // Result is the outcome of one [Install] or [Check] call.
 type Result struct {

@@ -44,8 +44,8 @@ func init() {
 func cmdCI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "ci", "render and install forge-native CI pipeline assets", []subVerb{
-			{"setup --project ID [--kind gate|scanner|all] [--gate-cmd CMD]", "render and install CI assets (idempotent)"},
-			{"check --project ID [--kind gate|scanner|all] [--gate-cmd CMD]", "report drift between installed assets and current render; exit 1 on drift"},
+			{"setup --project ID [--kind gate|scanner|docs|all] [--gate-cmd CMD]", "render and install CI assets (idempotent)"},
+			{"check --project ID [--kind gate|scanner|docs|all] [--gate-cmd CMD]", "report drift between installed assets and current render; exit 1 on drift"},
 		})
 		return 0
 	}
@@ -60,18 +60,18 @@ func cmdCI(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// cmdCISetup implements `koryph ci setup [--project ID] [--kind gate|scanner|all]
+// cmdCISetup implements `koryph ci setup [--project ID] [--kind gate|scanner|docs|all]
 // [--gate-cmd CMD]`. It resolves the project's forge from koryph.project.json,
 // renders the requested CI kinds via forge.CI().Render, and writes them to the
 // forge-native paths. Never commits; prints commit guidance instead.
 func cmdCISetup(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("ci setup", stderr)
 	flagProject := fs.String("project", "", "project id")
-	flagKind := fs.String("kind", "gate", "CI asset kind(s) to install: gate, scanner, or all")
+	flagKind := fs.String("kind", "gate", "CI asset kind(s) to install: gate, scanner, docs, or all")
 	flagGateCmd := fs.String("gate-cmd", "", "override the gate command (default: make gate)")
 	setUsage(fs, stdout,
 		"render and install forge-native CI pipeline assets into the project (idempotent)",
-		"[--project ID] [--kind gate|scanner|all] [--gate-cmd CMD]")
+		"[--project ID] [--kind gate|scanner|docs|all] [--gate-cmd CMD]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -164,17 +164,17 @@ func cmdCISetup(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cmdCICheck implements `koryph ci check [--project ID] [--kind gate|scanner|all]
+// cmdCICheck implements `koryph ci check [--project ID] [--kind gate|scanner|docs|all]
 // [--gate-cmd CMD]`. It compares installed CI assets against the current Render
 // output and exits 1 when any asset is missing or has drifted.
 func cmdCICheck(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("ci check", stderr)
 	flagProject := fs.String("project", "", "project id")
-	flagKind := fs.String("kind", "gate", "CI asset kind(s) to check: gate, scanner, or all")
+	flagKind := fs.String("kind", "gate", "CI asset kind(s) to check: gate, scanner, docs, or all")
 	flagGateCmd := fs.String("gate-cmd", "", "override the gate command (default: make gate)")
 	setUsage(fs, stdout,
 		"report drift between installed CI pipeline assets and current render; exit 1 on drift",
-		"[--project ID] [--kind gate|scanner|all] [--gate-cmd CMD]")
+		"[--project ID] [--kind gate|scanner|docs|all] [--gate-cmd CMD]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -252,7 +252,7 @@ func resolveKinds(cmd, kindFlag string, stderr io.Writer) ([]string, int) {
 	case "gate", "scanner", "caller", "docs", "release":
 		return []string{kindFlag}, 0
 	default:
-		return nil, usageErr(stderr, fmt.Sprintf("%s: unknown --kind value %q (want gate|scanner|all)", cmd, kindFlag))
+		return nil, usageErr(stderr, fmt.Sprintf("%s: unknown --kind value %q (want gate|scanner|docs|all)", cmd, kindFlag))
 	}
 }
 

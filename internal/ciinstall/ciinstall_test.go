@@ -43,6 +43,7 @@ func TestKindPathGitHub(t *testing.T) {
 	}{
 		{"gate", filepath.Join(".github", "workflows", "koryph-gate.yml")},
 		{"scanner", filepath.Join(".github", "workflows", "koryph-scanner.yml")},
+		{"docs", filepath.Join(".github", "workflows", "koryph-docs.yml")},
 	}
 	for _, c := range cases {
 		got, ok := ciinstall.KindPath("github", c.kind)
@@ -62,6 +63,7 @@ func TestKindPathGitLab(t *testing.T) {
 	}{
 		{"gate", filepath.Join(".koryph", "ci", "koryph-gate.yml")},
 		{"scanner", filepath.Join(".koryph", "ci", "koryph-scanner.yml")},
+		{"docs", filepath.Join(".koryph", "ci", "koryph-docs.yml")},
 	}
 	for _, c := range cases {
 		got, ok := ciinstall.KindPath("gitlab", c.kind)
@@ -244,13 +246,19 @@ func TestCheckUnsupportedKind(t *testing.T) {
 
 // ---------- AllKinds ---------------------------------------------------------
 
-func TestAllKindsContainsGate(t *testing.T) {
-	for _, k := range ciinstall.AllKinds {
-		if k == "gate" {
-			return
+func TestAllKindsContainsInstallableKinds(t *testing.T) {
+	for _, want := range []string{"gate", "scanner", "docs"} {
+		found := false
+		for _, got := range ciinstall.AllKinds {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AllKinds does not contain %q: %v", want, ciinstall.AllKinds)
 		}
 	}
-	t.Errorf("AllKinds does not contain 'gate': %v", ciinstall.AllKinds)
 }
 
 // compile-time: fakeCI satisfies forge.CIService

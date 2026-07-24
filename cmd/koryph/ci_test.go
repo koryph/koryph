@@ -104,6 +104,28 @@ func TestCISetupInstallsGateWorkflow(t *testing.T) {
 	}
 }
 
+// TestCISetupInstallsDocsWorkflow verifies that `ci setup --kind docs` writes
+// the artifact-based GitHub Pages workflow into the project root.
+func TestCISetupInstallsDocsWorkflow(t *testing.T) {
+	isolate(t)
+	root := gitRepo(t)
+	registerProjectForCI(t, "citestdocs", root)
+
+	code, out, errb := runCmd("ci", "setup", "--project", "citestdocs", "--kind", "docs")
+	if code != 0 {
+		t.Fatalf("ci setup docs: code = %d (stdout=%s stderr=%s)", code, out, errb)
+	}
+
+	wantFile := filepath.Join(root, ".github", "workflows", "koryph-docs.yml")
+	b, err := os.ReadFile(wantFile)
+	if err != nil {
+		t.Fatalf("docs workflow not installed at %s: %v", wantFile, err)
+	}
+	if !strings.Contains(string(b), "actions/deploy-pages") {
+		t.Errorf("installed docs workflow lacks Pages deployment:\n%s", b)
+	}
+}
+
 // TestCISetupIdempotent verifies that running `ci setup` twice leaves the file
 // unchanged and reports "already up-to-date".
 func TestCISetupIdempotent(t *testing.T) {

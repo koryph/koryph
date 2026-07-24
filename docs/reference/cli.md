@@ -1136,7 +1136,7 @@ render and install CI assets into the project
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--gate-cmd` | string |  | override the gate command (default: make gate) |
-| `--kind` | string | `gate` | CI asset kind(s) to install: gate, scanner, or all |
+| `--kind` | string | `gate` | CI asset kind(s) to install: gate, scanner, docs, or all |
 | `--project` | string |  | project id |
 
 ## `koryph ci check` { #koryph-ci-check }
@@ -1148,7 +1148,7 @@ report drift between installed CI assets and current Render output
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--gate-cmd` | string |  | override the gate command (default: make gate) |
-| `--kind` | string | `gate` | CI asset kind(s) to check: gate, scanner, or all |
+| `--kind` | string | `gate` | CI asset kind(s) to check: gate, scanner, docs, or all |
 | `--project` | string |  | project id |
 
 

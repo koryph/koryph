@@ -216,6 +216,36 @@ func TestCIRender_NoReleaseConfig(t *testing.T) {
 	}
 }
 
+// TestCIRender_Docs verifies the docs workflow renders the strict Zensical
+// build and the artifact-based GitHub Pages deployment without release config.
+func TestCIRender_Docs(t *testing.T) {
+	p := githubforge.New()
+	got, err := p.CI().Render("docs")
+	if err != nil {
+		t.Fatalf("Render(\"docs\"): %v", err)
+	}
+	s := string(got)
+
+	// REUSE-IgnoreStart
+	wantFragments := []string{
+		"name: docs",
+		"zensical build --strict",
+		"rm -rf docs/designs",
+		"actions/configure-pages",
+		"actions/upload-pages-artifact",
+		"actions/deploy-pages",
+		"pages: write",
+		"id-token: write",
+		"SPDX-License-Identifier: " + "Apache-2.0",
+	}
+	// REUSE-IgnoreEnd
+	for _, frag := range wantFragments {
+		if !strings.Contains(s, frag) {
+			t.Errorf("Render(\"docs\") missing fragment %q\nfull output:\n%s", frag, s)
+		}
+	}
+}
+
 // TestCIRender_UnknownKind verifies that an unknown kind wraps ErrUnsupported.
 func TestCIRender_UnknownKind(t *testing.T) {
 	p := githubforge.New(githubforge.WithReleaseConfig(goreleaserRC()))

@@ -22,6 +22,9 @@ var embeddedContainerWorkflowTmpl string
 //go:embed gate-workflow.yml.tmpl
 var embeddedGateWorkflowTmpl string
 
+//go:embed docs-workflow.yml.tmpl
+var embeddedDocsWorkflowTmpl string
+
 // githubCISvc implements [forge.CIService] for GitHub Actions.
 //
 // It renders forge-appropriate CI/CD pipeline asset files using embedded
@@ -79,6 +82,11 @@ type callerWorkflowData struct {
 //     (.github/workflows/container.yml). Requires a release config with a
 //     container block.
 //
+//   - "docs" — the GitHub Pages docs-publish workflow
+//     (.github/workflows/koryph-docs.yml). Builds the Zensical book strictly,
+//     uploads it as a Pages artifact, and deploys it. Does not require a
+//     ReleaseConfig.
+//
 // All other kinds return [forge.ErrUnsupported].
 func (s *githubCISvc) Render(kind string) ([]byte, error) {
 	switch kind {
@@ -88,6 +96,8 @@ func (s *githubCISvc) Render(kind string) ([]byte, error) {
 		return s.renderContainer()
 	case "gate":
 		return s.renderGate()
+	case "docs":
+		return s.renderDocs()
 	default:
 		return nil, fmt.Errorf("github CI: Render(%q): %w", kind, forge.ErrUnsupported)
 	}
@@ -188,4 +198,29 @@ func (s *githubCISvc) renderGate() ([]byte, error) {
 		return nil, fmt.Errorf("github CI: render gate workflow: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// renderDocs renders the GitHub Pages docs-publish workflow. This kind does
+// not require a ReleaseConfig.
+func (s *githubCISvc) renderDocs() ([]byte, error) {
+	td := pipelineHeaderData{
+		Copyright: s.copyright.FileCopyrightText(),
+		License:   s.copyright.LicenseID(),
+	}
+	tmpl, err := template.New("docs-workflow.yml").Parse(embeddedDocsWorkflowTmpl)
+	if err != nil {
+		return nil, fmt.Errorf("github CI: parse docs workflow template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, td); err != nil {
+		return nil, fmt.Errorf("github CI: render docs workflow: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// pipelineHeaderData carries the SPDX header fields for templates (like the
+// docs workflow) that have no other view-model.
+type pipelineHeaderData struct {
+	Copyright string
+	License   string
 }

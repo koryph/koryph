@@ -43,13 +43,32 @@ and scanner, or `--kind scanner` to install only the scanner.
 
 ---
 
+### Docs publishing pipeline (optional)
+
+The **docs** kind (`--kind docs`) builds a Zensical book with `--strict` and
+publishes it to your forge's Pages service. `--kind all` installs it alongside
+the gate and scanner assets. Your repository must provide `mkdocs.yml` and a
+`docs/requirements.txt` that declares Zensical.
+
+| Forge | Installed path |
+|-------|----------------|
+| GitHub | `.github/workflows/koryph-docs.yml` |
+| GitLab | `.koryph/ci/koryph-docs.yml` ¹ |
+
+GitHub uses the artifact-based Pages flow (`configure-pages`,
+`upload-pages-artifact`, and `deploy-pages`); it never creates a `gh-pages`
+branch. Configure the repository's Pages source as **GitHub Actions** before
+the first deployment.
+
+---
+
 ## Quickstart
 
 ```sh
 # Install the gate pipeline only (default)
 koryph ci setup --project myproject
 
-# Install both gate and scanner
+# Install gate, scanner, and docs publishing
 koryph ci setup --project myproject --kind all
 
 # Override the gate command (e.g. for a non-Makefile build)
@@ -57,6 +76,9 @@ koryph ci setup --project myproject --gate-cmd "go test ./..."
 
 # Install only the scanner
 koryph ci setup --project myproject --kind scanner
+
+# Install only docs publishing
+koryph ci setup --project myproject --kind docs
 ```
 
 After running `ci setup`, koryph prints commit guidance:
@@ -80,7 +102,7 @@ operator's (or agent's) act — the same principle as `koryph release setup`.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--project ID` | — | Project to install into (required, or pass the ID as a positional argument) |
-| `--kind gate\|scanner\|all` | `gate` | CI asset kind(s) to install |
+| `--kind gate\|scanner\|docs\|all` | `gate` | CI asset kind(s) to install |
 | `--gate-cmd CMD` | `make gate` | Override the gate command; see [The gate command contract](#the-gate-command-contract) |
 
 ---
@@ -213,6 +235,7 @@ flags work on GitHub and GitLab; only the rendered output differs.
 |---|---|---|
 | Gate kind | `.github/workflows/koryph-gate.yml` | `.koryph/ci/koryph-gate.yml` |
 | Scanner kind | `.github/workflows/koryph-scanner.yml` | `.koryph/ci/koryph-scanner.yml` |
+| Docs kind | `.github/workflows/koryph-docs.yml` | `.koryph/ci/koryph-docs.yml` |
 | Trigger (push) | `on: push` | `rules: CI_PIPELINE_SOURCE == "push"` |
 | Trigger (PR/MR) | `on: pull_request` | `rules: CI_PIPELINE_SOURCE == "merge_request_event"` |
 | Include mechanism | Standalone workflow file | Fragment; needs `include:` in `.gitlab-ci.yml` |
@@ -231,6 +254,8 @@ include:
   - local: '.koryph/ci/koryph-gate.yml'
   # (if you installed the scanner)
   - local: '.koryph/ci/koryph-scanner.yml'
+  # (if you installed docs publishing)
+  - local: '.koryph/ci/koryph-docs.yml'
 ```
 
 `koryph ci setup` prints the exact `include:` snippet after installation
