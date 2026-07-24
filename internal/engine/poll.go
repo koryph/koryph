@@ -1293,8 +1293,14 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	// branch/worktree plus the shared status document. Refuse incomplete
 	// candidates before pipeline/review can create noise or merge can mistake
 	// the unchanged base commit for agent work.
-	if ok, reason := r.candidateEligible(ctx, sl); !ok {
-		r.parkIncompleteCandidate(ctx, sl, reason)
+	assessment := r.assessCandidate(ctx, sl)
+	if !assessment.eligible {
+		if assessment.retryableBlock {
+			r.progress("bead %s: clean committed candidate self-blocked; retrying within attempt budget", sl.PhaseID)
+			r.requeueSlot(ctx, sl, "", "agent reported recoverable completion block")
+			return
+		}
+		r.parkIncompleteCandidate(ctx, sl, assessment.reason)
 		return
 	}
 
@@ -2017,12 +2023,17 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	// not a drifting re-resolution; see resolveModel). Merge errors are
 	// excluded (usually transient — the base moved, a push raced — not a
 	// model-capability failure), as are the rate-limit and budget-kill paths,
-	// which never reach this function. EscalationTier itself refuses to
-	// change opus/fable/unknown models and enforces the project allowlist
-	// that the frozen-model path otherwise bypasses.
+	// which never reach this function. RecoveryModel resolves the selected
+	// runtime's concrete frontier model and enforces the same fail-closed
+	// policy as initial routing; the frozen-model path otherwise bypasses it.
 	frozenModel, frozenWhy := sl.Model, sl.ModelWhy
 	if fault && attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote && why != cleanNoCommitExitNote {
-		if up := modelroute.EscalationTier(sl.Model, r.rec.AllowedModels); up != "" {
+		runtimeName := sl.Runtime
+		if runtimeName == "" {
+			runtimeName = "claude"
+		}
+		modelMap := r.modelRequestForRuntime(modelroute.StageImplement, nil, "", runtimeName).ModelMap
+		if up := modelroute.RecoveryModel(sl.Model, runtimeName, modelMap, r.rec.AllowedModels); up != "" {
 			frozenModel = up
 			frozenWhy = fmt.Sprintf("escalated from %s after %d bead-fault attempts (%s)", sl.Model, sl.Attempts, why)
 			r.progress("bead %s: escalating final attempt %d to %s (was %s — %s)",

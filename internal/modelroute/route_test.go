@@ -269,6 +269,31 @@ func TestEscalationTier(t *testing.T) {
 	}
 }
 
+func TestRecoveryModelUsesSelectedRuntimeFrontier(t *testing.T) {
+	cases := []struct {
+		name        string
+		current     string
+		runtimeName string
+		override    map[string]string
+		allowed     []string
+		want        string
+	}{
+		{"codex terra to frontier", "gpt-5.6-terra", "codex", nil, nil, "gpt-5.6-sol"},
+		{"codex already frontier", "gpt-5.6-sol", "codex", nil, nil, ""},
+		{"codex project frontier override", "gpt-5.6-terra", "codex", map[string]string{"frontier": "codex-top"}, []string{"codex-top"}, "codex-top"},
+		{"unknown custom model is not ordered", "custom", "codex", nil, []string{"custom"}, ""},
+		{"claude lower tier", TierSonnet, "claude", nil, nil, TierOpus},
+		{"claude fable never downgrades", TierFable, "claude", nil, fableAllowed, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RecoveryModel(tc.current, tc.runtimeName, tc.override, tc.allowed); got != tc.want {
+				t.Errorf("RecoveryModel(%q, %q) = %q, want %q", tc.current, tc.runtimeName, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTierForModelID exercises the koryph-qf6.2 normalization of concrete
 // model ids (modelUsage keys, version-suffixed and case-varied) to tiers.
 func TestTierForModelID(t *testing.T) {

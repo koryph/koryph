@@ -726,29 +726,52 @@ func RecoveryUpgrade(current string) string {
 	return TierOpus
 }
 
-// EscalationTier returns the tier the FINAL attempt of a bead-fault requeue
-// should escalate to (koryph-qf6.4): RecoveryUpgrade's target when current is
-// a strictly lower tier AND the target is in the project allowlist (nil/empty
-// allowed means the default allowlist, which includes opus). Returns "" when
-// no escalation applies: current is already at or above the target (opus, and
-// fable — escalation must never DOWNGRADE a fable bead to opus), current is
-// empty/unknown (an adopted or legacy slot whose model we cannot vouch for),
-// or the target is not allowlisted. This is the policy gate the engine
-// consults instead of calling RecoveryUpgrade raw — the requeue path bypasses
-// Resolve (koryph-ehx freeze), so the allowlist check Resolve would normally
-// perform has to happen here.
+// RecoveryModel returns the concrete model to use for a FINAL bead-fault
+// retry. Unlike the legacy Claude-only escalation policy, it resolves the
+// selected runtime's effective frontier mapping. This keeps recovery portable
+// while preserving the frozen first-attempt model for every non-final retry.
+//
+// A declared runtime model is itself a fail-closed policy decision, matching
+// Resolve's treatment of runtime model maps. An explicit project allowlist is
+// still honored for non-declared custom targets. Claude fable is never
+// implicitly selected or downgraded.
+func RecoveryModel(current, runtimeName string, override map[string]string, allowed []string) string {
+	if runtimeName == "" {
+		runtimeName = "claude" // slots written before Runtime was persisted
+	}
+	if runtimeName == "claude" && current == TierFable {
+		return ""
+	}
+	if !validModelForRuntime(current, runtimeName, override, allowed) {
+		return ""
+	}
+	// An operator-allowlisted custom model is valid for dispatch, but has no
+	// known capability ordering. Do not guess whether it is below frontier.
+	if runtimeName != "claude" && !declaredModelForRuntime(current, runtimeName, override) {
+		return ""
+	}
+	target := effectiveModelMapFor(runtimeName, override)[runtime.TierFrontier]
+	if target == "" || target == current || (runtimeName == "claude" && target == TierFable) {
+		return ""
+	}
+	if !validModelForRuntime(target, runtimeName, override, allowed) {
+		return ""
+	}
+	if runtimeName == "claude" {
+		if len(allowed) == 0 {
+			allowed = defaultAllowed
+		}
+		if !contains(allowed, target) {
+			return ""
+		}
+	}
+	return target
+}
+
+// EscalationTier remains the Claude compatibility facade for callers and
+// persisted-policy tests that use the historical tier vocabulary.
 func EscalationTier(current string, allowed []string) string {
-	if current != TierHaiku && current != TierSonnet {
-		return ""
-	}
-	up := RecoveryUpgrade(current)
-	if len(allowed) == 0 {
-		allowed = defaultAllowed
-	}
-	if !contains(allowed, up) {
-		return ""
-	}
-	return up
+	return RecoveryModel(current, "claude", nil, allowed)
 }
 
 // contains reports whether v is in s.

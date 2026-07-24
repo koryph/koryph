@@ -93,3 +93,24 @@ func TestCandidateEligibleAcceptsCleanCommittedClaudeOrCodexOutput(t *testing.T)
 		t.Fatalf("candidateEligible = false: %s", reason)
 	}
 }
+
+func TestAssessCandidateRetriesOnlyCleanCommittedSelfBlocksWithinBudget(t *testing.T) {
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "done\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): work")
+	if err := os.WriteFile(sl.StatusPath, []byte(`{"state":"blocked"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := r.assessCandidate(context.Background(), sl)
+	if a.eligible || !a.retryableBlock {
+		t.Fatalf("assessment = %+v, want non-eligible retryable self-block", a)
+	}
+
+	sl.Attempts = ledger.MaxAttempts
+	a = r.assessCandidate(context.Background(), sl)
+	if a.retryableBlock {
+		t.Fatalf("assessment at max attempts = %+v, want terminal", a)
+	}
+}

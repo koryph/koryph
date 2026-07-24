@@ -50,11 +50,11 @@
        "codex": {
          "enabled": true,
          "model_map": {
-           "frontier": "gpt-5.6-terra",
+           "frontier": "gpt-5.6-sol",
            "standard": "gpt-5.6-terra",
            "light": "gpt-5.6-terra"
          },
-         "effort_map": {"xhigh": "high"}
+         "effort_map": {"xhigh": "xhigh"}
        }
      }
    }
@@ -83,7 +83,7 @@ Beads can express either concrete runtime choices or a portable equivalency:
   model and native effort explicitly.
 - `runtime:codex`, `equiv:frontier:xhigh` selects the project's Codex
   frontier mapping and translates portable `xhigh` through
-  `runtimes.codex.effort_map` (the shipped default maps it to `high`).
+  `runtimes.codex.effort_map` (the shipped default preserves it as `xhigh`).
 
 Do not combine `equiv:` with `model:` on one bead. Existing
 `model:opus|sonnet|haiku` labels remain compatible Claude selections.
@@ -114,7 +114,7 @@ policies when an operator needs to constrain that normal routing:
 
 For example, a Claude bead carrying `runtime:claude`, `model:opus`, and
 `effort:xhigh` becomes Codex's `frontier:xhigh` mapping under
-`--runtime-equivalent codex` (currently `gpt-5.6-terra` with native `high`
+`--runtime-equivalent codex` (currently `gpt-5.6-sol` with native `xhigh`
 effort). Prefer an explicit `equiv:frontier:xhigh` whenever a bead must remain
 portable across runtimes.
 

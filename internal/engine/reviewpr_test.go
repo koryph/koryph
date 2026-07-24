@@ -108,7 +108,7 @@ func TestReviewPRUsesConfiguredCodexRuntime(t *testing.T) {
 	if got.Runtime == nil || got.Runtime.Name() != "codex" {
 		t.Fatalf("review runtime = %v, want codex", got.Runtime)
 	}
-	if got.Model != "gpt-5.6-terra" {
+	if got.Model != "gpt-5.6-sol" {
 		t.Errorf("review model = %q, want Codex frontier model", got.Model)
 	}
 	if got.Profile.ConfigDir != "/cfg/codex" {

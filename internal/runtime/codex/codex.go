@@ -305,22 +305,31 @@ func signingFilesystemRule(repoRoot string) string {
 	return "permissions.koryph_signing.filesystem={" + strings.Join(parts, ",") + "}"
 }
 
-// sandboxCacheEnv redirects general mutable developer-tool caches into the
-// invocation-owned phase directory. pre-commit is the deliberate exception:
-// its already-vetted hook environments are expensive and may require network
-// access to rebuild, so the permission profile grants only its exact cache
-// directory (never all of ~/.cache). It is active only for the signing
-// permission profile.
+// sandboxCacheEnv redirects mutable developer-tool state into the
+// invocation-owned phase directory. It is active whenever the caller gives us
+// a scratch directory: ordinary workspace-write launches need the same cache
+// isolation as signing launches. pre-commit is the deliberate exception; its
+// already-vetted hook environments are expensive and may require network
+// access to rebuild, so only the signing profile receives its narrowly granted
+// persistent cache.
 func sandboxCacheEnv(sshAuthSock, scratchDir string) []string {
-	if sshAuthSock == "" || scratchDir == "" {
+	if scratchDir == "" {
 		return nil
 	}
-	preCommitHome := filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit")
-	return []string{
-		"PRE_COMMIT_HOME=" + preCommitHome,
+	env := []string{
 		"GOCACHE=" + filepath.Join(scratchDir, "go-cache"),
+		"GOMODCACHE=" + filepath.Join(scratchDir, "go-mod-cache"),
 		"XDG_CACHE_HOME=" + filepath.Join(scratchDir, "cache"),
+		// The phase directory already exists before a runtime is launched;
+		// using it directly avoids asking tools such as xcrun to create a
+		// nested TMPDIR before their first cache operation.
+		"TMPDIR=" + scratchDir,
+		"GOTELEMETRY=off",
 	}
+	if sshAuthSock != "" {
+		env = append(env, "PRE_COMMIT_HOME="+filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"))
+	}
+	return env
 }
 
 func tomlString(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }

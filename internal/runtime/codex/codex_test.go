@@ -127,8 +127,46 @@ func TestCommandSigningCachesAreNarrowlyScoped(t *testing.T) {
 	for _, want := range []string{
 		"PRE_COMMIT_HOME=" + filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"),
 		"GOCACHE=/phase/go-cache",
+		"GOMODCACHE=/phase/go-mod-cache",
 		"XDG_CACHE_HOME=/phase/cache",
+		"TMPDIR=/phase",
+		"GOTELEMETRY=off",
 	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("env missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestCommandWithoutSigningStillUsesPhaseLocalMutableCaches(t *testing.T) {
+	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{RepoRoot: "/repo", PhaseDir: "/phase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{
+		"GOCACHE=/phase/go-cache",
+		"GOMODCACHE=/phase/go-mod-cache",
+		"XDG_CACHE_HOME=/phase/cache",
+		"TMPDIR=/phase",
+		"GOTELEMETRY=off",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("env missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "PRE_COMMIT_HOME=") {
+		t.Errorf("ordinary workspace-write launch inherited signing-only PRE_COMMIT_HOME:\n%s", joined)
+	}
+}
+
+func TestCommandJSONUsesScratchLocalMutableCaches(t *testing.T) {
+	_, env, err := (Codex{Bin: "codex"}).CommandJSON(runtime.JSONSpec{RepoRoot: "/repo", ScratchDir: "/scratch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{"GOCACHE=/scratch/go-cache", "GOMODCACHE=/scratch/go-mod-cache", "TMPDIR=/scratch", "GOTELEMETRY=off"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env missing %q:\n%s", want, joined)
 		}

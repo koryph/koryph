@@ -20,6 +20,12 @@ type portableCompletion struct {
 	State string `json:"state"`
 }
 
+type candidateAssessment struct {
+	eligible       bool
+	retryableBlock bool
+	reason         string
+}
+
 func completionState(path string) (string, error) {
 	if path == "" {
 		return "", nil
@@ -38,12 +44,15 @@ func completionState(path string) (string, error) {
 	return strings.TrimSpace(status.State), nil
 }
 
-// candidateEligible validates the portable output contract before any
-// pipeline, review, PR, or merge work. The invariant is deliberately outside
-// every runtime adapter: Claude, Codex, and future runtimes all hand the engine
-// the same branch, worktree, and status document.
-func (r *runner) candidateEligible(ctx context.Context, sl *ledger.Slot) (bool, string) {
+// assessCandidate validates the portable output contract before any pipeline,
+// review, PR, or merge work. The invariant is deliberately outside every
+// runtime adapter: Claude, Codex, and future runtimes all hand the engine the
+// same branch, worktree, and status document.
+func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidateAssessment {
 	var reasons []string
+	reportedBlock := false
+	commits := 0
+	clean := false
 
 	if sl.StatusPath != "" {
 		state, err := completionState(sl.StatusPath)
@@ -52,6 +61,7 @@ func (r *runner) candidateEligible(ctx context.Context, sl *ledger.Slot) (bool, 
 		} else {
 			switch strings.ToLower(state) {
 			case "blocked", "failed", "error", "cancelled", "canceled":
+				reportedBlock = true
 				reasons = append(reasons, "agent reported completion state "+state)
 			}
 		}
@@ -65,6 +75,8 @@ func (r *runner) candidateEligible(ctx context.Context, sl *ledger.Slot) (bool, 
 			s.Commits = commits
 			s.LastCommit = head
 		})
+		sl.Commits = commits
+		sl.LastCommit = head
 		if commits == 0 {
 			reasons = append(reasons, "branch has no commits beyond the dispatch base")
 		}
@@ -75,12 +87,25 @@ func (r *runner) candidateEligible(ctx context.Context, sl *ledger.Slot) (bool, 
 		reasons = append(reasons, "cannot verify worktree cleanliness: "+err.Error())
 	} else if dirty {
 		reasons = append(reasons, "worktree has staged, unstaged, or untracked changes")
+	} else {
+		clean = true
 	}
 
 	if len(reasons) > 0 {
-		return false, strings.Join(reasons, "; ")
+		return candidateAssessment{
+			retryableBlock: reportedBlock && commits > 0 && clean && sl.Attempts < ledger.MaxAttempts,
+			reason:         strings.Join(reasons, "; "),
+		}
 	}
-	return true, ""
+	return candidateAssessment{eligible: true}
+}
+
+// candidateEligible preserves the compact contract used by existing callers
+// and tests; finishCandidate needs the richer assessment to distinguish a
+// bounded, clean self-block from a terminally incomplete candidate.
+func (r *runner) candidateEligible(ctx context.Context, sl *ledger.Slot) (bool, string) {
+	a := r.assessCandidate(ctx, sl)
+	return a.eligible, a.reason
 }
 
 func (r *runner) parkIncompleteCandidate(ctx context.Context, sl *ledger.Slot, reason string) {

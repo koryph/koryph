@@ -59,13 +59,13 @@ var ClaudeModelMap = ModelMap{
 	TierLight:    "haiku",
 }
 
-// CodexModelMap is the default capability mapping for Codex. gpt-5.6-terra is
-// the current model accepted by the ChatGPT-authenticated Codex CLI; using it
-// for every tier is deliberate until a lower-cost model is confirmed for the
-// same authentication surface. Projects may overlay individual entries in
-// runtimes.codex.model_map as providers evolve.
+// CodexModelMap is the default capability mapping for Codex. Frontier work is
+// deliberately routed to the strongest supported reasoning model: planning,
+// review, and final-attempt recovery all rely on it to avoid poisoning later
+// automation. Standard and light work retain Terra's balanced profile.
+// Projects may overlay individual entries in runtimes.codex.model_map.
 var CodexModelMap = ModelMap{
-	TierFrontier: "gpt-5.6-terra",
+	TierFrontier: "gpt-5.6-sol",
 	TierStandard: "gpt-5.6-terra",
 	TierLight:    "gpt-5.6-terra",
 }
@@ -74,8 +74,9 @@ var ClaudeEffortMap = EffortMap{
 	"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh",
 }
 
-// Codex's native configuration accepts low/medium/high. Higher portable
-// classes map to high until a Codex CLI exposes a distinct higher setting.
+// Codex accepts the portable effort vocabulary directly for its current model
+// family, so preserve the requested budget rather than silently flattening a
+// frontier xhigh/max/ultra request to high.
 var CodexEffortMap = EffortMap{
-	"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high", "ultra": "high",
+	"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "ultra": "ultra",
 }

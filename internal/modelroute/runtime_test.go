@@ -84,8 +84,8 @@ func TestResolveCodexExactAndPortableEquivalency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(Codex equivalency): %v", err)
 	}
-	if got.Model != "gpt-5.6-terra" || got.Effort != "high" || got.Equivalent != "frontier:xhigh" {
-		t.Errorf("Codex equivalency = %+v, want model gpt-5.6-terra, effort high, portable frontier:xhigh", got)
+	if got.Model != "gpt-5.6-sol" || got.Effort != "xhigh" || got.Equivalent != "frontier:xhigh" {
+		t.Errorf("Codex equivalency = %+v, want model gpt-5.6-sol, effort xhigh, portable frontier:xhigh", got)
 	}
 }
 
@@ -98,8 +98,8 @@ func TestResolveEquivalentTranslatesNativeAndStageSelections(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ResolveEquivalent: %v", err)
 		}
-		if got.Model != "gpt-5.6-terra" || got.Effort != "high" || got.Equivalent != "frontier:xhigh" {
-			t.Errorf("resolution = %+v, want Codex frontier/high equivalent", got)
+		if got.Model != "gpt-5.6-sol" || got.Effort != "xhigh" || got.Equivalent != "frontier:xhigh" {
+			t.Errorf("resolution = %+v, want Codex frontier/xhigh equivalent", got)
 		}
 		if !strings.Contains(got.Rationale, "runtime equivalent codex") {
 			t.Errorf("rationale = %q, want runtime-equivalent provenance", got.Rationale)
@@ -135,8 +135,8 @@ func TestRunEquivalentIsProjectDefaultAndLosesToBeadModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(project equivalency): %v", err)
 	}
-	if got.Model != "gpt-5.6-terra" || got.Effort != "high" || got.Rationale != "project default equivalent standard:xhigh" {
-		t.Errorf("project equivalent = %+v, want Codex standard/high default", got)
+	if got.Model != "gpt-5.6-terra" || got.Effort != "xhigh" || got.Rationale != "project default equivalent standard:xhigh" {
+		t.Errorf("project equivalent = %+v, want Codex standard/xhigh default", got)
 	}
 
 	got, err = Resolve(Req{Runtime: "claude", Stage: StageImplement, Labels: []string{"model:opus"}, RunEquivalent: "standard:xhigh"})
