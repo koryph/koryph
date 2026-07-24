@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/koryph/koryph/internal/paths"
 )
 
 // RequireTools skips the test unless every named binary is on PATH.
@@ -39,7 +41,7 @@ const testAgentSocketsEnv = "KORYPH_TEST_SSH_AGENT_SOCKS"
 func SpawnAgent(t *testing.T) {
 	t.Helper()
 	RequireTools(t, "ssh-agent")
-	out, err := spawnAgentOutput()
+	out, err := spawnAgentOutput(t)
 	if err != nil {
 		t.Fatalf("ssh-agent -s: %v", err)
 	}
@@ -61,15 +63,19 @@ func SpawnAgent(t *testing.T) {
 // injected by the Codex runtime. The small pool lets Go run independent
 // packages in parallel without sharing agent state. Outside a Codex dispatch,
 // keep ssh-agent's normal temporary-socket behavior.
-func spawnAgentOutput() ([]byte, error) {
+func spawnAgentOutput(t *testing.T) ([]byte, error) {
+	t.Helper()
 	sockets := filepath.SplitList(os.Getenv(testAgentSocketsEnv))
 	if len(sockets) == 0 {
-		return exec.Command("ssh-agent", "-s").Output()
+		return spawnFallbackAgent(t)
 	}
 	var lastErr error
 	for _, socket := range sockets {
 		if socket == "" {
 			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+			return nil, err
 		}
 		out, err := exec.Command("ssh-agent", "-a", socket, "-s").CombinedOutput()
 		if err == nil {
@@ -83,7 +89,24 @@ func spawnAgentOutput() ([]byte, error) {
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return exec.Command("ssh-agent", "-s").Output()
+	return spawnFallbackAgent(t)
+}
+
+// spawnFallbackAgent keeps ordinary test runs independent of TMPDIR too. Its
+// per-test directory sits beneath the shared short socket root, while Codex
+// dispatches use the deterministic, explicitly allowlisted pool above.
+func spawnFallbackAgent(t *testing.T) ([]byte, error) {
+	t.Helper()
+	root := paths.SocketDir("signing-test-fixtures")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp(root, "agent-")
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return exec.Command("ssh-agent", "-a", filepath.Join(dir, "agent.sock"), "-s").CombinedOutput()
 }
 
 // GenKey generates an unencrypted ed25519 keypair in a temp dir and returns

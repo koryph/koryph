@@ -32,17 +32,22 @@ func KoryphHome() string {
 // ${KORYPH_HOME:-$HOME/.koryph}/hooks/<name>.
 func HooksDir() string { return filepath.Join(KoryphHome(), "hooks") }
 
-// SigningDir holds koryph's scoped signing-agent socket. It lives under a short,
-// per-user temp path (0700) rather than KoryphHome: a Unix domain socket path
-// caps at ~104 chars, and the socket is ephemeral runtime IPC (recreated by
-// `koryph signing enable`), not persistent state. Keyed by a hash of KoryphHome
-// so distinct homes (and test fixtures) never collide.
-func SigningDir() string {
+// SocketDir returns a short, deterministic directory for ephemeral Unix-domain
+// sockets in scope. It deliberately uses /tmp instead of os.TempDir: dispatched
+// runtimes set TMPDIR to their deeply nested phase directory, which can exceed
+// macOS's short socket-path limit. The hash isolates distinct koryph homes and
+// scopes without encoding their paths directly in a world-writable directory.
+func SocketDir(scope string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(KoryphHome()))
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("koryph-%d-%08x", os.Getuid(), h.Sum32()))
-	return dir
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(scope))
+	return filepath.Join("/tmp", fmt.Sprintf("koryph-%d-%08x", os.Getuid(), h.Sum32()))
 }
+
+// SigningDir holds koryph's scoped signing-agent socket. It is ephemeral IPC
+// (recreated by `koryph signing enable`), not persistent state.
+func SigningDir() string { return SocketDir("signing") }
 
 // SigningAgentSock is the koryph-managed ssh-agent socket that holds ONLY the
 // commit-signing key, isolated from the operator's ambient SSH_AUTH_SOCK.

@@ -47,6 +47,16 @@ func TestSpawnAgentUsesNextFreeConfiguredSocket(t *testing.T) {
 	}
 }
 
+func TestSpawnAgentFallbackIgnoresDeepTMPDIR(t *testing.T) {
+	RequireTools(t, "ssh-agent")
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "a", "deep", "phase", "directory", "that", "cannot", "hold", "an", "agent", "socket"))
+	t.Setenv(testAgentSocketsEnv, "")
+	SpawnAgent(t)
+	if got := os.Getenv("SSH_AUTH_SOCK"); len(got) >= 104 {
+		t.Errorf("SSH_AUTH_SOCK = %q, exceeds macOS socket path limit", got)
+	}
+}
+
 // shortSocketDir avoids macOS's short Unix socket-path limit when the test
 // process inherits a deeply nested phase-local TMPDIR.
 func shortSocketDir(t *testing.T) string {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/execx"
+	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/runtime"
 )
 
@@ -248,14 +249,15 @@ const (
 )
 
 // testAgentSockets returns the only sockets that signing integration tests may
-// bind during this dispatch. The compact names preserve macOS's short Unix
-// socket path limit even for the deeply nested phase directories koryph uses.
-// A pool keeps independent Go test packages from sharing a test agent when
+// bind during this dispatch. Their root is deterministically keyed by the
+// phase directory but remains short even when TMPDIR is phase-local and deeply
+// nested. A pool keeps independent Go test packages from sharing an agent when
 // `go test ./...` runs them in parallel.
-func testAgentSockets(dir string) []string {
-	if dir == "" {
+func testAgentSockets(phaseDir string) []string {
+	if phaseDir == "" {
 		return nil
 	}
+	dir := paths.SocketDir("test-ssh-agent:" + phaseDir)
 	sockets := make([]string, testAgentSocketCount)
 	for i := range sockets {
 		sockets[i] = filepath.Join(dir, fmt.Sprintf("s%x", i))

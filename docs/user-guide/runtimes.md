@@ -22,10 +22,11 @@
 
 For a Codex signing gate, koryph permits the production signing socket as one
 exact Unix-socket rule. Signing integration tests receive a small fixed pool of
-short, phase-local sockets through `KORYPH_TEST_SSH_AGENT_SOCKS`; every pool
-member is independently allowlisted so parallel test packages can create their
-own temporary agents. Koryph never enables Codex's broad all-Unix-sockets
-escape hatch.
+short sockets through `KORYPH_TEST_SSH_AGENT_SOCKS`. Their root is keyed to
+the phase but kept under `/tmp`, so a phase-local `TMPDIR` cannot exceed the
+macOS socket-path limit; every pool member is independently allowlisted so
+parallel test packages can create their own temporary agents. Koryph never
+enables Codex's broad all-Unix-sockets escape hatch.
 
 ## Codex setup
 
