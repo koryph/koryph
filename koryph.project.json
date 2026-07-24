@@ -110,9 +110,7 @@
     "agents/",
     ".envrc",
     "LICENSE",
-    ".github/",
-    ".pre-commit-config.yaml",
-    "Makefile"
+    ".pre-commit-config.yaml"
   ],
   "engine_version": "0.2+",
   "merge_policy": "auto",
