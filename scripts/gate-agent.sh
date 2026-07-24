@@ -90,14 +90,59 @@ else
 fi
 
 overall=0
+test_fixture_dir=""
+trap 'rm -rf "$test_fixture_dir"' EXIT
+
+# run_test_stage executes the gate's package tests without the dispatch
+# contract inherited by this wrapper.  Hook and Beads tests intentionally
+# distinguish interactive work from an active dispatch, so passing the
+# worker's phase metadata through would make them test the wrong mode (and
+# can direct a leaked runner at the live Beads database).
+#
+# KORYPH_PHASE_DIR remains available to this parent process for gate logs;
+# only the go test subprocess receives the neutral environment.  KORYPH_HOME
+# and KORYPH_BD_BIN point at disposable fixtures so an unisolated test fails
+# safely instead of observing an operator's real koryph home or Beads DB.
+run_test_stage() {
+  test_fixture_dir="$(mktemp -d "$log_dir/gate-test-env.XXXXXX")"
+  mkdir -p "$test_fixture_dir/home"
+  cat >"$test_fixture_dir/bd" <<'EOF'
+#!/bin/sh
+echo "gate-agent test fixture refuses bd invocation: $*" >&2
+exit 97
+EOF
+  chmod 755 "$test_fixture_dir/bd"
+
+  env \
+    -u KORYPH_RUN_ID \
+    -u KORYPH_SESSION_ID \
+    -u KORYPH_PHASE_ID \
+    -u KORYPH_SPAWN_KIND \
+    -u KORYPH_PHASE_DIR \
+    -u KORYPH_STATUS_PATH \
+    -u KORYPH_SUMMARY_PATH \
+    -u KORYPH_LOG_PATH \
+    -u KORYPH_DIR \
+    KORYPH_HOME="$test_fixture_dir/home" \
+    KORYPH_BD_BIN="$test_fixture_dir/bd" \
+    PATH="$test_fixture_dir:$PATH" \
+    bash -c "$1"
+}
+
 for stage in "${stages[@]}"; do
   name="${stage%%|*}"
   cmd="${stage#*|}"
   log="$log_dir/gate-$name.log"
-  if bash -c "$cmd" >"$log" 2>&1; then
+  stage_exit=0
+  if [[ "$name" == "test" ]]; then
+    run_test_stage "$cmd" >"$log" 2>&1 || stage_exit=$?
+  else
+    bash -c "$cmd" >"$log" 2>&1 || stage_exit=$?
+  fi
+  if [[ "$stage_exit" -eq 0 ]]; then
     echo "==> $name: PASS"
   else
-    ec=$?
+    ec=$stage_exit
     echo "==> $name: FAIL (exit $ec)"
     echo "----- tail: $log -----"
     tail -n 40 "$log"

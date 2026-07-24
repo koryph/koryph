@@ -55,6 +55,20 @@ func runGateAgent(t *testing.T, stages string) (output string, exitCode int, log
 	return output, exitCode, logDir
 }
 
+func gateAgentEnv(overrides map[string]string) []string {
+	env := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, pair := range os.Environ() {
+		name, _, _ := strings.Cut(pair, "=")
+		if _, replaced := overrides[name]; !replaced {
+			env = append(env, pair)
+		}
+	}
+	for name, value := range overrides {
+		env = append(env, name+"="+value)
+	}
+	return env
+}
+
 func TestGateAgentAllPass_ExitsZero(t *testing.T) {
 	out, code, logDir := runGateAgent(t, "a|true\nb|true")
 	if code != 0 {
@@ -107,5 +121,61 @@ func TestGateAgentRequiresLogDirArg(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("expected failure with no log-dir arg, got success:\n%s", out)
+	}
+}
+
+func TestGateAgentTestStageSanitizesDispatchEnvironment(t *testing.T) {
+	logDir := t.TempDir()
+	cmd := exec.Command("bash", "gate-agent.sh", logDir)
+	cmd.Env = gateAgentEnv(map[string]string{
+		"KORYPH_GATE_AGENT_STAGES": "test|for name in KORYPH_RUN_ID KORYPH_SESSION_ID KORYPH_PHASE_ID KORYPH_SPAWN_KIND KORYPH_PHASE_DIR KORYPH_STATUS_PATH KORYPH_SUMMARY_PATH KORYPH_LOG_PATH KORYPH_DIR; do if printenv \"$name\" >/dev/null; then echo \"$name=present\"; else echo \"$name=unset\"; fi; done; test -d \"$KORYPH_HOME\"; test -x \"$KORYPH_BD_BIN\"; test \"$(command -v bd)\" = \"$KORYPH_BD_BIN\"; \"$KORYPH_BD_BIN\" list --parent live-project; test $? -eq 97; bd list --parent live-project; test $? -eq 97",
+		"KORYPH_RUN_ID":            "host-run",
+		"KORYPH_SESSION_ID":        "host-session",
+		"KORYPH_PHASE_ID":          "host-phase",
+		"KORYPH_SPAWN_KIND":        "host-spawn",
+		"KORYPH_PHASE_DIR":         "/live/phase",
+		"KORYPH_STATUS_PATH":       "/live/status.json",
+		"KORYPH_SUMMARY_PATH":      "/live/SUMMARY.md",
+		"KORYPH_LOG_PATH":          "/live/session.log",
+		"KORYPH_DIR":               "/live/dispatch",
+		"KORYPH_HOME":              "/live/koryph-home",
+		"KORYPH_BD_BIN":            "/live/bd",
+	})
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gate-agent test stage: %v\noutput:\n%s", err, out)
+	}
+
+	stageLog, err := os.ReadFile(filepath.Join(logDir, "gate-test.log"))
+	if err != nil {
+		t.Fatalf("read test-stage log: %v", err)
+	}
+	for _, name := range []string{
+		"KORYPH_RUN_ID", "KORYPH_SESSION_ID", "KORYPH_PHASE_ID", "KORYPH_SPAWN_KIND",
+		"KORYPH_PHASE_DIR", "KORYPH_STATUS_PATH", "KORYPH_SUMMARY_PATH", "KORYPH_LOG_PATH", "KORYPH_DIR",
+	} {
+		if !strings.Contains(string(stageLog), name+"=unset") {
+			t.Errorf("test subprocess inherited %s:\n%s", name, stageLog)
+		}
+	}
+	if got := strings.Count(string(stageLog), "gate-agent test fixture refuses bd invocation: list --parent live-project"); got != 2 {
+		t.Errorf("fixture did not intercept explicit and PATH bd invocations (got %d):\n%s", got, stageLog)
+	}
+}
+
+func TestGateAgentFailingTestStagePreservesExitCode(t *testing.T) {
+	out, code, logDir := runGateAgent(t, "test|echo sanitized-test-failure; exit 23")
+	if code != 23 {
+		t.Fatalf("exit code = %d, want 23:\n%s", code, out)
+	}
+	if !strings.Contains(out, "==> test: FAIL (exit 23)") {
+		t.Errorf("sanitized test stage was not reported as failed:\n%s", out)
+	}
+	stageLog, err := os.ReadFile(filepath.Join(logDir, "gate-test.log"))
+	if err != nil {
+		t.Fatalf("read test-stage log: %v", err)
+	}
+	if !strings.Contains(string(stageLog), "sanitized-test-failure") {
+		t.Errorf("failing test-stage log missing marker:\n%s", stageLog)
 	}
 }
