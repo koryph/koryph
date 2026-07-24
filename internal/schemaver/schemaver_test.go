@@ -148,6 +148,20 @@ func TestMigrateLiftsLegacyLedgerState(t *testing.T) {
 	}
 }
 
+func TestMigrateLiftsProjectV1State(t *testing.T) {
+	migrated, err := Migrate(Project, []byte(`{"schema_version":1,"project_id":"demo"}`))
+	if err != nil {
+		t.Fatalf("Migrate(Project) = %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(migrated, &got); err != nil {
+		t.Fatalf("decode migrated state: %v", err)
+	}
+	if got["schema_version"] != float64(Current(Project)) {
+		t.Errorf("schema_version = %#v, want %d", got["schema_version"], Current(Project))
+	}
+}
+
 func TestMigrateRefusesNewerState(t *testing.T) {
 	_, err := Migrate(SigningVault, []byte(`{"schema_version":2}`))
 	var tooNew *TooNewError

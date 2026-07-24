@@ -68,7 +68,7 @@ var current = map[Surface]int{
 	Registry:       2,
 	Quota:          1,
 	SigningVault:   1,
-	Project:        1,
+	Project:        2,
 	LedgerRun:      2,
 	LedgerManifest: 2,
 }
@@ -91,6 +91,9 @@ var migrations = map[Surface][]Migration{
 	// never treat a missing step as an implicit no-op.
 	LedgerRun:      {noOpMigration, noOpMigration},
 	LedgerManifest: {noOpMigration, noOpMigration},
+	// Project v2 adds the optional release.container block. Existing v1 files
+	// remain valid; the no-op step makes that additive compatibility explicit.
+	Project: {nil, noOpMigration},
 }
 
 func noOpMigration(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
