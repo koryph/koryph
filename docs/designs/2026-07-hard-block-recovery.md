@@ -55,7 +55,7 @@ reproduce the same terminal states.
   candidate that reports `blocked`, including clean branches with commits.
 - `internal/runtime/codex/codex.go:sandboxCacheEnv` redirects only GOCACHE and
   XDG cache, only under the signing profile; it does not set TMPDIR,
-  GOMODCACHE, or GOTELEMETRY.
+  GOMODCACHE, or isolate Go telemetry.
 - The installed binary is built from `04e0a55`; current main is `a9b7661`.
   The two newer commits do not change recovery behavior.
 - Preserved branch heads exist for `koryph-bbr.2`, `koryph-r0l.1`,
@@ -85,9 +85,11 @@ model to the current concrete recovery target upgrades those slots correctly.
 
 Make phase-local cache environment construction independent of whether SSH
 signing is active. When a scratch directory exists, set GOCACHE, GOMODCACHE,
-XDG_CACHE_HOME, TMPDIR, and GOTELEMETRY=off there. Keep PRE_COMMIT_HOME on the
-existing vetted cache only for the signing permission profile that explicitly
-grants it. No credential namespaces are added.
+XDG_CACHE_HOME, TMPDIR, and TEST_TELEMETRY_DIR there. Go 1.26 reports
+GOTELEMETRY as a computed, non-settable value, so the telemetry-directory
+override is required to keep its token and counters phase-local. Keep
+PRE_COMMIT_HOME on the existing vetted cache only for the signing permission
+profile that explicitly grants it. No credential namespaces are added.
 
 Alternative considered: grant write access to the host's existing Go, Xcode,
 and telemetry cache paths. Phase-local state is narrower, deterministic, and
@@ -161,7 +163,8 @@ scope.
 - Fresh Codex frontier work selects `gpt-5.6-sol`; standard/light work remains
   on Terra.
 - Codex dispatch and JSON spawns with a scratch directory receive phase-local
-  Go/XDG/TMP caches and `GOTELEMETRY=off`.
+  Go/XDG/TMP caches and `TEST_TELEMETRY_DIR`; an actual Go subprocess confirms
+  that telemetry resolves inside the scratch directory.
 - A clean committed self-block retries within budget and reaches recovery
   escalation; dirty, commitless, malformed, and exhausted cases remain
   terminal.

@@ -319,12 +319,16 @@ func sandboxCacheEnv(sshAuthSock, scratchDir string) []string {
 	env := []string{
 		"GOCACHE=" + filepath.Join(scratchDir, "go-cache"),
 		"GOMODCACHE=" + filepath.Join(scratchDir, "go-mod-cache"),
+		// GOTELEMETRY is a computed, non-settable Go environment value as of
+		// Go 1.26. TEST_TELEMETRY_DIR is the narrow Go tool override: unlike
+		// HOME, it redirects only Go telemetry and leaves Codex's account
+		// configuration untouched.
+		"TEST_TELEMETRY_DIR=" + filepath.Join(scratchDir, "go-telemetry"),
 		"XDG_CACHE_HOME=" + filepath.Join(scratchDir, "cache"),
 		// The phase directory already exists before a runtime is launched;
 		// using it directly avoids asking tools such as xcrun to create a
 		// nested TMPDIR before their first cache operation.
 		"TMPDIR=" + scratchDir,
-		"GOTELEMETRY=off",
 	}
 	if sshAuthSock != "" {
 		env = append(env, "PRE_COMMIT_HOME="+filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"))

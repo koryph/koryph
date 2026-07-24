@@ -5,6 +5,7 @@ package codex
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -128,9 +129,9 @@ func TestCommandSigningCachesAreNarrowlyScoped(t *testing.T) {
 		"PRE_COMMIT_HOME=" + filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"),
 		"GOCACHE=/phase/go-cache",
 		"GOMODCACHE=/phase/go-mod-cache",
+		"TEST_TELEMETRY_DIR=/phase/go-telemetry",
 		"XDG_CACHE_HOME=/phase/cache",
 		"TMPDIR=/phase",
-		"GOTELEMETRY=off",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env missing %q:\n%s", want, joined)
@@ -147,9 +148,9 @@ func TestCommandWithoutSigningStillUsesPhaseLocalMutableCaches(t *testing.T) {
 	for _, want := range []string{
 		"GOCACHE=/phase/go-cache",
 		"GOMODCACHE=/phase/go-mod-cache",
+		"TEST_TELEMETRY_DIR=/phase/go-telemetry",
 		"XDG_CACHE_HOME=/phase/cache",
 		"TMPDIR=/phase",
-		"GOTELEMETRY=off",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env missing %q:\n%s", want, joined)
@@ -166,10 +167,23 @@ func TestCommandJSONUsesScratchLocalMutableCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"GOCACHE=/scratch/go-cache", "GOMODCACHE=/scratch/go-mod-cache", "TMPDIR=/scratch", "GOTELEMETRY=off"} {
+	for _, want := range []string{"GOCACHE=/scratch/go-cache", "GOMODCACHE=/scratch/go-mod-cache", "TMPDIR=/scratch", "TEST_TELEMETRY_DIR=/scratch/go-telemetry"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env missing %q:\n%s", want, joined)
 		}
+	}
+}
+
+func TestSandboxCacheEnvRedirectsGoTelemetryForActualSubprocess(t *testing.T) {
+	scratch := t.TempDir()
+	cmd := exec.Command("go", "env", "GOTELEMETRYDIR")
+	cmd.Env = append(os.Environ(), sandboxCacheEnv("", scratch)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go env GOTELEMETRYDIR: %v\n%s", err, output)
+	}
+	if got, want := strings.TrimSpace(string(output)), filepath.Join(scratch, "go-telemetry"); got != want {
+		t.Errorf("go telemetry directory = %q, want %q", got, want)
 	}
 }
 
