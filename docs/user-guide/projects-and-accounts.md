@@ -25,7 +25,7 @@ by `koryph validate`.
 | `gate` | array | — | Shell commands run inside the worktree after rebase and before merge. At least one required. |
 | `footprint` | array | — | Conflict-domain rules: `{pattern, tokens}`. Tokens prefixed `HOT:` conflict with every worktree sharing that token. |
 | `area_map` | object | — | Expands `area:<x>` bead labels to footprint tokens when no `fp:*` label is present. |
-| `stages` | object | — | Maps pipeline stage names to `.claude/agents/` persona names. |
+| `stages` | object | — | Maps pipeline stage names to canonical `agents/` persona names. |
 | `tiers` | object | — | Maps model tier names to persona names for tier-driven dispatch. |
 | `pipeline` | array | — | Ordered post-implement stages (`{name, persona?, model?, effort?, prompt?, optional?}`) run in the worktree before review/merge. See below. |
 | `bootstrap` | array | — | Commands run in a fresh or re-attached worktree before the agent starts (e.g. `pnpm install --frozen-lockfile`). |
@@ -178,7 +178,7 @@ may add its own commits (docs, tests, changelog, …):
 | Stage field | Purpose |
 |---|---|
 | `name` | Stage id (required, unique). Known ids — `docs`, `test`, … — inherit a default persona and model tier; `implement`/`review` are reserved. |
-| `persona` | Override the `.claude/agents/` agent. Default: the stage's namespaced engine persona (e.g. `docs → koryph-feature-docs-author`). |
+| `persona` | Override the canonical `agents/` persona. Default: the stage's namespaced engine persona (e.g. `docs → koryph-feature-docs-author`). |
 | `model` | Override the model tier (must be in the registry `allowed_models`). Default: the stage's engine default. |
 | `effort` | Reasoning-effort hint. |
 | `prompt` | Extra stage-specific instructions appended to the built stage prompt. |

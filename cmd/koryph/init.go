@@ -47,13 +47,13 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(tw, "home\t%s\tok\n", home)
 	tw.Flush()
 
-	// Verify tools on PATH; print found-path or "not found". Missing claude/bd
-	// are warnings — the command still exits 0 so new collaborators can
+	// Verify tools on PATH; print found-path or "not found". Missing agent
+	// runtimes/bd are warnings — the command still exits 0 so new collaborators can
 	// bootstrap incrementally.
 	fmt.Fprintln(stdout)
 	missing := false
 	tw = tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	for _, tool := range []string{"git", "claude", "bd"} {
+	for _, tool := range []string{"git", "claude", "codex", "bd"} {
 		if p, err := exec.LookPath(tool); err == nil {
 			fmt.Fprintf(tw, "%s\t%s\tok\n", tool, p)
 		} else {

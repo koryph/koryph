@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -41,8 +42,9 @@ func NewStore() *Store { return &Store{Home: paths.KoryphHome()} }
 func NewStoreAt(home string) *Store { return &Store{Home: home} }
 
 var (
-	slugRe  = regexp.MustCompile(`^[a-z0-9-]+$`)
-	emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	slugRe        = regexp.MustCompile(`^[a-z0-9-]+$`)
+	runtimeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	emailRe       = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 )
 
 const readmeStub = `# koryph home
@@ -293,8 +295,9 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 	}
 	if rec.AccountProfile != old.AccountProfile ||
 		rec.ClaudeConfigDir != old.ClaudeConfigDir ||
-		rec.ExpectedIdentity != old.ExpectedIdentity {
-		return fmt.Errorf("registry: account fields are immutable via Save; use SetAccount")
+		rec.ExpectedIdentity != old.ExpectedIdentity ||
+		!reflect.DeepEqual(rec.RuntimeAccounts, old.RuntimeAccounts) {
+		return fmt.Errorf("registry: account fields are immutable via Save; use SetAccount or SetRuntimeAccount")
 	}
 
 	// Get above already refused a newer-than-supported on-disk record
@@ -380,6 +383,51 @@ func (s *Store) SetAccount(ctx context.Context, id, profile, configDir, expected
 	return s.commit(ctx, fmt.Sprintf("feat(registry): set-account %s %s->%s", id, old["account_profile"], profile))
 }
 
+// SetRuntimeAccount is the audited, single mutation path for one runtime's
+// account selector and verified identity. It mirrors SetAccount without
+// changing the legacy Claude account fields, so projects can dispatch Claude
+// and Codex side-by-side from one registry record.
+func (s *Store) SetRuntimeAccount(ctx context.Context, id, runtimeName string, account RuntimeAccount, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("registry: SetRuntimeAccount requires a non-empty reason")
+	}
+	if !runtimeNameRe.MatchString(runtimeName) {
+		return fmt.Errorf("registry: runtime name %q must match [a-z0-9][a-z0-9-]*", runtimeName)
+	}
+	if strings.TrimSpace(account.ExpectedIdentity) == "" {
+		return fmt.Errorf("registry: runtime account %q requires a non-empty expected_identity", runtimeName)
+	}
+	if strings.ContainsAny(account.ExpectedIdentity, "\r\n") {
+		return fmt.Errorf("registry: runtime account %q expected_identity must be a single line", runtimeName)
+	}
+
+	rec, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	old, hadOld := rec.RuntimeAccounts[runtimeName]
+	if rec.RuntimeAccounts == nil {
+		rec.RuntimeAccounts = make(map[string]RuntimeAccount)
+	}
+	rec.RuntimeAccounts[runtimeName] = account
+	rec.MigrationStatus = StatusRegistered
+	rec.UpdatedAt = nowRFC3339()
+
+	if err := s.put(rec); err != nil {
+		return err
+	}
+	if err := s.Audit(Event{
+		Kind:      "set-runtime-account",
+		ProjectID: id,
+		Detail: map[string]any{
+			"reason": reason, "runtime": runtimeName, "old": old, "had_old": hadOld, "new": account,
+		},
+	}); err != nil {
+		return err
+	}
+	return s.commit(ctx, fmt.Sprintf("feat(registry): set-runtime-account %s %s", id, runtimeName))
+}
+
 // Audit appends one event to the audit log (append-only; never rewritten).
 func (s *Store) Audit(ev Event) error {
 	if ev.At == "" {
@@ -456,9 +504,21 @@ func validate(rec *Record) error {
 	// (see account.VerifyAuth) and have no login email to require — a
 	// non-email or empty expected_identity is a valid free-form display
 	// label for those modes.
-	if rec.EffectiveAuthMode() == AuthModeSubscription {
+	// A non-Claude-first project stores its active identity in an explicit
+	// RuntimeAccounts entry. Its legacy flat fields remain only for backward
+	// compatibility and need not be an email; requiring one here would make a
+	// local Codex fingerprint impossible to enroll safely.
+	if rec.EffectiveAuthMode() == AuthModeSubscription && len(rec.RuntimeAccounts) == 0 {
 		if !emailRe.MatchString(rec.ExpectedIdentity) {
 			return fmt.Errorf("registry: expected_identity %q must be an email", rec.ExpectedIdentity)
+		}
+	}
+	for name, account := range rec.RuntimeAccounts {
+		if !runtimeNameRe.MatchString(name) {
+			return fmt.Errorf("registry: runtime account name %q must match [a-z0-9][a-z0-9-]*", name)
+		}
+		if strings.TrimSpace(account.ExpectedIdentity) == "" || strings.ContainsAny(account.ExpectedIdentity, "\r\n") {
+			return fmt.Errorf("registry: runtime account %q must have a non-empty single-line expected_identity", name)
 		}
 	}
 	if err := validateAgentProxy(rec); err != nil {

@@ -27,6 +27,10 @@ import (
 // for turning them into the COMPLETE child environment, never a fragment on
 // top of the ambient shell.
 type JSONSpec struct {
+	// RepoRoot is the primary repository root. Adapters that need explicit
+	// access to a linked worktree's shared Git metadata may use RepoRoot/.git
+	// as a narrowly-scoped writable root; it is never the working directory.
+	RepoRoot string
 	// Persona is the named subagent/persona to run (claude's --agent).
 	Persona string
 	// Model is the concrete model id (claude's --model).
@@ -84,6 +88,13 @@ type JSONExec struct {
 // with execx.Run directly. An error is returned only for a CommandJSON
 // rejection (an unsupported capability) or a spawn/timeout failure.
 func SpawnJSON(ctx context.Context, rt Runtime, spec JSONSpec, ex JSONExec) (execx.Result, error) {
+	if preparer, ok := rt.(PromptPreparer); ok {
+		prepared, err := preparer.PreparePrompt(ex.Dir, spec.Persona, ex.Stdin)
+		if err != nil {
+			return execx.Result{}, err
+		}
+		ex.Stdin = prepared
+	}
 	argv, env, err := rt.CommandJSON(spec)
 	if err != nil {
 		return execx.Result{}, err

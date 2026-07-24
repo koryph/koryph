@@ -57,6 +57,12 @@ type Inventory struct {
 	BDAvailable   bool   `json:"bd_available"`
 	BDVersion     string `json:"bd_version,omitempty"`
 
+	// RuntimeHookConfigs and RuntimeBDPrimeHooks are keyed by runtime name
+	// (for example "claude" or "codex"). They describe native projections;
+	// agents and commands themselves live in the canonical source directories.
+	RuntimeHookConfigs  map[string]bool `json:"runtime_hook_configs,omitempty"`
+	RuntimeBDPrimeHooks map[string]bool `json:"runtime_bd_prime_hooks,omitempty"`
+	// ClaudeSettings and BDPrimeHook are retained for JSON/API compatibility.
 	ClaudeSettings bool     `json:"claude_settings"`
 	BDPrimeHook    bool     `json:"bd_prime_hook"`
 	Personas       []string `json:"personas,omitempty"`
@@ -81,9 +87,13 @@ type WorktreeState struct {
 
 // RegisterOpts are the explicit (never inferred) registration inputs.
 type RegisterOpts struct {
-	ProjectID       string // default: repo dir name slugified
+	ProjectID string // default: repo dir name slugified
+	// RuntimeName selects the first/default runtime for a newly scaffolded
+	// project. Empty means claude for compatibility; non-Claude values are
+	// enrolled in RuntimeAccounts and enabled in koryph.project.json.
+	RuntimeName     string
 	AccountProfile  string // REQUIRED: personal|work
-	ClaudeConfigDir string // "" for personal; e.g. ~/.claude-work for work
+	ClaudeConfigDir string // runtime config dir; CLAUDE_CONFIG_DIR or CODEX_HOME (legacy field name)
 	// ExpectedIdentity is REQUIRED and must be a login email for
 	// AuthMode subscription (the default). For AuthModeAPIKey /
 	// AuthModeOAuthToken it is optional and free-form (a display label —

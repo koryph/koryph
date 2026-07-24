@@ -17,8 +17,29 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 )
 
-// toolOrder is the fixed presentation order for the tools category.
-var toolOrder = []string{"git", "claude", "bd", "gh"}
+// toolOrder is the fixed presentation order for the tools category. The
+// selected runtime occupies the middle slot; a project never needs every
+// supported runtime installed merely because koryph supports them.
+func toolOrder(runtimeName string) []string {
+	if runtimeName == "" {
+		runtimeName = "claude"
+	}
+	return []string{"git", runtimeName, "bd", "gh"}
+}
+
+// RuntimeName returns the selected runtime for a snapshot, preserving the
+// historical Claude default when adoption is starting from a blank repo.
+func RuntimeName(snap *Snapshot) string {
+	if snap != nil && snap.RuntimeName != "" {
+		return snap.RuntimeName
+	}
+	return "claude"
+}
+
+// RequiredToolNames is the exact set of agent/tool dependencies an adoption
+// execution may provision. It is exported so the CLI cannot drift from the
+// plan shown to the operator.
+func RequiredToolNames(snap *Snapshot) []string { return toolOrder(RuntimeName(snap)) }
 
 // BuildPlan turns a detect-phase Snapshot into the ordered, printable plan
 // (design §3.2). It is a pure function of snap: no I/O, no writes, and no
@@ -27,7 +48,7 @@ var toolOrder = []string{"git", "claude", "bd", "gh"}
 // this function only decides what state each step is currently in.
 func BuildPlan(snap *Snapshot) []Step {
 	var steps []Step
-	steps = append(steps, buildToolSteps(snap.Tools)...)
+	steps = append(steps, buildToolSteps(snap.Tools, RuntimeName(snap))...)
 
 	home := buildHomeStep()
 	beadsStep := buildBeadsStep(snap)
@@ -63,10 +84,10 @@ func allDone(steps []Step) bool {
 
 // --- tools -------------------------------------------------------------
 
-func buildToolSteps(tools map[string]ToolStatus) []Step {
+func buildToolSteps(tools map[string]ToolStatus, runtimeName string) []Step {
 	var doneParts []string
 	var pending []Step
-	for _, name := range toolOrder {
+	for _, name := range toolOrder(runtimeName) {
 		ts, ok := tools[name]
 		if !ok {
 			continue
@@ -95,11 +116,11 @@ func toolDoneText(ts ToolStatus) string {
 	if v == "" {
 		v = "present"
 	}
-	if ts.Name == "claude" {
+	if ts.Name == "claude" || ts.Name == "codex" {
 		if ts.Authed {
 			return fmt.Sprintf("%s %s (authed)", ts.Name, v)
 		}
-		return fmt.Sprintf("%s %s (not authed — run `claude auth login`)", ts.Name, v)
+		return fmt.Sprintf("%s %s (not authed — run `%s login`)", ts.Name, v, ts.Name)
 	}
 	return fmt.Sprintf("%s %s", ts.Name, v)
 }
@@ -123,6 +144,8 @@ func toolWhy(name string) string {
 		return "koryph manages every project as a git worktree; without it there is no repo to adopt"
 	case "claude":
 		return "koryph dispatches work to the claude CLI; without it no agent can run"
+	case "codex":
+		return "koryph dispatches work to the Codex CLI; without it no agent can run"
 	case "bd":
 		return "koryph dispatches work from the beads ready-graph; without it the loop has nothing to build"
 	case "gh":
@@ -277,18 +300,24 @@ func gateSummary(props []onboard.Proposal) string {
 
 func buildAssetsStep(snap *Snapshot) Step {
 	inv := snap.Inventory
-	if inv.ClaudeSettings && inv.BDPrimeHook && len(inv.Personas) > 0 {
-		return Step{ID: StepAssets, Title: "assets", State: StateDone, Detail: fmt.Sprintf("%d persona(s), commands, hooks + settings.json present", len(inv.Personas))}
+	runtimeName := RuntimeName(snap)
+	hooksPresent := inv.RuntimeHookConfigs[runtimeName]
+	primePresent := inv.RuntimeBDPrimeHooks[runtimeName]
+	if runtimeName == "claude" && inv.RuntimeHookConfigs == nil {
+		hooksPresent, primePresent = inv.ClaudeSettings, inv.BDPrimeHook
+	}
+	if hooksPresent && primePresent && len(inv.Personas) > 0 {
+		return Step{ID: StepAssets, Title: "assets", State: StateDone, Detail: fmt.Sprintf("%d canonical persona(s), commands, and %s hooks present", len(inv.Personas), runtimeName)}
 	}
 	return Step{
 		ID:    StepAssets,
 		Title: "assets",
 		Why:   "AGENTS.md + personas + commands + hooks make koryph semantics apply whether invoked explicitly or implied by a prompt",
 		Writes: []string{
-			"AGENTS.md", ".claude/agents/", ".claude/commands/", ".claude/settings.json", "hooks/",
+			"AGENTS.md", "agents/", "commands/", "runtime-native projections", "hooks/",
 		},
 		State:  StateNeeded,
-		Detail: "install AGENTS.md, agent personas, commands, hooks + settings.json (capability-gated by runtime)",
+		Detail: "install AGENTS.md, canonical agents/commands, and runtime-native projections (capability-gated)",
 	}
 }
 

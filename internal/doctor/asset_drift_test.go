@@ -43,8 +43,8 @@ func TestAssetDriftAllUpToDate(t *testing.T) {
 	})
 
 	// Pre-install identical content.
-	writeInstalled(t, root, ".claude/commands/koryph-build.md", "build content")
-	writeInstalled(t, root, ".claude/agents/koryph-implementer.md", "implementer content")
+	writeInstalled(t, root, "commands/koryph-build.md", "build content")
+	writeInstalled(t, root, "agents/koryph-implementer.md", "implementer content")
 
 	o := projectOptsWithFakeAssets(root, cmdFS, agentFS)
 	r, err := RunProject(o)
@@ -91,7 +91,7 @@ func TestAssetDriftStaleCommand(t *testing.T) {
 	agentFS := fakeFS(map[string]string{})
 
 	// Install OLD content — hash will differ from embedded.
-	writeInstalled(t, root, ".claude/commands/koryph-build.md", "old installed content")
+	writeInstalled(t, root, "commands/koryph-build.md", "old installed content")
 
 	o := projectOptsWithFakeAssets(root, cmdFS, agentFS)
 	r, err := RunProject(o)
@@ -174,7 +174,7 @@ func TestAssetDriftFixInstallsMissing(t *testing.T) {
 	}
 
 	// File should now exist on disk with the embedded content.
-	dest := filepath.Join(root, ".claude", "commands", "koryph-build.md")
+	dest := filepath.Join(root, "commands", "koryph-build.md")
 	got, err := os.ReadFile(dest)
 	if err != nil {
 		t.Fatalf("installed file not found: %v", err)
@@ -197,7 +197,7 @@ func TestAssetDriftFixNoForceSkipsStale(t *testing.T) {
 	})
 	agentFS := fakeFS(map[string]string{})
 
-	writeInstalled(t, root, ".claude/commands/koryph-build.md", "old content")
+	writeInstalled(t, root, "commands/koryph-build.md", "old content")
 
 	o := projectOptsWithFakeAssets(root, cmdFS, agentFS)
 	o.Fix = true
@@ -215,7 +215,7 @@ func TestAssetDriftFixNoForceSkipsStale(t *testing.T) {
 	}
 
 	// On-disk content must remain the old version.
-	dest := filepath.Join(root, ".claude", "commands", "koryph-build.md")
+	dest := filepath.Join(root, "commands", "koryph-build.md")
 	got, _ := os.ReadFile(dest)
 	if string(got) != "old content" {
 		t.Errorf("on-disk content=%q, want old content to be preserved", got)
@@ -232,7 +232,7 @@ func TestAssetDriftFixForceOverwritesStale(t *testing.T) {
 	})
 	agentFS := fakeFS(map[string]string{})
 
-	writeInstalled(t, root, ".claude/commands/koryph-build.md", "old content")
+	writeInstalled(t, root, "commands/koryph-build.md", "old content")
 
 	o := projectOptsWithFakeAssets(root, cmdFS, agentFS)
 	o.Fix = true
@@ -246,7 +246,7 @@ func TestAssetDriftFixForceOverwritesStale(t *testing.T) {
 		t.Errorf("asset-drift fixed=%v level=%s, want fixed=true when --fix --force overwrites stale", f.Fixed, f.Level)
 	}
 
-	dest := filepath.Join(root, ".claude", "commands", "koryph-build.md")
+	dest := filepath.Join(root, "commands", "koryph-build.md")
 	got, _ := os.ReadFile(dest)
 	if string(got) != "new content" {
 		t.Errorf("on-disk content=%q, want %q after force overwrite", got, "new content")
@@ -265,7 +265,7 @@ func TestAssetDriftMixedFindings(t *testing.T) {
 	agentFS := fakeFS(map[string]string{})
 
 	// Only install one of the two commands.
-	writeInstalled(t, root, ".claude/commands/koryph-build.md", "build")
+	writeInstalled(t, root, "commands/koryph-build.md", "build")
 	// koryph-loop.md is missing.
 
 	o := projectOptsWithFakeAssets(root, cmdFS, agentFS)

@@ -63,7 +63,7 @@ func TestCompletePerCommandFlags(t *testing.T) {
 	// `koryph run --<TAB>` enumerates run's real flags, captured from its
 	// FlagSet (never hand-duplicated).
 	got := complete("2", "koryph", "run", "--")
-	for _, want := range []string{"--project", "--once", "--auto-merge", "--dispatch-mode"} {
+	for _, want := range []string{"--project", "--once", "--auto-merge", "--dispatch-mode", "--runtime-only", "--runtime-equivalent"} {
 		if !containsStr(got, want) {
 			t.Errorf("run flag completion missing %q; got %v", want, got)
 		}
@@ -82,7 +82,7 @@ func TestCompleteSubcommandFlags(t *testing.T) {
 
 func TestCompleteSubcommands(t *testing.T) {
 	got := complete("2", "koryph", "project", "")
-	for _, want := range []string{"add", "list", "show", "set-account"} {
+	for _, want := range []string{"add", "list", "show", "set-account", "set-runtime-account"} {
 		if !containsStr(got, want) {
 			t.Errorf("project subcommand completion missing %q; got %v", want, got)
 		}

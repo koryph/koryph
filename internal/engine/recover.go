@@ -246,6 +246,12 @@ func (r *runner) reconcileBlockedBead(ctx context.Context, sl *ledger.Slot, reas
 	if sl == nil || r.adapter == nil {
 		return
 	}
+	// Idempotence: once the tracker already reflects the terminal block, a
+	// repeated poll/reconcile must not append duplicate comments or rewrite
+	// state. The ledger remains the detailed reason source.
+	if issue, err := r.adapter.Show(ctx, sl.PhaseID); err == nil && issue.Status == "blocked" {
+		return
+	}
 	runID := ""
 	if r.run != nil {
 		runID = r.run.RunID

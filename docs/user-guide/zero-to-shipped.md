@@ -56,9 +56,10 @@ the record `registered → migrated` on the first green pass. See
 **Alternative — drive it by hand:** `koryph project add` is the lower-level
 primitive `adopt` sequences. It writes a machine-local registry record under
 `~/.koryph` and installs the agent scaffolding — `AGENTS.md` (the
-runtime-neutral operating contract), fallback personas, and — for Claude
-Code — the `koryph-*` slash commands, hooks, and permission baseline — but
-does not initialize beads or infer `gate`/`forge`/`area_map` for you:
+runtime-neutral operating contract), canonical personas/workflows, and the
+native links and hook configuration for the selected runtime (Claude Code or
+Codex) — but does not initialize beads or infer `gate`/`forge`/`area_map` for
+you:
 
 ```sh
 koryph project add ~/src/myproject \

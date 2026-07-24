@@ -3,24 +3,145 @@
 
 # AI runtimes: support status
 
-> **The honest status line: Claude Code is koryph's production runtime.
-> Every other runtime is alpha — declared in the architecture, not yet
-> verified end-to-end.** We intend to grow past a single vendor, and the
-> seams for that are real and shipped; but today koryph is heavily focused
-> on Claude Code, and we would rather say so than let you discover it
-> mid-wave.
+> **Claude Code and Codex are supported runtime adapters.** Claude retains
+> the complete legacy capability set; Codex is supported for authenticated
+> workspace-write dispatch with runtime-native hooks and an advisory quota
+> guard. Other runtimes remain declared-but-unimplemented adapters.
 
 ## Status by runtime
 
 | Runtime | Status | What works today |
 |---|---|---|
 | **Claude Code** (`claude`) | **Supported** | Everything in this book: dispatch, personas, hooks, session resume, identity verification, quota measurement, activity streaming |
-| Codex | **Alpha** | `AGENTS.md` operating contract; config/label plumbing parses — dispatch is refused fail-closed |
-| Cursor | **Alpha** | Same as Codex |
-| Gemini CLI | **Alpha** | Same as Codex |
-| Grok Builder | **Alpha** | Same as Codex |
-| Copilot | **Alpha** | Same as Codex |
-| opencode / amp | **Alpha** | Same as Codex |
+| **Codex** (`codex`) | **Supported, advisory metering** | `codex exec --json`, `CODEX_HOME` account isolation, ChatGPT/API-key CLI login, `AGENTS.md`, native `.codex/hooks.json`, native agent projections, workspace-write sandbox, exact-model and portable-equivalency routing |
+| Cursor | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |
+| Gemini CLI | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |
+| Grok Builder | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |
+| Copilot | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |
+| opencode / amp | **Declared, not dispatchable** | Runtime-neutral contract and model-routing schema only; no verified adapter yet |
+
+## Codex setup
+
+1. Install and authenticate the Codex CLI: `codex login` (or `codex login
+   --with-api-key`). Verify with `codex login status`.
+2. Enroll it for a project. This audited command enables `runtimes.codex`,
+   installs Codex's native assets, and optionally makes it the default:
+
+   ```sh
+   koryph project set-runtime-account <project-id> \
+     --runtime codex --config-dir "${CODEX_HOME:-$HOME/.codex}" --identity auto \
+     --reason "enroll Codex account"
+   # Add --default to make Codex the project default; otherwise Claude remains
+   # the default and beads can opt into Codex with runtime:codex.
+   ```
+
+   The equivalent initial onboarding command is:
+
+   ```sh
+   koryph project add <root> --account personal --runtime codex --identity auto
+   ```
+
+   A hand-authored configuration remains useful when you want to review it:
+
+   ```json
+   {
+     "default_runtime": "codex",
+     "runtimes": {
+       "codex": {
+         "enabled": true,
+         "model_map": {
+           "frontier": "gpt-5.6-terra",
+           "standard": "gpt-5.6-terra",
+           "light": "gpt-5.6-terra"
+         },
+         "effort_map": {"xhigh": "high"}
+       }
+     }
+   }
+   ```
+
+   `config_dir` is `CODEX_HOME`. A missing or changed auth-record binding
+   fails closed before dispatch.
+3. For a project with both runtimes enabled, `koryph project install-assets
+   <root>` refreshes every runtime projection together. It writes
+   `.codex/hooks.json` and `.codex/agents/*.toml` from canonical
+   `agents/*.md`. Claude's `.claude/agents/*.md` files and both runtimes'
+   workflow entries are relative links to canonical `agents/*.md` and
+   `commands/*.md`, respectively—edit the canonical file once and both tools
+   see the change immediately.
+
+Codex intentionally has no koryph hard spend cap or safe session-resume flag
+in the current CLI invocation form, so those features are omitted and quota
+throttling is advisory until a trustworthy Codex usage source is added.
+
+## Selecting models and effort
+
+Beads can express either concrete runtime choices or a portable equivalency:
+
+- `model:gpt-5.6-terra` infers Codex from the registered model catalogue.
+- `runtime:codex`, `model:gpt-5.6-terra`, `effort:high` selects an exact native
+  model and native effort explicitly.
+- `runtime:codex`, `equiv:frontier:xhigh` selects the project's Codex
+  frontier mapping and translates portable `xhigh` through
+  `runtimes.codex.effort_map` (the shipped default maps it to `high`).
+
+Do not combine `equiv:` with `model:` on one bead. Existing
+`model:opus|sonnet|haiku` labels remain compatible Claude selections.
+
+The portable equivalency vocabulary is `frontier|standard|light` plus a
+portable effort (`low`, `medium`, `high`, `xhigh`, `max`, or `ultra`). Each
+enabled runtime maps that pair through its own `model_map` and `effort_map`.
+An exact model that belongs to the built-in Codex/Claude catalogue infers its
+runtime; a custom model must carry an explicit `runtime:<name>` label.
+
+## Selecting a runtime for one run
+
+Normal dispatch preserves each bead's `runtime:`, `model:`, and `equiv:`
+labels, with `default_runtime` and the runtime-scoped project defaults filling
+in anything omitted. `koryph run` adds two mutually exclusive session-only
+policies when an operator needs to constrain that normal routing:
+
+- `--runtime-only codex` runs only beads whose normal routing already resolves
+  to Codex. A bead pinned to Claude (or to a Claude-only native model) remains
+  ready but is recorded as skipped in the run frontier; it is never silently
+  changed.
+- `--runtime-equivalent codex` processes the full eligible frontier on Codex.
+  Koryph first resolves every bead as declared, derives its portable
+  `frontier|standard|light` capability and, when known, portable effort, then
+  maps that request through `runtimes.codex.model_map` and `effort_map`. The
+  target runtime's account, authentication check, quota pool, and estimate
+  table are used for the run.
+
+For example, a Claude bead carrying `runtime:claude`, `model:opus`, and
+`effort:xhigh` becomes Codex's `frontier:xhigh` mapping under
+`--runtime-equivalent codex` (currently `gpt-5.6-terra` with native `high`
+effort). Prefer an explicit `equiv:frontier:xhigh` whenever a bead must remain
+portable across runtimes.
+
+Koryph fails closed rather than guessing when a native source model maps to
+more than one portable tier or is custom/unmapped. This is common with the
+current Codex default model, which intentionally serves several tiers. Replace
+that source selection with `equiv:<tier>:<effort>` (or the project's
+`default_equivalent`) before using `--runtime-equivalent`.
+
+Projects may set defaults in either place below; native and portable defaults
+are mutually exclusive at each scope:
+
+```json
+{
+  "default_runtime": "codex",
+  "default_equivalent": "standard:high",
+  "runtimes": {
+    "claude": {"enabled": true, "default_model": "sonnet"},
+    "codex": {"enabled": true, "default_equivalent": "standard:xhigh"}
+  }
+}
+```
+
+The top-level defaults belong to `default_runtime`. A
+`runtimes.<name>.default_model` or `default_equivalent` is the explicit default
+for that runtime and takes precedence when a bead selects it. A command-line
+`--default-model` remains the highest label-less native override for that run.
 
 ## What "alpha" means, precisely
 
@@ -29,11 +150,11 @@
   Codex, Cursor, Grok, Copilot, opencode, and amp. An interactive session in
   any of those tools will follow koryph's rules (beads-only task tracking,
   footprint labels, protected paths) when you drive it by hand.
-- **The plumbing parses; the engine refuses.** `koryph.project.json`
+- **The plumbing parses; unsupported adapters refuse.** `koryph.project.json`
   accepts `default_runtime` and a `runtimes{}` block, beads accept
   `runtime:<name>` labels, and the quota layer is built to bill each
   runtime against its own provider's windows. But dispatch to any runtime
-  other than `claude` is **blocked fail-closed with a clear reason** —
+  other than `claude` or `codex` is **blocked fail-closed with a clear reason** —
   koryph never silently substitutes a runtime it cannot vouch for, because
   it cannot yet verify those runtimes' identity, parse their event streams,
   or meter their quota.

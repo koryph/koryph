@@ -188,6 +188,10 @@ func volatileTail(in Input) string {
 		b.WriteString("\n\n")
 		b.WriteString(strings.TrimRight(in.Bead.Description, "\n"))
 	}
+	if strings.TrimSpace(in.Bead.AcceptanceCriteria) != "" {
+		b.WriteString("\n\n### Acceptance criteria\n")
+		b.WriteString(strings.TrimRight(in.Bead.AcceptanceCriteria, "\n"))
+	}
 
 	// OPERATOR NOTES (koryph-o72): an addendum sent via `bd update
 	// --append-notes` while this bead was still queued — before any agent

@@ -640,6 +640,17 @@ conformance fixtures.
 - **`DispatchSpec`** / **`Profile`** / **`BillingMode`** — runtime-neutral request mirrors
 - **`NewRegistry()`** — named-runtime registry; each runtime carries its own model map
 
+## runtimeconfig
+
+Resolves a named runtime adapter with its process-local binary override. Engine
+and command entry points use this package instead of constructing Claude,
+Codex, or future registered adapters independently, so one runtime selection
+has the same executable configuration everywhere.
+
+- **`Get(name)`** — return the configured built-in or registered adapter
+- **`EnvClaudeBin`** / **`EnvCodexBin`** — compatibility binary overrides,
+  applied only inside this construction seam
+
 ## sched
 
 Builds conflict-free waves from the beads ready frontier, respecting

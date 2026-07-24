@@ -49,7 +49,7 @@ func Register(ctx context.Context, store *registry.Store, inv *Inventory, opts R
 
 	// Scaffold the per-project adapter only when absent — never overwrite.
 	if !inv.AdapterPresent {
-		if err := project.Default(projectID).Save(inv.Root); err != nil {
+		if err := project.DefaultForRuntime(projectID, opts.RuntimeName).Save(inv.Root); err != nil {
 			return rec, fmt.Errorf("onboard: registered %s but failed to scaffold %s: %w",
 				projectID, project.ConfigFileName, err)
 		}
@@ -67,7 +67,7 @@ func validateRegisterOpts(opts RegisterOpts) error {
 	if strings.TrimSpace(opts.AccountProfile) == "" {
 		return fmt.Errorf("onboard: account profile is required (personal|work)")
 	}
-	if opts.AccountProfile != registry.ProfilePersonal && strings.TrimSpace(opts.ClaudeConfigDir) == "" {
+	if (opts.RuntimeName == "" || opts.RuntimeName == "claude") && opts.AccountProfile != registry.ProfilePersonal && strings.TrimSpace(opts.ClaudeConfigDir) == "" {
 		return fmt.Errorf("onboard: config dir (CLAUDE_CONFIG_DIR) is required for the %q account", opts.AccountProfile)
 	}
 	mode := opts.AuthMode
@@ -76,7 +76,10 @@ func validateRegisterOpts(opts RegisterOpts) error {
 	}
 	switch mode {
 	case registry.AuthModeSubscription:
-		if !strings.Contains(opts.ExpectedIdentity, "@") {
+		if strings.TrimSpace(opts.ExpectedIdentity) == "" {
+			return fmt.Errorf("onboard: expected identity is required")
+		}
+		if (opts.RuntimeName == "" || opts.RuntimeName == "claude") && !strings.Contains(opts.ExpectedIdentity, "@") {
 			return fmt.Errorf("onboard: expected identity %q must be a login email (contains '@')", opts.ExpectedIdentity)
 		}
 	case registry.AuthModeAPIKey, registry.AuthModeOAuthToken:
@@ -182,7 +185,7 @@ func buildRecord(projectID string, inv *Inventory, opts RegisterOpts, identityFi
 	}
 	worktreeRoot := filepath.Join(filepath.Dir(inv.Root), filepath.Base(inv.Root)+"-worktrees")
 
-	return &registry.Record{
+	rec := &registry.Record{
 		ProjectID:     projectID,
 		Name:          projectID,
 		Root:          inv.Root,
@@ -218,6 +221,18 @@ func buildRecord(projectID string, inv *Inventory, opts RegisterOpts, identityFi
 		QuotaProfile:   opts.AccountProfile,
 		VisibilitySync: "off",
 	}
+	if opts.RuntimeName != "" && opts.RuntimeName != "claude" {
+		rec.RuntimeAccounts = map[string]registry.RuntimeAccount{
+			opts.RuntimeName: {
+				ConfigDir:           opts.ClaudeConfigDir,
+				ExpectedIdentity:    opts.ExpectedIdentity,
+				AuthMode:            opts.AuthMode,
+				Credential:          opts.Credential,
+				IdentityFingerprint: identityFingerprint,
+			},
+		}
+	}
+	return rec
 }
 
 // slugify lowercases s and collapses every run of non [a-z0-9] into a single

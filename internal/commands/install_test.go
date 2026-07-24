@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/internal/commands"
+	_ "github.com/koryph/koryph/internal/runtime/codex"
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
@@ -36,6 +38,31 @@ func TestInstallWritesKoryphCommands(t *testing.T) {
 	for _, want := range []string{"koryph-adopt", "koryph-calibrate", "koryph-design", "koryph-import", "koryph-issue", "koryph-build", "koryph-loop", "koryph-plan", "koryph-replan", "koryph-stop", "koryph-kill"} {
 		if !got[want] {
 			t.Errorf("missing embedded command %q (installed: %v)", want, keys(got))
+		}
+	}
+}
+
+func TestInstallForCodexLinksCanonicalWorkflows(t *testing.T) {
+	root := t.TempDir()
+	results, err := commands.InstallForRuntime(root, false, "codex")
+	if err != nil {
+		t.Fatalf("InstallForRuntime(codex): %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no Codex workflow links installed")
+	}
+	for _, result := range results {
+		path := filepath.Join(root, ".agents", "skills", result.Name, "SKILL.md")
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s is not a canonical-source symlink", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(data), "name: "+result.Name) {
+			t.Errorf("Codex skill %s does not resolve its canonical command: %v\n%s", result.Name, err, data)
 		}
 	}
 }

@@ -111,6 +111,35 @@ func TestBuildPlan_AllMissing(t *testing.T) {
 	}
 }
 
+func TestBuildPlan_CodexFirstOnlyRequiresCodex(t *testing.T) {
+	setKoryphHome(t, false)
+	snap := &Snapshot{
+		Root: "/repo", ProjectID: "acme", RuntimeName: "codex",
+		Tools: map[string]ToolStatus{
+			"git":    {Name: "git", Found: true, VersionOK: true},
+			"codex":  {Name: "codex", Found: false},
+			"claude": {Name: "claude", Found: false},
+			"bd":     {Name: "bd", Found: true, VersionOK: true},
+			"gh":     {Name: "gh", Found: true, VersionOK: true},
+		},
+		Inventory: &onboard.Inventory{Root: "/repo"},
+	}
+	steps := BuildPlan(snap)
+	tools := toolSteps(steps)
+	var codexNeeded *Step
+	for i := range tools {
+		if strings.Contains(tools[i].Detail, "codex") {
+			codexNeeded = &tools[i]
+		}
+		if strings.Contains(tools[i].Detail, "claude") {
+			t.Errorf("Codex-first plan must not require Claude: %+v", tools[i])
+		}
+	}
+	if codexNeeded == nil || codexNeeded.State != StateNeeded {
+		t.Fatalf("Codex-first tools = %+v, want a Codex-only needed requirement", tools)
+	}
+}
+
 // --- BuildPlan: all-present ----------------------------------------------------
 
 // TestBuildPlan_AllPresent exercises a fully-adopted project: everything

@@ -3,14 +3,32 @@
   "project_id": "koryph",
   "work_source": "bd",
   "area_map": {
+    "adopt": [
+      "go:adopt"
+    ],
+    "beads": [
+      "go:beads"
+    ],
+    "build": [
+      "build:release"
+    ],
+    "ci": [
+      "ci:github"
+    ],
     "cli": [
       "go:cli"
     ],
     "cli:bot": [
       "go:cli:bot"
     ],
+    "cli:ops": [
+      "go:cli:ops"
+    ],
     "cli:posture": [
       "go:cli:posture"
+    ],
+    "cli:project": [
+      "go:cli:project"
     ],
     "cli:release": [
       "go:cli:release"
@@ -18,83 +36,65 @@
     "cli:signing": [
       "go:cli:signing"
     ],
-    "cli:project": [
-      "go:cli:project"
-    ],
-    "cli:ops": [
-      "go:cli:ops"
+    "dispatch": [
+      "go:dispatch"
     ],
     "docs": [
       "docs"
     ],
+    "doctor": [
+      "go:doctor"
+    ],
     "engine": [
       "go:engine"
-    ],
-    "sched": [
-      "go:sched"
-    ],
-    "quota": [
-      "go:quota"
-    ],
-    "dispatch": [
-      "go:dispatch"
-    ],
-    "ledger": [
-      "go:ledger"
-    ],
-    "govern": [
-      "go:govern"
-    ],
-    "merge": [
-      "go:merge"
-    ],
-    "review": [
-      "go:review"
     ],
     "epicreview": [
       "go:epicreview"
     ],
-    "worktree": [
-      "go:worktree"
-    ],
-    "beads": [
-      "go:beads"
-    ],
-    "registry": [
-      "go:registry"
-    ],
-    "intake": [
-      "go:intake"
-    ],
-    "doctor": [
-      "go:doctor"
-    ],
-    "libs": [
-      "go:libs"
-    ],
-    "project": [
-      "go:project"
+    "govern": [
+      "go:govern"
     ],
     "ide": [
       "ts:ide"
     ],
+    "intake": [
+      "go:intake"
+    ],
+    "ledger": [
+      "go:ledger"
+    ],
+    "libs": [
+      "go:libs"
+    ],
+    "merge": [
+      "go:merge"
+    ],
+    "meta": [
+      "meta:root"
+    ],
     "onboard": [
       "go:onboard"
+    ],
+    "project": [
+      "go:project"
+    ],
+    "quota": [
+      "go:quota"
+    ],
+    "registry": [
+      "go:registry"
+    ],
+    "review": [
+      "go:review"
+    ],
+    "sched": [
+      "go:sched"
     ],
     "sysdeps": [
       "go:sysdeps"
     ],
-    "adopt": [
-      "go:adopt"
-    ],
-    "ci": [
-      "ci:github"
-    ],
-    "build": [
-      "build:release"
-    ],
-    "meta": [
-      "meta:root"
+    "worktree": [
+      "go:worktree"
     ]
   },
   "gate": [
@@ -117,11 +117,6 @@
   "engine_version": "0.2+",
   "merge_policy": "auto",
   "risk_tier_default": 1,
-  "copyright": {
-    "holder": "The Koryph Developers",
-    "year": "2026",
-    "license": "Apache-2.0"
-  },
   "signing": {
     "required": true,
     "mode": "ssh",
@@ -133,24 +128,35 @@
   },
   "max_concurrent_slots": 6,
   "dispatch_stagger_seconds": 2,
+  "default_runtime": "codex",
+  "runtimes": {
+    "codex": {
+      "enabled": true
+    }
+  },
+  "copyright": {
+    "holder": "The Koryph Developers",
+    "year": "2026",
+    "license": "Apache-2.0"
+  },
   "posture": {
     "profile": "oss-solo-maintainer",
     "parameters": {
       "required_checks": "pre-commit,make gate"
     }
   },
-  "review": {
-    "timeout_seconds": 1200,
-    "max_timeout_seconds": 1200
-  },
   "epic_validation": {
-    "structural_parent": "koryph-qta",
     "timeout_seconds": 1200,
+    "structural_parent": "koryph-qta",
     "docs_update": {
       "labels": [
         "area:docs",
         "fp:docs-nav"
       ]
     }
+  },
+  "review": {
+    "timeout_seconds": 1200,
+    "max_timeout_seconds": 1200
   }
 }

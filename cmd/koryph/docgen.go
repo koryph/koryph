@@ -67,7 +67,7 @@ func renderCLIDoc(w io.Writer, warnOut io.Writer) {
 	p("\n")
 	p("# CLI Reference\n")
 	p("\n")
-	p("koryph — central multi-project orchestrator for autonomous Claude Code agents.\n")
+	p("koryph — central multi-project orchestrator for autonomous AI coding agents.\n")
 	p("\n")
 	p("## Quick index\n")
 	p("\n")

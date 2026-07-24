@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/modelroute"
@@ -32,6 +33,16 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 		return true, ""
 	}
 	issue := r.issueFor(ctx, sl)
+	runtimeName := sl.Runtime
+	if runtimeName == "" {
+		runtimeName = r.rt.Name()
+	}
+	rt, registered := runtimeForName(runtimeName)
+	if !registered {
+		return false, "runtime"
+	}
+	ra := r.rec.AccountFor(runtimeName)
+	profile := account.Profile{Name: r.rec.AccountProfile, ConfigDir: ra.ConfigDir}
 	phaseDir := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
 	// Bead-tier timeout override (koryph-w82i): a bead `timeout:<seconds>` label
 	// applies to every stage this bead runs, above the per-stage timeout_sec and
@@ -41,14 +52,7 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 	for _, st := range r.cfg.Pipeline {
 		// Resolve the tier through modelroute so the project allowlist and any
 		// model:<stage>:<tier> label are honored (fail closed on a bad tier).
-		res, err := modelroute.Resolve(modelroute.Req{
-			Stage:         st.Name,
-			Labels:        issue.Labels,
-			RunDefault:    r.opts.DefaultModel,
-			ExplicitModel: st.Model,
-			AllowedModels: r.rec.AllowedModels,
-			Stages:        r.cfg.Stages,
-		})
+		res, err := r.resolveModelForRuntime(st.Name, issue, st.Model, runtimeName)
 		if err != nil {
 			r.progress("bead %s: stage %q model resolution failed: %v", sl.PhaseID, st.Name, err)
 			if st.Optional {
@@ -97,6 +101,10 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 
 		r.progress("bead %s: stage %q running (persona %s, model %s)", sl.PhaseID, st.Name, persona, res.Model)
 		stageStart := time.Now()
+		maxBudgetUSD := r.quotaCfg.PerAgentMaxUSD
+		if !rt.Capabilities().BudgetFlag {
+			maxBudgetUSD = 0
+		}
 		sr := stage.Run(ctx, stage.Opts{
 			RepoRoot:         r.rec.Root,
 			Worktree:         sl.Worktree,
@@ -110,14 +118,15 @@ func (r *runner) runPipelineStages(ctx context.Context, sl *ledger.Slot) (ok boo
 			ExtraPrompt:      st.Prompt,
 			BeadID:           sl.PhaseID,
 			BeadTitle:        issue.Title,
-			Profile:          r.profile,
-			ExpectedIdentity: r.expectedIdentity,
+			Profile:          profile,
+			ExpectedIdentity: ra.ExpectedIdentity,
 			Billing:          r.billing,
 			APIKey:           r.apiKey,
 			SSHAuthSock:      r.sshAuthSock,
-			MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,
+			MaxBudgetUSD:     maxBudgetUSD,
 			PhaseDir:         phaseDir,
 			ClaudeBin:        os.Getenv(envClaudeBin),
+			Runtime:          rt,
 			// Follows sl's already-assigned holdout arm rather than the
 			// project's live config, so a stage spawned for a holdout-arm
 			// bead stays direct too (koryph-3l1.3) — see

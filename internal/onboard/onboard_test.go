@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/account"
+	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -312,6 +313,33 @@ func TestRegisterHappyPath(t *testing.T) {
 	// Present in the store.
 	if _, err := store.Get("demo"); err != nil {
 		t.Errorf("record not in store: %v", err)
+	}
+}
+
+func TestRegisterCodexFirstProject(t *testing.T) {
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	root := initRepo(t)
+	store := newStore(t)
+	inv, err := Inspect(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := Register(context.Background(), store, inv, RegisterOpts{
+		ProjectID: "codex-demo", RuntimeName: "codex", AccountProfile: registry.ProfilePersonal,
+		ClaudeConfigDir: "/cfg/codex", ExpectedIdentity: "codex:abc123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.RuntimeAccounts["codex"]; got.ConfigDir != "/cfg/codex" || got.ExpectedIdentity != "codex:abc123" {
+		t.Errorf("Codex runtime account = %+v", got)
+	}
+	cfg, err := project.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultRuntime != "codex" || !cfg.Runtimes["codex"].Enabled {
+		t.Errorf("Codex-first config = default=%q runtimes=%+v", cfg.DefaultRuntime, cfg.Runtimes)
 	}
 }
 

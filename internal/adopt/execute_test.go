@@ -222,6 +222,28 @@ func TestRegisterAndConfigure_FreshRepoRegistersAndScaffolds(t *testing.T) {
 	}
 }
 
+func TestRegisterAndConfigure_CodexFirstScaffoldsRuntimeAccount(t *testing.T) {
+	ctx := context.Background()
+	store := newAdoptTestStore(t)
+	root := initGitRepo(t)
+	snap := &Snapshot{
+		Root: root, ProjectID: "codex-widgets", RuntimeName: "codex",
+		Inventory: &onboard.Inventory{Root: root, IsGitRepo: true, DefaultBranch: "main"},
+	}
+	acct := AccountChoice{Profile: "personal", ConfigDir: "/cfg/codex", Identity: "codex:12345678"}
+	rec, cfg, err := RegisterAndConfigure(ctx, store, snap, acct, []string{"make test"}, "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultRuntime != "codex" || !cfg.Runtimes["codex"].Enabled {
+		t.Errorf("Codex config = %+v, want codex default/enabled", cfg)
+	}
+	got := rec.AccountFor("codex")
+	if got.ConfigDir != "/cfg/codex" || got.ExpectedIdentity != "codex:12345678" {
+		t.Errorf("Codex runtime account = %+v", got)
+	}
+}
+
 func TestRegisterAndConfigure_PreExistingConfigGateNotOverwritten(t *testing.T) {
 	ctx := context.Background()
 	store := newAdoptTestStore(t)

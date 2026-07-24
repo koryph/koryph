@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/ledger"
@@ -105,6 +106,7 @@ func cmdOpsReconcile(args []string, stdout, stderr io.Writer) int {
 
 	gov := newGovernStore()
 	pool := poolKeyFor(rec)
+	tracker := beads.New(rec.Root)
 
 	type transition struct {
 		phaseID string
@@ -168,6 +170,14 @@ func cmdOpsReconcile(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		transitions = append(transitions, transition{phaseID: id, from: from, note: note})
+		if berr := tracker.SetStatus(ctx, id, "blocked"); berr != nil {
+			fmt.Fprintf(stderr, "ops reconcile: %s: tracker status: %v\n", id, berr)
+		} else {
+			manual := fmt.Sprintf(
+				"ops reconcile: blocked without merge — %s; branch/worktree retained for manual review. Inspect with `git -C %q status`; after resolving, reopen with `bd update %s --status open`",
+				note, sl.Worktree, id)
+			_ = tracker.Comment(ctx, id, manual)
+		}
 		if rerr := gov.Release(pool, rec.ProjectID, id); rerr != nil {
 			fmt.Fprintf(stderr, "ops reconcile: %s: release lease: %v\n", id, rerr)
 		}

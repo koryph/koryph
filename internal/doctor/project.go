@@ -307,7 +307,7 @@ func RunProject(opts ProjectOptions) (*Report, error) {
 	cfg, cfgFinding := checkProjectConfig(repoRoot)
 	r.add(cfgFinding)
 	r.add(checkGitRepo(repoRoot))
-	r.addAll(checkHooksWiring(repoRoot))
+	r.addAll(checkHooksWiring(repoRoot, cfg))
 	if cfg != nil {
 		r.addAll(checkSigning(cfg))
 		r.add(checkProtectedPaths(cfg))
@@ -411,59 +411,57 @@ func checkGitRepo(repoRoot string) Finding {
 	}
 }
 
-// checkHooksWiring checks that each koryph hook marker is present in
-// .claude/settings.json. Missing markers are warnings (run `koryph rules install`).
-func checkHooksWiring(repoRoot string) []Finding {
-	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []Finding{{
-				Check:   checkNameHooksWiring,
-				Level:   LevelWarn,
-				Message: ".claude/settings.json absent (run `koryph rules install`)",
-			}}
-		}
-		return []Finding{{
-			Check:   checkNameHooksWiring,
-			Level:   LevelError,
-			Message: fmt.Sprintf("read .claude/settings.json: %v", err),
-		}}
+// checkHooksWiring checks the native hook configuration of every enabled
+// runtime that currently supports hooks. Missing markers are warnings (run
+// `koryph rules install`); runtimes without native hooks are intentionally
+// skipped because their containment is worktree + merge-gate based.
+func checkHooksWiring(repoRoot string, cfg *project.Config) []Finding {
+	runtimeNames := []string{"claude"}
+	if cfg != nil {
+		runtimeNames = cfg.EnabledRuntimeNames()
 	}
-	content := string(data)
 	markers := []struct{ label, marker string }{
 		{"bd-prime", "bd prime"},
 		{"boundary-guard", "agent-boundary-guard.sh"},
 		{"worktree-guard", "worktree-guard.sh"},
 	}
 	var findings []Finding
-	for _, m := range markers {
-		if strings.Contains(content, m.marker) {
-			findings = append(findings, Finding{
-				Check:   checkNameHooksWiring,
-				Level:   LevelOK,
-				Message: m.label + ": present",
-			})
-		} else {
-			findings = append(findings, Finding{
-				Check:   checkNameHooksWiring,
-				Level:   LevelWarn,
-				Message: m.label + ": missing from .claude/settings.json (run `koryph rules install`)",
-			})
+	for _, runtimeName := range runtimeNames {
+		settingsPath := ""
+		switch runtimeName {
+		case "claude":
+			settingsPath = filepath.Join(repoRoot, ".claude", "settings.json")
+		case "codex":
+			settingsPath = filepath.Join(repoRoot, ".codex", "hooks.json")
+		default:
+			continue
 		}
-	}
-	// bd init, run after koryph project add, appends its own bare "bd prime
-	// --hook-json" SessionStart entry alongside koryph's koryph-prime.sh
-	// wrapper — double session priming (koryph-14p.2). rules.ensureHook now
-	// dedupes this on the NEXT merge, so surface it here rather than silently
-	// tolerate it.
-	if n := countBDPrimeEntries(data); n > 1 {
-		findings = append(findings, Finding{
-			Check: checkNameHooksWiring,
-			Level: LevelWarn,
-			Message: fmt.Sprintf(
-				`duplicate session priming (%d entries match "bd prime") — run 'koryph project install-assets <root> rules' to dedupe`, n),
-		})
+		data, err := os.ReadFile(settingsPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				findings = append(findings, Finding{Check: checkNameHooksWiring, Level: LevelWarn,
+					Message: runtimeName + " hook configuration absent (run `koryph rules install`)"})
+				continue
+			}
+			findings = append(findings, Finding{Check: checkNameHooksWiring, Level: LevelError,
+				Message: fmt.Sprintf("read %s: %v", settingsPath, err)})
+			continue
+		}
+		content := string(data)
+		for _, m := range markers {
+			if strings.Contains(content, m.marker) {
+				findings = append(findings, Finding{Check: checkNameHooksWiring, Level: LevelOK,
+					Message: runtimeName + " " + m.label + ": present"})
+			} else {
+				findings = append(findings, Finding{Check: checkNameHooksWiring, Level: LevelWarn,
+					Message: runtimeName + " " + m.label + ": missing (run `koryph rules install`)"})
+			}
+		}
+		// bd init can append a second bare prime hook after koryph's wrapper.
+		if n := countBDPrimeEntries(data); n > 1 {
+			findings = append(findings, Finding{Check: checkNameHooksWiring, Level: LevelWarn,
+				Message: fmt.Sprintf("%s duplicate session priming (%d entries match \"bd prime\") — run 'koryph project install-assets <root> rules' to dedupe", runtimeName, n)})
+		}
 	}
 	return findings
 }
@@ -758,8 +756,8 @@ type assetSpec struct {
 	filter  func(name string) bool // nil = accept all entries
 }
 
-// checkAssetDrift compares the installed .claude/commands/koryph-*.md and
-// .claude/agents/koryph-*.md files against the currently embedded set using
+// checkAssetDrift compares the canonical commands/koryph-*.md and
+// agents/koryph-*.md source files against the currently embedded set using
 // SHA-256 hashes. It reports:
 //   - missing: asset is in the embedded set but not installed on disk
 //   - stale:   installed file's content differs from the embedded version
@@ -772,13 +770,13 @@ func checkAssetDrift(opts ProjectOptions, repoRoot string) []Finding {
 		{
 			label:   "commands",
 			fsys:    opts.commandsFS(),
-			destDir: filepath.Join(repoRoot, ".claude", "commands"),
+			destDir: filepath.Join(repoRoot, "commands"),
 			filter:  nil, // commands.FS only embeds koryph-*.md
 		},
 		{
 			label:   "agents",
 			fsys:    opts.agentsFS(),
-			destDir: filepath.Join(repoRoot, ".claude", "agents"),
+			destDir: filepath.Join(repoRoot, "agents"),
 			filter:  func(name string) bool { return strings.HasPrefix(name, "koryph-") },
 		},
 	}

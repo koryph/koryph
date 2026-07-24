@@ -1,0 +1,1 @@
+../../../commands/koryph-kill.md

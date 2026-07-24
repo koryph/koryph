@@ -28,6 +28,18 @@ const (
 // for that tier" — callers fall back to the persona's legacy `model` pin.
 type ModelMap map[string]string
 
+// EffortMap translates a portable reasoning-effort request (the second part
+// of an equiv: label) into the runtime's native setting. It is deliberately
+// separate from ModelMap: providers often expose the same model at several
+// different reasoning budgets.
+type EffortMap map[string]string
+
+// EffortMapper is optional because an adapter without a reasoning selector
+// can omit it and reject portable effort equivalencies fail-closed.
+type EffortMapper interface {
+	EffortMap() EffortMap
+}
+
 // ClaudeModelMap is the claude runtime's default tier map. It is exported as
 // a package-level constant-shaped value (rather than requiring a live Claude
 // Runtime instance) because koryph does not yet route dispatch through the
@@ -45,4 +57,25 @@ var ClaudeModelMap = ModelMap{
 	TierFrontier: "opus",
 	TierStandard: "sonnet",
 	TierLight:    "haiku",
+}
+
+// CodexModelMap is the default capability mapping for Codex. gpt-5.6-terra is
+// the current model accepted by the ChatGPT-authenticated Codex CLI; using it
+// for every tier is deliberate until a lower-cost model is confirmed for the
+// same authentication surface. Projects may overlay individual entries in
+// runtimes.codex.model_map as providers evolve.
+var CodexModelMap = ModelMap{
+	TierFrontier: "gpt-5.6-terra",
+	TierStandard: "gpt-5.6-terra",
+	TierLight:    "gpt-5.6-terra",
+}
+
+var ClaudeEffortMap = EffortMap{
+	"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh",
+}
+
+// Codex's native configuration accepts low/medium/high. Higher portable
+// classes map to high until a Codex CLI exposes a distinct higher setting.
+var CodexEffortMap = EffortMap{
+	"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high", "ultra": "high",
 }

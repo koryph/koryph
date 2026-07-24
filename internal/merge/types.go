@@ -180,6 +180,8 @@ const (
 	StatusProtected   Status = "protected"    // diff touched a protected path
 	StatusUnsigned    Status = "unsigned"     // required signature missing
 	StatusCommitStyle Status = "commit-style" // non-conventional commit subject
+	StatusDirty       Status = "dirty"        // staged/unstaged/untracked work would be lost
+	StatusNoChanges   Status = "no-changes"   // branch has no commits beyond default
 	StatusPRNoRemote  Status = "pr-no-remote" // merge_policy pr but no git remote
 	StatusPRNoGH      Status = "pr-no-gh"     // merge_policy pr but gh unavailable
 	StatusError       Status = "error"        // infrastructure failure (see error)

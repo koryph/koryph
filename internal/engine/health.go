@@ -906,6 +906,58 @@ func (r *runner) patrolCheckStaleWorktrees(ctx context.Context) []patrolFinding 
 			message: fmt.Sprintf("stale-worktrees: cannot list worktrees: %v", err)}}
 	}
 
+	// A terminally-blocked slot intentionally retains its branch/worktree for
+	// manual recovery. It is not the old "dirty merged orphan" signature below,
+	// but it is also not healthy/forgettable: report it even when clean, and
+	// surface any ledger↔Bead mismatch with non-destructive recovery commands.
+	blockedPaths := make(map[string]bool)
+	blockedBases := make(map[string]bool)
+	var blockedFindings []patrolFinding
+	if r.run != nil {
+		registered := make(map[string]worktree.Info, len(infos))
+		for _, wt := range infos {
+			registered[canonicalWorktreePath(wt.Path)] = wt
+		}
+		ids := make([]string, 0, len(r.run.Slots))
+		for id := range r.run.Slots {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			sl := r.run.Slots[id]
+			if sl == nil || sl.Status != ledger.SlotBlocked || sl.Worktree == "" {
+				continue
+			}
+			wt, ok := registered[canonicalWorktreePath(sl.Worktree)]
+			if !ok {
+				continue
+			}
+			blockedPaths[canonicalWorktreePath(wt.Path)] = true
+			blockedBases[filepath.Base(wt.Path)] = true
+			beadStatus := "unknown"
+			if r.adapter != nil {
+				if issue, serr := r.adapter.Show(ctx, id); serr == nil && issue.Status != "" {
+					beadStatus = issue.Status
+				}
+			}
+			kind := "terminal blocked worktree retained for manual review"
+			if beadStatus != "blocked" {
+				kind = fmt.Sprintf("ledger/Bead mismatch: ledger=blocked bead=%s", beadStatus)
+			}
+			branch := sl.Branch
+			if branch == "" {
+				branch = wt.Branch
+			}
+			blockedFindings = append(blockedFindings, patrolFinding{
+				check: patrolCheckStaleWt,
+				level: "warn",
+				message: fmt.Sprintf(
+					"%s: bead %s branch %s worktree %s (dirty=%t) — inspect with `git -C %q status`; after resolving, reopen with `bd update %s --status open`",
+					kind, id, branch, wt.Path, wt.Dirty, wt.Path, id),
+			})
+		}
+	}
+
 	// A worktree owned by a non-terminal slot of THIS run is a live agent, not
 	// an orphan (koryph-050). A long-running agent that has not yet made its
 	// first commit still has HEAD at the merged main tip AND a dirty tree —
@@ -921,7 +973,7 @@ func (r *runner) patrolCheckStaleWorktrees(ctx context.Context) []patrolFinding 
 		if sl == nil || ledger.Terminal(sl.Status) || sl.Worktree == "" {
 			continue
 		}
-		livePaths[filepath.Clean(sl.Worktree)] = true
+		livePaths[canonicalWorktreePath(sl.Worktree)] = true
 		liveBases[filepath.Base(sl.Worktree)] = true
 	}
 
@@ -929,14 +981,20 @@ func (r *runner) patrolCheckStaleWorktrees(ctx context.Context) []patrolFinding 
 	for _, wt := range infos {
 		// Skip the main checkout and any clean worktree; only dirty linked
 		// worktrees are candidates.
-		if wt.Path == repoRoot || !wt.Dirty || wt.Head == "" {
+		if canonicalWorktreePath(wt.Path) == canonicalWorktreePath(repoRoot) || !wt.Dirty || wt.Head == "" {
 			continue
 		}
 		// Skip a live agent's worktree (koryph-050): a running slot's tree is
 		// dirty by definition and, pre-first-commit, its HEAD is the merged
 		// main tip — the orphan signature is indistinguishable from healthy
 		// in-progress work, so ownership by a non-terminal slot is authoritative.
-		if livePaths[filepath.Clean(wt.Path)] || liveBases[filepath.Base(wt.Path)] {
+		if livePaths[canonicalWorktreePath(wt.Path)] || liveBases[filepath.Base(wt.Path)] {
+			continue
+		}
+		// A terminal blocked worktree is reported above with a recovery-safe
+		// manual-review message. Never misclassify it as disposable orphan WIP
+		// or recommend `worktree remove --force`.
+		if blockedPaths[canonicalWorktreePath(wt.Path)] || blockedBases[filepath.Base(wt.Path)] {
 			continue
 		}
 		// Merged tip? `git merge-base --is-ancestor <head> <def>` exits 0.
@@ -949,13 +1007,24 @@ func (r *runner) patrolCheckStaleWorktrees(ctx context.Context) []patrolFinding 
 	}
 
 	if len(orphans) == 0 {
+		if len(blockedFindings) > 0 {
+			return blockedFindings
+		}
 		return []patrolFinding{{check: patrolCheckStaleWt, level: "ok",
 			message: "stale-worktrees: none"}}
 	}
 	sort.Strings(orphans)
-	return []patrolFinding{{check: patrolCheckStaleWt, level: "warn",
+	return append(blockedFindings, patrolFinding{check: patrolCheckStaleWt, level: "warn",
 		message: fmt.Sprintf("stale-worktrees: %d dirty worktree(s) with an already-merged HEAD (orphaned by a dirty-tree cleanup skip) — inspect and `git worktree remove --force`: %s",
-			len(orphans), strings.Join(orphans, ", "))}}
+			len(orphans), strings.Join(orphans, ", "))})
+}
+
+func canonicalWorktreePath(path string) string {
+	clean := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return clean
 }
 
 // --- check: completed-but-unvalidated epics --------------------------------

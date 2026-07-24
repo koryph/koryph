@@ -50,7 +50,7 @@ func drainRunner(t *testing.T, r *runner) *capturingBackend {
 	t.Setenv("KORYPH_MIN_FREE_MEMORY_MB", "-1")
 	r.adapter = &fakeSource{}
 	r.quotaCfg = &quota.Config{}
-	r.rt = runtimetest.Stub{}
+	r.rt = runtimetest.Stub{StubName: "claude"}
 	backend := &capturingBackend{}
 	r.backend = backend
 	return backend

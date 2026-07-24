@@ -18,6 +18,8 @@ import (
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/onboard"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
+	_ "github.com/koryph/koryph/internal/runtime/codex"
 	"github.com/koryph/koryph/internal/sysdeps"
 )
 
@@ -57,8 +59,9 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 	dryRun := fs.Bool("dry-run", false, "detect + print the adoption plan, write nothing")
 	asJSON := fs.Bool("json", false, "emit the plan (and results) as JSON on stdout; implies non-interactive")
 	accountFlag := fs.String("account", "", "account profile (with --identity; overrides discovery)")
-	identityFlag := fs.String("identity", "", "login email that must match at dispatch (with --account)")
-	configDir := fs.String("config-dir", "", "CLAUDE_CONFIG_DIR for non-personal accounts")
+	identityFlag := fs.String("identity", "", "runtime identity that must match at dispatch, or auto to detect it locally (with --account)")
+	runtimeName := fs.String("runtime", "", "agent runtime (claude or codex; defaults to the existing project or claude)")
+	configDir := fs.String("config-dir", "", "runtime config directory (CLAUDE_CONFIG_DIR for Claude; CODEX_HOME for Codex)")
 	authMode := fs.String("auth-mode", "", authModeUsage)
 	cred := registerCredentialFlags(fs)
 	id := fs.String("id", "", "project slug (default: repo dir name slugified)")
@@ -94,6 +97,12 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 	if *id != "" {
 		snap.ProjectID = *id
 	}
+	if *runtimeName != "" {
+		if _, ok := runtime.Default.Get(*runtimeName); !ok {
+			return usageErr(stderr, fmt.Sprintf("adopt: runtime %q is not available in this koryph build", *runtimeName))
+		}
+		snap.RuntimeName = *runtimeName
+	}
 	if flagPassed(fs, "branch") && *branch != "" {
 		snap.Inventory.DefaultBranch = *branch
 	}
@@ -121,10 +130,29 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 
 	var acct adopt.AccountChoice
 	if stepState(plan, adopt.StepRegister) == adopt.StateNeeded {
+		resolvedIdentity := *identityFlag
+		if resolvedIdentity == "auto" {
+			if *accountFlag == "" {
+				return usageErr(stderr, "adopt: --identity auto requires --account so the runtime profile is explicit")
+			}
+			rt, ok := runtime.Default.Get(adopt.RuntimeName(snap))
+			if !ok {
+				return fail(stderr, fmt.Errorf("adopt: runtime %q is not available in this koryph build", adopt.RuntimeName(snap)))
+			}
+			prober, ok := rt.(runtime.IdentityProber)
+			if !ok {
+				return usageErr(stderr, fmt.Sprintf("adopt: runtime %q cannot derive an identity; supply --identity explicitly", adopt.RuntimeName(snap)))
+			}
+			var ierr error
+			resolvedIdentity, ierr = prober.CurrentIdentity(ctx, runtime.Profile{Name: *accountFlag, ConfigDir: *configDir})
+			if ierr != nil {
+				return fail(stderr, ierr)
+			}
+		}
 		if interactive && *accountFlag == "" && *identityFlag == "" {
 			acct, err = promptAccount(in, stderr, snap)
 		} else {
-			acct, err = adopt.ResolveAccountNonInteractive(snap.AccountCandidates, *accountFlag, *identityFlag, *configDir)
+			acct, err = adopt.ResolveAccountNonInteractive(snap.AccountCandidates, *accountFlag, resolvedIdentity, *configDir)
 		}
 		if err != nil {
 			return fail(stderr, err)
@@ -169,7 +197,7 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 	// tool but never aborts the wizard. A missing bd on a flake-managed repo
 	// is offered the repo's own flake first (design §4.1) — the system route
 	// only runs when the flake route is absent, declined, or fails.
-	for _, name := range []string{"claude", "bd", "gh"} {
+	for _, name := range adopt.RequiredToolNames(snap) {
 		ts, ok := snap.Tools[name]
 		if !ok || (ts.Found && ts.VersionOK) {
 			continue
@@ -238,7 +266,7 @@ func cmdAdopt(args []string, stdout, stderr io.Writer) int {
 
 	// 5. assets
 	adopt.InstallAssets(stderr, root)
-	stream(out, "ok", "assets", "AGENTS.md, agents, commands, hooks + settings.json ensured")
+	stream(out, "ok", "assets", "AGENTS.md, canonical agents/commands, and runtime projections ensured")
 
 	// 6. offers — guidance only for signing; posture reuses the project-add
 	// offer (which itself degrades to guidance in non-interactive shells).

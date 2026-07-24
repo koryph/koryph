@@ -23,7 +23,7 @@ import (
 func init() {
 	registerCmd(command{
 		name:    "commands",
-		summary: "install koryph-* Claude slash commands",
+		summary: "install canonical koryph workflows and runtime projections",
 		run:     cmdCommands,
 		// Superseded by `project install-assets commands`; hidden alias.
 		hidden: true,
@@ -33,7 +33,7 @@ func init() {
 		subs: []command{
 			{
 				name:     "install",
-				summary:  "install commands into <root>/.claude/commands",
+				summary:  "seed canonical commands and link a runtime projection",
 				run:      cmdCommandsInstall,
 				DocLinks: []string{"user-guide/projects-and-accounts.md"},
 			},
@@ -52,7 +52,7 @@ func init() {
 		subs: []command{
 			{
 				name:     "install",
-				summary:  "install hooks into <root>/.claude/settings.json",
+				summary:  "install hooks into a runtime's native configuration",
 				run:      cmdRulesInstall,
 				DocLinks: []string{"user-guide/projects-and-accounts.md"},
 			},
@@ -67,8 +67,8 @@ func init() {
 var assetTargets = []string{"agentsmd", "agents", "commands", "rules"}
 
 // cmdProjectInstallAssets is the canonical grouped installer: it (re)installs
-// the koryph assets — fallback personas, koryph-* slash commands, and the hook
-// scripts + settings wiring — that `project add` installs automatically. The
+// the koryph assets — canonical personas, workflows, and runtime-native hook
+// wiring — that `project add` installs automatically. The
 // optional positional target (agents|commands|rules|all, default all) narrows
 // the set; --force overwrites differing files; --all installs into every
 // registered project (the older --all-projects spelling still works as a
@@ -169,18 +169,18 @@ func installAssetsAllProjects(stdout, stderr io.Writer, targets []string, force 
 // shared installer reporters. It returns an error only on a hard failure; a
 // differing/skipped file is a warning surfaced by the reporter, not an error.
 //
-// Capability gating: commands and rules are only installed when the project's
-// configured runtime supports the corresponding capability:
-//   - commands → Capabilities.Personas (Claude Code slash commands require the
-//     .claude/ subtree that only Claude Code reads; skip for other runtimes).
-//   - rules    → Capabilities.Hooks (settings.json + hook scripts are
-//     Claude Code-specific; runtimes without hooks rely on worktree isolation
-//   - merge-time protected-path refusal instead).
+// Capability gating applies independently to every enabled runtime. Commands
+// and personas are projected for all of them, not just default_runtime, so a
+// project can be opened with Claude and Codex side by side while retaining one
+// editable source under agents/ and commands/. Rules are rendered only for a
+// runtime that declares native hook support; others rely on worktree isolation
+// and merge-time protected-path refusal.
 //
 // agentsmd and agents are always installed: AGENTS.md is the runtime-neutral
 // canonical instruction file, and personas render correctly for any runtime
 // via InstallForRuntime.
 func installAssetType(stdout, stderr io.Writer, root, target string, force bool) error {
+	runtimeNames := installRuntimeNames(root)
 	switch target {
 	case "agentsmd":
 		action, err := agentsmd.Install(root, force)
@@ -189,55 +189,65 @@ func installAssetType(stdout, stderr io.Writer, root, target string, force bool)
 		}
 		reportAgentsMD(stdout, stderr, action, force)
 	case "agents":
-		// Render for root's own default_runtime (koryph-v8u.12), matching
-		// `koryph agents install`'s unset-flag default; see
-		// resolveInstallRuntime.
-		results, untiered, err := personas.InstallForRuntime(root, force, resolveInstallRuntime(root, ""))
-		if err != nil {
-			return err
-		}
-		reportInstall(stdout, stderr, "agents", results, force)
-		if len(untiered) > 0 {
-			fmt.Fprintf(stderr, "koryph: note: %d persona(s) installed unchanged (no tier: frontmatter, or tier unmapped by the target runtime): %s\n",
-				len(untiered), strings.Join(untiered, ", "))
+		for _, runtimeName := range runtimeNames {
+			results, untiered, err := personas.InstallForRuntime(root, force, runtimeName)
+			if err != nil {
+				return err
+			}
+			reportInstall(stdout, stderr, "agents ("+runtimeName+")", results, force)
+			if len(untiered) > 0 {
+				fmt.Fprintf(stderr, "koryph: note: %d persona(s) installed unchanged (no tier: frontmatter, or tier unmapped by runtime %s): %s\n",
+					len(untiered), runtimeName, strings.Join(untiered, ", "))
+			}
 		}
 	case "commands":
-		caps := resolveRuntimeCapabilities(root)
-		if !caps.Personas {
-			fmt.Fprintf(stdout, "commands install: skipped (runtime %q does not support .claude/commands; containment via worktree isolation + merge gate)\n",
-				resolveInstallRuntime(root, ""))
-			return nil
+		for _, runtimeName := range runtimeNames {
+			results, err := commands.InstallForRuntime(root, force, runtimeName)
+			if err != nil {
+				return err
+			}
+			reportInstall(stdout, stderr, "commands ("+runtimeName+")", results, force)
 		}
-		results, err := commands.Install(root, force)
-		if err != nil {
-			return err
-		}
-		reportInstall(stdout, stderr, "commands", results, force)
 	case "rules":
-		caps := resolveRuntimeCapabilities(root)
-		if !caps.Hooks {
-			fmt.Fprintf(stdout, "rules install: skipped (runtime %q does not support hooks; containment via worktree isolation + merge gate)\n",
-				resolveInstallRuntime(root, ""))
-			return nil
+		for _, runtimeName := range runtimeNames {
+			rt, ok := runtime.Default.Get(runtimeName)
+			if !ok {
+				return fmt.Errorf("runtime %q is not registered", runtimeName)
+			}
+			if !rt.Capabilities().Hooks {
+				fmt.Fprintf(stdout, "rules install: skipped for %q (no native hooks; containment via worktree isolation + merge gate)\n", runtimeName)
+				continue
+			}
+			hookResults, settings, err := rules.InstallForRuntime(root, force, runtimeName)
+			if err != nil {
+				return err
+			}
+			reportInstall(stdout, stderr, "hooks ("+runtimeName+")", hookResults, force)
+			reportSettings(stdout, stderr, settings)
 		}
-		hookResults, settings, err := rules.Install(root, force)
-		if err != nil {
-			return err
-		}
-		reportInstall(stdout, stderr, "hooks", hookResults, force)
-		reportSettings(stdout, stderr, settings)
 	default:
 		return fmt.Errorf("unknown asset target %q", target)
 	}
 	return nil
 }
 
+// installRuntimeNames selects every runtime whose projection belongs in this
+// project. A missing or invalid config preserves historical Claude-only
+// installation, rather than preventing recovery with `install-assets`.
+func installRuntimeNames(root string) []string {
+	cfg, err := project.Load(root)
+	if err != nil {
+		return []string{"claude"}
+	}
+	return cfg.EnabledRuntimeNames()
+}
+
 // cmdCommands dispatches the commands sub-verbs.
 func cmdCommands(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		parentHelp(stdout, "commands", "manage the koryph-* Claude slash commands in a project (normally run by `koryph project add`)", []subVerb{
-			{"install <root> [--force]", "install koryph-* slash commands into <root>/.claude/commands"},
-			{"install --all [--force]", "install koryph-* slash commands into every registered project"},
+		parentHelp(stdout, "commands", "manage canonical koryph workflows and runtime-native links (normally run by `koryph project add`)", []subVerb{
+			{"install <root> [--force]", "seed commands/ and install the selected runtime projection"},
+			{"install --all [--force]", "install canonical workflows into every registered project"},
 		})
 		return 0
 	}
@@ -267,11 +277,11 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdRulesInstall installs the koryph hook scripts into <root>/hooks and
-// merges the hook + permission wiring into <root>/.claude/settings.json.
+// merges the wiring into the configured runtime's native hook configuration.
 func cmdRulesInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("rules install", stderr)
 	force := fs.Bool("force", false, "overwrite differing hook scripts; rebuild an unparseable settings.json")
-	setUsage(fs, stdout, "install hook scripts + merge hook/permission wiring into <root>/.claude/settings.json (normally run automatically by `koryph project add`)", "<root> [--force]")
+	setUsage(fs, stdout, "install hook scripts + merge native runtime hook wiring (normally run automatically by `koryph project add`)", "<root> [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -283,7 +293,7 @@ func cmdRulesInstall(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	hookResults, settings, err := rules.Install(root, *force)
+	hookResults, settings, err := rules.InstallForRuntime(root, *force, resolveInstallRuntime(root, ""))
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -302,7 +312,7 @@ func reportSettings(stdout, stderr io.Writer, action string) {
 	case rules.SettingsUnchanged:
 		fmt.Fprintln(stdout, "settings.json: already wired (no change)")
 	case rules.SettingsSkipped:
-		fmt.Fprintln(stderr, "koryph: warning: .claude/settings.json is unparseable or has an incompatible shape — left unchanged; fix it or re-run with --force to rebuild.")
+		fmt.Fprintln(stderr, "koryph: warning: native hook configuration is unparseable or has an incompatible shape — left unchanged; fix it or re-run with --force to rebuild.")
 	}
 }
 
@@ -310,20 +320,20 @@ func reportSettings(stdout, stderr io.Writer, action string) {
 // to internal/adopt (InstallAssets and friends) so `project add` and `koryph
 // adopt` share one install path.
 
-// cmdCommandsInstall writes the koryph-* Claude slash commands into
-// <root>/.claude/commands. Identical files are a no-op; content that differs is
-// left untouched unless --force is passed. With --all, installs into every
-// registered project instead of a single <root> (the older --all-projects
-// spelling still works as a hidden alias, koryph-b8g #18).
+// cmdCommandsInstall seeds canonical commands/*.md and links it into the
+// selected runtime's native workflow surface. With --all, each project uses
+// its own configured runtime (the older --all-projects spelling still works
+// as a hidden alias).
 func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("commands install", stderr)
 	force := fs.Bool("force", false, "overwrite existing commands whose content differs")
 	allProjects := fs.Bool("all", false, "install into every registered project (registry-wide refresh)")
+	runtimeName := fs.String("runtime", "", "target runtime name (default: <root>'s default_runtime, else claude)")
 	fs.BoolVar(allProjects, "all-projects", false, "deprecated alias for --all")
 	hideFlag(fs, "all-projects")
 	setUsage(fs, stdout,
-		"install koryph-* Claude slash commands into <root>/.claude/commands (idempotent; normally run automatically by `koryph project add`)",
-		"(<root> | --all) [--force]")
+		"seed canonical commands/*.md and link a runtime projection (idempotent; normally run automatically by `koryph project add`)",
+		"(<root> | --all) [--runtime NAME] [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
@@ -333,9 +343,12 @@ func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 		if len(pos) > 0 {
 			return usageErr(stderr, "commands install: <root> and --all are mutually exclusive")
 		}
+		if *runtimeName != "" {
+			return usageErr(stderr, "commands install: --runtime and --all are mutually exclusive")
+		}
 		return installAllProjects(stdout, stderr, "commands", *force,
 			func(root string, force bool) ([]scaffold.Result, error) {
-				return commands.Install(root, force)
+				return commands.InstallForRuntime(root, force, resolveInstallRuntime(root, ""))
 			})
 	}
 
@@ -346,7 +359,7 @@ func cmdCommandsInstall(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	results, err := commands.Install(root, *force)
+	results, err := commands.InstallForRuntime(root, *force, resolveInstallRuntime(root, *runtimeName))
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -443,52 +456,5 @@ func reportAgentsMD(stdout, stderr io.Writer, action string, force bool) {
 		if !force {
 			fmt.Fprintln(stderr, "koryph: warning: AGENTS.md already exists with different content — left unchanged; re-run with --force to overwrite.")
 		}
-	}
-}
-
-// resolveRuntimeCapabilities returns the Capabilities of the runtime
-// configured in root's koryph.project.json (koryph-v8u.9). It falls back to
-// claude's full Capabilities when the project config is absent/unreadable or
-// the configured runtime is not registered — matching the pre-capability-gating
-// behavior (all assets installed) so existing projects without a config do not
-// silently lose assets.
-func resolveRuntimeCapabilities(root string) runtime.Capabilities {
-	cfg, err := project.Load(root)
-	if err != nil {
-		return claudeCapabilities()
-	}
-	rtName := cfg.DefaultRuntime
-	if rtName == "" {
-		rtName = "claude"
-	}
-	rt, ok := runtime.Default.Get(rtName)
-	if !ok {
-		return claudeCapabilities()
-	}
-	return rt.Capabilities()
-}
-
-// claudeCapabilities returns the full capability set of the registered claude
-// adapter, or a hard-coded full set when (somehow) claude is not registered —
-// so the fallback is always permissive (all assets installed), never
-// restrictive.
-func claudeCapabilities() runtime.Capabilities {
-	if rt, ok := runtime.Default.Get("claude"); ok {
-		return rt.Capabilities()
-	}
-	// Claude is always registered in a real binary (engine/run.go imports
-	// internal/runtime/claude); this branch is only reachable in a stripped
-	// test binary that never imports the engine. Return all-true so no asset
-	// install is silently skipped.
-	return runtime.Capabilities{
-		JSONStream:  true,
-		Personas:    true,
-		Hooks:       true,
-		Resume:      true,
-		EffortFlag:  true,
-		BudgetFlag:  true,
-		Sandbox:     false,
-		ModelSelect: true,
-		UsageSource: true,
 	}
 }

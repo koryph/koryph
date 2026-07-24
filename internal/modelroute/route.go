@@ -27,9 +27,8 @@ const runtimeLabelPrefix = "runtime:"
 // resolveTier's label handling, factored out as its own exported function
 // (rather than folded into Resolve) because the caller must know the runtime
 // BEFORE it can decide whether to even attempt a dispatch —
-// internal/engine's dispatchBead calls this first and blocks the slot
-// outright for any non-claude result, never reaching Resolve at all. This
-// function performs no validation against runtime.Default; Resolve is what
+// internal/engine's dispatchBead calls this first and validates the selected
+// runtime before dispatch. This function performs no validation against runtime.Default; Resolve is what
 // fails closed on whatever name ends up in Req.Runtime.
 func ResolveRuntimeName(labels []string, defaultRuntime string) (name, rationale string) {
 	for _, l := range labels {
@@ -37,10 +36,45 @@ func ResolveRuntimeName(labels []string, defaultRuntime string) (name, rationale
 			return v, "label " + l
 		}
 	}
+	// A concrete model uniquely identifies its owning built-in runtime when no
+	// runtime label was supplied. This makes `model:gpt-5.6-terra` sufficient for a
+	// Codex bead while retaining `runtime:` as the explicit disambiguator for
+	// a future model offered by more than one runtime.
+	if model, ok := plainModelLabel(labels); ok {
+		if inferred, ok := inferRuntimeForModel(model); ok {
+			return inferred, "model " + model + " implies runtime " + inferred
+		}
+	}
 	if defaultRuntime != "" {
 		return defaultRuntime, "project default_runtime " + defaultRuntime
 	}
 	return "claude", "default"
+}
+
+func inferRuntimeForModel(model string) (string, bool) {
+	owners := make([]string, 0, 2)
+	for _, candidate := range []struct {
+		name string
+		map_ runtime.ModelMap
+	}{
+		{"claude", runtime.ClaudeModelMap},
+		{"codex", runtime.CodexModelMap},
+	} {
+		if candidate.name == "claude" && validTier(model) {
+			owners = append(owners, candidate.name)
+			continue
+		}
+		for _, id := range candidate.map_ {
+			if id == model {
+				owners = append(owners, candidate.name)
+				break
+			}
+		}
+	}
+	if len(owners) == 1 {
+		return owners[0], true
+	}
+	return "", false
 }
 
 // validTier reports whether s is a known model tier.
@@ -69,7 +103,7 @@ func Resolve(r Req) (Resolution, error) {
 	// runtime.Default. Checked up front so an unknown runtime fails here
 	// regardless of which resolution step would otherwise have won (e.g. an
 	// explicit --model that never even looks at the runtime).
-	if runtimeName != "claude" {
+	if runtimeName != "claude" && runtimeName != "codex" {
 		if _, ok := runtime.Default.Get(runtimeName); !ok {
 			return Resolution{}, fmt.Errorf(
 				"modelroute: unknown runtime %q (not registered in runtime.Default)", runtimeName)
@@ -81,37 +115,273 @@ func Resolve(r Req) (Resolution, error) {
 		allowed = defaultAllowed
 	}
 
+	// An equivalency is a portable (capability, effort) request. It is
+	// deliberately distinct from model:<id>, which always denotes an exact
+	// runtime-native model. Combining them would be ambiguous, so fail closed.
+	equivTier, equivEffort, hasLabelEquiv := equivalencyLabel(r.Labels)
+	_, hasStageModel := stageModelLabel(r.Labels, r.Stage)
+	_, hasModel := plainModelLabel(r.Labels)
+	if hasLabelEquiv && (r.ExplicitModel != "" || hasStageModel || hasModel) {
+		return Resolution{}, fmt.Errorf("modelroute: equiv label cannot be combined with an explicit model selection")
+	}
+	// A bead's model/equiv labels and a run --default-model both outrank a
+	// project default equivalency. Only use the latter when no higher source
+	// selected a concrete model. This mirrors resolveTier's normal precedence.
+	hasEquiv := hasLabelEquiv
+	if !hasEquiv && r.RunEquivalent != "" && r.ExplicitModel == "" && !hasStageModel && !hasModel && r.RunDefault == "" {
+		var ok bool
+		equivTier, equivEffort, ok = parseEquivalency(r.RunEquivalent)
+		if !ok {
+			return Resolution{}, fmt.Errorf("modelroute: invalid run/project default equivalency %q (want <frontier|standard|light>:<effort>)", r.RunEquivalent)
+		}
+		hasEquiv = true
+	}
+
 	tier, rationale, explicit, err := resolveTier(r, runtimeName)
 	if err != nil {
 		return Resolution{}, err
 	}
+	equivalent := ""
+	if hasEquiv {
+		mapped, ok := effectiveModelMapFor(runtimeName, r.ModelMap)[equivTier]
+		if !ok || mapped == "" {
+			return Resolution{}, fmt.Errorf("modelroute: runtime %q has no model equivalency for %q", runtimeName, equivTier)
+		}
+		nativeEffort, ok := effectiveEffortMapFor(runtimeName, r.EffortMap)[equivEffort]
+		if !ok || nativeEffort == "" {
+			return Resolution{}, fmt.Errorf("modelroute: runtime %q has no effort equivalency for %q", runtimeName, equivEffort)
+		}
+		if r.RunEquivalent != "" && !hasLabelEquiv {
+			rationale = "project default equivalent " + equivTier + ":" + equivEffort
+		} else {
+			rationale = "label equiv:" + equivTier + ":" + equivEffort
+		}
+		tier, explicit = mapped, true
+		equivalent = equivTier + ":" + equivEffort
+		equivEffort = nativeEffort
+	}
 
-	if !validTier(tier) {
+	if !validModelForRuntime(tier, runtimeName, r.ModelMap, r.AllowedModels) {
+		if runtimeName == "claude" {
+			return Resolution{}, fmt.Errorf(
+				"modelroute: unknown model tier %q (want one of haiku, sonnet, opus, fable)", tier)
+		}
 		return Resolution{}, fmt.Errorf(
-			"modelroute: unknown model tier %q (want one of haiku, sonnet, opus, fable)", tier)
+			"modelroute: model %q is not known for runtime %q", tier, runtimeName)
 	}
 
 	// Fable guard: a resolved "fable" is only legal when the project
 	// allowlist includes it AND the source was an explicit flag or label
 	// (run default and stage default may never yield fable, even if allowed).
-	if tier == TierFable && (!contains(allowed, TierFable) || !explicit) {
+	if runtimeName == "claude" && tier == TierFable && (!contains(allowed, TierFable) || !explicit) {
 		return Resolution{}, fmt.Errorf(
 			"modelroute: Fable requires explicit per-task selection and project allowlist "+
 				"(source explicit=%t, allowlist=%v)", explicit, allowed)
 	}
 
 	// Fail closed: never dispatch a tier the project has not allowed.
-	if !contains(allowed, tier) {
+	// AllowedModels predates runtime selection and therefore commonly holds
+	// Claude's legacy aliases on otherwise multi-runtime projects. A native
+	// model declared by the selected runtime (or its project model_map) is
+	// already an explicit, fail-closed allowlist for that runtime; do not make
+	// an old Claude-only list accidentally disable Codex. Unknown exact models
+	// still require an explicit AllowedModels entry.
+	if len(r.AllowedModels) > 0 && !contains(allowed, tier) && !declaredModelForRuntime(tier, runtimeName, r.ModelMap) {
 		return Resolution{}, fmt.Errorf(
 			"modelroute: resolved model %q is not in the project allowlist %v (fail closed)",
 			tier, allowed)
 	}
 
-	return Resolution{
-		Model:     tier,
-		Persona:   PersonaFor(r.Stage, r.Stages),
-		Rationale: rationale,
-	}, nil
+	res := Resolution{
+		Model:      tier,
+		Persona:    PersonaFor(r.Stage, r.Stages),
+		Effort:     equivEffort,
+		Equivalent: equivalent,
+		Rationale:  rationale,
+	}
+	if effort, ok := effortLabel(r.Labels); ok && !hasEquiv {
+		res.Effort = effort
+	}
+	return res, nil
+}
+
+// ResolveEquivalent translates source's normal model decision through target's
+// model and effort maps. It deliberately resolves the source first: the
+// existing label/default/persona/stage precedence remains authoritative, and
+// a runtime override changes only the concrete runtime/model selected after
+// that portable capability is known.
+//
+// An exact native model may be translated only when it maps to exactly one
+// portable tier. This is essential for maps such as Codex's current default,
+// where the same concrete id intentionally occupies frontier, standard, and
+// light; guessing in that case would silently change the work's capability.
+// Callers pass source with the normally resolved Runtime and target with the
+// forced Runtime plus that runtime's per-project maps.
+func ResolveEquivalent(source, target Req) (Resolution, error) {
+	sourceRes, err := Resolve(source)
+	if err != nil {
+		return Resolution{}, err
+	}
+	eq, err := EquivalencyFor(source, sourceRes)
+	if err != nil {
+		return Resolution{}, err
+	}
+	targetRuntime := target.Runtime
+	if targetRuntime == "" {
+		targetRuntime = "claude"
+	}
+	mapped, ok := effectiveModelMapFor(targetRuntime, target.ModelMap)[eq.Tier]
+	if !ok || mapped == "" {
+		return Resolution{}, fmt.Errorf("modelroute: runtime %q has no model equivalency for %q", targetRuntime, eq.Tier)
+	}
+
+	// Preserve the stage/persona selection but discard every source model
+	// directive. Passing the mapped native model explicitly through Resolve
+	// retains its runtime/allowlist/fable validation rather than duplicating
+	// that policy here.
+	target.Labels = nonModelLabels(target.Labels)
+	target.ExplicitModel = mapped
+	target.RunDefault = ""
+	target.RunEquivalent = ""
+	res, err := Resolve(target)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if eq.Effort != "" {
+		nativeEffort, ok := effectiveEffortMapFor(targetRuntime, target.EffortMap)[eq.Effort]
+		if !ok || nativeEffort == "" {
+			return Resolution{}, fmt.Errorf("modelroute: runtime %q has no effort equivalency for %q", targetRuntime, eq.Effort)
+		}
+		res.Effort = nativeEffort
+		res.Equivalent = eq.Tier + ":" + eq.Effort
+	}
+	sourceRuntime := source.Runtime
+	if sourceRuntime == "" {
+		sourceRuntime = "claude"
+	}
+	res.Rationale = fmt.Sprintf("runtime equivalent %s from %s: %s -> %s", targetRuntime, sourceRuntime, sourceRes.Rationale, eq.Tier)
+	return res, nil
+}
+
+// EquivalencyFor derives the portable capability behind a normal resolution.
+// equiv: is already portable. Native model selections use their source
+// runtime's inverse model map only when that inverse is unambiguous. For a
+// non-explicit default that cannot be reverse-mapped, stage and persona tier
+// provenance is safe; for an explicit native model it is not, so we refuse it
+// with a remediation that preserves the operator's intent.
+func EquivalencyFor(source Req, res Resolution) (Equivalency, error) {
+	if res.Equivalent != "" {
+		tier, effort, ok := parseEquivalency(res.Equivalent)
+		if ok {
+			return Equivalency{Tier: tier, Effort: effort}, nil
+		}
+	}
+	runtimeName := source.Runtime
+	if runtimeName == "" {
+		runtimeName = "claude"
+	}
+	tier := uniqueTierForModel(res.Model, runtimeName, source.ModelMap)
+	personaPinnedModel := false
+	if tier == "" && !hasExplicitModelSource(source) {
+		if source.RepoRoot != "" {
+			persona := PersonaFor(source.Stage, source.Stages)
+			if personaModel, _, personaTier, err := PersonaMeta(source.RepoRoot, persona); err == nil {
+				personaPinnedModel = personaModel != ""
+				if isPortableTier(personaTier) {
+					tier = personaTier
+				}
+			}
+		}
+		if tier == "" && !personaPinnedModel {
+			tier = portableTierForStage(source.Stage)
+		}
+	}
+	if tier == "" {
+		return Equivalency{}, fmt.Errorf(
+			"modelroute: cannot translate exact model %q from runtime %q to an equivalent capability; use equiv:<frontier|standard|light>:<effort> on the bead or configure default_equivalent",
+			res.Model, runtimeName)
+	}
+
+	effort := ""
+	if native, ok := effortLabel(source.Labels); ok {
+		var candidates []string
+		for portable, mapped := range effectiveEffortMapFor(runtimeName, source.EffortMap) {
+			if mapped == native {
+				candidates = append(candidates, portable)
+			}
+		}
+		if len(candidates) != 1 {
+			return Equivalency{}, fmt.Errorf(
+				"modelroute: cannot translate native effort %q from runtime %q; use equiv:%s:<effort>", native, runtimeName, tier)
+		}
+		effort = candidates[0]
+	}
+	return Equivalency{Tier: tier, Effort: effort}, nil
+}
+
+func nonModelLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if strings.HasPrefix(label, "model:") || strings.HasPrefix(label, "equiv:") || strings.HasPrefix(label, "effort:") {
+			continue
+		}
+		out = append(out, label)
+	}
+	return out
+}
+
+func hasExplicitModelSource(r Req) bool {
+	if r.ExplicitModel != "" || r.RunDefault != "" {
+		return true
+	}
+	_, stage := stageModelLabel(r.Labels, r.Stage)
+	_, plain := plainModelLabel(r.Labels)
+	return stage || plain
+}
+
+func uniqueTierForModel(model, runtimeName string, override map[string]string) string {
+	var matches []string
+	for tier, candidate := range effectiveModelMapFor(runtimeName, override) {
+		if candidate == model {
+			matches = append(matches, tier)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return ""
+}
+
+func portableTierForStage(stage string) string {
+	switch stage {
+	case StagePlan, StageDesign, StageScore, StageReview:
+		return runtime.TierFrontier
+	case StageExplore, StageDebug:
+		return runtime.TierLight
+	default:
+		return runtime.TierStandard
+	}
+}
+
+func isPortableTier(tier string) bool {
+	switch tier {
+	case runtime.TierFrontier, runtime.TierStandard, runtime.TierLight:
+		return true
+	default:
+		return false
+	}
+}
+
+func declaredModelForRuntime(model, runtimeName string, override map[string]string) bool {
+	if runtimeName == "claude" {
+		return false
+	}
+	for _, id := range effectiveModelMapFor(runtimeName, override) {
+		if id == model {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveTier walks the precedence chain and returns the raw (unvalidated)
@@ -202,11 +472,60 @@ func modelMapFor(runtimeName string) (runtime.ModelMap, bool) {
 	if runtimeName == "claude" {
 		return runtime.ClaudeModelMap, true
 	}
+	if runtimeName == "codex" {
+		return runtime.CodexModelMap, true
+	}
 	rt, ok := runtime.Default.Get(runtimeName)
 	if !ok {
 		return nil, false
 	}
 	return rt.ModelMap(), true
+}
+
+func effectiveModelMapFor(runtimeName string, override map[string]string) map[string]string {
+	base, _ := modelMapFor(runtimeName)
+	return effectiveModelMap(base, override)
+}
+
+func effectiveEffortMapFor(runtimeName string, override map[string]string) map[string]string {
+	var base runtime.EffortMap
+	switch runtimeName {
+	case "claude":
+		base = runtime.ClaudeEffortMap
+	case "codex":
+		base = runtime.CodexEffortMap
+	default:
+		if rt, ok := runtime.Default.Get(runtimeName); ok {
+			if mapper, ok := rt.(runtime.EffortMapper); ok {
+				base = mapper.EffortMap()
+			}
+		}
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// validModelForRuntime accepts either one of the runtime's declared concrete
+// models or an operator-allowlisted exact model. Claude's long-standing tier
+// aliases remain valid for compatibility.
+func validModelForRuntime(model, runtimeName string, override map[string]string, allowed []string) bool {
+	if runtimeName == "claude" && validTier(model) {
+		return true
+	}
+	for _, id := range effectiveModelMapFor(runtimeName, override) {
+		if id == model {
+			return true
+		}
+	}
+	return contains(allowed, model)
 }
 
 // effectiveModelMap overlays a project's sparse model_map override
@@ -254,6 +573,39 @@ func plainModelLabel(labels []string) (string, bool) {
 	return "", false
 }
 
+// equivalencyLabel reads the portable model-plus-effort form
+// `equiv:<frontier|standard|light>:<effort>`. It has a separate namespace so
+// existing model:<tier> labels remain exact legacy Claude selections.
+func equivalencyLabel(labels []string) (tier, effort string, ok bool) {
+	for _, l := range labels {
+		if !strings.HasPrefix(l, "equiv:") {
+			continue
+		}
+		return parseEquivalency(strings.TrimPrefix(l, "equiv:"))
+	}
+	return "", "", false
+}
+
+func parseEquivalency(value string) (tier, effort string, ok bool) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	if isPortableTier(parts[0]) {
+		return parts[0], parts[1], true
+	}
+	return "", "", false
+}
+
+func effortLabel(labels []string) (string, bool) {
+	for _, l := range labels {
+		if v, ok := strings.CutPrefix(l, "effort:"); ok && v != "" && !strings.Contains(v, ":") {
+			return v, true
+		}
+	}
+	return "", false
+}
+
 // claudeStageDefaults is claude's stage -> tier default table, preserved
 // byte-for-byte from the pre-koryph-v8u.3 hardcoded switch below (see git
 // history): plan/design/score/review -> opus; implement/docs/test -> sonnet;
@@ -285,6 +637,17 @@ var claudeStageDefaults = map[string]string{
 // claude.
 var runtimeStageDefaults = map[string]map[string]string{
 	"claude": claudeStageDefaults,
+	"codex": {
+		StagePlan:      runtime.CodexModelMap[runtime.TierFrontier],
+		StageDesign:    runtime.CodexModelMap[runtime.TierFrontier],
+		StageScore:     runtime.CodexModelMap[runtime.TierFrontier],
+		StageReview:    runtime.CodexModelMap[runtime.TierFrontier],
+		StageImplement: runtime.CodexModelMap[runtime.TierStandard],
+		StageDocs:      runtime.CodexModelMap[runtime.TierStandard],
+		StageTest:      runtime.CodexModelMap[runtime.TierStandard],
+		StageExplore:   runtime.CodexModelMap[runtime.TierLight],
+		StageDebug:     runtime.CodexModelMap[runtime.TierLight],
+	},
 }
 
 // stageDefault returns runtimeName's default tier for stage. It fails closed

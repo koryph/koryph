@@ -146,7 +146,19 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		}
 	}
 
-	// 3. Seed the phase directory.
+	// 3. Project a runtime's canonical persona source into the prompt before
+	// writing any agent-visible artifact. Claude has a native --agent flag and
+	// therefore does not implement this optional bridge; Codex uses it because
+	// `codex exec` has no equivalent per-invocation selector.
+	if preparer, ok := rt.(runtime.PromptPreparer); ok {
+		prepared, err := preparer.PreparePrompt(s.Worktree, s.Persona, s.Prompt)
+		if err != nil {
+			return Handle{}, fmt.Errorf("dispatch %s: prepare runtime persona prompt: %w", s.PhaseID, err)
+		}
+		s.Prompt = prepared
+	}
+
+	// 4. Seed the phase directory.
 	if len(s.EnvPassthrough) > 0 {
 		names := make([]string, len(s.EnvPassthrough))
 		copy(names, s.EnvPassthrough)

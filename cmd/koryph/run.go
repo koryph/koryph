@@ -57,6 +57,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	only := fs.String("only", "", "dispatch only this specific ready bead id")
 	budget := fs.Float64("budget", 0, "per-run cost ceiling in USD (0 = unlimited)")
 	defaultModel := fs.String("default-model", "", "model for label-less beads")
+	runtimeOnly := fs.String("runtime-only", "", "dispatch only beads normally routed to this runtime")
+	runtimeEquivalent := fs.String("runtime-equivalent", "", "force this runtime using equivalent model capability mappings")
 	autoMerge := fs.Bool("auto-merge", false, "allow auto-merge for merge:auto items")
 	direct := fs.Bool("direct", false, "owner override: skip PRs and merge straight to the default branch (needs branch-protection bypass)")
 	dryRun := fs.Bool("dry-run", false, "plan and print without dispatching")
@@ -73,7 +75,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	dispatchMode := fs.String("dispatch-mode", "", "dispatch mode: wave|rolling (default: project config, else wave)")
 	setGroupedUsage(fs, stdout, "execute one engine run over a project", "[--project ID] [flags]", []flagGroup{
 		{title: "CORE", names: []string{"project", "once", "max", "parent", "only", "dispatch-mode"}},
-		{title: "LAND & REVIEW", names: []string{"auto-merge", "review", "direct", "resume", "dry-run", "default-model"}},
+		{title: "LAND & REVIEW", names: []string{"auto-merge", "review", "direct", "resume", "dry-run", "default-model", "runtime-only", "runtime-equivalent"}},
 		{title: "BUDGET & SAFETY OVERRIDES", names: []string{"budget", "manual", "no-billing-guard", "require-calibration", "allow-api-spend", "allow-unvalidated"}},
 	})
 	if _, err := parseFlags(fs, args); err != nil {
@@ -106,6 +108,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		Only:               *only,
 		BudgetUSD:          *budget,
 		DefaultModel:       *defaultModel,
+		RuntimeOnly:        *runtimeOnly,
+		RuntimeEquivalent:  *runtimeEquivalent,
 		AutoMerge:          *autoMerge,
 		Direct:             *direct,
 		Review:             *review,

@@ -76,16 +76,16 @@ what it installs depends on the project's configured runtime (koryph-v8u.9):
 | Asset | Where | When |
 |---|---|---|
 | **`AGENTS.md`** | repo root | **always** — canonical cross-runtime operating contract |
-| **fallback personas** | `.claude/agents/` | **always** (rendered for the configured runtime) |
-| `koryph-*` slash commands | `.claude/commands/` | Claude Code only (`Capabilities.Personas`) |
-| hook scripts + `settings.json` | `hooks/` + `.claude/settings.json` | Claude Code only (`Capabilities.Hooks`) |
+| **canonical personas** | `agents/` | **always**; Claude links `.claude/agents/` to this source and Codex renders `.codex/agents/` from it |
+| `koryph-*` workflows | `commands/` | Claude links `.claude/commands/`; Codex links `.agents/skills/<name>/SKILL.md` to the same source |
+| hook scripts + runtime hook config | `hooks/` + `.claude/settings.json` / `.codex/hooks.json` | Claude Code and Codex (`Capabilities.Hooks`) |
 
 `AGENTS.md` is the runtime-neutral instruction file read natively by Codex, Cursor, Grok,
 Copilot, opencode, and amp — it documents the koryph operating contract so every runtime
 follows the same rules. Runtimes without hook support rely on **worktree isolation** and
 **merge-time protected-path refusal** for containment instead of in-editor lifecycle guards.
 Note that reading the contract is not the same as being dispatched: **koryph dispatch
-supports Claude Code only today** — support for the other runtimes is alpha and dispatch to
+supports Claude Code and Codex today** — support for the other runtimes is alpha and dispatch to
 them is refused fail-closed. See [AI runtimes: support status](runtimes.md).
 
 The rules are what make koryph's boundaries hold in-editor (Claude Code only): the
@@ -192,6 +192,8 @@ Other useful flags for early exploration:
 | `--parent EPIC` | Scope the bead frontier to a parent epic |
 | `--allow-unvalidated` | Run even if `validate` has not passed yet |
 | `--default-model M` | Model for beads with no explicit label |
+| `--runtime-only R` | Run only beads already routed to runtime `R` |
+| `--runtime-equivalent R` | Run all eligible beads on `R` using portable model equivalents |
 
 ---
 

@@ -2,9 +2,9 @@
 // Copyright (c) 2026 The Koryph Developers
 
 // Package rules installs the koryph enforcement "rules" into a managed
-// project: the hook scripts (hooks/*.sh) and their wiring in
-// .claude/settings.json (the agent-boundary + worktree guards, the bd-prime
-// SessionStart hook, and the intent→beads UserPromptSubmit router, plus the
+// project: the hook scripts (hooks/*.sh) and their runtime-native wiring
+// (the agent-boundary + worktree guards, the bd-prime SessionStart hook, and
+// the intent→beads UserPromptSubmit router; Claude additionally receives its
 // baseline permission allow/deny lists).
 //
 // Hook scripts install like agents/commands — whole files, hash-idempotent,
@@ -15,6 +15,7 @@ package rules
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +34,7 @@ const (
 	SettingsSkipped   = "skipped"   // unparseable/incompatible; left untouched (see --force)
 )
 
-// hookSpec is one koryph hook to ensure present in .claude/settings.json.
+// hookSpec is one koryph hook to ensure present in a native hook manifest.
 type hookSpec struct {
 	event   string // "PreToolUse" | "SessionStart" | "UserPromptSubmit"
 	matcher string // tool matcher ("" for SessionStart/UserPromptSubmit)
@@ -82,18 +83,53 @@ var koryphDeny = []string{
 // paths.HooksDir (NOT the project worktree) and merges the settings wiring. It
 // returns the per-hook copy results and the settings-merge outcome.
 func Install(root string, force bool) ([]scaffold.Result, string, error) {
+	return InstallForRuntime(root, force, "claude")
+}
+
+// InstallForRuntime installs the central guard scripts and renders their
+// runtime-native hook wiring. The guards themselves are portable shell; only
+// the hook manifest belongs to a particular agent runtime.
+func InstallForRuntime(root string, force bool, runtimeName string) ([]scaffold.Result, string, error) {
 	hookResults, err := scaffold.CopyEmbed(hooks.FS, paths.HooksDir(), force, 0o755)
 	if err != nil {
 		return nil, "", err
 	}
-	settings, err := MergeSettings(root, force)
-	return hookResults, settings, err
+	switch runtimeName {
+	case "", "claude":
+		settings, err := MergeSettings(root, force)
+		return hookResults, settings, err
+	case "codex":
+		settings, err := MergeCodexHooks(root, force)
+		return hookResults, settings, err
+	default:
+		return hookResults, "", fmt.Errorf("rules: runtime %q has no native hook renderer", runtimeName)
+	}
 }
 
 // MergeSettings additively merges the koryph hooks and permission lists into
 // <root>/.claude/settings.json, preserving every other key. See the package doc.
 func MergeSettings(root string, force bool) (string, error) {
-	path := filepath.Join(root, ".claude", "settings.json")
+	return mergeHookFile(filepath.Join(root, ".claude", "settings.json"), force, koryphHooks, true)
+}
+
+// Codex's project hooks use the same JSON hook envelope as Claude Code but
+// match Codex tool names (notably apply_patch rather than Edit/Write). Keeping
+// this separate projection makes the shared guard scripts a single source of
+// truth without teaching either runtime the other's configuration vocabulary.
+var koryphCodexHooks = []hookSpec{
+	{event: "PreToolUse", matcher: "^Bash$", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh"`, marker: "agent-boundary-guard.sh"},
+	{event: "PreToolUse", matcher: "^(Bash|apply_patch)$", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/worktree-guard.sh"`, marker: "worktree-guard.sh"},
+	{event: "SessionStart", matcher: "^(startup|resume|clear)$", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-prime.sh"  # replaces: bd prime --hook-json`, marker: "bd prime"},
+	{event: "UserPromptSubmit", command: `"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-intent.sh"`, marker: "koryph-intent.sh"},
+}
+
+// MergeCodexHooks additively merges koryph's native hook registrations into
+// <root>/.codex/hooks.json, preserving any user-owned entries.
+func MergeCodexHooks(root string, force bool) (string, error) {
+	return mergeHookFile(filepath.Join(root, ".codex", "hooks.json"), force, koryphCodexHooks, false)
+}
+
+func mergeHookFile(path string, force bool, specs []hookSpec, includePermissions bool) (string, error) {
 	raw, rerr := os.ReadFile(path)
 	existed := rerr == nil
 
@@ -107,7 +143,7 @@ func MergeSettings(root string, force bool) (string, error) {
 		}
 	}
 
-	changed, ok := mergeInto(cur)
+	changed, ok := mergeHooksInto(cur, specs, includePermissions)
 	if !ok {
 		return SettingsSkipped, nil // incompatible shape — leave it, warn upstream
 	}
@@ -131,16 +167,12 @@ func MergeSettings(root string, force bool) (string, error) {
 	return SettingsCreated, nil
 }
 
-// mergeInto adds the koryph hooks and permission entries to cur without
-// removing anything. changed reports whether cur was modified; ok is false when
-// an existing hooks/permissions subtree has an incompatible (non-object/array)
-// shape, in which case cur is left untouched.
-func mergeInto(cur map[string]any) (changed, ok bool) {
+func mergeHooksInto(cur map[string]any, specs []hookSpec, includePermissions bool) (changed, ok bool) {
 	hks, ok := getMap(cur, "hooks")
 	if !ok {
 		return false, false
 	}
-	for _, h := range koryphHooks {
+	for _, h := range specs {
 		arr, ok := getSlice(hks, h.event)
 		if !ok {
 			return false, false
@@ -152,6 +184,9 @@ func mergeInto(cur map[string]any) (changed, ok bool) {
 		hks[h.event] = newArr
 	}
 	cur["hooks"] = hks
+	if !includePermissions {
+		return changed, true
+	}
 
 	perms, ok := getMap(cur, "permissions")
 	if !ok {

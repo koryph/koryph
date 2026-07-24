@@ -138,6 +138,55 @@ func TestReviewNonBlockingWithProse(t *testing.T) {
 	}
 }
 
+func TestReviewContractOmissionFailsClosed(t *testing.T) {
+	repo := reviewRepo(t)
+	envelope := `{"type":"result","result":"{\"blocking\":false,\"findings\":[]}"}`
+	capture := filepath.Join(t.TempDir(), "stdin.txt")
+	t.Setenv("KORYPH_TEST_REVIEW_STDIN", capture)
+	o := baseOpts(t, repo, fakeClaude(t, envelope))
+	o.Contract = Contract{
+		ID: "bd-42", Title: "Implement the engine behavior",
+		Description:        "Change internal/engine, not an unrelated subsystem.",
+		AcceptanceCriteria: "- Engine enforces the behavior\n- Regression test passes",
+		Labels:             []string{"fp:go:engine"}, Runtime: "codex", CompletionState: "done",
+	}
+
+	v := Review(context.Background(), o)
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+	if !v.Blocking {
+		t.Fatal("review without criterion assessments was not blocked")
+	}
+	if len(v.Findings) != 2 {
+		t.Fatalf("Findings=%+v, want one omission finding per criterion", v.Findings)
+	}
+	prompt, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"bd-42", "Effective runtime: codex", "fp:go:engine", "AC1:", "AC2:", "wrong subsystem"} {
+		if !strings.Contains(string(prompt), want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestReviewUnsatisfiedCriterionIsBlocking(t *testing.T) {
+	repo := reviewRepo(t)
+	envelope := `{"type":"result","result":"{\"blocking\":false,\"criteria\":[{\"id\":\"AC1\",\"status\":\"satisfied\",\"evidence\":\"feature.go\"},{\"id\":\"AC2\",\"status\":\"unsatisfied\",\"evidence\":\"no regression test exists\"}],\"findings\":[]}"}`
+	o := baseOpts(t, repo, fakeClaude(t, envelope))
+	o.Contract = Contract{AcceptanceCriteria: "- Feature exists\n- Regression test exists"}
+
+	v := Review(context.Background(), o)
+	if v.Degraded {
+		t.Fatalf("verdict degraded: %+v", v)
+	}
+	if !v.Blocking {
+		t.Fatal("unsatisfied acceptance criterion did not force blocking")
+	}
+}
+
 // TestReviewImmuneToFrontendDiffTokens is the regression for the live bug: a
 // Svelte-heavy diff makes the reviewer quote frontend template tokens ({@html},
 // a {other_namespace%-*} glob, a raw {looks:like,json} snippet) in its prose

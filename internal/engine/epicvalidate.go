@@ -186,6 +186,37 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 		}
 		epicBeadTimeout, _ := timeoutcfg.BeadTimeout(epic.Labels)
 		epicTimeout := timeoutcfg.Resolve(epicBeadTimeout, rawEpicTimeout, r.systemTimeoutSec)
+		runtimeName := resolvedRuntimeName
+		validationRT := r.rt
+		if validationRT != nil {
+			runtimeName = validationRT.Name()
+		} else {
+			// Unit/test callers can exercise the in-loop validation seam without
+			// Run's normal runtime preflight. Preserve the historical Claude
+			// default rather than dereferencing a nil runtime.
+			var registered bool
+			validationRT, registered = runtimeForName(runtimeName)
+			if !registered {
+				r.progress("epic %s: validator runtime %q is not registered", epicID, runtimeName)
+				continue
+			}
+		}
+		// Effective() supplies Claude's legacy "opus" default for backwards
+		// compatibility. It is not an operator-selected concrete model, so do
+		// not pass it as ExplicitModel for another runtime; let that runtime's
+		// frontier persona tier/stage default choose its own equivalent.
+		explicitValidatorModel := ""
+		if r.cfg.EpicValidation != nil {
+			explicitValidatorModel = r.cfg.EpicValidation.Model
+		}
+		validatorModel, modelErr := r.resolveModelForRuntime(modelroute.StageReview, epic, explicitValidatorModel, runtimeName)
+		if modelErr != nil {
+			r.progress("epic %s: validator model resolution: %v", epicID, modelErr)
+			continue
+		}
+		if validateEffort == "" {
+			validateEffort = validatorModel.Effort
+		}
 		opts := epicreview.Opts{
 			EpicID:          epicID,
 			EpicTitle:       epic.Title,
@@ -197,8 +228,9 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 			RepoRoot:        r.rec.Root,
 			Profile:         r.profile,
 			Persona:         evcfg.Persona,
-			Model:           evcfg.Model,
+			Model:           validatorModel.Model,
 			Effort:          validateEffort,
+			Runtime:         validationRT,
 			TimeoutSec:      epicTimeout,
 			OutDir:          outDir,
 			// Deliberately the project's live config, NOT a bead-scoped arm

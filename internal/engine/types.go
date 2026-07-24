@@ -60,22 +60,30 @@ const (
 
 // Options configures one engine run.
 type Options struct {
-	ProjectID        string
-	Max              int     // wave width cap (project config may lower it)
-	Once             bool    // exactly one wave
-	DryRun           bool    // plan + print, no dispatch
-	Resume           bool    // classify + re-dispatch the latest run first
-	Parent           string  // epic scope for the bd frontier
-	Only             string  // dispatch only this specific ready bead id ("" = whole frontier)
-	BudgetUSD        float64 // per-run cost ceiling in USD (0 = unlimited)
-	DefaultModel     string  // model for label-less beads
-	AutoMerge        bool    // allow auto-merge for merge:auto/config-auto items
-	Direct           bool    // owner override: skip PRs, merge straight to the default branch
-	Review           bool    // post-implementation review pass before merge
-	Manual           bool    // single manual dispatch semantics (quota-exempt)
-	AllowAPISpend    bool    // permit api-key billing fallback at governor stop
-	AllowUnvalidated bool    // permit runs on non-validated projects (canary)
-	NoPreflight      bool
+	ProjectID    string
+	Max          int     // wave width cap (project config may lower it)
+	Once         bool    // exactly one wave
+	DryRun       bool    // plan + print, no dispatch
+	Resume       bool    // classify + re-dispatch the latest run first
+	Parent       string  // epic scope for the bd frontier
+	Only         string  // dispatch only this specific ready bead id ("" = whole frontier)
+	BudgetUSD    float64 // per-run cost ceiling in USD (0 = unlimited)
+	DefaultModel string  // model for label-less beads
+	// RuntimeOnly narrows the frontier to beads whose normal runtime
+	// resolution is this runtime. It never rewrites a bead's model/runtime
+	// declaration.
+	RuntimeOnly string
+	// RuntimeEquivalent forces all selected beads through this runtime. Their
+	// normal model selection is translated through portable capability tiers;
+	// it is mutually exclusive with RuntimeOnly.
+	RuntimeEquivalent string
+	AutoMerge         bool // allow auto-merge for merge:auto/config-auto items
+	Direct            bool // owner override: skip PRs, merge straight to the default branch
+	Review            bool // post-implementation review pass before merge
+	Manual            bool // single manual dispatch semantics (quota-exempt)
+	AllowAPISpend     bool // permit api-key billing fallback at governor stop
+	AllowUnvalidated  bool // permit runs on non-validated projects (canary)
+	NoPreflight       bool
 	// NoBillingGuard disables the governor's throttling constraints for
 	// this run (preflight, drain/stop blocking, slot scaling): usage is
 	// still measured, logged, and calibrated, but never blocks dispatch.

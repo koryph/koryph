@@ -16,7 +16,6 @@ import (
 	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
-	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/modelroute"
@@ -356,6 +355,8 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		// recommendations onto the frontier BEFORE the wave builds, so this
 		// very wave routes on them.
 		issues = r.applyLearnedModels(ctx, issues)
+		issues, prerequisiteDeferred := r.applyPrerequisitePolicy(ctx, issues)
+		issues, runtimeSkipped := r.applyRuntimePolicy(issues)
 		active := r.activeIDs()
 		// Cap the frontier at the FREE capacity, not the raw width (koryph-bzf).
 		// Historically wave mode entered each iteration fully idle (pollUntilIdle
@@ -384,6 +385,8 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			if err != nil {
 				return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
 			}
+			w.Skipped = append(runtimeSkipped, w.Skipped...)
+			w.Deferred = append(prerequisiteDeferred, w.Deferred...)
 			r.captureFrontier(w)
 		}
 
@@ -397,6 +400,21 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 
 		// Drained: nothing eligible, nothing active, nothing batched.
 		if eligible == 0 && len(active) == 0 && len(w.Items) == 0 {
+			if len(prerequisiteDeferred) > 0 {
+				r.reportWaveSkips(w)
+				r.run.Status = ledger.RunDone
+				_ = r.store.FinalizeRun(r.run)
+				r.progress("no ready work has prerequisites present in %s (%d bead(s) deferred)",
+					r.rec.DefaultBranch, len(prerequisiteDeferred))
+				return r.outcome(ExitOK, "ready work has missing prerequisite commits", false), nil
+			}
+			if len(runtimeSkipped) > 0 {
+				r.reportWaveSkips(w)
+				r.run.Status = ledger.RunDone
+				_ = r.store.FinalizeRun(r.run)
+				r.progress("runtime-only %s: no ready work selected (%d bead(s) skipped)", r.opts.RuntimeOnly, len(runtimeSkipped))
+				return r.outcome(ExitOK, "no ready work for runtime-only policy", false), nil
+			}
 			r.run.Status = ledger.RunDrained
 			_ = r.store.FinalizeRun(r.run)
 			r.dropDemand() // withdraw from the fair-share denominator
@@ -444,18 +462,22 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		}
 
 		if allowDispatch {
+			if err := r.validateEquivalentModels(w.Items); err != nil {
+				return r.outcome(ExitFatal, "runtime equivalency failed", false), err
+			}
 			r.progress("wave %d: %d ready, dispatching %d%s",
 				r.run.Wave, w.ReadyCount, len(w.Items), r.windowNote(calibrated, usage, est))
 			r.reportWaveSkips(w)
 
 			if r.opts.DryRun {
 				for _, it := range w.Items {
-					model := it.Model
-					if model == "" {
-						model = "(stage default)"
+					runtimeName, runtimeWhy := r.effectiveRuntimeFor(it.Issue)
+					res, effort, err := r.resolveModel(dispatchReq{issue: it.Issue}, runtimeName)
+					if err != nil {
+						return r.outcome(ExitFatal, "runtime equivalency failed", false), err
 					}
-					r.progress("dry-run: would dispatch %s (%s) model %s footprint %s",
-						it.Issue.ID, it.Issue.Title, model, it.Footprint)
+					r.progress("dry-run: would dispatch %s (%s) runtime %s (%s) model %s effort %s rationale %s footprint %s",
+						it.Issue.ID, it.Issue.Title, runtimeName, runtimeWhy, res.Model, effort, res.Rationale, it.Footprint)
 				}
 				_ = r.store.FinalizeRun(r.run)
 				return r.outcome(ExitOK, "dry-run", false), nil
@@ -799,7 +821,7 @@ func (r *runner) waveEstimate(items []sched.Item) float64 {
 		if model == "" {
 			model = modelroute.TierSonnet
 		}
-		runtimeName, _ := modelroute.ResolveRuntimeName(it.Issue.Labels, r.cfg.DefaultRuntime)
+		runtimeName, _ := r.effectiveRuntimeFor(it.Issue)
 		// r.rec is nil in some estimator-only unit tests that build a bare
 		// &runner{cfg:..., quotaCfg:...} (no registry record) — guard rather
 		// than dereference, matching health.go's existing "r.rec != nil"
@@ -1169,31 +1191,7 @@ func (r *runner) resolveModel(q dispatchReq, runtimeName string) (modelroute.Res
 		}, q.frozenEffort, nil
 	}
 
-	// Auto-filed docs-update beads (epic validation §4b, label validation:docs)
-	// dispatch as the docs stage: PersonaFor(StageDocs) routes them to the
-	// docs-author persona instead of the implementer. Everything else stays
-	// implement-stage.
-	stage := modelroute.StageImplement
-	if q.issue.HasLabel(epicreview.LabelDocs) {
-		stage = modelroute.StageDocs
-	}
-	res, err := modelroute.Resolve(modelroute.Req{
-		Stage:         stage,
-		Labels:        q.issue.Labels,
-		RunDefault:    r.opts.DefaultModel,
-		AllowedModels: r.rec.AllowedModels,
-		Stages:        r.cfg.Stages,
-		// RepoRoot/ModelMap enable the koryph-v8u.10 persona-tier resolution
-		// step inside Resolve: a bead model:<tier> label still wins unchanged;
-		// absent that, the implement-stage persona's `tier` frontmatter
-		// resolves through the selected runtime's ModelMap (overlaid with the
-		// project's ModelMap override) before falling back to the persona's
-		// legacy `model` pin and finally the runtime-namespaced hardcoded
-		// stage default (koryph-v8u.3).
-		RepoRoot: r.rec.Root,
-		ModelMap: r.cfg.ModelMap,
-		Runtime:  runtimeName,
-	})
+	res, err := r.resolveModelForRuntime(r.implementationStage(q.issue), q.issue, "", runtimeName)
 	if err != nil {
 		return modelroute.Resolution{}, "", err
 	}
@@ -1205,6 +1203,20 @@ func (r *runner) resolveModel(q dispatchReq, runtimeName string) (modelroute.Res
 		effort = metaEffort
 	}
 	return res, effort, nil
+}
+
+func mergeStringMaps(base, overlay map[string]string) map[string]string {
+	if len(overlay) == 0 {
+		return base
+	}
+	out := make(map[string]string, len(base)+len(overlay))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range overlay {
+		out[k] = v
+	}
+	return out
 }
 
 // dispatchBead runs the full dispatch flow for one bead: model routing,
@@ -1228,19 +1240,32 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	proxyID, proxyBaseURL := r.rec.AgentProxy.ArmFor(beadID)
 	proxyConfigured := r.rec.AgentProxy != nil && r.rec.AgentProxy.BaseURL != ""
 
-	// Runtime selection (koryph-v8u.3): bead `runtime:<name>` label > project
-	// default_runtime > "claude" (modelroute.ResolveRuntimeName). Dispatch
-	// itself only ever drives the claude CLI today — no other runtime's
-	// worktree/backend/ledger wiring exists yet — so anything other than
-	// "claude" blocks the slot right here, before any worktree or backend
-	// work happens, rather than silently falling back to claude (which would
-	// dispatch a bead under an identity/account/model policy the operator
-	// never asked for).
-	runtimeName, runtimeWhy := modelroute.ResolveRuntimeName(q.issue.Labels, r.cfg.DefaultRuntime)
-	if runtimeName != "claude" {
+	// Runtime selection normally follows bead runtime:<name> then project
+	// default_runtime. --runtime-only may only reach a matching normal route;
+	// --runtime-equivalent deliberately replaces it after preserving the source
+	// decision for model equivalency translation.
+	normalRuntime, normalWhy := r.normalRuntimeFor(q.issue)
+	if r.opts.RuntimeOnly != "" && normalRuntime != r.opts.RuntimeOnly {
+		r.blockSlot(beadID, q, fmt.Sprintf("runtime-only %s refuses normal runtime %s via %s", r.opts.RuntimeOnly, normalRuntime, normalWhy))
+		return
+	}
+	runtimeName, runtimeWhy := r.effectiveRuntimeFor(q.issue)
+	rt, ok := runtimeForName(runtimeName)
+	if !ok {
 		r.blockSlot(beadID, q, fmt.Sprintf(
-			"runtime %s not available (dispatch only supports claude today; resolved via %s)",
+			"runtime %s is not registered (resolved via %s)",
 			runtimeName, runtimeWhy))
+		return
+	}
+	if !runtimeEnabled(r.cfg, runtimeName) {
+		r.blockSlot(beadID, q, fmt.Sprintf("runtime %s is not enabled for this project (resolved via %s)", runtimeName, runtimeWhy))
+		return
+	}
+	ra := r.rec.AccountFor(runtimeName)
+	profile := account.Profile{Name: r.rec.AccountProfile, ConfigDir: ra.ConfigDir}
+	expectedIdentity := ra.ExpectedIdentity
+	if ra.EffectiveAuthMode() != registry.AuthModeSubscription && rt.Name() != "claude" {
+		r.blockSlot(beadID, q, fmt.Sprintf("runtime %s does not support koryph-managed %s credentials; use its native login", runtimeName, ra.EffectiveAuthMode()))
 		return
 	}
 
@@ -1291,7 +1316,19 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	sessionID := newSessionID()
 	sessionName := "koryph/" + r.opts.ProjectID + "/" + beadID + "/a" + strconv.Itoa(q.attempt)
 
-	handle, err := r.backend.Dispatch(ctx, dispatch.Spec{
+	backend := r.backend
+	if r.rt != nil && rt.Name() != r.rt.Name() {
+		backend = &dispatch.CLIBackend{Runtime: rt}
+	}
+	maxBudgetUSD := r.quotaCfg.PerAgentMaxUSD
+	if !rt.Capabilities().BudgetFlag {
+		maxBudgetUSD = 0
+	}
+	resumeSessionID := q.resumeSessionID
+	if !rt.Capabilities().Resume {
+		resumeSessionID = ""
+	}
+	handle, err := backend.Dispatch(ctx, dispatch.Spec{
 		ProjectID:        r.opts.ProjectID,
 		RepoRoot:         r.rec.Root,
 		RunID:            r.run.RunID,
@@ -1302,17 +1339,17 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		Persona:          res.Persona,
 		Model:            res.Model,
 		Effort:           effort,
-		Profile:          r.profile,
-		ExpectedIdentity: r.expectedIdentity,
+		Profile:          profile,
+		ExpectedIdentity: expectedIdentity,
 		Billing:          r.billing,
 		APIKey:           r.apiKey,
 		Credential:       r.credential,
 		CredentialEnvVar: r.credentialEnvVar,
-		MaxBudgetUSD:     r.quotaCfg.PerAgentMaxUSD,
+		MaxBudgetUSD:     maxBudgetUSD,
 		Prompt:           prompt,
 		SessionID:        sessionID,
 		SessionName:      sessionName,
-		ResumeSessionID:  q.resumeSessionID,
+		ResumeSessionID:  resumeSessionID,
 		BeadsDir:         r.beadsDir,
 		Attempt:          q.attempt,
 		SSHAuthSock:      r.sshAuthSock,
@@ -1480,6 +1517,10 @@ func (r *runner) reportWaveSkips(w sched.Wave) {
 			continue
 		}
 		r.reportedSkips[s.ID] = true
+		if strings.HasPrefix(s.Reason, "runtime-only ") {
+			r.progress("skipped %s: %s — excluded by this run's runtime policy", s.ID, s.Reason)
+			continue
+		}
 		r.progress("skipped %s: %s — not dispatchable as-is (file as task/bug/chore; area:* label; drop gt:*)", s.ID, s.Reason)
 	}
 	if len(w.Deferred) == 0 {

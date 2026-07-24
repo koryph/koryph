@@ -14,6 +14,7 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/sched"
 )
 
@@ -21,8 +22,9 @@ import (
 // rounding — mirrors quota's own test helper of the same name.
 func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
-// runtimeLabelBD serves a single ready bead labeled runtime:codex — a runtime
-// dispatch never actually drives today (koryph-v8u.3).
+// runtimeLabelBD serves a single ready bead labeled runtime:codex. The fixture
+// deliberately does not enable Codex in its project config, exercising the
+// fail-closed enabled-runtime gate before any worktree/backend work begins.
 const runtimeLabelBD = `#!/bin/sh
 dir="$FAKE_BD_DIR"
 printf '%s\n' "$*" >> "$dir/bd.log"
@@ -42,11 +44,78 @@ case "$1" in
 esac
 `
 
-// TestDispatchBlocksUnavailableRuntime proves a bead labeled runtime:<name>
-// naming anything other than claude is BLOCKED, never silently dispatched
-// under claude (koryph-v8u.3): dispatch today only ever drives the claude
-// CLI, so any other selection — registered in runtime.Default or not — must
-// fail closed with a clear note.
+const runtimeOnlyMixedBD = `#!/bin/sh
+dir="$FAKE_BD_DIR"
+printf '%s\n' "$*" >> "$dir/bd.log"
+case "$1" in
+  ready)
+    if [ -f "$dir/ready_served" ]; then
+      echo '[]'
+    else
+      touch "$dir/ready_served"
+      echo '[{"id":"tb-codex","title":"Codex bead","description":"do the work","status":"open","priority":0,"issue_type":"task","labels":["fp:codex","runtime:codex","model:gpt-5.6-terra"]},{"id":"tb-claude","title":"Claude bead","description":"do the work","status":"open","priority":1,"issue_type":"task","labels":["fp:claude","runtime:claude"]}]'
+    fi
+    ;;
+  version) echo "bd version 1.0.5" ;;
+  update|close|comment) exit 0 ;;
+  show) exit 1 ;;
+  *) exit 1 ;;
+esac
+`
+
+func TestRuntimeOnlyFiltersForeignRuntimeBeforeDispatch(t *testing.T) {
+	f := newFixture(t, fixOpts{bdScript: runtimeOnlyMixedBD})
+	var out bytes.Buffer
+	opts := baseOptions(&out)
+	opts.RuntimeOnly = "claude"
+
+	got, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, out.String())
+	}
+	if got.Dispatched != 1 || got.Merged != 1 {
+		t.Fatalf("Outcome = %+v, want exactly the Claude bead dispatched", got)
+	}
+	log := f.bdLog(t)
+	if strings.Contains(log, "update tb-codex --claim") || !strings.Contains(log, "update tb-claude --claim") {
+		t.Errorf("runtime-only claims =\n%s\nwant only tb-claude", log)
+	}
+	if !strings.Contains(out.String(), "runtime-only claude") {
+		t.Errorf("output = %q, want runtime-only audit rationale", out.String())
+	}
+}
+
+func TestRuntimeEquivalentMapsNormalSourceModelToTargetRuntime(t *testing.T) {
+	r := &runner{
+		opts: Options{RuntimeEquivalent: "codex"},
+		cfg:  &project.Config{DefaultRuntime: "claude", Runtimes: map[string]project.RuntimeConfig{"codex": {Enabled: true}}},
+		rec:  &registry.Record{Root: t.TempDir(), AllowedModels: []string{"haiku", "sonnet", "opus"}},
+	}
+	issue := beads.Issue{ID: "tb", Labels: []string{"runtime:claude", "model:opus", "effort:xhigh"}}
+	if normal, _ := r.normalRuntimeFor(issue); normal != "claude" {
+		t.Fatalf("normal runtime = %q, want claude", normal)
+	}
+	if effective, _ := r.effectiveRuntimeFor(issue); effective != "codex" {
+		t.Fatalf("effective runtime = %q, want codex", effective)
+	}
+	res, err := r.resolveModelForRuntime("implement", issue, "", "codex")
+	if err != nil {
+		t.Fatalf("resolve equivalent: %v", err)
+	}
+	if res.Model != "gpt-5.6-terra" || res.Effort != "high" || !strings.Contains(res.Rationale, "runtime equivalent codex") {
+		t.Errorf("resolution = %+v, want Codex equivalent provenance", res)
+	}
+}
+
+func TestRuntimeExecutionFlagsAreMutuallyExclusive(t *testing.T) {
+	got, err := Run(context.Background(), Options{RuntimeOnly: "claude", RuntimeEquivalent: "codex"})
+	if err == nil || got.Code != ExitUsage || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("Run() = (%+v, %v), want usage mutual-exclusion error", got, err)
+	}
+}
+
+// TestDispatchBlocksUnavailableRuntime proves a bead selecting a registered
+// but disabled runtime is BLOCKED, never silently dispatched under Claude.
 func TestDispatchBlocksUnavailableRuntime(t *testing.T) {
 	f := newFixture(t, fixOpts{bdScript: runtimeLabelBD})
 	var out bytes.Buffer
@@ -69,12 +138,12 @@ func TestDispatchBlocksUnavailableRuntime(t *testing.T) {
 	if sl == nil || sl.Status != ledger.SlotBlocked {
 		t.Fatalf("slot = %+v, want blocked", sl)
 	}
-	if !strings.Contains(sl.Note, "runtime codex not available") {
-		t.Errorf("slot note = %q, want it to name the unavailable runtime", sl.Note)
+	if !strings.Contains(sl.Note, "runtime codex is not enabled") {
+		t.Errorf("slot note = %q, want it to name the disabled runtime", sl.Note)
 	}
 	// Never dispatched: no worktree/backend work, no bd claim.
 	if log := f.bdLog(t); strings.Contains(log, "--claim") {
-		t.Errorf("bead was claimed despite an unavailable runtime:\n%s", log)
+		t.Errorf("bead was claimed despite a disabled runtime:\n%s", log)
 	}
 }
 

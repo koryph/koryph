@@ -3,9 +3,11 @@
 
 # Fallback personas
 
-These are the global fallback agent personas `koryph agents install` copies
-into a project's `.claude/agents/` (a project-local persona of the same role
-always wins). `internal/personas` embeds this directory (`//go:embed *.md`,
+These are the canonical fallback agent personas. `koryph agents install`
+projects this one Markdown corpus into the active runtime's native directory:
+`.claude/agents/` for Claude Code and `.codex/agents/` for Codex (a
+project-local canonical persona of the same role always wins). `internal/personas`
+embeds this directory (`//go:embed *.md`,
 which also embeds this README — it carries no `tier`/`model` frontmatter, so
 the installer's per-runtime rendering below always leaves it verbatim).
 
@@ -34,19 +36,18 @@ runtime's model map.
 
 ## Installer rendering (koryph-v8u.12)
 
-`koryph agents install --runtime <name>` renders these frontmatter files for
-a non-Claude target BEFORE they ever reach `internal/modelroute`: it rewrites
-each persona's `model:` scalar through `<name>`'s `runtime.Runtime.ModelMap`,
-keyed by that same persona's `tier:` scalar, so a codex/cursor/grok project
-lands with its own model pin instead of a Claude model name it cannot honor.
-`--runtime` unset (or `"claude"`) is a verbatim, byte-identical copy — no
-rendering pass runs at all for claude, which is the default and the
-compatibility contract every pre-koryph-v8u.12 install depends on. A persona
-with no `tier:`, or whose tier the target runtime's `ModelMap` does not
-cover, is installed UNCHANGED (still carrying the Claude `model:` pin) rather
-than having a value fabricated; the installer notes which personas landed
-this way. An unregistered `--runtime` name is a hard error (fail closed) —
-see `internal/personas.InstallForRuntime`.
+`koryph agents install --runtime <name>` renders a runtime-native projection
+from these source files. Codex receives TOML custom-agent definitions; its
+direct `codex exec` dispatches also receive this same canonical content as a
+protected prompt prefix because the CLI has no `--agent` flag. Other runtimes
+continue to receive a minimally rewritten Markdown projection until they
+provide a native renderer.
+For Claude, `.claude/agents` is a live relative-link projection of the source;
+for Codex, `.codex/agents` is TOML rendered from it while dispatch injects the
+same canonical Markdown directly. A persona with no `tier:`, or whose tier
+the target runtime's `ModelMap` does not cover, is installed unchanged rather
+than having a value fabricated. An unregistered `--runtime` name is a hard
+error (fail closed) — see `internal/personas.InstallForRuntime`.
 
 ## Resolution precedence (koryph-v8u.10)
 

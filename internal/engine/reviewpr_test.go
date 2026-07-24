@@ -89,6 +89,33 @@ func TestReviewPRAnalysisPrintsFindingsNeverApproves(t *testing.T) {
 	}
 }
 
+func TestReviewPRUsesConfiguredCodexRuntime(t *testing.T) {
+	host := &fakePRHost{meta: PRMeta{Number: 5, Author: "alice", URL: "https://x/pull/5"}}
+	rec := &registry.Record{
+		Root: t.TempDir(), DefaultBranch: "main", AccountProfile: "personal",
+		RuntimeAccounts: map[string]registry.RuntimeAccount{
+			"codex": {ConfigDir: "/cfg/codex", ExpectedIdentity: "codex:test"},
+		},
+	}
+	cfg := &project.Config{
+		DefaultRuntime: "codex",
+		Runtimes:       map[string]project.RuntimeConfig{"codex": {Enabled: true}},
+	}
+	var got review.Opts
+	if _, err := ReviewPR(context.Background(), rec, cfg, host, captureReviewer(review.Verdict{}, &got), ReviewPROpts{Selector: "5"}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Runtime == nil || got.Runtime.Name() != "codex" {
+		t.Fatalf("review runtime = %v, want codex", got.Runtime)
+	}
+	if got.Model != "gpt-5.6-terra" {
+		t.Errorf("review model = %q, want Codex frontier model", got.Model)
+	}
+	if got.Profile.ConfigDir != "/cfg/codex" {
+		t.Errorf("review config dir = %q, want /cfg/codex", got.Profile.ConfigDir)
+	}
+}
+
 // TestReviewPRApproveRegistersApproval: --approve registers the operator's
 // approval via the host (with the body) and reports it.
 func TestReviewPRApproveRegistersApproval(t *testing.T) {

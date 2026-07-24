@@ -144,8 +144,12 @@ func attemptValidate(ctx context.Context, o Opts, prompt string) Verdict {
 	// Route the one-shot JSON validator spawn through the resolved Runtime seam
 	// (koryph-fiv finding #1): read-only `--permission-mode plan`, no
 	// fallback/max-budget, matching the pre-seam argv exactly.
-	rt := claude.New(o.ClaudeBin)
+	rt := o.Runtime
+	if rt == nil {
+		rt = claude.New(o.ClaudeBin)
+	}
 	spec := runtime.JSONSpec{
+		RepoRoot:       o.RepoRoot,
 		Persona:        o.Persona,
 		Model:          o.Model,
 		Effort:         o.Effort,

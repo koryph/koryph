@@ -224,9 +224,10 @@ never leaves you without an install path.
 
 ## The `/koryph-adopt` skill
 
-Adoption installs a `/koryph-adopt` slash command into `.claude/commands`
-alongside `/koryph-plan` and friends, so an agent session in an adopted
-workspace can drive this whole wizard conversationally — adopt *another*
+Adoption installs the canonical `commands/koryph-adopt.md` workflow. Claude
+exposes it as `/koryph-adopt` through `.claude/commands`; Codex exposes the
+same file as a repository skill through `.agents/skills`. An agent session in
+an adopted workspace can drive this whole wizard conversationally — adopt *another*
 repo (`/koryph-adopt ~/src/other-repo`), or re-run it here as a repair
 pass. The skill previews with `--dry-run --json`, asks you for exactly the
 fail-closed values the wizard couldn't derive, and never runs a `sudo`

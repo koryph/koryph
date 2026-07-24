@@ -46,9 +46,13 @@ import "time"
 
 // Issue is the subset of bd's JSON the engine consumes.
 type Issue struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description,omitempty"`
+	ID                 string  `json:"id"`
+	Title              string  `json:"title"`
+	Description        string  `json:"description,omitempty"`
+	AcceptanceCriteria string  `json:"acceptance_criteria,omitempty"`
+	CloseReason        string  `json:"close_reason,omitempty"`
+	DependencyType     string  `json:"dependency_type,omitempty"`
+	Dependencies       []Issue `json:"dependencies,omitempty"`
 	// Notes carries bd's free-form `notes` field verbatim, as populated by
 	// `bd update --notes`/`--append-notes`. This is the reliable channel for
 	// an operator addendum sent while a bead is still queued (koryph-o72):

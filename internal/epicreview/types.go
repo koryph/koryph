@@ -21,7 +21,10 @@
 //     improvements surfaced by the epic, not obligations it failed.
 package epicreview
 
-import "github.com/koryph/koryph/internal/account"
+import (
+	"github.com/koryph/koryph/internal/account"
+	"github.com/koryph/koryph/internal/runtime"
+)
 
 // Gap is one completeness gap: a design goal or acceptance criterion that the
 // union of the epic's children did not fully meet.
@@ -102,6 +105,7 @@ type Opts struct {
 	Model      string          // default opus
 	Effort     string          // reasoning-effort hint; empty omits --effort (runtime default)
 	ClaudeBin  string          // default "claude"
+	Runtime    runtime.Runtime // optional; defaults to Claude for compatibility
 	TimeoutSec int             // default 420
 	Attempts   int             // validator spawn attempts before degrading (default 3)
 

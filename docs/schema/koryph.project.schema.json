@@ -353,12 +353,27 @@
           "type": "boolean",
           "description": "Enabled gates whether this project allows dispatching under this\nruntime at all; a bead or default_runtime naming a disabled runtime is\nrefused the same as an unregistered one. False (the default, also when\nthe whole entry is omitted) requires an explicit per-runtime opt-in —\nthe safer default while only claude is wired end-to-end in the engine."
         },
+        "default_model": {
+          "type": "string",
+          "description": "DefaultModel is this runtime's native default for a bead without a\nmodel:/equiv: label. It is deliberately scoped to the runtime so an\nenabled Codex projection never makes a Claude-native model leak into a\nCodex dispatch. It loses to koryph run --default-model."
+        },
+        "default_equivalent": {
+          "type": "string",
+          "description": "DefaultEquivalent is the portable fallback for this runtime's\nlabel-less work, in \"frontier:xhigh\" form. It is mutually exclusive\nwith DefaultModel and maps through this RuntimeConfig's ModelMap and\nEffortMap. Use it when the project wants the same capability policy on\nevery supported runtime."
+        },
         "model_map": {
           "additionalProperties": {
             "type": "string"
           },
           "type": "object",
           "description": "ModelMap sparsely overrides this runtime's own tier-\u003emodel table\n(mirrors Config.ModelMap's shape, scoped to just this runtime)."
+        },
+        "effort_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "EffortMap maps a portable equivalency effort (low, medium, high,\nxhigh, ...) to this runtime's native setting. It is used only by\nequiv:\u003ctier\u003e:\u003ceffort\u003e labels; an exact model plus effort:\u003cnative\u003e label\npasses the native effort through unchanged."
         }
       },
       "additionalProperties": false,
@@ -657,7 +672,15 @@
     },
     "default_runtime": {
       "type": "string",
-      "description": "DefaultRuntime selects the runtime (internal/runtime.Runtime) a bead\ndispatches under when it carries no `runtime:\u003cname\u003e` label\n(koryph-v8u.3). Empty means \"claude\" — today's only runtime the engine\nactually dispatches through; internal/engine's dispatchBead blocks\n(rather than silently substituting claude) any bead or default that\nresolves to anything else. Must be \"\", \"claude\", or a name registered\nin runtime.Default (enforced by Validate)."
+      "description": "DefaultRuntime selects the runtime (internal/runtime.Runtime) a bead\ndispatches under when it carries no `runtime:\u003cname\u003e` label. Empty means\n\"claude\" for compatibility. Claude and Codex are currently dispatchable;\nany unregistered or disabled selected runtime is refused rather than\nsilently substituted. Must be \"\", \"claude\", or a name registered in\nruntime.Default (enforced by Validate)."
+    },
+    "default_model": {
+      "type": "string",
+      "description": "DefaultModel is the native default model for label-less beads routed to\nDefaultRuntime. It is the project-level counterpart to a bead's\nmodel:\u003cid\u003e label and is intentionally mutually exclusive with\nDefaultEquivalent. For a secondary runtime, prefer that runtime's\nRuntimes.\u003cname\u003e.DefaultModel so the association remains explicit."
+    },
+    "default_equivalent": {
+      "type": "string",
+      "description": "DefaultEquivalent is the portable project default for label-less beads\nrouted to DefaultRuntime, written as \"frontier:xhigh\". It is the\nproject-level counterpart to equiv:\u003ctier\u003e:\u003ceffort\u003e; the selected\nruntime's model_map and effort_map turn it into native options."
     },
     "runtimes": {
       "additionalProperties": {

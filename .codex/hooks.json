@@ -24,6 +24,26 @@
         "matcher": "manual|auto"
       }
     ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/agent-boundary-guard.sh\"",
+            "type": "command"
+          }
+        ],
+        "matcher": "^Bash$"
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/worktree-guard.sh\"",
+            "type": "command"
+          }
+        ],
+        "matcher": "^(Bash|apply_patch)$"
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -34,6 +54,15 @@
           }
         ],
         "matcher": "startup|resume|clear"
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-prime.sh\"  # replaces: bd prime --hook-json",
+            "type": "command"
+          }
+        ],
+        "matcher": "^(startup|resume|clear)$"
       }
     ],
     "UserPromptSubmit": [
@@ -42,6 +71,14 @@
           {
             "command": "bd codex-hook UserPromptSubmit",
             "statusMessage": "Refreshing Beads context",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"${KORYPH_HOME:-$HOME/.koryph}/hooks/koryph-intent.sh\"",
             "type": "command"
           }
         ]

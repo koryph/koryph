@@ -58,7 +58,10 @@ func Run(ctx context.Context, o Opts) Result {
 	// through the runtime seam (koryph-v8u.5): claude's VerifyIdentity
 	// delegates to account.VerifyExpected, unchanged — see
 	// runtime.Runtime.VerifyIdentity's doc.
-	rt := claude.New(bin)
+	rt := o.Runtime
+	if rt == nil {
+		rt = claude.New(bin)
+	}
 	if _, err := rt.VerifyIdentity(ctx, runtime.Profile{Name: o.Profile.Name, ConfigDir: o.Profile.ConfigDir}, o.ExpectedIdentity); err != nil {
 		return Result{Note: "identity: " + err.Error()}
 	}
@@ -76,6 +79,7 @@ func Run(ctx context.Context, o Opts) Result {
 	// FallbackModel constant dispatch's claude adapter uses) and an optional
 	// per-invocation budget cap.
 	spec := runtime.JSONSpec{
+		RepoRoot:       o.RepoRoot,
 		Persona:        o.Persona,
 		Model:          o.Model,
 		Effort:         o.Effort,
@@ -88,6 +92,14 @@ func Run(ctx context.Context, o Opts) Result {
 		APIKey:         o.APIKey,
 		SSHAuthSock:    o.SSHAuthSock,
 		ProxyBaseURL:   o.ProxyBaseURL,
+	}
+	if !rt.Capabilities().BudgetFlag {
+		spec.MaxBudgetUSD = 0
+	}
+	if rt.Name() != "claude" {
+		// Fallback is a Claude-specific semantic; do not request an invented
+		// substitute from another adapter.
+		spec.Fallback = false
 	}
 
 	// obs.Span adoption (koryph-5a1 #59): the stage agent spawn is the same

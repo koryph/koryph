@@ -327,6 +327,36 @@ func TestSetAccountHappyPath(t *testing.T) {
 	}
 }
 
+func TestSetRuntimeAccountHappyPath(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+	if err := s.Add(ctx, sampleRecord("runtime-acct", root)); err != nil {
+		t.Fatal(err)
+	}
+	entry := RuntimeAccount{ConfigDir: "/cfg/codex", ExpectedIdentity: "codex:abc123"}
+	if err := s.SetRuntimeAccount(ctx, "runtime-acct", "codex", entry, "enroll Codex"); err != nil {
+		t.Fatalf("SetRuntimeAccount: %v", err)
+	}
+	got, err := s.Get("runtime-acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.RuntimeAccounts["codex"], entry) {
+		t.Errorf("RuntimeAccounts[codex] = %+v, want %+v", got.RuntimeAccounts["codex"], entry)
+	}
+	if got.MigrationStatus != StatusRegistered {
+		t.Errorf("migration_status = %q, want %q", got.MigrationStatus, StatusRegistered)
+	}
+	if err := s.Save(ctx, got); err != nil {
+		t.Fatalf("Save unchanged runtime account: %v", err)
+	}
+	got.RuntimeAccounts["codex"] = RuntimeAccount{ExpectedIdentity: "codex:changed"}
+	if err := s.Save(ctx, got); err == nil || !strings.Contains(err.Error(), "SetRuntimeAccount") {
+		t.Errorf("Save changed runtime account = %v, want SetRuntimeAccount refusal", err)
+	}
+}
+
 // TestAgentProxyLoopbackValidation is the koryph-3l1.1 acceptance test for
 // I4: agent_proxy.base_url is machine-checked at load, not merely documented.
 // A record with an absent or loopback-hosted agent_proxy is accepted; any

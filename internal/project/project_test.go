@@ -83,8 +83,9 @@ func fullConfig() *Config {
 		StaleClaimWarnHours:    48,
 		DispatchMode:           "rolling",
 		DefaultRuntime:         "claude",
+		DefaultModel:           "opus",
 		Runtimes: map[string]RuntimeConfig{
-			"claude": {Enabled: true, ModelMap: map[string]string{"frontier": "fable"}},
+			"claude": {Enabled: true, DefaultEquivalent: "frontier:xhigh", ModelMap: map[string]string{"frontier": "fable"}, EffortMap: map[string]string{"xhigh": "xhigh"}},
 		},
 		Release: &ReleaseConfig{
 			Type:         "go",
@@ -168,6 +169,11 @@ func TestConfig_AllFieldsPopulated(t *testing.T) {
 	// TestReleaseConfig_Validation exercises the Commands branch.
 	skip := map[string]bool{
 		"Config.Release.Build.Commands": true,
+		// Model defaults are a union: fullConfig exercises the native project
+		// default and the portable runtime default; their counterparts must be
+		// empty for Validate to accept the configuration.
+		"Config.DefaultEquivalent":             true,
+		"Config.Runtimes[claude].DefaultModel": true,
 	}
 	assertNoZeroFields(t, reflect.ValueOf(fullConfig()), "Config", skip)
 }
@@ -348,6 +354,56 @@ func TestConfig_DefaultRuntimeValidation(t *testing.T) {
 			case tc.wantErr == "" && err != nil:
 				t.Errorf("Validate() = %v, want nil", err)
 			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfig_DefaultModelSelections(t *testing.T) {
+	c := Default("proj")
+	c.DefaultRuntime = "codex"
+	c.Runtimes = map[string]RuntimeConfig{
+		"codex":  {Enabled: true, DefaultEquivalent: "standard:xhigh"},
+		"claude": {Enabled: true, DefaultModel: "sonnet"},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate(valid defaults): %v", err)
+	}
+	if model, equiv := c.DefaultSelectionForRuntime("codex"); model != "" || equiv != "standard:xhigh" {
+		t.Errorf("Codex selection = (%q, %q), want portable runtime default", model, equiv)
+	}
+	if model, equiv := c.DefaultSelectionForRuntime("claude"); model != "sonnet" || equiv != "" {
+		t.Errorf("Claude selection = (%q, %q), want scoped native default", model, equiv)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name:    "project native and portable defaults conflict",
+			mutate:  func(c *Config) { c.DefaultModel, c.DefaultEquivalent = "opus", "frontier:xhigh" },
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "runtime native and portable defaults conflict",
+			mutate: func(c *Config) {
+				c.Runtimes = map[string]RuntimeConfig{"codex": {DefaultModel: "gpt-5.6-terra", DefaultEquivalent: "standard:high"}}
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "portable default requires portable tier",
+			mutate:  func(c *Config) { c.DefaultEquivalent = "opus:xhigh" },
+			wantErr: "unknown tier",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default("proj")
+			tc.mutate(cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})

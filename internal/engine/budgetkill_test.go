@@ -29,6 +29,7 @@ import (
 const budgetKillWarmResumeClaudeScript = `#!/bin/sh
 cat > /dev/null
 if [ -f .attempted ]; then
+  rm -f .attempted
   echo "work" > agent-work.txt
   git add agent-work.txt
   git commit -q --no-verify -m "feat(tb1): work"

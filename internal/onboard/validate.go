@@ -17,17 +17,11 @@ import (
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
+	_ "github.com/koryph/koryph/internal/runtime/claude"
+	_ "github.com/koryph/koryph/internal/runtime/codex"
 	"github.com/koryph/koryph/internal/sched"
 )
-
-// resolvedRuntimeName is the runtime onboarding's account-identity check
-// resolves to today. Real per-project runtime SELECTION (bead
-// `runtime:<name>` label, project default_runtime/runtimes block) is
-// koryph-v8u.3's job — until it lands, "claude" is every project's only
-// supported runtime, so registry.Record.AccountFor(resolvedRuntimeName)
-// always falls back to the flat AccountProfile/ClaudeConfigDir/
-// ExpectedIdentity fields already validated here (koryph-v8u.5).
-const resolvedRuntimeName = "claude"
 
 // Check levels.
 const (
@@ -74,7 +68,7 @@ func Validate(ctx context.Context, store *registry.Store, projectID string, out 
 		add("git repo", LevelError, "no .git under "+rec.Root)
 	}
 
-	// Account identity (fail closed), via the branched account.VerifyAuth
+	// Account identity (fail closed), through the selected runtime adapter.
 	// (koryph-i3b, design §5/§8): subscription mode verifies the OAuth
 	// email exactly as before; api-key/oauth-token modes resolve the
 	// credential, fingerprint-check it against the enrolled
@@ -83,20 +77,48 @@ func Validate(ctx context.Context, store *registry.Store, projectID string, out 
 	// rec's flat fields for every project that has not opted into
 	// runtime_accounts (AccountFor's flat-field fallback), so subscription
 	// projects are unchanged end-to-end.
-	ra := rec.AccountFor(resolvedRuntimeName)
-	spec := account.AuthSpec{
-		Mode:             account.AuthMode(ra.AuthMode),
-		ExpectedIdentity: ra.ExpectedIdentity,
-		// ra.Credential is *registry.Credential, which account.Credential
-		// aliases (both alias internal/authmode.Credential) — no conversion.
-		Credential:          ra.Credential,
-		IdentityFingerprint: ra.IdentityFingerprint,
+	runtimeName := "claude"
+	if cfg != nil && cfg.DefaultRuntime != "" {
+		runtimeName = cfg.DefaultRuntime
 	}
-	acctProf := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
-	if id, verr := account.VerifyAuth(ctx, acctProf, spec); verr != nil {
-		add("account identity", LevelError, verr.Error())
+	if cfg != nil && runtimeName != "claude" && !cfg.Runtimes[runtimeName].Enabled {
+		add("runtime configuration", LevelError, fmt.Sprintf("default runtime %q is not enabled", runtimeName))
+	}
+	rt, registered := runtime.Default.Get(runtimeName)
+	if !registered {
+		add("runtime configuration", LevelError, fmt.Sprintf("runtime %q is not registered", runtimeName))
 	} else {
-		add("account identity", LevelOK, "verified "+identityLabel(id))
+		add("runtime configuration", LevelOK, runtimeName)
+	}
+	ra := rec.AccountFor(runtimeName)
+	if registered {
+		profile := runtime.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
+		switch ra.EffectiveAuthMode() {
+		case registry.AuthModeSubscription:
+			if got, verr := rt.VerifyIdentity(ctx, profile, ra.ExpectedIdentity); verr != nil {
+				add("account identity", LevelError, verr.Error())
+			} else {
+				add("account identity", LevelOK, "verified "+got)
+			}
+		case registry.AuthModeAPIKey, registry.AuthModeOAuthToken:
+			if runtimeName != "claude" {
+				add("account identity", LevelError, fmt.Sprintf("runtime %q requires its native login; koryph-managed %s credentials are unsupported", runtimeName, ra.EffectiveAuthMode()))
+				break
+			}
+			spec := account.AuthSpec{
+				Mode:                account.AuthMode(ra.AuthMode),
+				ExpectedIdentity:    ra.ExpectedIdentity,
+				Credential:          ra.Credential,
+				IdentityFingerprint: ra.IdentityFingerprint,
+			}
+			if id, verr := account.VerifyAuth(ctx, account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}, spec); verr != nil {
+				add("account identity", LevelError, verr.Error())
+			} else {
+				add("account identity", LevelOK, "verified "+identityLabel(id))
+			}
+		default:
+			add("account identity", LevelError, fmt.Sprintf("unrecognized auth mode %q", ra.EffectiveAuthMode()))
+		}
 	}
 
 	// bd availability + ready parse (bd work source only).
@@ -142,10 +164,14 @@ func Validate(ctx context.Context, store *registry.Store, projectID string, out 
 	}
 
 	// Hooks wiring (warn-only).
-	if fileContains(filepath.Join(rec.Root, ".claude", "settings.json"), "bd prime") {
-		add("hooks wiring", LevelOK, "'bd prime' present in .claude/settings.json")
+	hookConfig := filepath.Join(rec.Root, ".claude", "settings.json")
+	if runtimeName == "codex" {
+		hookConfig = filepath.Join(rec.Root, ".codex", "hooks.json")
+	}
+	if fileContains(hookConfig, "bd prime") {
+		add("hooks wiring", LevelOK, "'bd prime' present in "+hookConfig)
 	} else {
-		add("hooks wiring", LevelWarn, ".claude/settings.json missing 'bd prime' hook")
+		add("hooks wiring", LevelWarn, hookConfig+" missing 'bd prime' hook")
 	}
 
 	// Governor calibration (warn when uncalibrated).

@@ -52,7 +52,7 @@ that billing shape is an explicit opt-in; koryph never infers it from an
 ambient key. See [Authentication
 modes](../user-guide/authentication-modes.md) for the full mode reference.
 
-Personas live as markdown files under `.claude/agents/` (e.g.
+Personas live as canonical markdown files under `agents/` (e.g.
 `koryph-implementer`, `koryph-feature-docs-author`). Each stage resolves to a
 persona, and each persona carries a **tier** — frontier / standard / light —
 which the runtime maps to its own concrete models (`opus`, `sonnet`, `haiku`

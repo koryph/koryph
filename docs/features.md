@@ -85,8 +85,8 @@ the current release.
   maps tiers to its own models.
   → [People: accounts and personas](concepts/accounts.md)
 - **Runtime-neutral core** — the adapter seam, `runtime:<name>` labels, and
-  per-provider quota blocks are built; **Claude Code is the only production
-  runtime today** and everything else is alpha — dispatch to an unshipped
+  per-provider quota blocks are built; **Claude Code and Codex are supported
+  runtimes today** and everything else is declared but unshipped — dispatch to an unshipped
   runtime is refused fail-closed rather than guessed at.
   → [AI runtimes: support status](user-guide/runtimes.md)
 

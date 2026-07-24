@@ -306,9 +306,17 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	}
 	defer cleanup()
 
-	// AccountFor (koryph-v8u.5) falls back to rec.ClaudeConfigDir for every
-	// project today (no runtime_accounts entry) — same ConfigDir as before.
-	ra := rec.AccountFor(resolvedRuntimeName)
+	// An operator-initiated PR review is still an agent spawn: resolve the
+	// project's selected runtime instead of silently using Claude's profile.
+	runtimeName, _ := modelroute.ResolveRuntimeName(nil, cfg.DefaultRuntime)
+	reviewRT, ok := runtimeForName(runtimeName)
+	if !ok {
+		return res, fmt.Errorf("review-pr: runtime %q is not registered", runtimeName)
+	}
+	if !runtimeEnabled(cfg, runtimeName) {
+		return res, fmt.Errorf("review-pr: runtime %q is not enabled in koryph.project.json", runtimeName)
+	}
+	ra := rec.AccountFor(runtimeName)
 	prReviewPersona := modelroute.PersonaFor(modelroute.StageReview, cfg.Stages)
 	// Same koryph-77r.8 fix as the in-loop reviewer call site (poll.go): honor
 	// the persona's declared frontmatter effort instead of silently dropping it.
@@ -325,16 +333,38 @@ func analyzePR(ctx context.Context, rec *registry.Record, cfg *project.Config, h
 	}
 	rc := cfg.EffectiveReview()
 	reviewTimeout := timeoutcfg.Resolve(0, rc.TimeoutSeconds, sysTimeout)
+	modelMap := cfg.ModelMap
+	effortMap := map[string]string(nil)
+	if runtimeCfg, configured := cfg.Runtimes[runtimeName]; configured {
+		modelMap = mergeStringMaps(modelMap, runtimeCfg.ModelMap)
+		effortMap = runtimeCfg.EffortMap
+	}
+	resolvedModel, err := modelroute.Resolve(modelroute.Req{
+		Stage:         modelroute.StageReview,
+		AllowedModels: rec.AllowedModels,
+		Stages:        cfg.Stages,
+		RepoRoot:      rec.Root,
+		ModelMap:      modelMap,
+		EffortMap:     effortMap,
+		Runtime:       runtimeName,
+	})
+	if err != nil {
+		return res, fmt.Errorf("review-pr: model resolution: %w", err)
+	}
+	if prReviewEffort == "" {
+		prReviewEffort = resolvedModel.Effort
+	}
 	v := reviewer(ctx, review.Opts{
 		RepoRoot:   rec.Root,
 		Worktree:   wt,
 		Branch:     ref,
 		Base:       rec.DefaultBranch,
 		Persona:    prReviewPersona,
-		Model:      modelroute.TierOpus,
+		Model:      resolvedModel.Model,
 		Effort:     prReviewEffort,
 		Profile:    account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir},
 		ClaudeBin:  os.Getenv(envClaudeBin),
+		Runtime:    reviewRT,
 		TimeoutSec: reviewTimeout,
 		// Deliberately the project's live config, not a bead-scoped arm
 		// (koryph-3l1.3): `koryph review-pr`/review-queue reviews arbitrary

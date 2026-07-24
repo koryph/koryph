@@ -359,12 +359,12 @@ func TestInitMissingToolsAreWarned(t *testing.T) {
 	// Point PATH at an empty dir so no tools are found. git is special:
 	// store.Init() calls git internally, so we need it in a real bin dir
 	// that we inject separately via KORYPH_BD_BIN / not-present-in-PATH
-	// gymnastics.  Instead we test only that claude+bd missing doesn't crash
+	// gymnastics.  Instead we test only that agent runtimes+bd missing doesn't crash
 	// by running in a fresh but otherwise real environment.
 	//
 	// The simplest reliable coverage: normal init with real PATH always
 	// exits 0, even if some tools are absent. We already proved that above
-	// (claude/bd may be absent in CI and init still returned 0).
+	// (claude/codex/bd may be absent in CI and init still returned 0).
 	isolate(t)
 	home := t.TempDir()
 	t.Setenv("KORYPH_HOME", home)
@@ -374,7 +374,7 @@ func TestInitMissingToolsAreWarned(t *testing.T) {
 	}
 	// git is always present in this CI; claude/bd may not be — either way
 	// output should contain an ok or not-found entry for each tool.
-	for _, tool := range []string{"git", "claude", "bd"} {
+	for _, tool := range []string{"git", "claude", "codex", "bd"} {
 		if !strings.Contains(out, tool) {
 			t.Errorf("init output missing tool %q check;\ngot: %s", tool, out)
 		}

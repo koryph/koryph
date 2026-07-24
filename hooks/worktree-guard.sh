@@ -13,10 +13,10 @@
 # Register in .claude/settings.json (PreToolUse, matcher "Bash|Edit|Write"):
 #   {"type":"command","command":"${KORYPH_HOME}/hooks/worktree-guard.sh"}
 #
-# Project tree root: CLAUDE_PROJECT_DIR, set by Claude Code for every hook
-# invocation to the project's root — not this repo's root. This hook is
-# shipped centrally but always evaluates boundaries against the *dispatched
-# project*, never against the koryph checkout itself.
+# Project tree root: Claude Code provides CLAUDE_PROJECT_DIR; Codex provides
+# cwd in its hook JSON. This hook is shipped centrally but always evaluates
+# boundaries against the *dispatched project*, never against the koryph
+# checkout itself.
 
 set -euo pipefail
 
@@ -32,7 +32,8 @@ input="$(cat)"
 tool_name="$(jq -r '.tool_name // empty' <<<"${input}")"
 command="$(jq -r '.tool_input.command // empty' <<<"${input}")"
 file_path="$(jq -r '.tool_input.file_path // empty' <<<"${input}")"
-project_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+project_dir="${CLAUDE_PROJECT_DIR:-$(jq -r '.cwd // empty' <<<"${input}")}"
+project_dir="${project_dir:-$(pwd)}"
 
 deny() {
   jq -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
@@ -64,6 +65,7 @@ selfprotected() {
   case "${p}" in
     "${project_dir}"/hooks | "${project_dir}"/hooks/* | \
     "${project_dir}"/.claude | "${project_dir}"/.claude/* | \
+    "${project_dir}"/.codex | "${project_dir}"/.codex/* | \
     "${project_dir}"/agents | "${project_dir}"/agents/*) return 0 ;;
     *) return 1 ;;
   esac
@@ -76,6 +78,21 @@ if [[ "${tool_name}" == "Edit" || "${tool_name}" == "Write" ]]; then
     inside_project "${file_path}" || deny "file_path outside project tree: ${file_path}"
     selfprotected "${file_path}" && deny "koryph enforcement path is read-only for agents: ${file_path}"
   fi
+  exit 0
+fi
+
+# Codex exposes file changes through apply_patch. The patch body is a command
+# string, so reject any target that resolves outside the project or lands on
+# koryph's protected enforcement surface. This is intentionally conservative:
+# a malformed patch is allowed through for Codex to reject itself, but an
+# explicit absolute/traversal target is never delegated to the tool.
+if [[ "${tool_name}" == "apply_patch" && -n "${command}" ]]; then
+  while IFS= read -r target; do
+    [[ -n "${target}" ]] || continue
+    [[ "${target}" == *".."* ]] && deny "apply_patch path contains '..' traversal: ${target}"
+    inside_project "${target}" || deny "apply_patch path outside project tree: ${target}"
+    selfprotected "${target}" && deny "koryph enforcement path is read-only for agents: ${target}"
+  done < <(printf '%s\n' "${command}" | sed -n -E 's#^\*\*\* (Add|Update|Delete) File: (.*)$#\2#p')
   exit 0
 fi
 
@@ -108,11 +125,11 @@ if [[ "${command}" =~ \>[[:space:]]*(/etc/|/usr/|/bin/|/sbin/|/System/|/Library/
 fi
 
 # --- Bash: block redirection into koryph's enforcement surface ----------------
-# Catches `> hooks/x`, `>> .claude/y`, `> ./agents/z`, and absolute/nested forms
+# Catches `> hooks/x`, `>> .claude/y`, `> .codex/y`, `> ./agents/z`, and absolute/nested forms
 # `> /path/hooks/x`, so an agent cannot rewrite a guard via shell redirect.
-if [[ "${command}" =~ \>\>?[[:space:]]*(\./)?(hooks|\.claude|agents)/ ]] ||
-  [[ "${command}" =~ \>\>?[[:space:]]*[^[:space:]]*/(hooks|\.claude|agents)/ ]]; then
-  deny "redirection writes to a koryph enforcement path (hooks/.claude/agents): ${command}"
+if [[ "${command}" =~ \>\>?[[:space:]]*(\./)?(hooks|\.claude|\.codex|agents)/ ]] ||
+  [[ "${command}" =~ \>\>?[[:space:]]*[^[:space:]]*/(hooks|\.claude|\.codex|agents)/ ]]; then
+  deny "redirection writes to a koryph enforcement path (hooks/.claude/.codex/agents): ${command}"
 fi
 
 # --- Bash: block any reference to a credential / koryph-state path -------------

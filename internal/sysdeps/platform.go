@@ -3,7 +3,7 @@
 
 // Package sysdeps detects the host platform (OS, Linux distro family, and
 // which package managers are on PATH) and turns that into a consented
-// install plan for koryph's external tool dependencies (bd, claude, gh).
+// install plan for koryph's external tool dependencies (bd, agent runtimes, gh).
 //
 // This package is pure planning: Detect and Plan never execute an install,
 // write a file, or touch the network. The only "execution" here is the
@@ -25,7 +25,7 @@ import (
 
 // Manager identifies a package manager (or pseudo-route) sysdeps knows how to
 // plan an install through. Values: "brew", "apt", "dnf", "pacman", "zypper",
-// "nix-profile", "npm" (a pseudo-route, claude only), and "manual" (no
+// "nix-profile", "npm" (a pseudo-route for CLI runtimes), and "manual" (no
 // package-manager route — see InstallPlan.Route).
 type Manager string
 
@@ -37,7 +37,7 @@ const (
 	ManagerZypper Manager = "zypper"
 	ManagerNix    Manager = "nix-profile"
 	// ManagerNpm is not a system package manager; it is a pseudo-route some
-	// tool specs (claude) use because the JS ecosystem's install path is more
+	// tool specs (CLI runtimes) use because the JS ecosystem's install path is more
 	// reliably documented than a platform package's exact name.
 	ManagerNpm Manager = "npm"
 	// ManagerManual is the InstallPlan.Route value when no package-manager

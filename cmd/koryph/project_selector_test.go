@@ -6,10 +6,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -122,6 +125,34 @@ func TestProjectSetAccountMissingIDIsUsageError(t *testing.T) {
 		"--profile", "work", "--identity", "work@example.com", "--reason", "test")
 	if code != engine.ExitUsage {
 		t.Errorf("code = %d, want usage exit when no id given", code)
+	}
+}
+
+func TestProjectSetRuntimeAccount(t *testing.T) {
+	isolate(t)
+	registerProject(t, "runtime-proj")
+
+	code, out, errb := runCmd("project", "set-runtime-account", "--project", "runtime-proj",
+		"--runtime", "codex", "--config-dir", "/cfg/codex", "--identity", "codex:test", "--reason", "enroll Codex")
+	if code != 0 {
+		t.Fatalf("project set-runtime-account code = %d; stderr=%s", code, errb)
+	}
+	var rec registry.Record
+	if err := json.Unmarshal([]byte(out), &rec); err != nil {
+		t.Fatalf("output not JSON: %v\n%s", err, out)
+	}
+	if got := rec.RuntimeAccounts["codex"]; got.ConfigDir != "/cfg/codex" || got.ExpectedIdentity != "codex:test" {
+		t.Errorf("Codex runtime account = %+v", got)
+	}
+	cfg, err := project.Load(rec.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Runtimes["codex"].Enabled {
+		t.Errorf("Codex runtime was not enabled in project config: %+v", cfg.Runtimes)
+	}
+	if _, err := os.Stat(filepath.Join(rec.Root, ".agents", "skills", "koryph-design", "SKILL.md")); err != nil {
+		t.Errorf("Codex workflow projection missing after enrollment: %v", err)
 	}
 }
 

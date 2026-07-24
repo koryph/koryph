@@ -51,7 +51,7 @@ func TestMergeConflictRequeuesWithinBudget(t *testing.T) {
 	fake := &fakeSource{}
 	r.adapter = fake
 	r.quotaCfg = &quota.Config{}
-	r.rt = runtimetest.Stub{}
+	r.rt = runtimetest.Stub{StubName: "claude"}
 	r.backend = refusingBackend{}
 	sl := conflictSlot(t, r, "cb1", 0)
 
@@ -99,7 +99,7 @@ func TestConflictRequeuePreservesAllBudgetCounters(t *testing.T) {
 	fake := &fakeSource{}
 	r.adapter = fake
 	r.quotaCfg = &quota.Config{}
-	r.rt = runtimetest.Stub{}
+	r.rt = runtimetest.Stub{StubName: "claude"}
 	backend := &capturingBackend{}
 	r.backend = backend
 

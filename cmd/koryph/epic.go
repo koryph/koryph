@@ -17,6 +17,7 @@ import (
 	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/modelroute"
 	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/runtimeconfig"
 )
 
 func init() {
@@ -96,6 +97,9 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 	// Load project config for epic_validation defaults (nil config is fine; all
 	// fields fall back to their documented defaults via Effective()).
 	cfg, _ := project.Load(rec.Root)
+	if cfg == nil {
+		cfg = project.Default(rec.ProjectID)
+	}
 	evcfg := epicValidationConfig(cfg)
 
 	// Open the beads adapter.
@@ -178,9 +182,18 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 		})
 	}
 
-	// Resolve account profile (falls back to flat AccountProfile/ClaudeConfigDir
-	// fields for projects predating runtime_accounts — every project today).
-	ra := rec.AccountFor("claude")
+	// Resolve the project's active runtime and its account. Explicit CLI
+	// validation must behave like the engine loop: never silently substitute
+	// Claude for a Codex-configured project.
+	runtimeName, _ := modelroute.ResolveRuntimeName(nil, cfg.DefaultRuntime)
+	rt, ok := runtimeconfig.Get(runtimeName)
+	if !ok {
+		return fail(stderr, fmt.Errorf("epic: runtime %q is not registered", runtimeName))
+	}
+	if runtimeName != "claude" && !cfg.Runtimes[runtimeName].Enabled {
+		return fail(stderr, fmt.Errorf("epic: runtime %q is not enabled in koryph.project.json", runtimeName))
+	}
+	ra := rec.AccountFor(runtimeName)
 	profile := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
 
 	// Build validator opts from config defaults + caller overrides.
@@ -193,6 +206,36 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 			validateEffort = metaEffort
 		}
 	}
+	modelMap := cfg.ModelMap
+	effortMap := map[string]string(nil)
+	if runtimeCfg, configured := cfg.Runtimes[runtimeName]; configured {
+		modelMap = mergeModelMaps(modelMap, runtimeCfg.ModelMap)
+		effortMap = runtimeCfg.EffortMap
+	}
+	// Effective() fills the historical Claude default "opus". Only a value
+	// explicitly present in the project file is a concrete model selection;
+	// otherwise the selected runtime's frontier mapping decides the model.
+	explicitModel := ""
+	if cfg.EpicValidation != nil {
+		explicitModel = cfg.EpicValidation.Model
+	}
+	resolvedModel, err := modelroute.Resolve(modelroute.Req{
+		Stage:         modelroute.StageReview,
+		Labels:        epic.Labels,
+		ExplicitModel: explicitModel,
+		AllowedModels: rec.AllowedModels,
+		Stages:        cfg.Stages,
+		RepoRoot:      rec.Root,
+		ModelMap:      modelMap,
+		EffortMap:     effortMap,
+		Runtime:       runtimeName,
+	})
+	if err != nil {
+		return fail(stderr, fmt.Errorf("epic: validator model resolution: %w", err))
+	}
+	if validateEffort == "" {
+		validateEffort = resolvedModel.Effort
+	}
 	opts := epicreview.Opts{
 		EpicID:          epicID,
 		EpicTitle:       epic.Title,
@@ -204,8 +247,9 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 		RepoRoot:        rec.Root,
 		Profile:         profile,
 		Persona:         evcfg.Persona,
-		Model:           evcfg.Model,
+		Model:           resolvedModel.Model,
 		Effort:          validateEffort,
+		Runtime:         rt,
 		TimeoutSec:      evcfg.TimeoutSeconds,
 		OutDir:          outDir,
 		ProxyBaseURL:    rec.ProxyBaseURL(),
@@ -218,10 +262,6 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 			}
 		},
 	}
-	if bin := os.Getenv("KORYPH_CLAUDE_BIN"); bin != "" {
-		opts.ClaudeBin = bin
-	}
-
 	// Run the validator.
 	verdict := epicreview.Validate(ctx, opts)
 
@@ -261,6 +301,20 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 		return engine.ExitFatal
 	}
 	return 0
+}
+
+func mergeModelMaps(base, override map[string]string) map[string]string {
+	if len(override) == 0 {
+		return base
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range override {
+		out[key] = value
+	}
+	return out
 }
 
 // epicValidationConfig returns the effective EpicValidationConfig for cfg, applying

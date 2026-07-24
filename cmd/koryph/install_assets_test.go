@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/project"
 )
 
 // TestProjectInstallAssetsAll installs the full asset set (default target) into
@@ -38,6 +39,33 @@ func TestProjectInstallAssetsAll(t *testing.T) {
 	// centrally under KORYPH_HOME, referenced from here).
 	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json")); err != nil {
 		t.Errorf("expected settings.json wired: %v", err)
+	}
+}
+
+func TestProjectInstallAssetsProjectsEveryEnabledRuntime(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	cfg := project.Default("test-proj")
+	cfg.DefaultRuntime = "claude"
+	cfg.Runtimes = map[string]project.RuntimeConfig{"codex": {Enabled: true}}
+	if err := cfg.Save(root); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := runCmd("project", "install-assets", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (stdout=%s stderr=%s)", code, out, errb)
+	}
+	for _, path := range []string{
+		filepath.Join(root, ".claude", "agents", "koryph-implementer.md"),
+		filepath.Join(root, ".claude", "commands", "koryph-design.md"),
+		filepath.Join(root, ".codex", "agents", "koryph-implementer.toml"),
+		filepath.Join(root, ".agents", "skills", "koryph-design", "SKILL.md"),
+		filepath.Join(root, ".claude", "settings.json"),
+		filepath.Join(root, ".codex", "hooks.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("enabled runtime asset %s missing: %v", path, err)
+		}
 	}
 }
 
@@ -83,7 +111,7 @@ func TestProjectInstallAssetsCapabilityGatingNoHooks(t *testing.T) {
 	// which has no Hooks/Personas capabilities. The stub adapter is registered
 	// in runtime.Default by the runtimetest package (its init would need to do
 	// so — but since we're inside the main package and can't call init directly,
-	// we write a JSON that references the "stub" name; resolveRuntimeCapabilities
+	// we write a JSON that references the "stub" name; runtime projections
 	// will fail to find it in runtime.Default and fall back to claude's full
 	// caps.  Instead, write an explicit gate field to test the JSON path by
 	// writing valid JSON that says default_runtime = "claude" — that test is

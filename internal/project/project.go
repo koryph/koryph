@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/koryph/koryph/internal/fsx"
@@ -274,14 +275,11 @@ type IntakeSource struct {
 }
 
 // RuntimeConfig is one runtime's per-project override (koryph-v8u.3), keyed
-// by runtime name in Config.Runtimes. Deliberately minimal: an entry exists
-// today only to (a) let an operator explicitly enable a registered runtime
-// for this project, even though it may already be available process-wide,
-// and (b) carry a per-runtime sparse tier->model override alongside the
-// top-level ModelMap (which today only ever applies to the active/claude
-// runtime). Richer per-runtime policy (its own Stages/Tiers/Gate) is future
-// work once a second real adapter (koryph-v8u.6) lands and requirements are
-// concrete.
+// by runtime name in Config.Runtimes. It enables an installed adapter, carries
+// sparse model/effort maps, and can define that runtime's label-less model
+// default. The top-level ModelMap remains the common base; this block overlays
+// it for this one runtime. Stages, gates, and project policy stay shared so
+// canonical agents behave alike across runtime projections.
 type RuntimeConfig struct {
 	// Enabled gates whether this project allows dispatching under this
 	// runtime at all; a bead or default_runtime naming a disabled runtime is
@@ -290,9 +288,28 @@ type RuntimeConfig struct {
 	// the safer default while only claude is wired end-to-end in the engine.
 	Enabled bool `json:"enabled,omitempty"`
 
+	// DefaultModel is this runtime's native default for a bead without a
+	// model:/equiv: label. It is deliberately scoped to the runtime so an
+	// enabled Codex projection never makes a Claude-native model leak into a
+	// Codex dispatch. It loses to koryph run --default-model.
+	DefaultModel string `json:"default_model,omitempty"`
+
+	// DefaultEquivalent is the portable fallback for this runtime's
+	// label-less work, in "frontier:xhigh" form. It is mutually exclusive
+	// with DefaultModel and maps through this RuntimeConfig's ModelMap and
+	// EffortMap. Use it when the project wants the same capability policy on
+	// every supported runtime.
+	DefaultEquivalent string `json:"default_equivalent,omitempty"`
+
 	// ModelMap sparsely overrides this runtime's own tier->model table
 	// (mirrors Config.ModelMap's shape, scoped to just this runtime).
 	ModelMap map[string]string `json:"model_map,omitempty"`
+
+	// EffortMap maps a portable equivalency effort (low, medium, high,
+	// xhigh, ...) to this runtime's native setting. It is used only by
+	// equiv:<tier>:<effort> labels; an exact model plus effort:<native> label
+	// passes the native effort through unchanged.
+	EffortMap map[string]string `json:"effort_map,omitempty"`
 }
 
 // EpicValidationConfig is the optional epic_validation sub-block of
@@ -703,13 +720,25 @@ type Config struct {
 	DispatchMode string `json:"dispatch_mode,omitempty" jsonschema:"enum=wave,enum=rolling"`
 
 	// DefaultRuntime selects the runtime (internal/runtime.Runtime) a bead
-	// dispatches under when it carries no `runtime:<name>` label
-	// (koryph-v8u.3). Empty means "claude" — today's only runtime the engine
-	// actually dispatches through; internal/engine's dispatchBead blocks
-	// (rather than silently substituting claude) any bead or default that
-	// resolves to anything else. Must be "", "claude", or a name registered
-	// in runtime.Default (enforced by Validate).
+	// dispatches under when it carries no `runtime:<name>` label. Empty means
+	// "claude" for compatibility. Claude and Codex are currently dispatchable;
+	// any unregistered or disabled selected runtime is refused rather than
+	// silently substituted. Must be "", "claude", or a name registered in
+	// runtime.Default (enforced by Validate).
 	DefaultRuntime string `json:"default_runtime,omitempty"`
+
+	// DefaultModel is the native default model for label-less beads routed to
+	// DefaultRuntime. It is the project-level counterpart to a bead's
+	// model:<id> label and is intentionally mutually exclusive with
+	// DefaultEquivalent. For a secondary runtime, prefer that runtime's
+	// Runtimes.<name>.DefaultModel so the association remains explicit.
+	DefaultModel string `json:"default_model,omitempty"`
+
+	// DefaultEquivalent is the portable project default for label-less beads
+	// routed to DefaultRuntime, written as "frontier:xhigh". It is the
+	// project-level counterpart to equiv:<tier>:<effort>; the selected
+	// runtime's model_map and effort_map turn it into native options.
+	DefaultEquivalent string `json:"default_equivalent,omitempty"`
 
 	// Runtimes configures per-runtime settings for this project, keyed by
 	// runtime name — the same string a bead's `runtime:<name>` label and
@@ -779,6 +808,48 @@ func Default(projectID string) *Config {
 		MaxConcurrentSlots:     4,
 		DispatchStaggerSeconds: 8,
 	}
+}
+
+// DefaultForRuntime returns the conservative baseline config with runtimeName
+// selected and enabled. It keeps Default's historical Claude result when the
+// name is empty or "claude", while allowing a Codex-first project to onboard
+// without a hand edit before its first asset install or dispatch.
+func DefaultForRuntime(projectID, runtimeName string) *Config {
+	c := Default(projectID)
+	if runtimeName == "" || runtimeName == "claude" {
+		return c
+	}
+	c.DefaultRuntime = runtimeName
+	c.Runtimes = map[string]RuntimeConfig{runtimeName: {Enabled: true}}
+	return c
+}
+
+// EnabledRuntimeNames returns the runtime projections a project must keep
+// current. The default runtime is always included (empty means Claude for
+// compatibility); every explicitly enabled secondary runtime is included as
+// well. This lets one repository expose the same canonical agents and
+// workflows to Claude, Codex, and any future adapter simultaneously.
+func (c *Config) EnabledRuntimeNames() []string {
+	if c == nil {
+		return []string{"claude"}
+	}
+	seen := map[string]struct{}{}
+	defaultName := c.DefaultRuntime
+	if defaultName == "" {
+		defaultName = "claude"
+	}
+	seen[defaultName] = struct{}{}
+	for name, cfg := range c.Runtimes {
+		if cfg.Enabled {
+			seen[name] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Load reads the adapter config from repoRoot.
@@ -867,6 +938,14 @@ func (c *Config) Validate() error {
 	if err := validateDefaultRuntime(c.DefaultRuntime); err != nil {
 		return err
 	}
+	if err := validateDefaultSelection("project", c.DefaultModel, c.DefaultEquivalent); err != nil {
+		return err
+	}
+	for name, rc := range c.Runtimes {
+		if err := validateDefaultSelection("runtimes."+name, rc.DefaultModel, rc.DefaultEquivalent); err != nil {
+			return err
+		}
+	}
 	if err := validateRelease(c.Release); err != nil {
 		return err
 	}
@@ -922,7 +1001,7 @@ func validateMergeReconcilers(recs []MergeReconciler) error {
 // be able to point default_runtime at a runtime dispatch cannot possibly
 // select.
 func validateDefaultRuntime(name string) error {
-	if name == "" || name == "claude" {
+	if name == "" || name == "claude" || name == "codex" {
 		return nil
 	}
 	if _, ok := runtime.Default.Get(name); !ok {
@@ -930,6 +1009,51 @@ func validateDefaultRuntime(name string) error {
 			"default_runtime %q is not a registered runtime (want \"claude\", empty, or a name registered in runtime.Default)", name)
 	}
 	return nil
+}
+
+// validateDefaultSelection keeps the two intentionally distinct default
+// grammars unambiguous. Native models are runtime-owned; a portable default is
+// the exact "tier:effort" suffix used by an equiv: bead label. We leave the
+// effort vocabulary open here because adapters own their EffortMap and may add
+// a portable class without requiring a project-schema release.
+func validateDefaultSelection(scope, model, equiv string) error {
+	if model != "" && equiv != "" {
+		return fmt.Errorf("%s default_model and default_equivalent are mutually exclusive", scope)
+	}
+	if equiv == "" {
+		return nil
+	}
+	parts := strings.Split(equiv, ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("%s default_equivalent must be <frontier|standard|light>:<effort>, got %q", scope, equiv)
+	}
+	switch parts[0] {
+	case runtime.TierFrontier, runtime.TierStandard, runtime.TierLight:
+		return nil
+	default:
+		return fmt.Errorf("%s default_equivalent has unknown tier %q (want frontier, standard, or light)", scope, parts[0])
+	}
+}
+
+// DefaultSelectionForRuntime returns the native or portable project default
+// associated with runtimeName. A runtime-scoped selection wins. The legacy
+// project-level selection applies only to DefaultRuntime; it cannot
+// accidentally be applied to a bead that selected a different runtime.
+func (c *Config) DefaultSelectionForRuntime(runtimeName string) (model, equivalent string) {
+	if c == nil {
+		return "", ""
+	}
+	if rc, ok := c.Runtimes[runtimeName]; ok && (rc.DefaultModel != "" || rc.DefaultEquivalent != "") {
+		return rc.DefaultModel, rc.DefaultEquivalent
+	}
+	projectRuntime := c.DefaultRuntime
+	if projectRuntime == "" {
+		projectRuntime = "claude"
+	}
+	if runtimeName == projectRuntime {
+		return c.DefaultModel, c.DefaultEquivalent
+	}
+	return "", ""
 }
 
 // EnforceConventional reports whether the merge/PR paths must validate commit

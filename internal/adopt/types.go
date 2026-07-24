@@ -72,7 +72,7 @@ type ToolStatus struct {
 	Path      string `json:"path,omitempty"`
 	Version   string `json:"version,omitempty"`
 	VersionOK bool   `json:"version_ok"`
-	Authed    bool   `json:"authed,omitempty"` // claude only: an account candidate verified
+	Authed    bool   `json:"authed,omitempty"` // set when this runtime's local auth was verified
 	// Plan is the install route for this tool, nil when the tool is already
 	// satisfied or (git) has no sysdeps route at all.
 	Plan *sysdeps.InstallPlan `json:"plan,omitempty"`
@@ -96,7 +96,11 @@ type Snapshot struct {
 	Platform        sysdeps.Platform `json:"platform"`
 	FlakeNixPresent bool             `json:"flake_nix_present"`
 
-	// Tools is keyed by tool name: "git", "claude", "bd", "gh".
+	// RuntimeName selects the runtime being adopted. Empty means Claude for
+	// backward compatibility; it is intentionally independent of what other
+	// binaries happen to be installed on the machine.
+	RuntimeName string `json:"runtime_name,omitempty"`
+	// Tools is keyed by tool name: "git", runtime CLIs, "bd", and "gh".
 	Tools map[string]ToolStatus `json:"tools"`
 
 	Inventory *onboard.Inventory `json:"inventory"`

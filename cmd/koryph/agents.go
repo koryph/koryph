@@ -28,7 +28,7 @@ func init() {
 		subs: []command{
 			{
 				name:     "install",
-				summary:  "install personas into <root>/.claude/agents",
+				summary:  "seed canonical agents and render a runtime projection",
 				run:      cmdAgentsInstall,
 				DocLinks: []string{"user-guide/projects-and-accounts.md"},
 			},
@@ -40,7 +40,7 @@ func init() {
 func cmdAgents(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "agents", "manage the fallback koryph personas in a project (normally run by `koryph project add`)", []subVerb{
-			{"install <root> [--runtime NAME] [--force]", "install fallback personas into <root>/.claude/agents"},
+			{"install <root> [--runtime NAME] [--force]", "seed canonical agents and render a runtime projection"},
 			{"install --all [--force]", "install fallback personas into every registered project"},
 		})
 		return 0
@@ -54,13 +54,11 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// cmdAgentsInstall writes the fallback personas into <root>/.claude/agents.
-// Identical files are a no-op; a persona whose content differs is left
-// untouched unless --force is passed. With --all, installs into every
-// registered project instead of a single <root> (always the verbatim claude
-// rendering — --runtime is not supported alongside --all today,
-// koryph-v8u.12). The older --all-projects spelling still works as a hidden
-// alias (koryph-b8g #18).
+// cmdAgentsInstall seeds canonical <root>/agents/*.md then renders a native
+// runtime projection. Identical files are a no-op; a persona whose content
+// differs is left untouched unless --force is passed. With --all, installs
+// into every registered project instead of a single <root> (always the
+// Claude projection — --runtime is not supported alongside --all today).
 //
 // --runtime renders each persona's frontmatter `model:` pin for a target
 // runtime other than claude (koryph-v8u.12; see
@@ -77,7 +75,7 @@ func cmdAgentsInstall(args []string, stdout, stderr io.Writer) int {
 	hideFlag(fs, "all-projects")
 	runtimeName := fs.String("runtime", "", "target runtime name (default: <root>'s default_runtime, else \"claude\")")
 	setUsage(fs, stdout,
-		"install fallback personas into <root>/.claude/agents (idempotent; normally run automatically by `koryph project add`)",
+		"seed canonical agents/*.md and render a runtime projection (idempotent; normally run automatically by `koryph project add`)",
 		"(<root> | --all) [--runtime NAME] [--force]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {

@@ -96,6 +96,28 @@ func TestInstallCreatesHooksAndSettings(t *testing.T) {
 	}
 }
 
+func TestInstallForCodexCreatesNativeHooks(t *testing.T) {
+	centralHooks(t)
+	root := t.TempDir()
+	if _, action, err := InstallForRuntime(root, false, "codex"); err != nil {
+		t.Fatalf("InstallForRuntime(codex): %v", err)
+	} else if action != SettingsCreated {
+		t.Errorf("action = %q, want created", action)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read Codex hooks: %v", err)
+	}
+	for _, want := range []string{"apply_patch", "^(startup|resume|clear)$", "worktree-guard.sh", "koryph-intent.sh"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("Codex hook manifest missing %q:\n%s", want, data)
+		}
+	}
+	if strings.Contains(string(data), "permissions") {
+		t.Errorf("Codex hooks must not receive Claude permissions:\n%s", data)
+	}
+}
+
 // TestMergeMigratesLegacyHookPath proves an old worktree-relative guard
 // registration (${CLAUDE_PROJECT_DIR}/hooks/...) is rewritten in place to the
 // central KORYPH_HOME path, not left dangling or duplicated.

@@ -10,7 +10,7 @@
 
 # CLI Reference
 
-koryph — central multi-project orchestrator for autonomous Claude Code agents.
+koryph — central multi-project orchestrator for autonomous AI coding agents.
 
 ## Quick index
 
@@ -23,6 +23,7 @@ koryph — central multi-project orchestrator for autonomous Claude Code agents.
 | ↳ [`koryph project list`](#koryph-project-list) | list managed projects (id, account, status, root) |
 | ↳ [`koryph project show`](#koryph-project-show) | print one project record as JSON |
 | ↳ [`koryph project set-account`](#koryph-project-set-account) | change a project's account (audited; resets validation) |
+| ↳ [`koryph project set-runtime-account`](#koryph-project-set-runtime-account) | enroll one runtime's account (audited; resets validation) |
 | [`koryph validate`](#koryph-validate) | run the pre-dispatch gate |
 | [`koryph run`](#koryph-run) | execute one engine run over a project |
 | [`koryph intake`](#koryph-intake) | poll external issue trackers into planning beads |
@@ -142,17 +143,18 @@ register a project (inspect + register + scaffold adapter + install assets)
 | `--account` | string |  | account profile: personal\|work (required) |
 | `--auth-mode` | string |  | auth mode: subscription (default; OAuth login) \| api-key (long-lived ANTHROPIC_API_KEY; bills PAY-PER-TOKEN, not the subscription; requires --credential-*) \| oauth-token (long-lived CLAUDE_CODE_OAUTH_TOKEN; subscription-billed; requires --credential-*) |
 | `--branch` | string |  | default branch (default: detected) |
-| `--config-dir` | string |  | CLAUDE_CONFIG_DIR for non-personal accounts |
+| `--config-dir` | string |  | runtime config directory (CLAUDE_CONFIG_DIR for Claude; CODEX_HOME for Codex) |
 | `--credential-env` | string |  | purpose-named env var holding the credential (with --credential-source env; must not be ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) |
 | `--credential-provider` | string |  | vault provider name (with --credential-source vault) |
 | `--credential-ref` | string |  | vault item reference/name (with --credential-source vault) |
 | `--credential-source` | string |  | credential source for --auth-mode api-key\|oauth-token: vault\|env |
 | `--force` | bool |  | override an .envrc account-disagreement refusal |
 | `--id` | string |  | project slug (default: repo dir name slugified) |
-| `--identity` | string |  | login email that must match at dispatch (required) |
+| `--identity` | string |  | runtime identity that must match at dispatch, or auto to detect it locally (required) |
 | `--name` | string |  | display name (default: project id) |
 | `--no-posture` | bool |  | skip the posture profile offer entirely |
 | `--posture` | string |  | posture profile to apply non-interactively (e.g. oss-solo-maintainer); skips the interactive prompt |
+| `--runtime` | string | `claude` | initial runtime name (claude or codex) |
 
 ## `koryph project install-assets` { #koryph-project-install-assets }
 
@@ -200,6 +202,21 @@ change a project's account (audited; resets validation)
 | `--project` | string |  | project id (alternative to positional <id>; default: the project containing the current directory) |
 | `--reason` | string |  | why the account is changing (required, audited) |
 
+## `koryph project set-runtime-account` { #koryph-project-set-runtime-account }
+
+enroll one runtime's account (audited; resets validation)
+
+**See also:** [Projects and accounts](../user-guide/projects-and-accounts) · [Runtimes](../user-guide/runtimes)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--config-dir` | string |  | runtime config directory (CODEX_HOME for Codex) |
+| `--default` | bool |  | also select this runtime as the project's default_runtime |
+| `--identity` | string |  | verified runtime identity, or auto to detect it locally (required) |
+| `--project` | string |  | project id (alternative to positional <id>; default: the project containing the current directory) |
+| `--reason` | string |  | why the runtime account is changing (required, audited) |
+| `--runtime` | string |  | runtime name (required, for example codex) |
+
 
 ---
 
@@ -242,6 +259,8 @@ execute one engine run over a project
 | `--require-calibration` | bool |  | refuse to dispatch while the quota governor is uncalibrated (koryph-grz); run 'koryph quota calibrate' first |
 | `--resume` | bool |  | classify and re-dispatch the latest run first |
 | `--review` | bool |  | post-implementation review pass before merge |
+| `--runtime-equivalent` | string |  | force this runtime using equivalent model capability mappings |
+| `--runtime-only` | string |  | dispatch only beads normally routed to this runtime |
 
 
 ---
@@ -1071,7 +1090,7 @@ wizard: take an existing repo to a green `koryph validate` in one run
 | `--account` | string |  | account profile (with --identity; overrides discovery) |
 | `--auth-mode` | string |  | auth mode: subscription (default; OAuth login) \| api-key (long-lived ANTHROPIC_API_KEY; bills PAY-PER-TOKEN, not the subscription; requires --credential-*) \| oauth-token (long-lived CLAUDE_CODE_OAUTH_TOKEN; subscription-billed; requires --credential-*) |
 | `--branch` | string |  | default branch (default: detected) |
-| `--config-dir` | string |  | CLAUDE_CONFIG_DIR for non-personal accounts |
+| `--config-dir` | string |  | runtime config directory (CLAUDE_CONFIG_DIR for Claude; CODEX_HOME for Codex) |
 | `--credential-env` | string |  | purpose-named env var holding the credential (with --credential-source env; must not be ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) |
 | `--credential-provider` | string |  | vault provider name (with --credential-source vault) |
 | `--credential-ref` | string |  | vault item reference/name (with --credential-source vault) |
@@ -1081,12 +1100,13 @@ wizard: take an existing repo to a green `koryph validate` in one run
 | `--forge` | string |  | forge provider github\|gitlab (overrides inference) |
 | `--gate` | gate |  | gate command (repeatable, or one ";;"-separated list); overrides inference |
 | `--id` | string |  | project slug (default: repo dir name slugified) |
-| `--identity` | string |  | login email that must match at dispatch (with --account) |
+| `--identity` | string |  | runtime identity that must match at dispatch, or auto to detect it locally (with --account) |
 | `--json` | bool |  | emit the plan (and results) as JSON on stdout; implies non-interactive |
 | `--no-commit` | bool |  | skip the adoption commit offer |
 | `--no-posture` | bool |  | skip the posture profile offer |
 | `--no-remote` | bool |  | force a local-only beads init (no sync remote) |
 | `--remote` | string |  | beads sync remote URL (overrides the derived origin) |
+| `--runtime` | string |  | agent runtime (claude or codex; defaults to the existing project or claude) |
 | `--yes` | bool |  | non-interactive: accept unambiguous derivations, fail closed on ambiguity |
 
 

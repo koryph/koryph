@@ -12,6 +12,7 @@ import (
 
 	"github.com/koryph/koryph/agents"
 	"github.com/koryph/koryph/internal/personas"
+	_ "github.com/koryph/koryph/internal/runtime/codex"
 	"github.com/koryph/koryph/internal/scaffold"
 )
 
@@ -29,6 +30,31 @@ func embeddedNames(t *testing.T) []string {
 		}
 	}
 	return names
+}
+
+func TestInstallForCodexProjectsCanonicalAgentSource(t *testing.T) {
+	root := t.TempDir()
+	canonical := filepath.Join(root, "agents", "koryph-implementer.md")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const source = "---\nmodel: sonnet\ntier: standard\n---\nCanonical Codex instructions.\n"
+	if err := os.WriteFile(canonical, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := personas.InstallForRuntime(root, false, "codex"); err != nil {
+		t.Fatalf("InstallForRuntime(codex): %v", err)
+	}
+	if got, err := os.ReadFile(canonical); err != nil || string(got) != source {
+		t.Fatalf("canonical source changed: got=%q err=%v", got, err)
+	}
+	projection, err := os.ReadFile(filepath.Join(root, ".codex", "agents", "koryph-implementer.toml"))
+	if err != nil {
+		t.Fatalf("read Codex projection: %v", err)
+	}
+	if !strings.Contains(string(projection), "Canonical Codex instructions.") || strings.Contains(string(projection), "model: sonnet") {
+		t.Errorf("projection did not derive from canonical source:\n%s", projection)
+	}
 }
 
 // actionOf returns the install action reported for name.
@@ -60,9 +86,31 @@ func TestInstallWritesMissingPersonas(t *testing.T) {
 			t.Errorf("persona %q: action=%q, want installed (empty destination)", r.Name, r.Action)
 		}
 		dest := filepath.Join(root, ".claude", "agents", r.Name+".md")
-		if _, serr := os.Stat(dest); os.IsNotExist(serr) {
+		info, serr := os.Lstat(dest)
+		if serr != nil {
 			t.Errorf("persona %q: file not found at %s", r.Name, dest)
+		} else if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("persona %q: %s is not a canonical-source symlink", r.Name, dest)
 		}
+	}
+}
+
+func TestInstallClaudeLinkTracksCanonicalEdits(t *testing.T) {
+	root := t.TempDir()
+	if _, err := personas.Install(root, false); err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(root, "agents", "koryph-implementer.md")
+	projection := filepath.Join(root, ".claude", "agents", "koryph-implementer.md")
+	if err := os.WriteFile(canonical, []byte("canonical update\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "canonical update\n" {
+		t.Errorf("Claude projection = %q, want live canonical content", got)
 	}
 }
 

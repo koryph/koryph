@@ -161,6 +161,59 @@ func TestMergeGateFailedLeavesMainUntouched(t *testing.T) {
 	}
 }
 
+func TestMergeRejectsNoChangeBranchWithoutMovingMain(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t)
+	wt := worktreeOn(t, repo, "agent/x")
+	mainBefore := headOf(t, repo, "main")
+
+	res, err := Merge(context.Background(), Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main", Gate: []string{"true"},
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if res.Status != StatusNoChanges {
+		t.Fatalf("Status=%q, want %q", res.Status, StatusNoChanges)
+	}
+	if res.MergedSHA != "" {
+		t.Errorf("MergedSHA=%q, want empty", res.MergedSHA)
+	}
+	if got := headOf(t, repo, "main"); got != mainBefore {
+		t.Errorf("main moved on no-change merge: %s != %s", got, mainBefore)
+	}
+	if !fsx.Exists(wt.Path) {
+		t.Error("no-change worktree was removed")
+	}
+}
+
+func TestMergeRejectsDirtyWorktreeWithoutDiscardingChanges(t *testing.T) {
+	isolateGit(t)
+	repo := initRepo(t)
+	wt := worktreeOn(t, repo, "agent/x")
+	commitIn(t, wt.Path, "committed.txt", "committed\n", "feat(x): committed")
+	writeFile(t, filepath.Join(wt.Path, "staged.txt"), "staged\n")
+	mustGit(t, wt.Path, "add", "staged.txt")
+	writeFile(t, filepath.Join(wt.Path, "unstaged.txt"), "unstaged\n")
+	mainBefore := headOf(t, repo, "main")
+
+	res, err := Merge(context.Background(), Opts{
+		RepoRoot: repo, Branch: "agent/x", DefaultBranch: "main", Gate: []string{"true"},
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if res.Status != StatusDirty {
+		t.Fatalf("Status=%q, want %q", res.Status, StatusDirty)
+	}
+	if got := headOf(t, repo, "main"); got != mainBefore {
+		t.Errorf("main moved on dirty candidate: %s != %s", got, mainBefore)
+	}
+	if got := mustGit(t, wt.Path, "status", "--porcelain"); !strings.Contains(got, "staged.txt") || !strings.Contains(got, "unstaged.txt") {
+		t.Errorf("dirty work was discarded:\n%s", got)
+	}
+}
+
 // TestMergeGateFlakeRetriedOnceThenMerges proves the gate retry-once behavior:
 // a gate that fails the first time and passes afterwards (the shape of a
 // load-sensitive flake) must be retried and the bead landed, not requeued —
@@ -416,11 +469,11 @@ func TestMergeConflictAbortsCleanly(t *testing.T) {
 	}
 }
 
-// TestMergeDirtyWorktreeResetBeforeRebase proves D3: an uncommitted edit left in
-// the branch worktree (which would make `git rebase` abort with "you have
-// unstaged changes" and be misread as a content conflict) is reset away, and
-// the committed work lands.
-func TestMergeDirtyWorktreeResetBeforeRebase(t *testing.T) {
+// TestMergeDirtyWorktreePreservedBeforeRebase proves an uncommitted edit is
+// never reset away merely to make a committed subset land. The worktree is the
+// recovery boundary when an agent could not commit (for example, signing
+// transport failed), so merge must refuse before mutation.
+func TestMergeDirtyWorktreePreservedBeforeRebase(t *testing.T) {
 	isolateGit(t)
 	repo := initRepo(t)
 	ctx := context.Background()
@@ -440,11 +493,14 @@ func TestMergeDirtyWorktreeResetBeforeRebase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Merge: %v (status=%s)", err, res.Status)
 	}
-	if res.Status != StatusMerged {
-		t.Fatalf("Status=%q, want merged (a dirty worktree must not be misread as a conflict)", res.Status)
+	if res.Status != StatusDirty {
+		t.Fatalf("Status=%q, want dirty", res.Status)
 	}
-	if got := strings.TrimSpace(readFile(t, filepath.Join(repo, "b.txt"))); got != "feature" {
-		t.Errorf("b.txt on main = %q, want committed 'feature' (dirty edit discarded)", got)
+	if got := strings.TrimSpace(readFile(t, filepath.Join(wt.Path, "b.txt"))); got != "uncommitted junk" {
+		t.Errorf("b.txt in worktree = %q, want preserved uncommitted edit", got)
+	}
+	if fsx.Exists(filepath.Join(repo, "b.txt")) {
+		t.Error("committed subset landed despite dirty candidate")
 	}
 }
 

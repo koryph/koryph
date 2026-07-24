@@ -118,7 +118,7 @@ func TestPlan_NixProfileFallback(t *testing.T) {
 
 func TestPlan_NoManager_Manual(t *testing.T) {
 	p := Platform{OS: "linux", DistroID: "voidlinux"} // no managers detected at all
-	for _, tool := range []Tool{ToolBD, ToolClaude, ToolGH} {
+	for _, tool := range []Tool{ToolBD, ToolClaude, ToolCodex, ToolGH} {
 		plan := Plan(p, tool)
 		if plan.Route != ManagerManual {
 			t.Errorf("Plan(no-manager, %s) route = %q, want manual", tool, plan.Route)
@@ -167,6 +167,23 @@ func TestPlan_ClaudeManualWithoutNpmOrBrew(t *testing.T) {
 	}
 }
 
+func TestPlan_CodexUsesNpm(t *testing.T) {
+	p := Platform{OS: "darwin", Managers: []Manager{ManagerBrew, ManagerNpm}}
+	got := Plan(p, ToolCodex)
+	want := []string{"npm", "install", "-g", "@openai/codex"}
+	if got.Route != ManagerNpm || !reflect.DeepEqual(got.Argv, want) {
+		t.Errorf("Plan(darwin+npm+brew, codex) = %+v, want npm route %v", got, want)
+	}
+}
+
+func TestPlan_CodexManualWithoutNpm(t *testing.T) {
+	p := Platform{OS: "linux", DistroID: "ubuntu", Managers: []Manager{ManagerApt}}
+	got := Plan(p, ToolCodex)
+	if got.Route != ManagerManual || !strings.Contains(got.Manual, "codex") {
+		t.Errorf("Plan(ubuntu-apt-only, codex) = %+v, want manual Codex instructions", got)
+	}
+}
+
 func TestPlan_UnknownTool(t *testing.T) {
 	p := Platform{OS: "darwin", Managers: []Manager{ManagerBrew}}
 	got := Plan(p, Tool("nonexistent"))
@@ -179,7 +196,7 @@ func TestPlan_ManualNeverSudo(t *testing.T) {
 	// Manual routes carry no Argv at all, so NeedsSudo must always be false
 	// for them — sudo-flagging only applies to a real command.
 	p := Platform{OS: "linux", DistroID: "voidlinux"}
-	for _, tool := range []Tool{ToolBD, ToolClaude, ToolGH} {
+	for _, tool := range []Tool{ToolBD, ToolClaude, ToolCodex, ToolGH} {
 		if plan := Plan(p, tool); plan.NeedsSudo {
 			t.Errorf("Plan(no-manager, %s).NeedsSudo = true, want false for a manual route", tool)
 		}

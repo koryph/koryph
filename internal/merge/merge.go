@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -200,14 +201,17 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 	var reconciled []string
 	var reconcileRounds int
 
-	// D3: a prior attempt or a pipeline stage can leave the worktree dirty, and
-	// `git rebase` then aborts with "cannot rebase: You have unstaged changes",
-	// which looks exactly like a content conflict and parks a landable bead.
-	// Uncommitted state is never part of the branch and never merges, so reset
-	// the tracked tree to the branch tip first; the rebase then either succeeds
-	// or fails on a genuine conflict.
-	if dirty, derr := worktreeDirty(ctx, wt.Path); derr == nil && dirty {
-		_, _ = gitRun(ctx, wt.Path, "reset", "--hard", "HEAD")
+	// The read-only preflight rejects a dirty candidate. Check again at the
+	// mutation boundary to close the race where a late agent/subprocess writes
+	// after preflight. Never reset this state: it may be the only copy of valid
+	// implementation work (for example, when commit signing was unavailable).
+	if dirty, derr := candidateWorktreeDirty(ctx, wt.Path); derr != nil {
+		return Result{Status: StatusError}, derr
+	} else if dirty {
+		return Result{
+			Status:     StatusDirty,
+			GateOutput: "candidate worktree became dirty after preflight; staged/unstaged work was preserved",
+		}, nil
 	}
 
 	// D2: when the branch already contains <def> (e.g. it merged main in once to
@@ -401,6 +405,34 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 // return res: a rejection Result (StatusProtected/Unsigned/CommitStyle) with a
 // nil error, or Result{StatusError} with the underlying error.
 func preflight(ctx context.Context, o Opts, wt *worktree.Info, def string) (res Result, ok bool, err error) {
+	// A merge operates only on committed branch state. Refuse dirty worktrees
+	// before any reset/rebase/gate can discard or obscure the agent's only copy
+	// of an implementation.
+	dirty, derr := candidateWorktreeDirty(ctx, wt.Path)
+	if derr != nil {
+		return Result{Status: StatusError}, false, derr
+	}
+	if dirty {
+		return Result{
+			Status:     StatusDirty,
+			GateOutput: "candidate worktree has staged, unstaged, or untracked changes; commit or recover them before merge",
+		}, false, nil
+	}
+
+	// `git merge --ff-only <branch>` succeeds with "Already up to date" when
+	// branch == default. That is not a merge: reporting default's existing HEAD
+	// as MergedSHA closes the Bead without landing any candidate work.
+	count, cerr := candidateCommitCount(ctx, o.RepoRoot, def, o.Branch)
+	if cerr != nil {
+		return Result{Status: StatusError}, false, cerr
+	}
+	if count == 0 {
+		return Result{
+			Status:     StatusNoChanges,
+			GateOutput: "candidate branch has no commits beyond " + def,
+		}, false, nil
+	}
+
 	// Protected-path check. AllowProtected (operator CLI only, koryph-dcn)
 	// lifts just the LiftableProtected subset; governance defaults and the
 	// project's extra paths always refuse.
@@ -446,6 +478,41 @@ func preflight(ctx context.Context, o Opts, wt *worktree.Info, def string) (res 
 	}
 
 	return Result{}, true, nil
+}
+
+// candidateWorktreeDirty detects agent/stage WIP while ignoring the engine's
+// own untracked conflict breadcrumb. CONFLICT.md is recovery metadata and was
+// already explicitly excluded from merge-prepare commits; treating it as
+// candidate WIP would make every successfully resolved resume unmergeable.
+func candidateWorktreeDirty(ctx context.Context, wtPath string) (bool, error) {
+	res, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: wtPath, Name: "git", Args: []string{"status", "--porcelain", "--untracked-files=all"},
+	})
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "?? "+conflictBreadcrumb {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func candidateCommitCount(ctx context.Context, dir, base, branch string) (int, error) {
+	res, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: dir, Name: "git", Args: []string{"rev-list", "--count", base + ".." + branch},
+	})
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(res.Stdout))
+	if err != nil {
+		return 0, fmt.Errorf("parse candidate commit count %q: %w", strings.TrimSpace(res.Stdout), err)
+	}
+	return n, nil
 }
 
 // remoteExists reports whether the repo at dir has any configured git remote.

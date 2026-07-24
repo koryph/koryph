@@ -146,7 +146,7 @@ func Review(ctx context.Context, o Opts) Verdict {
 		return degradedReason("git diff --name-only failed: " + err.Error())
 	}
 
-	prompt := buildPrompt(o.Branch, base, tailLines(stat.Stdout, diffStatTailLines), names.Stdout)
+	prompt := buildPrompt(o.Branch, base, tailLines(stat.Stdout, diffStatTailLines), names.Stdout, o.Contract)
 
 	// history accumulates every attempt's diagnosis (koryph-5a1 #55): before
 	// this, only the LAST attempt's Reason survived on the returned Verdict —
@@ -246,8 +246,12 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	// Route the one-shot JSON spawn through the resolved Runtime seam
 	// (koryph-fiv finding #1) instead of hand-building claude's argv here — a
 	// read-only reviewer is `--permission-mode plan`, no fallback/max-budget.
-	rt := claude.New(o.ClaudeBin)
+	rt := o.Runtime
+	if rt == nil {
+		rt = claude.New(o.ClaudeBin)
+	}
 	spec := runtime.JSONSpec{
+		RepoRoot:       o.RepoRoot,
 		Persona:        o.Persona,
 		Model:          o.Model,
 		Effort:         o.Effort,
@@ -262,7 +266,7 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	// times per review — so it gets the same latency/status/error span shape
 	// as forge.api and vault.resolve, giving real correlation across an
 	// entire reviewer attempt instead of scattered log lines.
-	sp := obs.StartSpan(ctx, log, slog.LevelDebug, "review.reviewer_spawn", obs.ForgeAttrs("claude", o.Model, o.Persona)...)
+	sp := obs.StartSpan(ctx, log, slog.LevelDebug, "review.reviewer_spawn", obs.ForgeAttrs(rt.Name(), o.Model, o.Persona)...)
 	res, err := runtime.SpawnJSON(ctx, rt, spec, runtime.JSONExec{
 		Dir:     o.Worktree,
 		Stdin:   prompt,
@@ -297,6 +301,15 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	}
 	v.Degraded = false
 	v.Raw = raw
+	if criteria := splitAcceptance(o.Contract.AcceptanceCriteria); len(criteria) > 0 {
+		enforceContract(&v, criteria)
+		if normalized, err := json.Marshal(v); err == nil {
+			// Persist the enforced verdict, not the reviewer's pre-enforcement
+			// claim. Otherwise review.json could say clean while the engine
+			// correctly blocked missing/unsatisfied acceptance evidence.
+			v.Raw = string(normalized)
+		}
+	}
 	// Capture the full Claude envelope so Review can persist it for audit/metrics
 	// beside the parsed verdict (koryph-qbc). res.Stdout is the raw --output-format
 	// json output including usage and cost fields.
@@ -325,13 +338,39 @@ func degradedTimeout(reason string) Verdict {
 
 // buildPrompt renders the reviewer prompt: diffstat tail + changed-file list
 // plus the strict-JSON response contract.
-func buildPrompt(branch, base, stat, names string) string {
+func buildPrompt(branch, base, stat, names string, contract Contract) string {
 	var b strings.Builder
 	b.WriteString("Review the branch `")
 	b.WriteString(branch)
 	b.WriteString("` against `")
 	b.WriteString(base)
 	b.WriteString("` for correctness and security issues.\n\n")
+
+	if contract.ID != "" || contract.AcceptanceCriteria != "" {
+		b.WriteString("## Bead contract\n")
+		fmt.Fprintf(&b, "- ID: %s\n- Title: %s\n- Effective runtime: %s\n- Completion state: %s\n",
+			contract.ID, contract.Title, contract.Runtime, contract.CompletionState)
+		if len(contract.Labels) > 0 {
+			b.WriteString("- Declared labels/footprint: ")
+			b.WriteString(strings.Join(contract.Labels, ", "))
+			b.WriteString("\n")
+		}
+		if strings.TrimSpace(contract.Description) != "" {
+			b.WriteString("\n### Description and scope\n")
+			b.WriteString(strings.TrimSpace(contract.Description))
+			b.WriteString("\n")
+		}
+		criteria := splitAcceptance(contract.AcceptanceCriteria)
+		if len(criteria) > 0 {
+			b.WriteString("\n### Acceptance criteria\n")
+			for i, criterion := range criteria {
+				fmt.Fprintf(&b, "- AC%d: %s\n", i+1, criterion)
+			}
+		}
+		b.WriteString("\nReview the implementation against every criterion and the declared scope. " +
+			"A locally correct diff in the wrong subsystem, a missing deliverable, or unexplained " +
+			"footprint drift is blocking.\n\n")
+	}
 
 	b.WriteString("## Diff stat (tail)\n```\n")
 	b.WriteString(strings.TrimSpace(stat))
@@ -348,7 +387,7 @@ func buildPrompt(branch, base, stat, names string) string {
 		" verdict as STRICT JSON inside a single ```json fenced block, and nothing" +
 		" after the closing fence, in exactly this shape:\n\n")
 	b.WriteString("```json\n")
-	b.WriteString(`{"blocking": <bool>, "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}`)
+	b.WriteString(`{"blocking": <bool>, "criteria": [{"id": "AC1", "status": "satisfied|unsatisfied|not-applicable", "evidence": "<specific file/test/result>"}], "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}`)
 	b.WriteString("\n```\n")
 	b.WriteString(`
 Include "line" (a 1-based line number in "file") when a finding is about a
@@ -359,6 +398,50 @@ finding must be fixed before this branch may merge. An empty findings list with
 {@html} in a summary, keep them inside JSON string values only.
 `)
 	return b.String()
+}
+
+func splitAcceptance(raw string) []string {
+	raw = strings.ReplaceAll(raw, `\n`, "\n")
+	var out []string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(strings.TrimLeft(line, "-*•"))
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// enforceContract makes omission of the acceptance audit fail closed. The
+// reviewer may find no code defect and still block when it implemented the
+// wrong subsystem or skipped a required deliverable.
+func enforceContract(v *Verdict, criteria []string) {
+	if len(criteria) == 0 {
+		return
+	}
+	seen := make(map[string]CriterionAssessment, len(v.Criteria))
+	for _, assessment := range v.Criteria {
+		seen[strings.ToUpper(strings.TrimSpace(assessment.ID))] = assessment
+	}
+	for i := range criteria {
+		id := fmt.Sprintf("AC%d", i+1)
+		assessment, ok := seen[id]
+		status := strings.ToLower(strings.TrimSpace(assessment.Status))
+		evidence := strings.TrimSpace(assessment.Evidence)
+		if !ok || evidence == "" ||
+			(status != "satisfied" && status != "unsatisfied" && status != "not-applicable") {
+			v.Blocking = true
+			v.Findings = append(v.Findings, Finding{
+				Severity: "blocking",
+				Summary:  fmt.Sprintf("%s was not evaluated with a valid status and evidence", id),
+			})
+			continue
+		}
+		if status == "unsatisfied" {
+			v.Blocking = true
+		}
+	}
 }
 
 // tailLines returns the last n lines of s.

@@ -195,6 +195,16 @@ type Profile struct {
 	ConfigDir string
 }
 
+// IdentityProber is an optional enrollment helper. Runtime.VerifyIdentity
+// deliberately requires a pre-enrolled expected value; this smaller seam lets
+// a setup command obtain the runtime's current non-secret identity once and
+// persist it before the first dispatch. Implementations must perform the same
+// local/no-quota authentication checks as AuthCheck and must never return a
+// credential or token.
+type IdentityProber interface {
+	CurrentIdentity(ctx context.Context, profile Profile) (string, error)
+}
+
 // BillingMode mirrors internal/account.BillingMode's two values as local
 // constants (see the package doc's import-boundary rationale). Not every
 // runtime distinguishes subscription vs. API-key billing the way Claude

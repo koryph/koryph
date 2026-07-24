@@ -100,7 +100,7 @@ The full history is in the
 | | Recovery & escalation | Stalls detected, failures classified and retried; a genuine fault's final attempt escalates to the frontier tier — and koryph learns which work to start there |
 | | Epic validation | After an epic's last child lands, a validator vets the union against the design — gaps become follow-up beads, then a docs update, then the epic closes |
 | | Account safety | Each project pins its account; identity is verified fail-closed before any dispatch |
-| | Multi-runtime | Runtime-neutral core with personas and model tiers (frontier / standard / light); **Claude Code is the production runtime — others are [alpha](user-guide/runtimes.md)**, refused fail-closed rather than guessed at |
+| | Multi-runtime | Runtime-neutral core with portable tiers (frontier / standard / light); **Claude Code and Codex are supported**, while unimplemented adapters remain [fail-closed](user-guide/runtimes.md) |
 | **Protect** | Posture profiles | Repo hygiene as named, applyable configuration — rulesets, settings, secret scanning, org-level rules |
 | | Signing, vault-served | SSH commit signing with keys resolved on demand from Proton Pass, 1Password, macOS Keychain, or an encrypted file — never plaintext by default |
 | | Protected paths | Merges that touch CI, hooks, or policy files are refused; a human lands those |

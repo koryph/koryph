@@ -23,6 +23,7 @@ import (
 	"github.com/koryph/koryph/internal/posture"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
 )
 
 func init() {
@@ -65,6 +66,12 @@ func init() {
 				run:      cmdProjectSetAccount,
 				DocLinks: []string{"user-guide/projects-and-accounts.md", "concepts/accounts.md"},
 			},
+			{
+				name:     "set-runtime-account",
+				summary:  "enroll one runtime's account (audited; resets validation)",
+				run:      cmdProjectSetRuntimeAccount,
+				DocLinks: []string{"user-guide/projects-and-accounts.md", "user-guide/runtimes.md"},
+			},
 		},
 	})
 	registerCmd(command{
@@ -91,11 +98,12 @@ func init() {
 func cmdProject(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || isHelpArg(args[0]) {
 		parentHelp(stdout, "project", "onboard and manage registered projects", []subVerb{
-			{"add <root> --account P --identity EMAIL [--posture <profile>|--no-posture] [flags]", "register a project (inspect + register + scaffold); offers default posture profile interactively"},
+			{"add <root> --account P --identity ID|auto [--runtime R] [--posture <profile>|--no-posture] [flags]", "register a project (inspect + register + scaffold); offers default posture profile interactively"},
 			{"install-assets (<root> | --all) [agents|commands|rules|all] [--force]", "(re)install koryph assets (agents, commands & rules; normally run by 'add')"},
 			{"list", "list managed projects (id, account, status, root)"},
 			{"show <id>|--project ID", "print one project record as JSON"},
 			{"set-account <id> --profile P --identity EMAIL --reason R", "change a project's account (audited)"},
+			{"set-runtime-account <id> --runtime R --identity ID|auto --reason R", "enroll a runtime-specific account (audited)"},
 		})
 		return 0
 	}
@@ -111,6 +119,8 @@ func cmdProject(args []string, stdout, stderr io.Writer) int {
 		return cmdProjectShow(rest, stdout, stderr)
 	case "set-account":
 		return cmdProjectSetAccount(rest, stdout, stderr)
+	case "set-runtime-account":
+		return cmdProjectSetRuntimeAccount(rest, stdout, stderr)
 	default:
 		return usageErr(stderr, fmt.Sprintf("unknown project subcommand %q", sub))
 	}
@@ -119,8 +129,9 @@ func cmdProject(args []string, stdout, stderr io.Writer) int {
 func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("project add", stderr)
 	account := fs.String("account", "", "account profile: personal|work (required)")
-	identity := fs.String("identity", "", "login email that must match at dispatch (required)")
-	configDir := fs.String("config-dir", "", "CLAUDE_CONFIG_DIR for non-personal accounts")
+	runtimeName := fs.String("runtime", "claude", "initial runtime name (claude or codex)")
+	identity := fs.String("identity", "", "runtime identity that must match at dispatch, or auto to detect it locally (required)")
+	configDir := fs.String("config-dir", "", "runtime config directory (CLAUDE_CONFIG_DIR for Claude; CODEX_HOME for Codex)")
 	id := fs.String("id", "", "project slug (default: repo dir name slugified)")
 	name := fs.String("name", "", "display name (default: project id)")
 	branch := fs.String("branch", "", "default branch (default: detected)")
@@ -130,13 +141,20 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 	postureProfile := fs.String("posture", "", "posture profile to apply non-interactively (e.g. oss-solo-maintainer); skips the interactive prompt")
 	noPosture := fs.Bool("no-posture", false, "skip the posture profile offer entirely")
 	setUsage(fs, stdout, "register a project (inspect + register + scaffold adapter + install agents, commands & rules)",
-		"<root> --account <personal|work> --identity EMAIL [--posture <profile>|--no-posture] [flags]")
+		"<root> --account <personal|work> --identity ID|auto [--runtime NAME] [--posture <profile>|--no-posture] [flags]")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return flagExit(err)
 	}
 	if len(pos) < 1 {
 		return usageErr(stderr, "project add: <root> is required")
+	}
+	if strings.TrimSpace(*runtimeName) == "" {
+		return usageErr(stderr, "project add: --runtime cannot be empty")
+	}
+	rt, ok := runtime.Default.Get(*runtimeName)
+	if !ok {
+		return usageErr(stderr, fmt.Sprintf("project add: runtime %q is not available in this koryph build", *runtimeName))
 	}
 	root, err := filepath.Abs(pos[0])
 	if err != nil {
@@ -155,9 +173,21 @@ func cmdProjectAdd(args []string, stdout, stderr io.Writer) int {
 	if flagPassed(fs, "branch") && *branch != "" {
 		inv.DefaultBranch = *branch
 	}
+	if *identity == "auto" {
+		prober, ok := rt.(runtime.IdentityProber)
+		if !ok {
+			return fail(stderr, fmt.Errorf("project add: runtime %q cannot derive an identity; supply --identity explicitly", *runtimeName))
+		}
+		resolved, err := prober.CurrentIdentity(ctx, runtime.Profile{Name: *account, ConfigDir: *configDir})
+		if err != nil {
+			return fail(stderr, err)
+		}
+		*identity = resolved
+	}
 
 	rec, err := onboard.Register(ctx, store, inv, onboard.RegisterOpts{
 		ProjectID:        *id,
+		RuntimeName:      *runtimeName,
 		AccountProfile:   *account,
 		ClaudeConfigDir:  *configDir,
 		ExpectedIdentity: *identity,
@@ -313,6 +343,103 @@ func cmdProjectSetAccount(args []string, stdout, stderr io.Writer) int {
 	if err := store.SetAccount(ctx, id, *profile, *configDir, *identity, *reason); err != nil {
 		return fail(stderr, err)
 	}
+	rec, err := store.Get(id)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := printJSON(stdout, rec); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
+}
+
+// cmdProjectSetRuntimeAccount enrolls the account home and identity used by
+// one selected runtime without mutating the project's legacy/default account.
+// --identity auto asks an adapter that implements runtime.IdentityProber to
+// derive its current non-secret identity locally (Codex hashes auth.json;
+// Claude reads its configured login email).
+func cmdProjectSetRuntimeAccount(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("project set-runtime-account", stderr)
+	flagProject := fs.String("project", "", "project id (alternative to positional <id>; default: the project containing the current directory)")
+	runtimeName := fs.String("runtime", "", "runtime name (required, for example codex)")
+	identity := fs.String("identity", "", "verified runtime identity, or auto to detect it locally (required)")
+	configDir := fs.String("config-dir", "", "runtime config directory (CODEX_HOME for Codex)")
+	makeDefault := fs.Bool("default", false, "also select this runtime as the project's default_runtime")
+	reason := fs.String("reason", "", "why the runtime account is changing (required, audited)")
+	setUsage(fs, stdout, "enroll a runtime-specific account (audited; resets validation)",
+		"[<id>|--project ID] --runtime R --identity ID|auto [--config-dir DIR] [--default] --reason R")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if strings.TrimSpace(*runtimeName) == "" {
+		return usageErr(stderr, "project set-runtime-account: --runtime is required")
+	}
+	if strings.TrimSpace(*identity) == "" {
+		return usageErr(stderr, "project set-runtime-account: --identity is required (use auto to derive it)")
+	}
+	posVal := ""
+	if len(pos) > 0 {
+		posVal = pos[0]
+	}
+	id, code := mergeProjectID(stderr, "project set-runtime-account", posVal, *flagProject)
+	if code != 0 {
+		return code
+	}
+	ctx := context.Background()
+	store, err := openStore(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	recSel, code := resolveProjectRecordCwd(stderr, store, id, "project set-runtime-account")
+	if code != 0 {
+		return code
+	}
+	id = recSel.ProjectID
+	cfg, err := project.Load(recSel.Root)
+	if err != nil {
+		// Some pre-onboard registry records predate the per-project adapter.
+		// Enrolling another runtime is a natural migration point, so create the
+		// conservative config instead of leaving a successful account mutation
+		// unusable behind a missing file.
+		cfg = project.Default(id)
+	}
+	resolvedIdentity := *identity
+	if resolvedIdentity == "auto" {
+		rt, ok := runtime.Default.Get(*runtimeName)
+		if !ok {
+			return fail(stderr, fmt.Errorf("project set-runtime-account: runtime %q is not installed in this koryph build", *runtimeName))
+		}
+		prober, ok := rt.(runtime.IdentityProber)
+		if !ok {
+			return fail(stderr, fmt.Errorf("project set-runtime-account: runtime %q cannot derive an identity; supply --identity explicitly", *runtimeName))
+		}
+		resolvedIdentity, err = prober.CurrentIdentity(ctx, runtime.Profile{Name: recSel.AccountProfile, ConfigDir: *configDir})
+		if err != nil {
+			return fail(stderr, err)
+		}
+	}
+	if err := store.SetRuntimeAccount(ctx, id, *runtimeName, registry.RuntimeAccount{
+		ConfigDir: *configDir, ExpectedIdentity: resolvedIdentity,
+	}, *reason); err != nil {
+		return fail(stderr, err)
+	}
+	if cfg.Runtimes == nil {
+		cfg.Runtimes = make(map[string]project.RuntimeConfig)
+	}
+	runtimeCfg := cfg.Runtimes[*runtimeName]
+	runtimeCfg.Enabled = true
+	cfg.Runtimes[*runtimeName] = runtimeCfg
+	if *makeDefault {
+		cfg.DefaultRuntime = *runtimeName
+	}
+	if err := cfg.Save(recSel.Root); err != nil {
+		return fail(stderr, fmt.Errorf("project set-runtime-account: enable runtime: %w", err))
+	}
+	// Immediately materialize the new runtime's native links and hook wiring;
+	// this is what makes account enrollment a usable setup command rather than
+	// a registry-only mutation that still needs a manual asset refresh.
+	adopt.InstallAssets(stderr, recSel.Root)
 	rec, err := store.Get(id)
 	if err != nil {
 		return fail(stderr, err)
@@ -578,8 +705,8 @@ func printInventory(w io.Writer, inv *onboard.Inventory) {
 	line("remote", orDash(inv.Remote))
 	line("beads", beadsSummary(inv))
 	line("bd available", fmt.Sprintf("%s %s", yesno(inv.BDAvailable), inv.BDVersion))
-	line("claude settings", yesno(inv.ClaudeSettings))
-	line("bd prime hook", yesno(inv.BDPrimeHook))
+	line("runtime hook configs", orDash(fmt.Sprintf("%v", inv.RuntimeHookConfigs)))
+	line("runtime bd prime hooks", orDash(fmt.Sprintf("%v", inv.RuntimeBDPrimeHooks)))
 	line("personas", orDash(fmt.Sprintf("%v", inv.Personas)))
 	line("legacy koryph", fmt.Sprintf("%s %v", yesno(inv.LegacyKoryph), inv.LegacyHints))
 	line("envrc profile", orDash(inv.EnvrcProfile))

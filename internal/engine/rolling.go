@@ -89,6 +89,8 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		// there is a pure cost saving (design L1: "scan only when
 		// capacity > 0, at most once per tick") with no semantic effect.
 		var w sched.Wave
+		var runtimeSkipped []sched.Reason
+		var prerequisiteDeferred []sched.Reason
 		eligible := 0
 		scanned := false
 		if (capacity > 0 && allowDispatch) || len(active) == 0 {
@@ -107,6 +109,8 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			// Learned-model pass (koryph-qf6.6) — see waveLoop's identical
 			// hook; the in-function throttle keeps rolling refills cheap.
 			issues = r.applyLearnedModels(ctx, issues)
+			issues, prerequisiteDeferred = r.applyPrerequisitePolicy(ctx, issues)
+			issues, runtimeSkipped = r.applyRuntimePolicy(issues)
 			w, err = sched.BuildWave(ctx, issues, r.cfg, sched.Opts{
 				Max:              capacity,
 				DefaultModel:     r.opts.DefaultModel,
@@ -119,6 +123,8 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if err != nil {
 				return r.outcome(ExitFatal, "wave build failed", false), fmt.Errorf("engine: build wave: %w", err)
 			}
+			w.Skipped = append(runtimeSkipped, w.Skipped...)
+			w.Deferred = append(prerequisiteDeferred, w.Deferred...)
 			r.captureFrontier(w)
 			for _, iss := range issues {
 				if ok, _ := sched.Eligible(iss, active); ok {
@@ -136,6 +142,21 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		// nothing left to do.
 		if scanned && eligible == 0 && len(active) == 0 && len(w.Items) == 0 &&
 			r.epicInFlight == "" {
+			if len(prerequisiteDeferred) > 0 {
+				r.reportWaveSkips(w)
+				r.run.Status = ledger.RunDone
+				_ = r.store.FinalizeRun(r.run)
+				r.progress("no ready work has prerequisites present in %s (%d bead(s) deferred)",
+					r.rec.DefaultBranch, len(prerequisiteDeferred))
+				return r.outcome(ExitOK, "ready work has missing prerequisite commits", false), nil
+			}
+			if len(runtimeSkipped) > 0 {
+				r.reportWaveSkips(w)
+				r.run.Status = ledger.RunDone
+				_ = r.store.FinalizeRun(r.run)
+				r.progress("runtime-only %s: no ready work selected (%d bead(s) skipped)", r.opts.RuntimeOnly, len(runtimeSkipped))
+				return r.outcome(ExitOK, "no ready work for runtime-only policy", false), nil
+			}
 			r.run.Status = ledger.RunDrained
 			_ = r.store.FinalizeRun(r.run)
 			r.dropDemand() // withdraw from the fair-share denominator
@@ -180,16 +201,20 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 		}
 
 		if allowDispatch {
+			if err := r.validateEquivalentModels(w.Items); err != nil {
+				return r.outcome(ExitFatal, "runtime equivalency failed", false), err
+			}
 			r.reportWaveSkips(w)
 
 			if r.opts.DryRun {
 				for _, it := range w.Items {
-					model := it.Model
-					if model == "" {
-						model = "(stage default)"
+					runtimeName, runtimeWhy := r.effectiveRuntimeFor(it.Issue)
+					res, effort, err := r.resolveModel(dispatchReq{issue: it.Issue}, runtimeName)
+					if err != nil {
+						return r.outcome(ExitFatal, "runtime equivalency failed", false), err
 					}
-					r.progress("dry-run: would dispatch %s (%s) model %s footprint %s",
-						it.Issue.ID, it.Issue.Title, model, it.Footprint)
+					r.progress("dry-run: would dispatch %s (%s) runtime %s (%s) model %s effort %s rationale %s footprint %s",
+						it.Issue.ID, it.Issue.Title, runtimeName, runtimeWhy, res.Model, effort, res.Rationale, it.Footprint)
 				}
 				_ = r.store.FinalizeRun(r.run)
 				return r.outcome(ExitOK, "dry-run", false), nil

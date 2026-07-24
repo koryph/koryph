@@ -173,11 +173,32 @@ Precedence (highest first):
 | `model:implement:<tier>` | this bead, implement stage only |
 | `model:<tier>` | this bead, all stages |
 | `--default-model <tier>` | all label-less beads in this run |
+| `runtimes.<name>.default_model` / `.default_equivalent` | label-less beads routed to that runtime |
+| top-level `default_model` / `default_equivalent` | label-less beads routed to `default_runtime` |
 | _(none)_ | stage default (configured in `koryph.project.json`) |
 
 `<tier>` is a model ID such as `sonnet`, `opus`, or a full model string. Stage-scoped
 labels (`model:implement:*`) take precedence over bare `model:*` labels so a bead can
 pin the implement tier without affecting review.
+
+`default_equivalent` uses the portable `frontier|standard|light:<effort>`
+grammar, such as `frontier:xhigh`; it maps through the selected runtime's
+`model_map` and `effort_map`. It is mutually exclusive with `default_model` at
+the same project or runtime scope.
+
+### Run-scoped runtime policies
+
+Use one of these mutually exclusive flags when this engine session must run a
+particular runtime:
+
+| Flag | Effect |
+|---|---|
+| `--runtime-only <runtime>` | Dispatch only beads whose normal bead/project routing already resolves to `<runtime>`; all other ready beads are skipped for this run. |
+| `--runtime-equivalent <runtime>` | Dispatch the whole eligible frontier on `<runtime>`, translating each normal source choice through portable capability tiers and effort mappings. |
+
+`--runtime-equivalent` never guesses a tier for an ambiguous or custom native
+model. Use `equiv:<tier>:<effort>` on the bead or `default_equivalent` in the
+project to make the requested capability explicit.
 
 ### Final-attempt escalation
 

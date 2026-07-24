@@ -18,7 +18,7 @@ normal `git pull`.
 |---|---|---|
 | Project config | `koryph.project.json` | Engine version pin, gate commands, merge policy, footprint rules. |
 | Beads database | `.beads/` | Issue graph, synced peer-to-peer over `refs/dolt/data`. |
-| Agent personas | `.claude/agents/*.md` | Shared role definitions (implementer, planner, etc.). |
+| Agent personas | `agents/*.md` | Canonical shared role definitions; Claude links its native directory here and Codex reads the same source. |
 | Hook scripts | `hooks/` | Boundary guards and lifecycle hooks enforced on every worktree. |
 | Gate commands | `koryph.project.json → gate` | Green-gate checks every agent must pass before merge. |
 
@@ -74,7 +74,7 @@ git clone <repo-url>
 cd <repo>
 ```
 
-The shared artefacts (`.claude/agents/`, `hooks/`, `koryph.project.json`,
+The shared artefacts (`agents/`, `commands/`, `hooks/`, `koryph.project.json`,
 `.beads/`) arrive automatically.
 
 ### 3 — Register the project
@@ -86,10 +86,12 @@ koryph project add <repo-root> \
 ```
 
 `koryph project add` inspects the repo, writes a registry record under
-`~/.koryph/registry.d/`, and installs the koryph scaffolding (fallback
-personas into `.claude/agents/`, the `koryph-*` slash commands into
-`.claude/commands/`, and the hook wiring into `.claude/settings.json`). It
-prints the record as JSON on success.
+`~/.koryph/registry.d/`, and installs the koryph scaffolding: canonical
+personas in `agents/`, canonical workflows in `commands/`, and runtime-native
+links/configuration for every enabled runtime. Claude uses `.claude/agents`,
+`.claude/commands`, and `.claude/settings.json`; Codex uses `.codex/agents`,
+`.agents/skills`, and `.codex/hooks.json`. It prints the record as JSON on
+success.
 
 Required flags:
 - **`--account`**: account profile to dispatch under (`personal` or `work`).
@@ -160,7 +162,8 @@ repo (shared)                per-machine (~/.koryph)
 ─────────────────────────    ──────────────────────────────────────────
 koryph.project.json   →   registry record (root, account, quota)
 .beads/  (Dolt ref)      ↔   bd dolt pull / push
-.claude/agents/*.md      →   same files, read by every dispatch
+agents/*.md               →   canonical personas (Claude links; Codex injects)
+commands/*.md             →   canonical workflows (runtime-native links)
 hooks/                   →   same files, enforced on every worktree
                              expected_identity: alice@example.com (Alice)
                              expected_identity: bob@example.com   (Bob)

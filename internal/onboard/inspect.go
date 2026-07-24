@@ -61,12 +61,22 @@ func Inspect(ctx context.Context, root string) (*Inventory, error) {
 		}
 	}
 
-	// Claude wiring.
-	settings := filepath.Join(absRoot, ".claude", "settings.json")
-	inv.ClaudeSettings = fsx.Exists(settings)
-	if inv.ClaudeSettings {
-		inv.BDPrimeHook = fileContains(settings, "bd prime")
+	// Native runtime wiring. The workflows/personas beneath agents/ and
+	// commands/ are canonical; these are only runtime-specific projections.
+	inv.RuntimeHookConfigs = map[string]bool{}
+	inv.RuntimeBDPrimeHooks = map[string]bool{}
+	for runtimeName, rel := range map[string]string{
+		"claude": filepath.Join(".claude", "settings.json"),
+		"codex":  filepath.Join(".codex", "hooks.json"),
+	} {
+		settings := filepath.Join(absRoot, rel)
+		if fsx.Exists(settings) {
+			inv.RuntimeHookConfigs[runtimeName] = true
+			inv.RuntimeBDPrimeHooks[runtimeName] = fileContains(settings, "bd prime")
+		}
 	}
+	inv.ClaudeSettings = inv.RuntimeHookConfigs["claude"]
+	inv.BDPrimeHook = inv.RuntimeBDPrimeHooks["claude"]
 	inv.Personas = detectPersonas(absRoot)
 
 	// Legacy koryph fork.
@@ -236,12 +246,17 @@ func detectBeadsHooks(ctx context.Context, root string) bool {
 	return false
 }
 
-// --- claude / legacy / plans probes ----------------------------------------
+// --- runtime projections / legacy / plans probes ---------------------------
 
 // detectPersonas returns the sorted persona names (basenames without .md) under
-// .claude/agents.
+// canonical agents/. Existing pre-migration .claude/agents projects are read
+// as a fallback so inspection remains useful until install-assets migrates
+// them to the shared source.
 func detectPersonas(root string) []string {
-	entries, err := os.ReadDir(filepath.Join(root, ".claude", "agents"))
+	entries, err := os.ReadDir(filepath.Join(root, "agents"))
+	if err != nil {
+		entries, err = os.ReadDir(filepath.Join(root, ".claude", "agents"))
+	}
 	if err != nil {
 		return nil
 	}

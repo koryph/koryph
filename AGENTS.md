@@ -46,8 +46,9 @@ planning commands so it becomes dispatch-shaped beads carrying the footprint
 - `/koryph-import [path]` — existing roadmap/TODO/FIXME markdown.
 - `/koryph-issue <desc>` — one small, self-contained fix or chore.
 
-On runtimes without slash-command support, open the same prompt files under
-`.claude/commands/koryph-*.md` and follow them directly. Questions need no bead — just
+On runtimes without slash-command support, use the same canonical workflows
+under `commands/koryph-*.md` (Codex also discovers them as `.agents/skills`)
+and follow them directly. Questions need no bead — just
 answer; so does a trivial edit the operator asks for directly.
 
 ## The green gate
@@ -83,7 +84,8 @@ runtime supports:
   guards **deterministically at every tool call** — a violation is caught and blocked
   pre-execution. settings.json wiring and per-tool-use guard scripts are installed during
   `koryph project add`.
-- **Runtimes without hook support** (e.g., Codex, Cursor, Grok, opencode, amp): containment
+
+- **Runtimes without hook support** (e.g., Cursor, Grok, opencode, amp): containment
   relies on **worktree isolation** (agents work in a dedicated branch + worktree; the default
   branch is never writable) and **merge-time protected-path refusal** (the koryph engine
   refuses to merge a branch that touches a protected path, regardless of what the agent

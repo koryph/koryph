@@ -80,6 +80,7 @@ func RegisterAndConfigure(ctx context.Context, store *registry.Store, snap *Snap
 		var err error
 		rec, err = onboard.Register(ctx, store, snap.Inventory, onboard.RegisterOpts{
 			ProjectID:        snap.ProjectID,
+			RuntimeName:      RuntimeName(snap),
 			AccountProfile:   acct.Profile,
 			ClaudeConfigDir:  acct.ConfigDir,
 			ExpectedIdentity: acct.Identity,
@@ -141,7 +142,7 @@ func RegisterAndConfigure(ctx context.Context, store *registry.Store, snap *Snap
 // never fails on a pathspec that doesn't exist in this repo (e.g. flake.nix
 // on a non-nix project).
 var AdoptionCommitPaths = []string{
-	"AGENTS.md", ".claude", "koryph.project.json", ".beads", "CLAUDE.md",
+	"AGENTS.md", "agents", "commands", ".claude", ".codex", ".agents", "koryph.project.json", ".beads", "CLAUDE.md",
 	"flake.nix", "flake.lock", "hooks",
 }
 

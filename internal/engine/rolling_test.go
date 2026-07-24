@@ -84,8 +84,8 @@ cat > /dev/null
 if [ -n "$KORYPH_TEST_SLOW_PHASE" ] && [ "$KORYPH_PHASE_ID" = "$KORYPH_TEST_SLOW_PHASE" ]; then
   sleep "$KORYPH_TEST_SLOW_SECONDS"
 fi
-echo "work" > agent-work.txt
-git add agent-work.txt
+echo "work for $KORYPH_PHASE_ID" > "agent-$KORYPH_PHASE_ID.txt"
+git add "agent-$KORYPH_PHASE_ID.txt"
 git commit -q --no-verify -m "feat($KORYPH_PHASE_ID): work"
 printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
 printf '{"type":"result","total_cost_usd":0.10}\n'

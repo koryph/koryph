@@ -23,7 +23,10 @@
 //     or a non-zero exit yields OK=false with Note explaining why.
 package stage
 
-import "github.com/koryph/koryph/internal/account"
+import (
+	"github.com/koryph/koryph/internal/account"
+	"github.com/koryph/koryph/internal/runtime"
+)
 
 // Opts configures one stage run.
 type Opts struct {
@@ -44,9 +47,10 @@ type Opts struct {
 	APIKey           string
 	SSHAuthSock      string // koryph scoped signing socket (post-implement stages may commit)
 	MaxBudgetUSD     float64
-	PhaseDir         string // where stage-<name>.json is written
-	ClaudeBin        string // default "claude"
-	TimeoutSec       int    // default DefaultTimeoutSec (1200); bead>project>system winner resolved by caller
+	PhaseDir         string          // where stage-<name>.json is written
+	ClaudeBin        string          // default "claude"
+	Runtime          runtime.Runtime // optional; defaults to Claude for compatibility
+	TimeoutSec       int             // default DefaultTimeoutSec (1200); bead>project>system winner resolved by caller
 
 	// ProxyBaseURL is the project's registry-configured agent_proxy.base_url
 	// (koryph-3l1.1), threaded from the caller's registry.Record via

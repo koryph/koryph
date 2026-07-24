@@ -88,7 +88,7 @@ happens to be logged in. **Personas** describe the kind of worker a task
 needs (implementer, reviewer, architect, …) and carry a **model tier**
 (frontier / standard / light) rather than a hard-coded model name; each
 runtime maps tiers to its own models. That is what keeps koryph
-runtime-neutral: Claude Code today, other agent CLIs through the same
+runtime-neutral: Claude Code and Codex today, other agent CLIs through the same
 adapter seam — support for those is
 [alpha](../user-guide/runtimes.md), stated plainly.
 

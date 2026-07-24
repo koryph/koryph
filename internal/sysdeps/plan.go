@@ -10,6 +10,7 @@ type Tool string
 const (
 	ToolBD     Tool = "bd"     // github.com/gastownhall/beads
 	ToolClaude Tool = "claude" // Claude Code CLI
+	ToolCodex  Tool = "codex"  // OpenAI Codex CLI
 	ToolGH     Tool = "gh"     // GitHub CLI
 )
 
@@ -89,6 +90,19 @@ var toolSpecs = map[Tool]toolSpec{
 			"(`npm install -g @anthropic-ai/claude-code`, or the platform-specific " +
 			"instructions there).",
 		Verify: []string{"claude", "--version"},
+	},
+	ToolCodex: {
+		// Codex's supported distribution is its npm package. Keep the same
+		// npm-first preference as Claude so an available JavaScript toolchain
+		// produces a deterministic, portable plan.
+		RoutePreference: []Manager{ManagerNpm},
+		Routes: map[Manager]routeSpec{
+			ManagerNpm: {Argv: []string{"npm", "install", "-g", "@openai/codex"}},
+		},
+		Manual: "Install the Codex CLI following the official documentation at " +
+			"https://developers.openai.com/codex/cli/ " +
+			"(`npm install -g @openai/codex`), then run `codex login`.",
+		Verify: []string{"codex", "--version"},
 	},
 	ToolGH: {
 		Routes: map[Manager]routeSpec{

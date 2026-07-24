@@ -9,8 +9,8 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **koryph turns AI coding agents into a software factory.** Point it at a git
-repo and it plans the work, runs a fleet of agents (Claude Code today, more
-runtimes via adapters) in parallel without merge conflicts, keeps them inside
+repo and it plans the work, runs a fleet of agents (Claude Code and Codex
+today, more runtimes via adapters) in parallel without merge conflicts, keeps them inside
 budget and policy, merges only what passes your gate — and ships signed,
 attested releases at the end. One static binary. No SaaS. Nothing to
 unsubscribe from.

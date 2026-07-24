@@ -18,6 +18,8 @@ import (
 	"github.com/koryph/koryph/internal/onboard"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
+	_ "github.com/koryph/koryph/internal/runtime/codex"
 	"github.com/koryph/koryph/internal/sysdeps"
 )
 
@@ -69,6 +71,7 @@ func Detect(ctx context.Context, root string) (*Snapshot, error) {
 	if inv.AdapterPresent {
 		if cfg, cerr := project.Load(absRoot); cerr == nil {
 			snap.ProjectConfig = cfg
+			snap.RuntimeName = cfg.DefaultRuntime
 		}
 	}
 
@@ -85,13 +88,13 @@ func anyVerified(cands []account.Candidate) bool {
 	return false
 }
 
-// detectTools probes git, claude, bd, and gh: presence, version, and — for
+// detectTools probes git, every locally supported runtime, bd, and gh: presence, version, and — for
 // whichever tool needs one — the sysdeps install plan. git carries no
 // sysdeps route (sysdeps.Tool has no ToolGit; installing git itself varies
 // too much by platform and predates every other prerequisite here), so its
 // ToolStatus.Plan always stays nil.
 func detectTools(ctx context.Context, p sysdeps.Platform) map[string]ToolStatus {
-	out := make(map[string]ToolStatus, 4)
+	out := make(map[string]ToolStatus, 5)
 
 	out["git"] = probeSimpleTool(ctx, "git", []string{"--version"})
 
@@ -101,6 +104,16 @@ func detectTools(ctx context.Context, p sysdeps.Platform) map[string]ToolStatus 
 		claudeStatus.Plan = &plan
 	}
 	out["claude"] = claudeStatus
+
+	codexStatus := probeSimpleTool(ctx, "codex", []string{"--version"})
+	if !codexStatus.Found {
+		plan := sysdeps.Plan(p, sysdeps.ToolCodex)
+		codexStatus.Plan = &plan
+	}
+	if rt, ok := runtime.Default.Get("codex"); ok && codexStatus.Found {
+		codexStatus.Authed = rt.AuthCheck(ctx, runtime.Profile{}) == nil
+	}
+	out["codex"] = codexStatus
 
 	out["bd"] = detectBD(ctx, p)
 

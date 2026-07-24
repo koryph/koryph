@@ -21,9 +21,10 @@ func baseInput() Input {
 		CrossGates:    []string{"make schema-check"},
 		Bootstrap:     []string{"pnpm install --frozen-lockfile"},
 		Bead: beads.Issue{
-			ID:          "bd-42",
-			Title:       "Wire the widget",
-			Description: "Implement the widget and its handler.",
+			ID:                 "bd-42",
+			Title:              "Wire the widget",
+			Description:        "Implement the widget and its handler.",
+			AcceptanceCriteria: "- Handler returns 200\n- Widget renders",
 		},
 		PhaseDir:    "/phases/p1",
 		SummaryPath: "/phases/p1/SUMMARY.md",
@@ -48,6 +49,11 @@ func TestCompileThreeSectionsInOrder(t *testing.T) {
 	}
 	if !(iPreamble < iProject && iProject < iTask) {
 		t.Errorf("sections out of order: preamble=%d project=%d task=%d", iPreamble, iProject, iTask)
+	}
+	for _, want := range []string{"### Acceptance criteria", "Handler returns 200", "Widget renders"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing bead acceptance contract %q", want)
+		}
 	}
 
 	// Project block content present.

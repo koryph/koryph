@@ -122,6 +122,13 @@ needs a decision — and the health patrol WARNs on any residual `in_progress`
 claim with no live agent (a bead a hard crash left before it could reconcile)
 as a backstop. Reopen a resolved one with `bd update <id> --status open`.
 
+The branch and worktree of a terminally blocked bead are retained even when the
+tree is clean. Health patrol reports that retained manual-review state and any
+ledger/Bead mismatch with an inspection command. Inspect first with
+`git -C <worktree> status`; recover or commit the intended work, then reopen the
+bead with `bd update <id> --status open`. Koryph never deletes or force-merges
+that worktree during reconciliation.
+
 ## When the engine itself dies { #engine-death }
 
 The recovery paths above are for a dead *agent* under a live engine. The

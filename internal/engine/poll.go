@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
@@ -26,6 +27,7 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/review"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/timeoutcfg"
 	"github.com/koryph/koryph/internal/worktree"
 )
@@ -452,30 +454,112 @@ func slotAlive(pid int) bool {
 	return dispatch.Alive(pid)
 }
 
+// streamSignals is the runtime-neutral completion data recovered from an
+// agent transcript. Claude keeps its established specialised readers; every
+// other adapter supplies the same facts through runtime.ParseEvents. This
+// prevents a new runtime from silently bypassing rate-limit recovery or token
+// accounting just because its JSONL differs from Claude's.
+type streamSignals struct {
+	cost        float64
+	hasCost     bool
+	tokens      dispatch.TokenUsage
+	hasTokens   bool
+	rateLimited bool
+}
+
+func (s streamSignals) costUSD() (float64, bool) { return s.cost, s.hasCost }
+func (s streamSignals) usage() (dispatch.TokenUsage, bool) {
+	return s.tokens, s.hasTokens
+}
+
+func parseRuntimeSignals(rt runtime.Runtime, path string) streamSignals {
+	if rt.Name() == "claude" {
+		cost, hasCost := dispatch.ParseResultCost(path)
+		usage, hasUsage := dispatch.ParseResultUsage(path)
+		return streamSignals{cost: cost, hasCost: hasCost, tokens: usage, hasTokens: hasUsage, rateLimited: dispatch.ParseRateLimited(path)}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return streamSignals{}
+	}
+	defer f.Close()
+	es, err := rt.ParseEvents(f)
+	if err != nil {
+		return streamSignals{}
+	}
+	defer es.Close()
+	var out streamSignals
+	for {
+		ev, ok, err := es.Next()
+		if err != nil || !ok {
+			return out
+		}
+		if ev.Kind == runtime.EventResult {
+			if ev.HasCost {
+				out.cost, out.hasCost = ev.CostUSD, true
+			}
+			if ev.HasUsage {
+				out.tokens = dispatch.TokenUsage{
+					InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens,
+					CacheReadTokens: ev.CacheReadTokens, CacheCreationTokens: ev.CacheCreationTokens,
+				}
+				out.hasTokens = true
+			}
+		}
+		if ev.Kind == runtime.EventError && ev.RateLimited {
+			out.rateLimited = true
+		}
+	}
+}
+
 // completeSlot handles a dead agent: record cost, then either finish the
 // candidate (review + merge policy), block, or requeue.
 func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
+	runtimeName := sl.Runtime
+	if runtimeName == "" {
+		if r.rt != nil {
+			runtimeName = r.rt.Name()
+		} else {
+			projectDefault := ""
+			if r.cfg != nil {
+				projectDefault = r.cfg.DefaultRuntime
+			}
+			runtimeName, _ = modelroute.ResolveRuntimeName(nil, projectDefault)
+		}
+	}
+	streamRT, registered := runtimeForName(runtimeName)
+	if !registered && r.rt != nil {
+		streamRT = r.rt // dispatch already succeeded; preserve legacy recovery behaviour.
+	}
+	if streamRT == nil {
+		r.blockSlot(sl.PhaseID, dispatchReq{issue: r.issueFor(ctx, sl), attempt: sl.Attempts},
+			fmt.Sprintf("runtime %q is unavailable while parsing completion signals", runtimeName))
+		return
+	}
+	signals := parseRuntimeSignals(streamRT, sl.Stream)
 	// Actual-model ground truth (koryph-qf6.2): every dispatch runs with a
 	// hardcoded --fallback-model, so the tier dispatch requested can silently
 	// degrade mid-session. The result line's modelUsage keys record what
 	// actually ran; stamp the dominant model (normalized to a tier when the
 	// id names one) so outcome data never attributes a downgraded session to
 	// the requested tier. Snapshotted per attempt, exactly like DeathReason.
-	if id, ok := dispatch.ParseActualModel(sl.Stream); ok && id != "" {
-		actual := id
-		if tier := modelroute.TierForModelID(id); tier != "" {
-			actual = tier
-		}
-		sl.ModelActual = actual
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ModelActual = actual })
-		if actual != sl.Model {
-			r.progress("bead %s: model fallback — requested %s, actually ran %s (%s)",
-				sl.PhaseID, sl.Model, actual, id)
-			logModelFallback(sl.PhaseID, sl.Model, actual, id)
+	if streamRT.Name() == "claude" {
+		if id, ok := dispatch.ParseActualModel(sl.Stream); ok && id != "" {
+			actual := id
+			if tier := modelroute.TierForModelID(id); tier != "" {
+				actual = tier
+			}
+			sl.ModelActual = actual
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ModelActual = actual })
+			if actual != sl.Model {
+				r.progress("bead %s: model fallback — requested %s, actually ran %s (%s)",
+					sl.PhaseID, sl.Model, actual, id)
+				logModelFallback(sl.PhaseID, sl.Model, actual, id)
+			}
 		}
 	}
 
-	if cost, ok := dispatch.ParseResultCost(sl.Stream); ok {
+	if cost, ok := signals.costUSD(); ok {
 		// ADD the new attempt's cost to whatever was accumulated from prior
 		// attempts (koryph-6bl: CostUSD accumulates across requeues so total
 		// spend per bead is never lost when a slot is replaced on requeue).
@@ -513,7 +597,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// accumulated total) for the koryph-77r.10 thrash guard below — see
 	// totalAttemptTokens' doc for why the distinction matters.
 	var attemptUsage dispatch.TokenUsage
-	if usage, ok := dispatch.ParseResultUsage(sl.Stream); ok {
+	if usage, ok := signals.usage(); ok {
 		attemptUsage = usage
 		r.applyTokenUsage(sl.PhaseID, usage)
 	} else if tc, ok := quota.SessionTokens(r.profile.ConfigDir, sl.SessionID); ok {
@@ -558,7 +642,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// so it must not fall through to review/merge. Checked before the
 	// MaxAttempts gate too — the requeue budget here is RateLimitRequeues, not
 	// Attempts (see requeueRateLimited).
-	if dispatch.ParseRateLimited(sl.Stream) {
+	if signals.rateLimited {
 		r.requeueRateLimited(ctx, sl)
 		return
 	}
@@ -1205,6 +1289,15 @@ func (r *runner) proxyBaseURLForSlot(sl *ledger.Slot) string {
 func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	policy := r.mergePolicy(ctx, sl.EpicID)
 
+	// Completion is runtime-neutral: every adapter ultimately produces a git
+	// branch/worktree plus the shared status document. Refuse incomplete
+	// candidates before pipeline/review can create noise or merge can mistake
+	// the unchanged base commit for agent work.
+	if ok, reason := r.candidateEligible(ctx, sl); !ok {
+		r.parkIncompleteCandidate(ctx, sl, reason)
+		return
+	}
+
 	// --direct is the owner override: skip the PR flow and merge straight to the
 	// default branch, even on a merge:pr epic. The push to a protected default
 	// branch still requires the identity to hold a branch-protection bypass —
@@ -1229,6 +1322,17 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	}
 
 	if r.opts.Review {
+		runtimeName := sl.Runtime
+		if runtimeName == "" {
+			runtimeName = r.rt.Name()
+		}
+		reviewRT, ok := runtimeForName(runtimeName)
+		if !ok {
+			r.blockSlot(sl.PhaseID, dispatchReq{issue: beads.Issue{ID: sl.PhaseID}}, "review runtime is no longer registered")
+			return
+		}
+		ra := r.rec.AccountFor(runtimeName)
+		reviewProfile := account.Profile{Name: r.rec.AccountProfile, ConfigDir: ra.ConfigDir}
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = ledger.SlotReview })
 		outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
 		reviewPersona := modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages)
@@ -1247,19 +1351,34 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 		// `timeout:<seconds>` label wins, else the project review.timeout_seconds
 		// (EffectiveReview), else the machine-wide default, else the built-in
 		// 1200s. No escalation, no hard cap.
-		beadTimeout, _ := timeoutcfg.BeadTimeout(r.issueFor(ctx, sl).Labels)
+		issue := r.issueFor(ctx, sl)
+		beadTimeout, _ := timeoutcfg.BeadTimeout(issue.Labels)
 		reviewTimeout := timeoutcfg.Resolve(beadTimeout, r.cfg.EffectiveReview().TimeoutSeconds, r.systemTimeoutSec)
+		reviewModel, rerr := r.resolveModelForRuntime(modelroute.StageReview, issue, "", runtimeName)
+		if rerr != nil {
+			r.blockSlot(sl.PhaseID, dispatchReq{issue: beads.Issue{ID: sl.PhaseID}}, "review model resolution: "+rerr.Error())
+			return
+		}
 		v := review.Review(ctx, review.Opts{
-			RepoRoot:     r.rec.Root,
-			Worktree:     sl.Worktree,
-			Branch:       sl.Branch,
-			Base:         r.rec.DefaultBranch,
-			Persona:      reviewPersona,
-			Model:        modelroute.TierOpus,
-			Effort:       reviewEffort,
-			Profile:      r.profile,
-			OutPath:      outPath,
-			ClaudeBin:    os.Getenv(envClaudeBin),
+			RepoRoot:  r.rec.Root,
+			Worktree:  sl.Worktree,
+			Branch:    sl.Branch,
+			Base:      r.rec.DefaultBranch,
+			Persona:   reviewPersona,
+			Model:     reviewModel.Model,
+			Effort:    reviewEffort,
+			Profile:   reviewProfile,
+			OutPath:   outPath,
+			ClaudeBin: os.Getenv(envClaudeBin),
+			Runtime:   reviewRT,
+			Contract: review.Contract{
+				ID: issue.ID, Title: issue.Title, Description: issue.Description,
+				AcceptanceCriteria: issue.AcceptanceCriteria, Labels: issue.Labels,
+				Runtime: runtimeName, CompletionState: func() string {
+					state, _ := completionState(sl.StatusPath)
+					return state
+				}(),
+			},
 			TimeoutSec:   reviewTimeout,
 			ProxyBaseURL: r.proxyBaseURLForSlot(sl),
 		})
@@ -1276,6 +1395,7 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 			r.releaseGlobalSlot(sl.PhaseID) // terminal
 			r.progress("bead %s: BLOCKED — review could not complete after %d attempt(s) (%s); refusing to auto-merge unreviewed work",
 				sl.PhaseID, v.Attempts, v.Reason)
+			r.reconcileBlockedBead(ctx, sl, "review degraded: "+v.Reason)
 			return
 		}
 		if v.Blocking {
@@ -1286,10 +1406,19 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 				r.requeueSlot(ctx, sl, outPath, "blocking review findings")
 				return
 			}
-			// Iterations exhausted: never auto-merge unresolved findings.
-			policy = project.PolicyManual
-			r.progress("bead %s: blocking findings persist after %d review iterations — forcing manual merge",
-				sl.PhaseID, sl.ReviewIters)
+			// Iterations exhausted: unresolved findings are a terminal block,
+			// not a weaker merge policy. "Manual merge" was interpreted as
+			// ready-for-merge and let wrong-scope or unsafe work advance.
+			note := fmt.Sprintf("blocking review findings persist after %d iteration(s) — branch/worktree preserved; resolve findings before retrying", sl.ReviewIters)
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.Status = ledger.SlotBlocked
+				s.Note = note
+			})
+			r.checkpointSlot(sl, "review-blocking")
+			r.releaseGlobalSlot(sl.PhaseID)
+			r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
+			r.auditBlocked(ctx, sl, "review-blocking", v.Raw)
+			return
 		}
 	}
 
@@ -1511,6 +1640,28 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.checkpointSlot(sl, "commit-style")
 		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
 		r.auditBlocked(ctx, sl, "commit-style", res.GateOutput)
+
+	case merge.StatusDirty:
+		note := "candidate worktree has uncommitted changes — preserved for recovery; commit the intended work before retrying"
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = note
+		})
+		r.checkpointSlot(sl, "dirty")
+		r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
+		r.auditBlocked(ctx, sl, "dirty", res.GateOutput)
+
+	case merge.StatusNoChanges:
+		note := "candidate branch has no commits beyond the dispatch base — refusing false merge"
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = note
+			s.Commits = 0
+			s.LastCommit = ""
+		})
+		r.checkpointSlot(sl, "no-changes")
+		r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
+		r.auditBlocked(ctx, sl, "no-changes", res.GateOutput)
 
 	case merge.StatusConflict:
 		// A rebase conflict is the most agent-resolvable merge failure: requeue
@@ -2222,10 +2373,15 @@ func (r *runner) branchProgress(ctx context.Context, wtPath string) (int, string
 		return 0, "", err
 	}
 	head := ""
-	if hr, herr := execx.Run(ctx, execx.Cmd{
-		Dir: wtPath, Name: "git", Args: []string{"rev-parse", "--short", "HEAD"},
-	}); herr == nil && hr.ExitCode == 0 {
-		head = strings.TrimSpace(hr.Stdout)
+	// LastCommit means the candidate's last commit, never the default branch's
+	// pre-existing HEAD. Leaving it empty for n==0 prevents an unchanged base
+	// from masquerading as merged work in the ledger and Bead close reason.
+	if n > 0 {
+		if hr, herr := execx.Run(ctx, execx.Cmd{
+			Dir: wtPath, Name: "git", Args: []string{"rev-parse", "--short", "HEAD"},
+		}); herr == nil && hr.ExitCode == 0 {
+			head = strings.TrimSpace(hr.Stdout)
+		}
 	}
 	return n, head, nil
 }

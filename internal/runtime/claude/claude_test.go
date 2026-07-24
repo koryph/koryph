@@ -12,7 +12,20 @@ import (
 	"testing"
 
 	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/runtimetest"
 )
+
+func TestClaudeConformsToSharedRuntimeContract(t *testing.T) {
+	runtimetest.AssertConforms(t, Claude{Bin: "claude"}, runtimetest.ConformanceFixture{
+		Dispatch: goldenSpec(),
+		JSON: runtime.JSONSpec{
+			RepoRoot: "/repo", Persona: "reviewer", Model: "opus", Effort: "high",
+			PermissionMode: "plan", Profile: runtime.Profile{ConfigDir: "/cfg/work"},
+			SSHAuthSock: "/run/koryph-signing/signing.sock",
+		},
+		Stream: "{\"type\":\"system\",\"session_id\":\"s1\"}\n",
+	})
+}
 
 // goldenSpec mirrors internal/dispatch/cli_test.go's baseSpec fixture
 // field-for-field (converted to runtime.DispatchSpec), so this package's
@@ -41,6 +54,7 @@ func goldenSpec() runtime.DispatchSpec {
 		SessionName:      "koryph/proj/bead-42/a1",
 		BeadsDir:         "/repo/.beads",
 		Attempt:          1,
+		SSHAuthSock:      "/run/koryph-signing/signing.sock",
 	}
 }
 

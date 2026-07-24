@@ -28,7 +28,10 @@
 //     (review.json).
 package review
 
-import "github.com/koryph/koryph/internal/account"
+import (
+	"github.com/koryph/koryph/internal/account"
+	"github.com/koryph/koryph/internal/runtime"
+)
 
 // Finding is one review finding.
 type Finding struct {
@@ -38,13 +41,22 @@ type Finding struct {
 	Summary  string `json:"summary"`
 }
 
+// CriterionAssessment is the reviewer's evidence-backed disposition for one
+// acceptance criterion enumerated in the prompt as AC1, AC2, ...
+type CriterionAssessment struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"` // satisfied|unsatisfied|not-applicable
+	Evidence string `json:"evidence"`
+}
+
 // Verdict is the review outcome.
 type Verdict struct {
-	Blocking bool      `json:"blocking"`
-	Findings []Finding `json:"findings,omitempty"`
-	Degraded bool      `json:"degraded,omitempty"` // review could not be obtained
-	Reason   string    `json:"reason,omitempty"`   // why it degraded (never a black box)
-	Attempts int       `json:"attempts,omitempty"` // reviewer spawns made
+	Blocking bool                  `json:"blocking"`
+	Criteria []CriterionAssessment `json:"criteria,omitempty"`
+	Findings []Finding             `json:"findings,omitempty"`
+	Degraded bool                  `json:"degraded,omitempty"` // review could not be obtained
+	Reason   string                `json:"reason,omitempty"`   // why it degraded (never a black box)
+	Attempts int                   `json:"attempts,omitempty"` // reviewer spawns made
 	// TimedOut marks a degraded verdict whose attempt was killed for exceeding
 	// its wall-clock TimeoutSec (as opposed to a rate limit or bad reply). The
 	// retry loop reads it to escalate the timeout before the next attempt. Not
@@ -58,6 +70,18 @@ type Verdict struct {
 	Envelope string `json:"-"`
 }
 
+// Contract is the runtime-neutral Bead and completion context a reviewer must
+// evaluate in addition to local code quality.
+type Contract struct {
+	ID                 string
+	Title              string
+	Description        string
+	AcceptanceCriteria string
+	Labels             []string
+	Runtime            string
+	CompletionState    string
+}
+
 // Opts configures one review.
 type Opts struct {
 	RepoRoot  string
@@ -68,8 +92,10 @@ type Opts struct {
 	Model     string // default opus
 	Effort    string // reasoning-effort hint; empty omits --effort (runtime default)
 	Profile   account.Profile
-	OutPath   string // review.json destination
-	ClaudeBin string // default "claude"
+	OutPath   string          // review.json destination
+	ClaudeBin string          // default "claude"
+	Runtime   runtime.Runtime // optional; defaults to Claude for compatibility
+	Contract  Contract        // optional for standalone PR review; required by the engine
 	// TimeoutSec is the reviewer's single wall-clock timeout in seconds
 	// (koryph-w82i). The caller supplies the bead > project > system winner
 	// (timeoutcfg.Resolve); <=0 falls back to DefaultTimeoutSec (1200). The

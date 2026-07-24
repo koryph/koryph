@@ -19,6 +19,7 @@ import (
 	"github.com/koryph/koryph/internal/epicreview"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/modelroute"
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/project"
@@ -26,7 +27,7 @@ import (
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/runtime"
-	"github.com/koryph/koryph/internal/runtime/claude"
+	"github.com/koryph/koryph/internal/runtimeconfig"
 	"github.com/koryph/koryph/internal/signing"
 	"github.com/koryph/koryph/internal/sysmem"
 	"github.com/koryph/koryph/internal/version"
@@ -264,6 +265,10 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		return Outcome{Code: ExitUsage}, fmt.Errorf(
 			"engine: --dispatch-mode must be wave|rolling, got %q", opts.DispatchMode)
 	}
+	if opts.RuntimeOnly != "" && opts.RuntimeEquivalent != "" {
+		return Outcome{Code: ExitUsage}, fmt.Errorf(
+			"engine: --runtime-only and --runtime-equivalent are mutually exclusive")
+	}
 
 	reg := registry.NewStore()
 	rec, err := reg.Get(opts.ProjectID)
@@ -293,19 +298,37 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 			cfg.WorkSource)
 	}
 
+	// The project default is the run's primary runtime. A runtime execution
+	// policy intentionally replaces that baseline: both --runtime-only and
+	// --runtime-equivalent can dispatch at most one runtime, so its account,
+	// identity check, governor pool, and estimate table must be preflighted.
+	// Without either flag, individual beads may still select another enabled
+	// runtime at dispatch time, preserving existing mixed-runtime behavior.
+	runRuntimeName, _ := modelroute.ResolveRuntimeName(nil, cfg.DefaultRuntime)
+	if opts.RuntimeOnly != "" {
+		runRuntimeName = opts.RuntimeOnly
+	}
+	if opts.RuntimeEquivalent != "" {
+		runRuntimeName = opts.RuntimeEquivalent
+	}
+	rt, ok := runtimeForName(runRuntimeName)
+	if !ok {
+		return Outcome{Code: ExitFatal}, fmt.Errorf("engine: execution runtime %q is not registered", runRuntimeName)
+	}
+	if !runtimeEnabled(cfg, runRuntimeName) {
+		return Outcome{Code: ExitFatal}, fmt.Errorf("engine: execution runtime %q is not enabled in koryph.project.json", runRuntimeName)
+	}
+
 	// ra resolves the effective account profile for this run's runtime
 	// (koryph-v8u.5): registry.Record.AccountFor falls back to the flat
 	// AccountProfile/ClaudeConfigDir/ExpectedIdentity fields when the project
 	// has no runtime_accounts entry for resolvedRuntimeName, which is every
 	// project today — so profile/expectedIdentity below are identical to
 	// pre-v8u.5's rec.ClaudeConfigDir/rec.ExpectedIdentity reads.
-	ra := rec.AccountFor(resolvedRuntimeName)
+	ra := rec.AccountFor(runRuntimeName)
 	profile := account.Profile{Name: rec.AccountProfile, ConfigDir: ra.ConfigDir}
 	expectedIdentity := ra.ExpectedIdentity
 	authMode := ra.EffectiveAuthMode()
-
-	// rt is the resolved runtime adapter (see resolvedRuntimeName's doc).
-	rt := claude.New(os.Getenv(envClaudeBin))
 
 	// Run-level identity/credential check, fail closed BEFORE any state is
 	// touched (no lock, no run dir, no worktrees). The dispatch backend
@@ -328,6 +351,9 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 			return Outcome{Code: ExitFatal}, err
 		}
 	case registry.AuthModeAPIKey, registry.AuthModeOAuthToken:
+		if rt.Name() != "claude" {
+			return Outcome{Code: ExitFatal}, fmt.Errorf("engine: runtime %q does not support koryph-managed %s credentials; login with its native CLI in the configured account home", rt.Name(), authMode)
+		}
 		// First-class non-subscription account (koryph-i3b, design §5/§6):
 		// there is no .claude.json to read — "verified" means the
 		// credential resolves, fingerprint-matches the enrolled identity
@@ -494,6 +520,21 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	stopHeartbeat()
 	logRunEnd(r.run.RunID, r.opts.ProjectID, outcome.Reason, outcome.Drained, outcome.Dispatched, outcome.Merged)
 	return outcome, loopErr
+}
+
+// runtimeForName returns a configured runtime adapter. The two built-ins use
+// their binary overrides; later adapters self-register in runtime.Default and
+// need no engine branch.
+func runtimeForName(name string) (runtime.Runtime, bool) {
+	return runtimeconfig.Get(name)
+}
+
+func runtimeEnabled(cfg *project.Config, name string) bool {
+	if name == "claude" {
+		return true // existing projects predate explicit runtime opt-in
+	}
+	rc, configured := cfg.Runtimes[name]
+	return configured && rc.Enabled
 }
 
 // signingPreflight enforces a Required signing policy at run setup:

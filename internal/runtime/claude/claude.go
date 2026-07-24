@@ -116,6 +116,17 @@ func (c Claude) VerifyIdentity(ctx context.Context, profile runtime.Profile, exp
 	return id.Email, nil
 }
 
+// CurrentIdentity is the optional enrollment counterpart of VerifyIdentity.
+// It is used only by the runtime-neutral account setup command; ordinary
+// dispatch still verifies against the value stored in the registry.
+func (c Claude) CurrentIdentity(ctx context.Context, profile runtime.Profile) (string, error) {
+	id, err := account.Verify(ctx, toAccountProfile(profile))
+	if err != nil {
+		return "", err
+	}
+	return id.Email, nil
+}
+
 // Capabilities implements runtime.Runtime. Every flag Claude's CLI actually
 // supports today is true; Sandbox is false because Claude has no filesystem/
 // network sandbox flag of its own (worktree isolation stands in — see the
@@ -154,6 +165,10 @@ func (c Claude) AccountEnv(profile runtime.Profile) []string {
 
 // ModelMap implements runtime.Runtime.
 func (c Claude) ModelMap() runtime.ModelMap { return runtime.ClaudeModelMap }
+
+func (c Claude) EffortMap() runtime.EffortMap { return runtime.ClaudeEffortMap }
+
+var _ runtime.IdentityProber = Claude{}
 
 // Command implements runtime.Runtime: it reproduces, byte-for-byte,
 // internal/dispatch/cli.go's launch.sh argv and env before koryph-v8u.2 (see

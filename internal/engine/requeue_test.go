@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/account"
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
@@ -39,13 +40,14 @@ func runnerFromFixture(t *testing.T, f *fix) *runner {
 		t.Fatalf("NewRun: %v", err)
 	}
 	return &runner{
-		opts:   Options{ProjectID: "proj", Out: &bytes.Buffer{}},
-		reg:    reg,
-		rec:    rec,
-		cfg:    cfg,
-		store:  store,
-		run:    run,
-		issues: map[string]beads.Issue{},
+		opts:    Options{ProjectID: "proj", Out: &bytes.Buffer{}},
+		reg:     reg,
+		rec:     rec,
+		cfg:     cfg,
+		store:   store,
+		run:     run,
+		issues:  map[string]beads.Issue{},
+		billing: account.BillingSubscription,
 	}
 }
 

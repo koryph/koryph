@@ -68,6 +68,86 @@ func TestResolveRuntimeNamePrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveCodexExactAndPortableEquivalency(t *testing.T) {
+	name, rationale := ResolveRuntimeName([]string{"model:gpt-5.6-terra"}, "claude")
+	if name != "codex" || !strings.Contains(rationale, "implies runtime codex") {
+		t.Fatalf("ResolveRuntimeName(model:gpt-5.6-terra) = (%q, %q), want codex inference", name, rationale)
+	}
+
+	got, err := Resolve(Req{
+		Runtime: "codex", Stage: StageImplement,
+		Labels: []string{"equiv:frontier:xhigh"},
+		// This is the legacy default stored by projects created before
+		// runtime-specific mappings. It must not reject a known Codex model.
+		AllowedModels: []string{TierHaiku, TierSonnet, TierOpus},
+	})
+	if err != nil {
+		t.Fatalf("Resolve(Codex equivalency): %v", err)
+	}
+	if got.Model != "gpt-5.6-terra" || got.Effort != "high" || got.Equivalent != "frontier:xhigh" {
+		t.Errorf("Codex equivalency = %+v, want model gpt-5.6-terra, effort high, portable frontier:xhigh", got)
+	}
+}
+
+func TestResolveEquivalentTranslatesNativeAndStageSelections(t *testing.T) {
+	t.Run("unique Claude native model and effort map to Codex", func(t *testing.T) {
+		got, err := ResolveEquivalent(
+			Req{Runtime: "claude", Stage: StageImplement, Labels: []string{"model:opus", "effort:xhigh"}},
+			Req{Runtime: "codex", Stage: StageImplement},
+		)
+		if err != nil {
+			t.Fatalf("ResolveEquivalent: %v", err)
+		}
+		if got.Model != "gpt-5.6-terra" || got.Effort != "high" || got.Equivalent != "frontier:xhigh" {
+			t.Errorf("resolution = %+v, want Codex frontier/high equivalent", got)
+		}
+		if !strings.Contains(got.Rationale, "runtime equivalent codex") {
+			t.Errorf("rationale = %q, want runtime-equivalent provenance", got.Rationale)
+		}
+	})
+
+	t.Run("non-explicit Codex stage default carries stage capability", func(t *testing.T) {
+		got, err := ResolveEquivalent(
+			Req{Runtime: "codex", Stage: StageImplement},
+			Req{Runtime: "claude", Stage: StageImplement},
+		)
+		if err != nil {
+			t.Fatalf("ResolveEquivalent: %v", err)
+		}
+		if got.Model != TierSonnet {
+			t.Errorf("Model = %q, want %q from implement's standard capability", got.Model, TierSonnet)
+		}
+	})
+
+	t.Run("ambiguous exact Codex model fails closed", func(t *testing.T) {
+		_, err := ResolveEquivalent(
+			Req{Runtime: "codex", Stage: StageImplement, Labels: []string{"model:gpt-5.6-terra"}},
+			Req{Runtime: "claude", Stage: StageImplement},
+		)
+		if err == nil || !strings.Contains(err.Error(), "cannot translate exact model") || !strings.Contains(err.Error(), "equiv:") {
+			t.Fatalf("ResolveEquivalent error = %v, want exact-model equiv remediation", err)
+		}
+	})
+}
+
+func TestRunEquivalentIsProjectDefaultAndLosesToBeadModel(t *testing.T) {
+	got, err := Resolve(Req{Runtime: "codex", Stage: StageImplement, RunEquivalent: "standard:xhigh"})
+	if err != nil {
+		t.Fatalf("Resolve(project equivalency): %v", err)
+	}
+	if got.Model != "gpt-5.6-terra" || got.Effort != "high" || got.Rationale != "project default equivalent standard:xhigh" {
+		t.Errorf("project equivalent = %+v, want Codex standard/high default", got)
+	}
+
+	got, err = Resolve(Req{Runtime: "claude", Stage: StageImplement, Labels: []string{"model:opus"}, RunEquivalent: "standard:xhigh"})
+	if err != nil {
+		t.Fatalf("Resolve(bead model over project equivalent): %v", err)
+	}
+	if got.Model != TierOpus || got.Rationale != "label model:opus" {
+		t.Errorf("bead label = %+v, want opus label selection", got)
+	}
+}
+
 // TestResolveClaudeRuntimeParity proves an explicit Runtime: "claude" resolves
 // byte-for-byte identically to leaving Runtime unset — the compatibility
 // contract every pre-koryph-v8u.3 caller depends on.

@@ -239,6 +239,14 @@ func ParseEnvelope(out string) (string, error) {
 // naturally when prefixed with a caller label (e.g. "reviewer ", "validator ")
 // in a degraded verdict Reason.
 func ParseEnvelopeVerdict(out string, requiredKeys ...string) (string, error) {
+	// Codex and other runtimes can emit the final model text directly rather
+	// than Claude's {result,is_error} envelope. Prefer a schema-matching direct
+	// object before attempting the legacy envelope unwrap.
+	if len(requiredKeys) > 0 {
+		if raw := SelectJSON(out, requiredKeys...); raw != "" {
+			return raw, nil
+		}
+	}
 	result, err := unwrapEnvelope(out)
 	if err != nil {
 		return "", err

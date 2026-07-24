@@ -79,9 +79,15 @@ const (
 
 // Req is one resolution request.
 type Req struct {
-	Stage         string
-	Labels        []string          // bead labels
-	RunDefault    string            // --default-model
+	Stage      string
+	Labels     []string // bead labels
+	RunDefault string   // --default-model
+	// RunEquivalent is the portable model selection for otherwise
+	// label-less work, in the form "frontier:xhigh". It is mutually
+	// exclusive with RunDefault, just as an equiv: bead label is mutually
+	// exclusive with a model: label. Project defaults are passed here by the
+	// engine after it chooses the runtime whose RuntimeConfig owns them.
+	RunEquivalent string
 	ExplicitModel string            // --model on a single dispatch (highest precedence)
 	AllowedModels []string          // project policy; empty → ["haiku","sonnet","opus"]
 	Stages        map[string]string // project persona map (may be nil)
@@ -94,8 +100,9 @@ type Req struct {
 	// runtime.ClaudeModelMap before koryph-v8u.3). RepoRoot == "" disables
 	// this step entirely (every existing caller/test that omits it keeps
 	// today's label/run-default/stage-default-only behavior unchanged).
-	RepoRoot string
-	ModelMap map[string]string
+	RepoRoot  string
+	ModelMap  map[string]string
+	EffortMap map[string]string
 
 	// Runtime is the resolved runtime name (koryph-v8u.3) this dispatch runs
 	// under: "claude", or another name registered in runtime.Default. Empty
@@ -111,8 +118,22 @@ type Req struct {
 
 // Resolution is the outcome.
 type Resolution struct {
-	Model     string `json:"model"`
-	Persona   string `json:"persona"`
-	Effort    string `json:"effort,omitempty"`
-	Rationale string `json:"rationale"`
+	Model   string `json:"model"`
+	Persona string `json:"persona"`
+	Effort  string `json:"effort,omitempty"`
+	// Equivalent records the runtime-neutral capability request when the
+	// selected concrete model came from an `equiv:<tier>:<effort>` bead label.
+	// Empty means the operator selected a concrete native model instead.
+	Equivalent string `json:"equivalent,omitempty"`
+	Rationale  string `json:"rationale"`
+}
+
+// Equivalency is a portable request that can be mapped through any runtime's
+// ModelMap and EffortMap. Effort is optional: a concrete/native source model
+// can be translated by capability tier while leaving target effort at its
+// normal default. An effort is present only when its source was itself
+// portable (equiv:) or could be unambiguously reverse-mapped.
+type Equivalency struct {
+	Tier   string `json:"tier"`
+	Effort string `json:"effort,omitempty"`
 }

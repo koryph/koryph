@@ -8,11 +8,10 @@ import (
 	"strings"
 	"testing/fstest"
 
-	"github.com/koryph/koryph/agents"
 	"github.com/koryph/koryph/internal/runtime"
 )
 
-// renderPersonasFS builds an in-memory fs.FS mirroring agents.FS, with each
+// renderPersonasFS builds an in-memory fs.FS mirroring source, with each
 // persona's frontmatter `model:` value rewritten through modelMap (keyed by
 // that SAME persona's `tier:` scalar) via rewriteModelPin (koryph-v8u.12).
 // It is returned as an fs.FS (fstest.MapFS, rather than a plain
@@ -21,8 +20,8 @@ import (
 // overwrite policy verbatim — rendering never touches that policy, only the
 // bytes fed into it. untiered names every persona (without ".md") that was
 // copied unchanged; see rewriteModelPin for why.
-func renderPersonasFS(modelMap runtime.ModelMap) (fstest.MapFS, []string, error) {
-	entries, err := fs.ReadDir(agents.FS, ".")
+func renderPersonasFS(source fs.FS, modelMap runtime.ModelMap) (fstest.MapFS, []string, error) {
+	entries, err := fs.ReadDir(source, ".")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -32,7 +31,7 @@ func renderPersonasFS(modelMap runtime.ModelMap) (fstest.MapFS, []string, error)
 		if e.IsDir() {
 			continue
 		}
-		data, rerr := fs.ReadFile(agents.FS, e.Name())
+		data, rerr := fs.ReadFile(source, e.Name())
 		if rerr != nil {
 			return nil, nil, rerr
 		}

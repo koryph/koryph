@@ -11,10 +11,11 @@ import (
 )
 
 // PersonaMeta reads the leading YAML frontmatter of
-// <repoRoot>/.claude/agents/<persona>.md and returns its "model", "effort",
-// and "tier" scalars ("" when absent). A missing file yields ("", "", "",
-// nil) so the engine can fall back to its own defaults without treating
-// absence as an error.
+// <repoRoot>/agents/<persona>.md (the canonical source) and returns its
+// "model", "effort", and "tier" scalars. A legacy .claude/agents copy is a
+// compatibility fallback only. A missing file yields ("", "", "", nil) so
+// the engine can fall back to its own defaults without treating absence as an
+// error.
 //
 // tier (koryph-v8u.10) is the runtime-agnostic capability class documented in
 // agents/README.md's frontmatter contract ("frontier"/"standard"/"light");
@@ -22,13 +23,19 @@ import (
 // active runtime's model map (see internal/modelroute/route.go's
 // effectiveModelMap) before falling back to model.
 func PersonaMeta(repoRoot, persona string) (model, effort, tier string, err error) {
-	path := filepath.Join(repoRoot, ".claude", "agents", persona+".md")
+	path := filepath.Join(repoRoot, "agents", persona+".md")
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", "", "", err
+		}
+		data, err = os.ReadFile(filepath.Join(repoRoot, ".claude", "agents", persona+".md"))
 		if errors.Is(err, os.ErrNotExist) {
 			return "", "", "", nil
 		}
-		return "", "", "", err
+		if err != nil {
+			return "", "", "", err
+		}
 	}
 	fm := parseFrontmatter(string(data))
 	return fm["model"], fm["effort"], fm["tier"], nil

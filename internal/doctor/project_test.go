@@ -200,6 +200,36 @@ func TestHooksWiringSettingsAbsent(t *testing.T) {
 	}
 }
 
+func TestHooksWiringCodex(t *testing.T) {
+	root := fabricateProject(t)
+	cfg, err := project.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DefaultRuntime = "codex"
+	cfg.Runtimes = map[string]project.RuntimeConfig{"codex": {Enabled: true}}
+	if err := cfg.Save(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooks := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bd prime --hook-json"}]}],"PreToolUse":[{"matcher":"^Bash$","hooks":[{"type":"command","command":"agent-boundary-guard.sh"}]},{"matcher":"^(Bash|apply_patch)$","hooks":[{"type":"command","command":"worktree-guard.sh"}]}]}}`
+	if err := os.WriteFile(filepath.Join(root, ".codex", "hooks.json"), []byte(hooks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := RunProject(projectOpts(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range r.Findings {
+		if f.Check == checkNameHooksWiring && f.Level == LevelWarn {
+			t.Errorf("codex hooks warning: %s", f.Message)
+		}
+	}
+}
+
 // TestHooksWiringDuplicatePrime is the koryph-14p.2 regression: `bd init`
 // run after `koryph project add` appends its own bare "bd prime --hook-json"
 // SessionStart entry alongside koryph's koryph-prime.sh wrapper entry,
