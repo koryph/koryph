@@ -85,7 +85,17 @@ type Migration func(map[string]json.RawMessage) (map[string]json.RawMessage, err
 //
 // When bumping a surface, append its vN-to-vN+1 step here in the same change as
 // the version bump in current. A no-op step is valid for an additive change.
-var migrations = map[Surface][]Migration{}
+var migrations = map[Surface][]Migration{
+	// Ledger v0 predates schema_version and v1/v2 added only fields that
+	// decode as zero values when absent. Keep the steps explicit: Migrate must
+	// never treat a missing step as an implicit no-op.
+	LedgerRun:      {noOpMigration, noOpMigration},
+	LedgerManifest: {noOpMigration, noOpMigration},
+}
+
+func noOpMigration(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	return state, nil
+}
 
 // Current returns the schema version this binary writes for surface s. Write
 // paths stamp this value into the state's schema_version field. Panics on an
