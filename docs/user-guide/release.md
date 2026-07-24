@@ -21,6 +21,7 @@ never adding) the release block and workflow file.
 | File | Purpose |
 |---|---|
 | `.github/workflows/release.yml` | Caller workflow that invokes koryph's reusable `release-train.yml` |
+| `.github/workflows/container.yml` | Optional GHCR image-release workflow, when `release.container` is configured |
 | `release-please-config.json` | release-please package configuration |
 | `.release-please-manifest.json` | Initial version manifest (written once, managed by release-please thereafter) |
 
@@ -145,4 +146,4 @@ alternative, admin-merge escape hatch) and their trade-offs.
 
 ## Re-running setup
 
-`koryph release setup` is idempotent for the workflow and config files (they are always overwritten with the latest render). The manifest file (`.release-please-manifest.json`) is **never overwritten** after the first write — release-please manages it from that point on.
+`koryph release setup` is idempotent for the workflow and config files (they are always overwritten with the latest render). When `release.container` is removed, setup also removes the previously generated `.github/workflows/container.yml`, so re-running setup disables image publishing. The manifest file (`.release-please-manifest.json`) is **never overwritten** after the first write — release-please manages it from that point on.
