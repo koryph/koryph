@@ -93,6 +93,22 @@ func TestHasCohortPeerIncludesDescendantsAndReparentedTools(t *testing.T) {
 	}
 }
 
+func TestProcessIdentityRequiresExactBirth(t *testing.T) {
+	tbl := newProcTable([]procInfo{{pid: 500, ppid: 1, pgid: 500, birthID: "linux:42"}}, false)
+	if got, ok := tbl.ProcessIdentity(500); !ok || got != "linux:42" {
+		t.Errorf("ProcessIdentity(500) = (%q, %v), want (linux:42, true)", got, ok)
+	}
+	if !tbl.MatchesProcess(500, "linux:42") {
+		t.Error("matching process identity was rejected")
+	}
+	if tbl.MatchesProcess(500, "linux:43") {
+		t.Error("recycled PID identity was accepted")
+	}
+	if tbl.MatchesProcess(500, "") {
+		t.Error("empty recorded identity was accepted")
+	}
+}
+
 func TestAggregate_MissingRoot(t *testing.T) {
 	tbl := tree(false, [5]int{1, 0, 0, 1, 1})
 	if _, ok := tbl.Aggregate(4242); ok {

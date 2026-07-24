@@ -167,12 +167,13 @@ leave a clean, resumable ledger — not to take its children with it.
   liveness derivation flags this as a **dead run** (`koryph board` shows
   `run_dead`, `koryph doctor` lists it), and `koryph ops reconcile` finalizes
   it. The detached agents still survive this too.
-- **`--resume` adopts a still-running orphan.** On resume the engine probes
-  each non-terminal slot's recorded PID. A slot whose agent is **still alive**
-  is *reattached* — the poll loop resumes over the same process, with no
-  restart and no lost work — while a slot whose agent has died is requeued or
-  re-dispatched per its death classification. An agent that outlived its
-  engine is therefore picked up exactly where it was, not started over.
+- **`--resume` adopts an authenticated still-running orphan.** On resume the
+  engine probes each non-terminal slot's recorded PID *and process-start
+  identity*. A matching live agent is *reattached* — the poll loop resumes over
+  the same process, with no restart and no lost work — while a dead, legacy, or
+  PID-recycled slot is requeued or re-dispatched per its death classification.
+  An agent that outlived its engine is therefore picked up exactly where it
+  was, not started over; an unrelated process is never adopted or signalled.
 
 > **Operator caution.** Because the engine is catchable-but-graceful, stop it
 > with a single `SIGTERM` to the engine process (or wind the run down with

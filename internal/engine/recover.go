@@ -28,7 +28,9 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 	}
 
 	decisions := ledger.Classify(latest, ledger.Probe{
-		Alive: slotAlive,
+		AliveSlot: func(sl *ledger.Slot) bool {
+			return r.slotProcessMatches(ctx, sl)
+		},
 		CommitCount: func(branch string) (int, error) {
 			return r.commitCount(ctx, branch)
 		},

@@ -90,6 +90,19 @@ func TestClassifyNilAliveTreatsAsDead(t *testing.T) {
 	}
 }
 
+func TestClassifyIdentityAwareProbeRejectsRecycledPID(t *testing.T) {
+	run := &Run{Slots: map[string]*Slot{
+		"reused": {PhaseID: "reused", Status: SlotRunning, PID: 4242},
+	}}
+	got := Classify(run, Probe{
+		Alive:     func(int) bool { return true },
+		AliveSlot: func(*Slot) bool { return false },
+	})
+	if len(got) != 1 || got[0].Action != ActionRequeueFresh {
+		t.Fatalf("Classify = %+v, want recycled PID requeue-fresh", got)
+	}
+}
+
 func TestClassifyNilRun(t *testing.T) {
 	if got := Classify(nil, Probe{}); got != nil {
 		t.Fatalf("Classify(nil) = %v, want nil", got)

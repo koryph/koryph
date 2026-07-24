@@ -19,8 +19,11 @@ import (
 // ps (it needs proc_pid_rusage/DTrace — the kernel-hook backend on the roadmap
 // in docs/designs/2026-07-process-metrics.md), so IOAvailable is false here.
 func Snapshot(ctx context.Context) (*ProcTable, error) {
-	// pid, ppid, pgid, rss(KB), cumulative CPU time — headerless via trailing '='.
-	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=,pgid=,rss=,time=").Output()
+	// pid, ppid, pgid, rss(KB), cumulative CPU time, and a stable process-start
+	// identity — headerless via trailing '='. lstart is the strongest identity
+	// ps exposes without privileged/cgo APIs; an empty/unparseable value makes
+	// reattach and recovery fail closed rather than trusting PID alone.
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=,pgid=,rss=,time=,lstart=").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +52,13 @@ func parsePSTable(out string) []procInfo {
 		if !ok {
 			continue
 		}
-		procs = append(procs, procInfo{pid: pid, ppid: ppid, pgid: pgid, rssKB: rssKB, cpuSec: cpuSec})
+		birthID := ""
+		// lstart is five fields: weekday month day time year. Preserve it as an
+		// opaque platform identity so repeated snapshots compare byte-for-byte.
+		if len(fields) >= 10 {
+			birthID = "darwin:" + strings.Join(fields[5:10], " ")
+		}
+		procs = append(procs, procInfo{pid: pid, ppid: ppid, pgid: pgid, birthID: birthID, rssKB: rssKB, cpuSec: cpuSec})
 	}
 	return procs
 }

@@ -26,6 +26,10 @@ func TestParseStatCPU(t *testing.T) {
 	if cpu != 6.0 {
 		t.Errorf("cpuSec = %v, want 6.0 (utime+stime+cutime+cstime)", cpu)
 	}
+	_, _, _, birth, ok := parseStatCPUWithBirth(line)
+	if !ok || birth != "linux:100" {
+		t.Errorf("parseStatCPUWithBirth birth = %q, ok=%v, want linux:100, true", birth, ok)
+	}
 }
 
 func TestParseStatCPU_Malformed(t *testing.T) {

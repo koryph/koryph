@@ -47,11 +47,11 @@ func Snapshot(ctx context.Context) (*ProcTable, error) {
 		if err != nil {
 			continue // process exited between ReadDir and now
 		}
-		ppid, pgid, cpuSec, ok := parseStatCPU(string(statBytes))
+		ppid, pgid, cpuSec, birthID, ok := parseStatCPUWithBirth(string(statBytes))
 		if !ok {
 			continue
 		}
-		pi := procInfo{pid: pid, ppid: ppid, pgid: pgid, cpuSec: cpuSec}
+		pi := procInfo{pid: pid, ppid: ppid, pgid: pgid, birthID: birthID, cpuSec: cpuSec}
 
 		if statmBytes, err := os.ReadFile("/proc/" + e.Name() + "/statm"); err == nil {
 			pi.rssKB = parseStatmRSS(string(statmBytes), pageKB)
@@ -82,31 +82,49 @@ func Snapshot(ctx context.Context) (*ProcTable, error) {
 // reaped by exactly one parent, summing (utime+stime+cutime+cstime) across the
 // live cohort counts every reaped descendant exactly once, with no double-count.
 func parseStatCPU(content string) (ppid, pgid int, cpuSec float64, ok bool) {
+	ppid, pgid, cpuSec, _, ok = parseStatCPUWithBirth(content)
+	return ppid, pgid, cpuSec, ok
+}
+
+// parseStatCPUWithBirth additionally returns the Linux /proc stat starttime
+// (field 22) as a boot-relative clock-tick identity. A PID cannot be reused
+// while retaining that start time, so this distinguishes the dispatched agent
+// from a later unrelated process that inherited its numeric PID.
+func parseStatCPUWithBirth(content string) (ppid, pgid int, cpuSec float64, birthID string, ok bool) {
 	rparen := strings.LastIndexByte(content, ')')
 	if rparen < 0 || rparen+2 >= len(content) {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	rest := strings.Fields(content[rparen+2:])
 	// rest[1]=ppid(f4) rest[2]=pgrp(f5) rest[11..14]=utime,stime,cutime,cstime(f14..17)
 	if len(rest) < 15 {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	ppid, err := strconv.Atoi(rest[1])
 	if err != nil {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	pgid, err = strconv.Atoi(rest[2])
 	if err != nil {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	utime, err1 := strconv.ParseInt(rest[11], 10, 64)
 	stime, err2 := strconv.ParseInt(rest[12], 10, 64)
 	cutime, err3 := strconv.ParseInt(rest[13], 10, 64)
 	cstime, err4 := strconv.ParseInt(rest[14], 10, 64)
 	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
-	return ppid, pgid, float64(utime+stime+cutime+cstime) / userHZ, true
+	// starttime is field 22, offset 19 after the comm field. Old or malformed
+	// rows still supply resource metrics, but cannot authenticate a PID.
+	if len(rest) < 20 {
+		return ppid, pgid, float64(utime+stime+cutime+cstime) / userHZ, "", true
+	}
+	start, err := strconv.ParseUint(rest[19], 10, 64)
+	if err != nil {
+		return ppid, pgid, float64(utime+stime+cutime+cstime) / userHZ, "", true
+	}
+	return ppid, pgid, float64(utime+stime+cutime+cstime) / userHZ, "linux:" + strconv.FormatUint(start, 10), true
 }
 
 // parseStatmRSS returns the resident-set size in KB from a /proc/<pid>/statm

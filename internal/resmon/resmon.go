@@ -52,6 +52,7 @@ type procInfo struct {
 	pid       int
 	ppid      int
 	pgid      int     // process-group id (== the Setsid leader's pid for an agent)
+	birthID   string  // opaque, stable process-start identity; empty when unavailable
 	rssKB     int64   // resident set size, kilobytes
 	cpuSec    float64 // cumulative CPU time (user+system), seconds
 	ioReadKB  int64   // cumulative disk bytes read, kilobytes (0 when unavailable)
@@ -166,6 +167,29 @@ func (t *ProcTable) Aggregate(rootPID int) (Sample, bool) {
 func (t *ProcTable) HasCohortPeer(rootPID int) (has, found bool) {
 	s, found := t.Aggregate(rootPID)
 	return found && s.PIDs > 1, found
+}
+
+// ProcessIdentity returns the opaque process-start identity for pid. A present
+// process without an identity is deliberately reported unavailable: callers
+// that may reattach or signal a previously recorded PID must fail closed rather
+// than mistake a recycled numeric PID for the agent they dispatched.
+func (t *ProcTable) ProcessIdentity(pid int) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	p, ok := t.byPID[pid]
+	if !ok || p.birthID == "" {
+		return "", false
+	}
+	return p.birthID, true
+}
+
+// MatchesProcess reports whether pid still identifies the process that was
+// recorded with want. Empty identities never match, so legacy ledgers and
+// unavailable platform readings cannot authorize a reattach or SIGTERM.
+func (t *ProcTable) MatchesProcess(pid int, want string) bool {
+	got, ok := t.ProcessIdentity(pid)
+	return ok && want != "" && got == want
 }
 
 // Usage is the lifetime aggregate of a slot's resource usage, updated

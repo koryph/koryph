@@ -56,3 +56,13 @@ func TestParsePSTable(t *testing.T) {
 		t.Errorf("PIDs = %d, want 2 (600 is a different group)", s.PIDs)
 	}
 }
+
+func TestParsePSTableProcessStartIdentity(t *testing.T) {
+	procs := parsePSTable("  501   1   501   4096   0:01.50 Fri Jul 24 14:50:00 2026\n")
+	if len(procs) != 1 {
+		t.Fatalf("parsed rows = %d, want 1", len(procs))
+	}
+	if got := procs[0].birthID; got != "darwin:Fri Jul 24 14:50:00 2026" {
+		t.Errorf("birthID = %q", got)
+	}
+}

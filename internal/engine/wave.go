@@ -1377,6 +1377,9 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	// are persisted and re-attached to the lease, so a relabel or vocabulary
 	// edit mid-run cannot re-price a live slot (I8).
 	resKinds, memReserveMB := r.resolveDispatchResources(q)
+	// The numeric PID alone is insufficient across a later engine resume: it
+	// may already belong to an unrelated process after PID reuse.
+	processIdentity := r.processIdentity(ctx, handle.PID)
 
 	_ = r.adapter.Claim(ctx, beadID) // best-effort
 	r.holdGlobalSlot(beadID, handle.PID, res.Model, resKinds, memReserveMB)
@@ -1413,6 +1416,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		ProxyID:               proxyID,
 		ProxyConfigured:       proxyConfigured,
 		PID:                   handle.PID,
+		ProcessIdentity:       processIdentity,
 		Stream:                handle.StreamPath,
 		StatusPath:            handle.StatusPath,
 		LogPath:               filepath.Join(phaseDir, "session.log"),

@@ -302,6 +302,43 @@ func (r *runner) sampleProcTable(ctx context.Context) *resmon.ProcTable {
 	return tbl
 }
 
+// processIdentity authenticates a currently running PID with one bounded
+// snapshot. Unlike periodic resource sampling it deliberately ignores the
+// sampling cadence and envResmon switch: PID authentication guards signal and
+// resume safety, not optional metrics collection.
+func (r *runner) processIdentity(ctx context.Context, pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	if r.processIdentityProbe != nil {
+		return r.processIdentityProbe(ctx, pid)
+	}
+	probe := r.resProbe
+	if probe == nil {
+		probe = resmon.Snapshot
+	}
+	pctx, cancel := context.WithTimeout(ctx, resSampleTimeout)
+	defer cancel()
+	tbl, err := probe(pctx)
+	if err != nil || tbl == nil {
+		return ""
+	}
+	id, ok := tbl.ProcessIdentity(pid)
+	if !ok {
+		return ""
+	}
+	return id
+}
+
+// slotProcessMatches proves that the process presently using sl.PID is the
+// exact process the engine dispatched. Legacy slots deliberately do not match:
+// an ordinary requeue is safe, while reattaching or signalling a recycled PID
+// is not.
+func (r *runner) slotProcessMatches(ctx context.Context, sl *ledger.Slot) bool {
+	return sl != nil && sl.PID > 0 && sl.ProcessIdentity != "" && slotAlive(sl.PID) &&
+		r.processIdentity(ctx, sl.PID) == sl.ProcessIdentity
+}
+
 // sampleSlotResources folds this pass's resource reading for sl's agent process
 // cohort into the slot's running Usage and mirrors the derived aggregates onto
 // the ledger slot. A slot whose process has already exited (Aggregate not
@@ -480,6 +517,9 @@ func (r *runner) recoverStaleHeartbeat(sl *ledger.Slot, procs *resmon.ProcTable)
 	if r.staleRecoveryEligible != nil {
 		eligible = r.staleRecoveryEligible(sl, procs)
 	} else {
+		if procs == nil || !procs.MatchesProcess(sl.PID, sl.ProcessIdentity) {
+			return false
+		}
 		hasPeer, found := procs.HasCohortPeer(sl.PID)
 		eligible = found && !hasPeer
 	}

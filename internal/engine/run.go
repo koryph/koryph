@@ -166,6 +166,9 @@ type runner struct {
 	// table predicate and graceful process-group SIGTERM, respectively.
 	staleRecoveryEligible func(*ledger.Slot, *resmon.ProcTable) bool
 	staleRecoveryStop     func(int) error
+	// processIdentityProbe is the narrow test seam for PID authentication. Nil
+	// takes a bounded platform process-table snapshot through processIdentity.
+	processIdentityProbe func(context.Context, int) string
 
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time

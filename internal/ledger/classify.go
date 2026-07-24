@@ -40,7 +40,11 @@ const (
 // dead). A nil CommitCount disables the branch fallback (only the slot's
 // recorded Commits count).
 type Probe struct {
-	Alive       func(pid int) bool
+	Alive func(pid int) bool
+	// AliveSlot is the identity-aware liveness probe used when a caller can
+	// authenticate more than a numeric PID. When supplied it takes precedence
+	// over Alive, allowing resume to reject a recycled PID safely.
+	AliveSlot   func(*Slot) bool
 	CommitCount func(branch string) (int, error)
 }
 
@@ -82,7 +86,14 @@ func Classify(run *Run, p Probe) []Decision {
 				Reason:  fmt.Sprintf("attempts %d >= max %d", sl.Attempts, MaxAttempts),
 			})
 
-		case sl.PID > 0 && p.Alive != nil && p.Alive(sl.PID):
+		case sl.PID > 0 && p.AliveSlot != nil && p.AliveSlot(sl):
+			out = append(out, Decision{
+				PhaseID: id,
+				Action:  ActionReattach,
+				Reason:  fmt.Sprintf("pid %d authenticated alive", sl.PID),
+			})
+
+		case sl.PID > 0 && p.AliveSlot == nil && p.Alive != nil && p.Alive(sl.PID):
 			out = append(out, Decision{
 				PhaseID: id,
 				Action:  ActionReattach,

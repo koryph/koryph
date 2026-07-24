@@ -171,16 +171,21 @@ type Slot struct {
 	// experiment could have been running before this field existed).
 	ProxyConfigured bool `json:"proxy_configured,omitempty"`
 
-	PID        int     `json:"pid,omitempty"`
-	Stream     string  `json:"stream,omitempty"`
-	StatusPath string  `json:"status_path,omitempty"`
-	LogPath    string  `json:"log_path,omitempty"`
-	Status     string  `json:"status"`
-	Attempts   int     `json:"attempts"`
-	Commits    int     `json:"commits"`
-	LastCommit string  `json:"last_commit,omitempty"`
-	ResumeSHA  string  `json:"resume_sha,omitempty"`
-	CostUSD    float64 `json:"cost_usd"`
+	PID int `json:"pid,omitempty"`
+	// ProcessIdentity is the opaque process-start identity captured with PID at
+	// dispatch. A later resume or automatic SIGTERM must match both values so a
+	// recycled PID cannot be adopted or signalled as if it were this agent.
+	// Additive: legacy slots with no identity fail closed into ordinary requeue.
+	ProcessIdentity string  `json:"process_identity,omitempty"`
+	Stream          string  `json:"stream,omitempty"`
+	StatusPath      string  `json:"status_path,omitempty"`
+	LogPath         string  `json:"log_path,omitempty"`
+	Status          string  `json:"status"`
+	Attempts        int     `json:"attempts"`
+	Commits         int     `json:"commits"`
+	LastCommit      string  `json:"last_commit,omitempty"`
+	ResumeSHA       string  `json:"resume_sha,omitempty"`
+	CostUSD         float64 `json:"cost_usd"`
 
 	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are the
 	// per-slot token composition (koryph-77r.1, design
