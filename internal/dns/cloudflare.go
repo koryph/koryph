@@ -277,7 +277,7 @@ func (c *CloudflareClient) call(ctx context.Context, token []byte, method, endpo
 		return fmt.Errorf("decode response (HTTP %d): %w", resp.StatusCode, err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !envelope.Success {
-		return fmt.Errorf("Cloudflare API HTTP %d: %s", resp.StatusCode, cloudflareErrors(envelope.Errors))
+		return fmt.Errorf("cloudflare API HTTP %d: %s", resp.StatusCode, cloudflareErrors(envelope.Errors))
 	}
 	if result != nil && len(envelope.Result) > 0 {
 		if err := json.Unmarshal(envelope.Result, result); err != nil {
