@@ -337,9 +337,9 @@ One labeled block per **AI provider/runtime** with a configured quota
 ceiling — different dispatched threads can run under different runtimes
 (each bead may carry a `runtime:<name>` label), and each runtime is billed
 against its own provider's rate limits with its own measurement source. Only
-one block ("claude") exists today, since claude is the only runtime koryph
-ships an adapter for; a future runtime's quota reader adds its own block here
-with no further changes to this tab.
+Claude currently supplies measured quota windows. Codex is shown explicitly
+as advisory/unavailable until a trustworthy Codex usage source is available;
+it never inherits Claude's window names or values.
 
 Each block shows two burn bars — 5-hour window and weekly window — as
 `[filled bar] $spent/$ceiling (pct%)`. Live spend comes from a background
@@ -520,10 +520,13 @@ through the dependency rows (the view follows the focused row), `Enter` jumps
 into the focused dep, `Backspace` pops the navigation stack, and `t` tails
 the raw agent log.
 
-`T` (capital) opens the **activity tail**: the agent's live `stream.jsonl`
-parsed into its train of thought — **thinking**, **tool calls** (with the tool
-name and its key argument), and **assistant messages** — following as the agent
-works. Filter with the number keys shown in the footer:
+`T` (capital) opens the **activity tail**: the selected runtime's live
+`stream.jsonl` projected into **reasoning**, **tool calls** (with the tool name
+and its key argument), **assistant messages**, and available
+session/completion/error signals. Claude Code and Codex have separate native
+parsers behind one runtime-neutral view. Unknown records are ignored, malformed
+partial JSONL is tolerated, and an adapter without an activity projector gets a
+clear neutral message. Filter with the number keys shown in the footer:
 
 | Key | Shows |
 |-----|-------|
@@ -597,15 +600,11 @@ The bottom line of the TUI is one de-duplicated fleet summary:
   beads waiting on deps/footprints/resources.
 - **✗ N failed** — terminal failed/conflict/blocked slots needing attention
   (red; hidden at zero).
-- **`<runtime>` 5h N% wk M%** — one segment per AI provider with a
-  configured quota ceiling, each showing BOTH the 5-hour and weekly window
-  burn (green/amber/red/gray by the worse of the two; gray means a ceiling is
-  set but nothing is currently measurable). Different dispatched threads may
-  run under different runtimes, each billed against its own provider's rate
-  limits — so this is a list of segments, not a single hardcoded pair of
-  numbers, even though only `claude` exists to populate one today. Providers
-  with no ceiling configured at all are omitted (see the Efficiency tab's
-  Quota Windows section for the full "run koryph quota calibrate" hint).
+- **`<runtime> <window> N% …`** — one segment per AI provider, using window
+  names supplied by that runtime rather than hardcoded Claude semantics.
+  Measured windows are green/amber/red/gray by the worst fraction; runtimes
+  without trustworthy measurement remain visible as `usage advisory`,
+  `usage unavailable`, or `usage uncalibrated`.
 - **⚠ message** — last error (e.g. failed refresh, rejected nudge).
 - **✓ message** — last successful action (e.g. `nudged koryph-9af.6`).
 - **?** / **q** key hints — always visible.

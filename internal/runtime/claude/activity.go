@@ -9,37 +9,29 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/koryph/koryph/internal/runtime"
 )
 
 // ActivityKind classifies one entry of an agent's streamed activity so the TUI
 // tail can filter thinking, tool calls, and assistant messages independently
 // (koryph-xvk follow-up: "tail thinking, tool use, or other messages … filter
 // between each one or all").
-type ActivityKind int
+type ActivityKind = runtime.ActivityKind
 
 const (
 	// ActThinking is an extended-thinking block (thinking_delta text).
-	ActThinking ActivityKind = iota
+	ActThinking = runtime.ActThinking
 	// ActToolUse is a tool invocation — Tool holds the tool name, Text holds the
 	// accumulated input JSON (possibly partial for the in-flight call).
-	ActToolUse
+	ActToolUse = runtime.ActToolUse
 	// ActMessage is assistant-visible text (text_delta) — the "other messages"
 	// the agent emits alongside its reasoning and tool calls.
-	ActMessage
+	ActMessage = runtime.ActMessage
 )
 
 // ActivityEntry is one classified block extracted from a slot's stream.jsonl.
-type ActivityEntry struct {
-	Kind ActivityKind
-	// Parent is parent_tool_use_id: "" for the main agent, otherwise the
-	// enclosing Task tool-use id when the block came from a nested subagent.
-	Parent string
-	// Tool is the tool name (ActToolUse only).
-	Tool string
-	// Text is the block's text: reasoning (ActThinking), assistant text
-	// (ActMessage), or the tool-input JSON (ActToolUse).
-	Text string
-}
+type ActivityEntry = runtime.ActivityEntry
 
 // activityLine is the tolerant superset of a stream-json line the activity
 // extractor reads. Every dispatch runs with --include-partial-messages, so all
@@ -96,6 +88,14 @@ func ExtractActivity(r io.Reader) []ActivityEntry {
 	s := NewActivityScanner()
 	s.Write(buf)
 	return s.Entries()
+}
+
+func (c Claude) ExtractActivity(r io.Reader) []runtime.ActivityEntry {
+	return ExtractActivity(r)
+}
+
+func (c Claude) NewActivityScanner() runtime.ActivityScanner {
+	return NewActivityScanner()
 }
 
 // ActivityScanner incrementally parses stream-json into ActivityEntry values,
@@ -251,3 +251,5 @@ func entryFor(ob *openActivityBlock) (ActivityEntry, bool) {
 	}
 	return ActivityEntry{Kind: ob.kind, Parent: ob.parent, Tool: ob.tool, Text: text}, true
 }
+
+var _ runtime.ActivityProjector = Claude{}

@@ -13,7 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/koryph/koryph/internal/cockpit"
-	"github.com/koryph/koryph/internal/runtime/claude"
+	"github.com/koryph/koryph/internal/runtime"
 )
 
 // streamFixture writes a realistic stream.jsonl (content_block_start → deltas →
@@ -94,6 +94,53 @@ func TestDetailActivityTail(t *testing.T) {
 	}
 	if v := dm.View(); !strings.Contains(v, "b1") || !strings.Contains(v, "bead") {
 		t.Errorf("after esc the detail panel must render again:\n%s", v)
+	}
+}
+
+func TestDetailActivityTailSelectsCodexProjector(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"thread-7"}`,
+		`{"type":"item.completed","item":{"type":"reasoning","text":"Codex reasoning signal"}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"go test ./..."}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Codex message signal"}}`,
+		`{"type":"turn.completed"}`,
+		`{"type":"turn.failed","error":{"message":"Codex error signal"}}`,
+	}, "\n") + "\n"
+	path := filepath.Join(t.TempDir(), "codex-stream.jsonl")
+	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newDetailModel(DefaultTheme())
+	m.Resize(100, 30)
+	m.SetDetail(cockpit.BeadDetailSnapshot{
+		BeadID: "b-codex", Title: "codex bead", Runtime: "codex", StreamPath: path,
+	})
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")})
+	view := mm.(*detailModel).View()
+	for _, want := range []string{
+		"Codex reasoning signal", "go test", "Codex message signal",
+		"turn completed", "Codex error signal",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Codex activity view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestDetailActivityTailUnsupportedRuntimeIsNeutral(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stream.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := newDetailModel(DefaultTheme())
+	m.Resize(100, 30)
+	m.SetDetail(cockpit.BeadDetailSnapshot{
+		BeadID: "future", Runtime: "future-runtime", StreamPath: path,
+	})
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")})
+	if view := mm.(*detailModel).View(); !strings.Contains(view, "no activity projector") {
+		t.Errorf("unsupported runtime view =\n%s", view)
 	}
 }
 
@@ -279,7 +326,7 @@ func entriesContain(entries []claudeActivityEntry, sub string) bool {
 
 // claudeActivityEntry aliases the entry type so the helper signature reads
 // cleanly in this test file.
-type claudeActivityEntry = claude.ActivityEntry
+type claudeActivityEntry = runtime.ActivityEntry
 
 // TestDetailActivityFullHistory proves the 'h' toggle: the default tail window
 // cannot reach an entry emitted more than 512 KB ago, but switching to full

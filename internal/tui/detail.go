@@ -38,7 +38,8 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/koryph/koryph/internal/cockpit"
-	"github.com/koryph/koryph/internal/runtime/claude"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtimeconfig"
 )
 
 func init() {
@@ -135,14 +136,14 @@ type detailModel struct {
 	// mode; nil in (or on entry to) tail mode. activityOffset is the byte count
 	// already fed to it, and activityScanPath the stream it is bound to — a
 	// change in either resets the scan.
-	activityScanner  *claude.ActivityScanner
+	activityScanner  runtime.ActivityScanner
 	activityOffset   int64
 	activityScanPath string
 
 	// activityEntries is the last parse of the slot's stream.jsonl (the 512 KB
 	// window in tail mode, the whole stream in full mode), cached so a filter
 	// change re-renders without re-reading the file.
-	activityEntries []claude.ActivityEntry
+	activityEntries []runtime.ActivityEntry
 
 	// zonePrefix is unique to this model instance to avoid zone ID collisions.
 	zonePrefix string
@@ -173,14 +174,14 @@ func (f activityFilter) label() string {
 }
 
 // matches reports whether an entry of kind k is shown under this filter.
-func (f activityFilter) matches(k claude.ActivityKind) bool {
+func (f activityFilter) matches(k runtime.ActivityKind) bool {
 	switch f {
 	case filterThinking:
-		return k == claude.ActThinking
+		return k == runtime.ActThinking
 	case filterTools:
-		return k == claude.ActToolUse
+		return k == runtime.ActToolUse
 	case filterMessages:
-		return k == claude.ActMessage
+		return k == runtime.ActMessage
 	default:
 		return true
 	}
@@ -392,11 +393,29 @@ func (m *detailModel) resetActivityScan() {
 	m.activityScanPath = ""
 }
 
+func (m *detailModel) activityProjector() (runtime.ActivityProjector, bool) {
+	name := strings.TrimSpace(m.detail.Runtime)
+	if name == "" {
+		name = "claude"
+	}
+	rt, ok := runtimeconfig.Get(name)
+	if !ok {
+		return nil, false
+	}
+	projector, ok := rt.(runtime.ActivityProjector)
+	return projector, ok
+}
+
 // refreshActivityTail reads the last activityTailBytes of the stream (a fresh,
 // stateless parse each call) and re-renders. On a read error the cached entries
 // are left intact so a transient stat/seek failure mid-write doesn't blank a
 // working tail; only a successful parse replaces the cache.
 func (m *detailModel) refreshActivityTail() {
+	projector, ok := m.activityProjector()
+	if !ok {
+		m.activityVP.SetContent(fmt.Sprintf("(activity unavailable: runtime %q has no activity projector)", m.detail.Runtime))
+		return
+	}
 	f, err := os.Open(m.detail.StreamPath)
 	if err != nil {
 		m.activityVP.SetContent(fmt.Sprintf("(stream unavailable: %v)", err))
@@ -426,11 +445,11 @@ func (m *detailModel) refreshActivityTail() {
 			m.renderActivity()
 			return
 		}
-		m.activityEntries = claude.ExtractActivity(br)
+		m.activityEntries = projector.ExtractActivity(br)
 		m.renderActivity()
 		return
 	}
-	m.activityEntries = claude.ExtractActivity(f)
+	m.activityEntries = projector.ExtractActivity(f)
 	m.renderActivity()
 }
 
@@ -440,6 +459,11 @@ func (m *detailModel) refreshActivityTail() {
 // no new bytes have arrived it is a no-op (the cached render stands), keeping a
 // finished or quiet stream free of per-tick work.
 func (m *detailModel) refreshActivityFull() {
+	projector, ok := m.activityProjector()
+	if !ok {
+		m.activityVP.SetContent(fmt.Sprintf("(activity unavailable: runtime %q has no activity projector)", m.detail.Runtime))
+		return
+	}
 	path := m.detail.StreamPath
 	f, err := os.Open(path)
 	if err != nil {
@@ -459,7 +483,7 @@ func (m *detailModel) refreshActivityFull() {
 	// shrank under our offset (truncation/rotation) — any of which invalidates
 	// the accumulated parse.
 	if m.activityScanner == nil || m.activityScanPath != path || size < m.activityOffset {
-		m.activityScanner = claude.NewActivityScanner()
+		m.activityScanner = projector.NewActivityScanner()
 		m.activityOffset = 0
 		m.activityScanPath = path
 	}
@@ -469,7 +493,7 @@ func (m *detailModel) refreshActivityFull() {
 	if m.activityOffset > 0 {
 		if _, err = f.Seek(m.activityOffset, io.SeekStart); err != nil {
 			// Fall back to a clean re-scan from the start.
-			m.activityScanner = claude.NewActivityScanner()
+			m.activityScanner = projector.NewActivityScanner()
 			m.activityOffset = 0
 			if _, err = f.Seek(0, io.SeekStart); err != nil {
 				return // leave the cached entries intact
@@ -525,15 +549,23 @@ func (m *detailModel) renderActivity() {
 		shown++
 
 		switch e.Kind {
-		case claude.ActToolUse:
+		case runtime.ActToolUse:
 			head := toolStyle.Render("⚙ " + e.Tool)
 			if arg := toolArgSummary(e.Text); arg != "" {
 				head += " " + dim.Render(truncate(arg, w-lipgloss.Width(head)-1))
 			}
 			b.WriteString(head + "\n")
-		case claude.ActMessage:
+		case runtime.ActMessage:
 			for _, line := range wrapText(e.Text, w) {
 				b.WriteString(msgStyle.Render(line) + "\n")
+			}
+		case runtime.ActError:
+			for _, line := range wrapText("error: "+e.Text, w) {
+				b.WriteString(lipgloss.NewStyle().Foreground(m.theme.Error).Render(line) + "\n")
+			}
+		case runtime.ActSession, runtime.ActResult:
+			for _, line := range wrapText(e.Text, w) {
+				b.WriteString(divStyle.Render(line) + "\n")
 			}
 		default: // thinking
 			for _, line := range wrapText(e.Text, w) {
@@ -582,11 +614,11 @@ func (m *detailModel) activityFilterBar() string {
 	var nThink, nTool, nMsg int
 	for _, e := range m.activityEntries {
 		switch e.Kind {
-		case claude.ActThinking:
+		case runtime.ActThinking:
 			nThink++
-		case claude.ActToolUse:
+		case runtime.ActToolUse:
 			nTool++
-		case claude.ActMessage:
+		case runtime.ActMessage:
 			nMsg++
 		}
 	}

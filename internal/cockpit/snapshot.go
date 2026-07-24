@@ -85,6 +85,9 @@ type BeadDetailSnapshot struct {
 	// the 'T' thinking tail (koryph-xvk): extended-thinking deltas, with
 	// subagent segments marked by parent_tool_use_id transitions.
 	StreamPath string
+	// Runtime selects the adapter-specific activity projector. Empty means
+	// "claude" for ledgers written before slots recorded their runtime.
+	Runtime string
 
 	// Timing + resource usage (koryph process-metrics). StartedAt/FinishedAt are
 	// the dispatch and terminal wall-clock instants; the resource aggregates are

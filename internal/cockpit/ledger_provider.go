@@ -898,6 +898,10 @@ func (p *LedgerProvider) BeadDetail(ctx context.Context, beadID string, now time
 		d.SlotNote = sl.Note
 		d.LogPath = sl.LogPath
 		d.StreamPath = sl.Stream
+		d.Runtime = sl.Runtime
+		if d.Runtime == "" {
+			d.Runtime = "claude"
+		}
 
 		// Timing + resource usage (koryph process-metrics).
 		d.PeakRSSMB = sl.PeakRSSMB
