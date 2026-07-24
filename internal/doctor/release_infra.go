@@ -5,16 +5,17 @@ package doctor
 
 // release_infra.go — per-project release-infrastructure checks
 //
-// Seven checks are grouped under the "release-infra" umbrella and called from
+// Eight checks are grouped under the "release-infra" umbrella and called from
 // RunProject after the core structural checks:
 //
 //  1. release-block         — release block ↔ caller workflow consistency
 //  2. release-workflow-drift — installed workflow vs. current template
 //  3. container-release-block — release.container ↔ container workflow consistency
-//  4. container-workflow-drift — installed container workflow vs. current template
-//  5. release-bot-secrets   — RELEASE_BOT_APP_ID/PRIVATE_KEY via gh api
-//  6. actions-approval      — can_approve_pull_request_reviews via gh api
-//  7. bot-credentials       — stored bot credentials can form a valid JWT
+//  4. container-dockerfile  — repository-root Dockerfile required by the workflow
+//  5. container-workflow-drift — installed container workflow vs. current template
+//  6. release-bot-secrets   — RELEASE_BOT_APP_ID/PRIVATE_KEY via gh api
+//  7. actions-approval      — can_approve_pull_request_reviews via gh api
+//  8. bot-credentials       — stored bot credentials can form a valid JWT
 //  5. bot-credentials       — offline PEM validity for stored bots
 //
 // Checks 3 and 4 use gh(1) under the hood; they degrade gracefully (LevelOK
@@ -43,13 +44,14 @@ import (
 // --- check name constants ---------------------------------------------------
 
 const (
-	checkNameReleaseBlock      = "release-block"
-	checkNameReleaseWorkflow   = "release-workflow-drift"
-	checkNameContainerBlock    = "container-release-block"
-	checkNameContainerWorkflow = "container-workflow-drift"
-	checkNameReleaseBotSecrets = "release-bot-secrets"
-	checkNameActionsApproval   = "actions-approval"
-	checkNameBotCredentials    = "bot-credentials"
+	checkNameReleaseBlock        = "release-block"
+	checkNameReleaseWorkflow     = "release-workflow-drift"
+	checkNameContainerBlock      = "container-release-block"
+	checkNameContainerDockerfile = "container-dockerfile"
+	checkNameContainerWorkflow   = "container-workflow-drift"
+	checkNameReleaseBotSecrets   = "release-bot-secrets"
+	checkNameActionsApproval     = "actions-approval"
+	checkNameBotCredentials      = "bot-credentials"
 )
 
 // callerWorkflowPath returns the conventional path of the caller workflow
@@ -72,6 +74,7 @@ func checkReleaseInfra(opts ProjectOptions, repoRoot string, cfg *project.Config
 	out = append(out, checkReleaseBlock(repoRoot, cfg)...)
 	out = append(out, checkReleaseWorkflowDrift(repoRoot, cfg)...)
 	out = append(out, checkContainerReleaseBlock(repoRoot, cfg)...)
+	out = append(out, checkContainerDockerfile(repoRoot, cfg)...)
 	out = append(out, checkContainerWorkflowDrift(repoRoot, cfg)...)
 	out = append(out, checkReleaseBotSecrets(opts, repoRoot, cfg)...)
 	out = append(out, checkActionsApproval(opts, repoRoot, cfg)...)
@@ -227,7 +230,51 @@ func checkContainerReleaseBlock(repoRoot string, cfg *project.Config) []Finding 
 	}
 }
 
-// --- 4. container-workflow-drift -------------------------------------------
+// --- 4. container-dockerfile ------------------------------------------------
+
+// checkContainerDockerfile verifies the prerequisite implied by the generated
+// workflow's default Docker build configuration: it uses context "." and no
+// file override, so a regular Dockerfile must exist at the repository root.
+func checkContainerDockerfile(repoRoot string, cfg *project.Config) []Finding {
+	if cfg == nil || cfg.Release == nil || cfg.Release.Container == nil {
+		return []Finding{{
+			Check:   checkNameContainerDockerfile,
+			Level:   LevelOK,
+			Message: "container release not configured; Dockerfile check skipped",
+		}}
+	}
+
+	dockerfile := filepath.Join(repoRoot, "Dockerfile")
+	info, err := os.Stat(dockerfile)
+	switch {
+	case os.IsNotExist(err):
+		return []Finding{{
+			Check:   checkNameContainerDockerfile,
+			Level:   LevelWarn,
+			Message: "release.container is configured but repository-root Dockerfile is missing (add Dockerfile or disable the container release)",
+		}}
+	case err != nil:
+		return []Finding{{
+			Check:   checkNameContainerDockerfile,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("stat repository-root Dockerfile: %v", err),
+		}}
+	case info.IsDir():
+		return []Finding{{
+			Check:   checkNameContainerDockerfile,
+			Level:   LevelWarn,
+			Message: "repository-root Dockerfile is a directory (provide a regular Dockerfile for the container release)",
+		}}
+	default:
+		return []Finding{{
+			Check:   checkNameContainerDockerfile,
+			Level:   LevelOK,
+			Message: "repository-root Dockerfile present",
+		}}
+	}
+}
+
+// --- 5. container-workflow-drift -------------------------------------------
 
 // checkContainerWorkflowDrift compares the installed optional GHCR workflow
 // against the bytes rendered from the current release.container configuration.
@@ -285,7 +332,7 @@ func checkContainerWorkflowDrift(repoRoot string, cfg *project.Config) []Finding
 	}}
 }
 
-// --- 5. release-bot-secrets -------------------------------------------------
+// --- 6. release-bot-secrets -------------------------------------------------
 
 // checkReleaseBotSecrets checks that RELEASE_BOT_APP_ID and
 // RELEASE_BOT_PRIVATE_KEY are set on the project's GitHub repository. The
@@ -362,7 +409,7 @@ func checkReleaseBotSecrets(opts ProjectOptions, repoRoot string, cfg *project.C
 	return out
 }
 
-// --- 6. actions-approval ----------------------------------------------------
+// --- 7. actions-approval ----------------------------------------------------
 
 // checkActionsApproval checks that the GitHub Actions
 // can_approve_pull_request_reviews toggle is enabled on the project's
@@ -502,7 +549,7 @@ func releaseFileExists(path string) bool {
 	return err == nil
 }
 
-// --- 7. bot-credentials (offline) -------------------------------------------
+// --- 8. bot-credentials (offline) -------------------------------------------
 
 // checkBotCredentials is a purely offline check that verifies the PEM stored
 // in each ~/.koryph/bots/*.json file can produce a structurally valid JWT.

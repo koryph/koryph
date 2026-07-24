@@ -77,6 +77,15 @@ func writeContainerWorkflow(t *testing.T, root string, content []byte) {
 	}
 }
 
+// writeDockerfile installs the repository-root Dockerfile consumed by the
+// generated container-release workflow.
+func writeDockerfile(t *testing.T, root string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatalf("writeDockerfile: %v", err)
+	}
+}
+
 // containerReleaseConfig returns a release config with the optional GHCR
 // image-release mode enabled.
 func containerReleaseConfig() *project.ReleaseConfig {
@@ -343,6 +352,42 @@ func TestContainerReleaseBlockWorkflowPresentConfigMissing(t *testing.T) {
 	}
 }
 
+// --- container-dockerfile ---------------------------------------------------
+
+func TestContainerDockerfileMissing(t *testing.T) {
+	root := fabricateProject(t)
+	addReleaseBlock(t, root, containerReleaseConfig())
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerDockerfile)
+	if f.Level != LevelWarn {
+		t.Errorf("container-dockerfile: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "Dockerfile") {
+		t.Errorf("container-dockerfile: message should mention Dockerfile, got %q", f.Message)
+	}
+}
+
+func TestContainerDockerfilePresent(t *testing.T) {
+	root := fabricateProject(t)
+	addReleaseBlock(t, root, containerReleaseConfig())
+	writeDockerfile(t, root)
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerDockerfile)
+	if f.Level != LevelOK {
+		t.Errorf("container-dockerfile: got %s %q, want ok", f.Level, f.Message)
+	}
+}
+
 // --- container-workflow-drift ----------------------------------------------
 
 func TestContainerWorkflowDriftNoContainerConfig(t *testing.T) {
@@ -365,6 +410,7 @@ func TestContainerWorkflowDriftCurrentTemplate(t *testing.T) {
 	root := fabricateProject(t)
 	rc := containerReleaseConfig()
 	addReleaseBlock(t, root, rc)
+	writeDockerfile(t, root)
 	expected, err := release.RenderContainerWorkflow(rc)
 	if err != nil {
 		t.Fatal(err)
