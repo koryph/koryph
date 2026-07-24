@@ -244,6 +244,30 @@ func TestCIRender_Docs(t *testing.T) {
 			t.Errorf("Render(\"docs\") missing fragment %q\nfull output:\n%s", frag, s)
 		}
 	}
+	buildPermissions := `  build:
+    name: build (zensical --strict)
+    runs-on: ubuntu-latest
+    # configure-pages reads the existing Pages configuration; the build must
+    # not receive the deployment or OIDC credentials.
+    permissions:
+      contents: read
+      pages: read
+`
+	if !strings.Contains(s, buildPermissions) {
+		t.Errorf("Render(\"docs\") must scope build job to read-only Pages permissions\nfull output:\n%s", s)
+	}
+	deployPermissions := `  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    # Only the dedicated deployment job can publish and mint the Pages OIDC token.
+    permissions:
+      pages: write
+      id-token: write
+`
+	if !strings.Contains(s, deployPermissions) {
+		t.Errorf("Render(\"docs\") must scope Pages deployment permissions to deploy\nfull output:\n%s", s)
+	}
 }
 
 // TestCIRender_UnknownKind verifies that an unknown kind wraps ErrUnsupported.
