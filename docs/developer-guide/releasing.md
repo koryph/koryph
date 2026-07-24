@@ -527,6 +527,41 @@ via `koryph release setup` use the cross-repo form,
 Both modes preserve the v0.4.0 post-mortem invariant this whole document is
 about: nothing publishes until every asset is attached.
 
+### Optional GHCR container release
+
+`release.container` is an additive GitHub-only image lane; it does not alter
+the reusable release train or replace either build mode. The configuration is
+strictly `{"registry":"ghcr.io","image":"owner/name"}`: project validation
+rejects other registries, registry hostnames embedded in `image`, tags,
+digests, and non-OCI path components. `koryph release setup` renders the
+independent `.github/workflows/container.yml` from
+`internal/forge/github/container-workflow.yml.tmpl` and removes that file when
+the block is deleted.
+
+The workflow is intentionally keyed to the same `main` push and the same
+`chore(main): release X.Y.Z` subject as `release-train.yml`. It builds the
+repository-root Dockerfile with context `.`, then uses
+`docker/build-push-action`'s `push-by-digest=true` output. Tag promotion is a
+separate `docker buildx imagetools create` step, so `vX.Y.Z` is assigned only
+after the immutable digest exists; the template deliberately publishes no
+`latest` tag.
+
+Every supply-chain operation addresses `ghcr.io/$IMAGE@$DIGEST`, never a
+mutable tag: cosign keyless-signs the digest, Syft generates an SPDX JSON SBOM
+which cosign attests to that digest, and GitHub's
+`actions/attest-build-provenance` receives the same subject name and digest.
+The template therefore requires `packages: write`, `id-token: write`, and
+`attestations: write` in addition to `contents: read`. Organization package
+policy can still prevent `GITHUB_TOKEN` from creating or writing the GHCR
+package; that is an operator prerequisite, not a renderer concern.
+
+`koryph doctor --project ID` keeps the rendered contract observable:
+`container-release-block` finds a missing or orphaned workflow, while
+`container-workflow-drift` compares its exact bytes with
+`release.RenderContainerWorkflow`. Keep both checks in lockstep with any
+template or configuration-contract change, and extend their fixtures before
+changing the renderer.
+
 ### Optional generic pre-tag gate
 
 `gate_command` and `go_version` generalize this pipeline's original

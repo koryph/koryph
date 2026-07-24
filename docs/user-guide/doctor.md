@@ -239,6 +239,25 @@ koryph ci setup --project <id>
 koryph ci setup --project <id> --force   # overwrite a locally modified file
 ```
 
+### container release
+
+When `release.container` is configured, doctor validates the separately
+generated GHCR image-release workflow:
+
+- **container-release-block** compares the `release.container` block with
+  `.github/workflows/container.yml`. A configured container without the file,
+  or the file without the configuration, is a **warning**. Re-run `koryph
+  release setup` after configuring a container; remove a no-longer-used
+  workflow when disabling one.
+- **container-workflow-drift** compares the installed workflow with the
+  current renderer output. A mismatch is a **warning** with the exact
+  `koryph release setup` remediation. The check is skipped when no container
+  release is configured or when the consistency check already found the file
+  missing.
+
+See [Releasing projects](releasing-projects.md#optional-ghcr-image-release)
+for the GHCR, Dockerfile, tag, signing, SBOM, and provenance contract.
+
 ### epic-validations
 Reports open epics carrying `validation:parked` (exceeded `max_rounds`,
 awaiting an operator decision) or `validation:degraded` (validator infra

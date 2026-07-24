@@ -118,6 +118,54 @@ pre-tag gate, SLSA provenance, and the final publish.
 
 Koryph itself uses mode B. Requires a `.goreleaser.yaml` at the repo root.
 
+### Optional GHCR image release
+
+Add the optional `container` block to either build mode when the project also
+ships a Docker/OCI image:
+
+```json
+"release": {
+  "type": "simple",
+  "artifacts_dir": "dist",
+  "build": {
+    "commands": ["make build"]
+  },
+  "container": {
+    "registry": "ghcr.io",
+    "image": "acme/widget"
+  }
+}
+```
+
+This is a GitHub-only contract. `registry` must be `ghcr.io`, and `image` must
+be a lowercase, registry-relative OCI path such as `acme/widget`: omit the
+registry hostname, tag, and digest. The container workflow builds the
+repository-root `Dockerfile` with `context: .`; projects that need a different
+Dockerfile or context must provide that layout before enabling the mode.
+
+On the same `main` push that follows a Release PR merge, the generated
+`.github/workflows/container.yml`:
+
+1. detects the `chore(main): release X.Y.Z` merge subject;
+2. builds and pushes `ghcr.io/acme/widget` by immutable digest;
+3. promotes the `vX.Y.Z` tag to that digest (it does not publish a `latest` tag);
+4. signs the digest keylessly with cosign, generates an SPDX SBOM with Syft and
+   attaches it with cosign; and
+5. publishes a GitHub build-provenance attestation whose subject is that digest.
+
+The workflow declares `packages: write`, `id-token: write`, and
+`attestations: write`. Before the first release, ensure the repository's
+`GITHUB_TOKEN` is allowed to create and write the GHCR package in the owning
+user or organization. The emitted tag, signature, SBOM attestation, and
+provenance all identify the same immutable digest; record that digest from the
+workflow when you need to verify or promote the image elsewhere.
+
+Run `koryph release setup --project myproject` after adding or changing the
+block. `koryph doctor --project myproject` reports `container-release-block`
+when the configuration and workflow disagree, and `container-workflow-drift`
+when the installed workflow no longer matches the renderer. Both findings name
+the appropriate remediation.
+
 ### Release block reference
 
 | Field | Type | Required | Description |
@@ -129,6 +177,8 @@ Koryph itself uses mode B. Requires a `.goreleaser.yaml` at the repo root.
 | `build.goreleaser` | object | one of | Mode B: GoReleaser config; `version` field selects the GoReleaser version |
 | `sbom` | bool | no | Attach a syft SPDX SBOM per artifact (mode A) or per-archive (mode B) |
 | `provenance` | bool | no | Generate and attach a SLSA Build L3 provenance attestation |
+| `container.registry` | string | no | OCI registry for the optional image release; currently must be `ghcr.io` |
+| `container.image` | string | with `container` | Lowercase registry-relative OCI image name, without a tag or digest |
 
 Exactly one of `build.commands` or `build.goreleaser` must be set.
 `koryph validate --project ID` enforces this.
@@ -235,12 +285,13 @@ Projects that require SLSA Build L3 should use the GitHub forge.
 
 ## Setting up your project's release pipeline (GitHub)
 
-`koryph release setup` renders three files from koryph's embedded templates
-and installs them into your repository:
+`koryph release setup` renders its managed files from koryph's embedded
+templates and installs them into your repository:
 
 | File | Purpose |
 |------|---------|
 | `.github/workflows/release.yml` | Caller workflow that invokes the reusable `release-train.yml` |
+| `.github/workflows/container.yml` | Optional GHCR image-release workflow, when `release.container` is configured |
 | `release-please-config.json` | release-please package configuration |
 | `.release-please-manifest.json` | Initial version manifest (written once; release-please manages it thereafter) |
 
@@ -281,6 +332,9 @@ re-render templates after editing the project config by hand.
 5. **GoReleaser users**: verify `.goreleaser.yaml` is present at the repo root.
 6. **Provenance users**: confirm `id-token: write` permission is available in
    your GitHub organisation.
+7. **Container users**: verify the repository-root `Dockerfile` builds from
+   `context: .`, and allow the repository `GITHUB_TOKEN` to create and write
+   the configured GHCR package.
 
 `koryph release setup` is **idempotent** for the workflow and config files —
 they are always overwritten with the latest render. The manifest
@@ -288,8 +342,11 @@ they are always overwritten with the latest render. The manifest
 write; release-please manages it from that point on.
 
 `koryph doctor --project myproject` checks for configuration drift: missing
-secrets, outdated caller workflow, missing release block fields, and the
-Actions PR-approval toggle.
+secrets, outdated caller or container workflow, missing release block fields,
+and the Actions PR-approval toggle. For a configured image release,
+`container-release-block` catches a missing or orphaned
+`.github/workflows/container.yml`; `container-workflow-drift` catches a
+locally edited or stale generated workflow.
 
 ---
 

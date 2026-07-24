@@ -16,7 +16,9 @@ never adding) the release block and workflow file.
 
 ---
 
-`koryph release setup` wires a project's release pipeline by rendering three files from koryph's embedded templates and installing them into your repository:
+`koryph release setup` wires a project's release pipeline by rendering its
+managed files from koryph's embedded templates and installing them into your
+repository:
 
 | File | Purpose |
 |---|---|
@@ -93,6 +95,38 @@ Requires a `.goreleaser.yaml` at the repo root. GoReleaser manages cross-platfor
 
 An ordered list of shell commands (each run via `sh -c`) that build and stage artifacts into `artifacts_dir`. Use this for non-Go projects or bespoke build systems.
 
+## Optional GHCR container release
+
+Add `container` to either build mode to publish an OCI image alongside the
+ordinary release train:
+
+```json
+"release": {
+  "type": "simple",
+  "build": {
+    "commands": ["make build"]
+  },
+  "container": {
+    "registry": "ghcr.io",
+    "image": "acme/widget"
+  }
+}
+```
+
+GitHub Container Registry is the supported registry. `image` is a
+registry-relative OCI image name: do not include `ghcr.io`, a tag, or a digest.
+The generated workflow builds the repository-root `Dockerfile`, pushes an
+immutable digest, promotes only the release's `vX.Y.Z` tag to that digest, then
+signs, SBOMs, and attests the same digest. It needs GitHub Actions permission
+to write packages and publish attestations; ensure your organization permits
+the repository's `GITHUB_TOKEN` to create or update its GHCR package.
+
+After adding or changing this block, run `koryph release setup` to render
+`.github/workflows/container.yml`. `koryph doctor --project myproject` checks
+that the configured workflow exists and has not drifted from the current
+container-release template. See [Releasing projects](releasing-projects.md#optional-ghcr-image-release)
+for the full release and verification contract.
+
 ## Release block reference (`koryph.project.json`)
 
 | Field | Type | Required | Description |
@@ -104,6 +138,8 @@ An ordered list of shell commands (each run via `sh -c`) that build and stage ar
 | `build.commands` | `[]string` | one of | Mode B: ordered shell commands |
 | `sbom` | bool | no | Enable SBOM generation via `anchore/sbom-action` |
 | `provenance` | bool | no | Enable SLSA provenance via `slsa-framework/slsa-github-generator` |
+| `container.registry` | string | no | OCI registry; currently must be `ghcr.io` |
+| `container.image` | string | with `container` | Registry-relative OCI image name, without registry, tag, or digest |
 
 Exactly one of `build.goreleaser` or `build.commands` must be set. `koryph validate` enforces this.
 
@@ -117,6 +153,8 @@ After `koryph release setup` prints "Remaining HUMAN steps:", you need to:
 4. **Commit and push** the generated files to trigger the first release-please run.
 5. **GoReleaser users**: verify `.goreleaser.yaml` is present at the repo root.
 6. **Provenance users**: confirm `id-token: write` permission is available in your GitHub org.
+7. **Container users**: verify a repository-root `Dockerfile` and that the
+   repository's `GITHUB_TOKEN` may create and write the configured GHCR package.
 
 ## Bot-less mode (rung 2)
 
