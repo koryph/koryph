@@ -5,13 +5,16 @@ package doctor
 
 // release_infra.go — per-project release-infrastructure checks
 //
-// Five checks are grouped under the "release-infra" umbrella and called from
+// Seven checks are grouped under the "release-infra" umbrella and called from
 // RunProject after the core structural checks:
 //
 //  1. release-block         — release block ↔ caller workflow consistency
 //  2. release-workflow-drift — installed workflow vs. current template
-//  3. release-bot-secrets   — RELEASE_BOT_APP_ID/PRIVATE_KEY via gh api
-//  4. actions-approval      — can_approve_pull_request_reviews via gh api
+//  3. container-release-block — release.container ↔ container workflow consistency
+//  4. container-workflow-drift — installed container workflow vs. current template
+//  5. release-bot-secrets   — RELEASE_BOT_APP_ID/PRIVATE_KEY via gh api
+//  6. actions-approval      — can_approve_pull_request_reviews via gh api
+//  7. bot-credentials       — stored bot credentials can form a valid JWT
 //  5. bot-credentials       — offline PEM validity for stored bots
 //
 // Checks 3 and 4 use gh(1) under the hood; they degrade gracefully (LevelOK
@@ -42,6 +45,8 @@ import (
 const (
 	checkNameReleaseBlock      = "release-block"
 	checkNameReleaseWorkflow   = "release-workflow-drift"
+	checkNameContainerBlock    = "container-release-block"
+	checkNameContainerWorkflow = "container-workflow-drift"
 	checkNameReleaseBotSecrets = "release-bot-secrets"
 	checkNameActionsApproval   = "actions-approval"
 	checkNameBotCredentials    = "bot-credentials"
@@ -53,6 +58,12 @@ func callerWorkflowPath(repoRoot string) string {
 	return filepath.Join(repoRoot, ".github", "workflows", "release.yml")
 }
 
+// containerWorkflowPath returns the conventional path of the optional GHCR
+// image-release workflow relative to repoRoot.
+func containerWorkflowPath(repoRoot string) string {
+	return filepath.Join(repoRoot, ".github", "workflows", "container.yml")
+}
+
 // checkReleaseInfra is the top-level dispatcher; it is called from RunProject.
 // cfg may be nil (project config failed to load), in which case the checks that
 // require config are skipped gracefully.
@@ -60,6 +71,8 @@ func checkReleaseInfra(opts ProjectOptions, repoRoot string, cfg *project.Config
 	var out []Finding
 	out = append(out, checkReleaseBlock(repoRoot, cfg)...)
 	out = append(out, checkReleaseWorkflowDrift(repoRoot, cfg)...)
+	out = append(out, checkContainerReleaseBlock(repoRoot, cfg)...)
+	out = append(out, checkContainerWorkflowDrift(repoRoot, cfg)...)
 	out = append(out, checkReleaseBotSecrets(opts, repoRoot, cfg)...)
 	out = append(out, checkActionsApproval(opts, repoRoot, cfg)...)
 	out = append(out, checkBotCredentials(opts, cfg)...)
@@ -172,7 +185,107 @@ func checkReleaseWorkflowDrift(repoRoot string, cfg *project.Config) []Finding {
 	}}
 }
 
-// --- 3. release-bot-secrets -------------------------------------------------
+// --- 3. container-release-block --------------------------------------------
+
+// checkContainerReleaseBlock verifies that the presence of the optional
+// release.container configuration agrees with the generated GHCR workflow:
+//
+//   - both present → ok
+//   - container configured, workflow absent → warn (run `koryph release setup`)
+//   - workflow present, container absent → warn (configure it or remove the file)
+//   - both absent → ok (container releases are intentionally opt-in)
+func checkContainerReleaseBlock(repoRoot string, cfg *project.Config) []Finding {
+	wfPath := containerWorkflowPath(repoRoot)
+	wfPresent := releaseFileExists(wfPath)
+	containerPresent := cfg != nil && cfg.Release != nil && cfg.Release.Container != nil
+
+	switch {
+	case containerPresent && wfPresent:
+		return []Finding{{
+			Check:   checkNameContainerBlock,
+			Level:   LevelOK,
+			Message: "release.container and container workflow both present",
+		}}
+	case containerPresent && !wfPresent:
+		return []Finding{{
+			Check:   checkNameContainerBlock,
+			Level:   LevelWarn,
+			Message: "release.container is configured but .github/workflows/container.yml is missing (run `koryph release setup`)",
+		}}
+	case !containerPresent && wfPresent:
+		return []Finding{{
+			Check:   checkNameContainerBlock,
+			Level:   LevelWarn,
+			Message: ".github/workflows/container.yml present but release.container is not configured (add release.container or remove the workflow file)",
+		}}
+	default:
+		return []Finding{{
+			Check:   checkNameContainerBlock,
+			Level:   LevelOK,
+			Message: "container release not configured (no release.container, no container workflow)",
+		}}
+	}
+}
+
+// --- 4. container-workflow-drift -------------------------------------------
+
+// checkContainerWorkflowDrift compares the installed optional GHCR workflow
+// against the bytes rendered from the current release.container configuration.
+// Missing configuration or a missing workflow is covered by
+// checkContainerReleaseBlock, so those cases skip here to avoid duplicate
+// warnings.
+func checkContainerWorkflowDrift(repoRoot string, cfg *project.Config) []Finding {
+	if cfg == nil || cfg.Release == nil || cfg.Release.Container == nil {
+		return []Finding{{
+			Check:   checkNameContainerWorkflow,
+			Level:   LevelOK,
+			Message: "container release not configured; workflow drift check skipped",
+		}}
+	}
+
+	wfPath := containerWorkflowPath(repoRoot)
+	onDisk, err := os.ReadFile(wfPath)
+	if os.IsNotExist(err) {
+		return []Finding{{
+			Check:   checkNameContainerWorkflow,
+			Level:   LevelOK,
+			Message: "container workflow absent; drift check skipped (see container-release-block check)",
+		}}
+	}
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameContainerWorkflow,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("read %s: %v", wfPath, err),
+		}}
+	}
+
+	expected, err := release.RenderContainerWorkflow(cfg.Release)
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameContainerWorkflow,
+			Level:   LevelWarn,
+			Message: fmt.Sprintf("render container workflow template: %v", err),
+		}}
+	}
+
+	diskHash := sha256.Sum256(onDisk)
+	wantHash := sha256.Sum256(expected)
+	if diskHash == wantHash {
+		return []Finding{{
+			Check:   checkNameContainerWorkflow,
+			Level:   LevelOK,
+			Message: "container workflow matches current template",
+		}}
+	}
+	return []Finding{{
+		Check:   checkNameContainerWorkflow,
+		Level:   LevelWarn,
+		Message: "container workflow differs from current template (run `koryph release setup` to update .github/workflows/container.yml)",
+	}}
+}
+
+// --- 5. release-bot-secrets -------------------------------------------------
 
 // checkReleaseBotSecrets checks that RELEASE_BOT_APP_ID and
 // RELEASE_BOT_PRIVATE_KEY are set on the project's GitHub repository. The
@@ -249,7 +362,7 @@ func checkReleaseBotSecrets(opts ProjectOptions, repoRoot string, cfg *project.C
 	return out
 }
 
-// --- 4. actions-approval ----------------------------------------------------
+// --- 6. actions-approval ----------------------------------------------------
 
 // checkActionsApproval checks that the GitHub Actions
 // can_approve_pull_request_reviews toggle is enabled on the project's
@@ -389,7 +502,7 @@ func releaseFileExists(path string) bool {
 	return err == nil
 }
 
-// --- 5. bot-credentials (offline) -------------------------------------------
+// --- 7. bot-credentials (offline) -------------------------------------------
 
 // checkBotCredentials is a purely offline check that verifies the PEM stored
 // in each ~/.koryph/bots/*.json file can produce a structurally valid JWT.

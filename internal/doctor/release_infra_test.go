@@ -64,6 +64,27 @@ func writeCallerWorkflow(t *testing.T, root string, content []byte) {
 	}
 }
 
+// writeContainerWorkflow installs the optional container workflow file at
+// .github/workflows/container.yml in root.
+func writeContainerWorkflow(t *testing.T, root string, content []byte) {
+	t.Helper()
+	wfDir := filepath.Join(root, ".github", "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatalf("writeContainerWorkflow: mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "container.yml"), content, 0o644); err != nil {
+		t.Fatalf("writeContainerWorkflow: write: %v", err)
+	}
+}
+
+// containerReleaseConfig returns a release config with the optional GHCR
+// image-release mode enabled.
+func containerReleaseConfig() *project.ReleaseConfig {
+	rc := releaseConfig()
+	rc.Container = &project.ContainerConfig{Registry: "ghcr.io", Image: "acme/widget"}
+	return rc
+}
+
 // projectOptsWithRelease builds injectable ProjectOptions that stub out the
 // three gh-dependent injections so tests never hit real processes.
 func projectOptsWithRelease(root, ownerRepo string, secretNames []string, secretsErr error, approvalEnabled bool, approvalErr error) ProjectOptions {
@@ -244,6 +265,142 @@ func TestReleaseWorkflowDriftStaleContent(t *testing.T) {
 	}
 	if !strings.Contains(f.Message, "koryph release setup") {
 		t.Errorf("workflow-drift: message should mention koryph release setup, got %q", f.Message)
+	}
+}
+
+// --- container-release-block ------------------------------------------------
+
+func TestContainerReleaseBlockBothAbsent(t *testing.T) {
+	root := fabricateProject(t)
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerBlock)
+	if f.Level != LevelOK {
+		t.Errorf("container-release-block: got %s %q, want ok", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "not configured") {
+		t.Errorf("container-release-block: unexpected message %q", f.Message)
+	}
+}
+
+func TestContainerReleaseBlockBothPresent(t *testing.T) {
+	root := fabricateProject(t)
+	rc := containerReleaseConfig()
+	addReleaseBlock(t, root, rc)
+	expected, err := release.RenderContainerWorkflow(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeContainerWorkflow(t, root, expected)
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerBlock)
+	if f.Level != LevelOK {
+		t.Errorf("container-release-block: got %s %q, want ok", f.Level, f.Message)
+	}
+}
+
+func TestContainerReleaseBlockConfiguredWorkflowMissing(t *testing.T) {
+	root := fabricateProject(t)
+	addReleaseBlock(t, root, containerReleaseConfig())
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerBlock)
+	if f.Level != LevelWarn {
+		t.Errorf("container-release-block: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "koryph release setup") {
+		t.Errorf("container-release-block: message should mention koryph release setup, got %q", f.Message)
+	}
+}
+
+func TestContainerReleaseBlockWorkflowPresentConfigMissing(t *testing.T) {
+	root := fabricateProject(t)
+	writeContainerWorkflow(t, root, []byte("# orphan container workflow\n"))
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerBlock)
+	if f.Level != LevelWarn {
+		t.Errorf("container-release-block: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "release.container") {
+		t.Errorf("container-release-block: message should mention release.container, got %q", f.Message)
+	}
+}
+
+// --- container-workflow-drift ----------------------------------------------
+
+func TestContainerWorkflowDriftNoContainerConfig(t *testing.T) {
+	root := fabricateProject(t)
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerWorkflow)
+	if f.Level != LevelOK {
+		t.Errorf("container-workflow-drift: got %s %q, want ok", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "skipped") {
+		t.Errorf("container-workflow-drift: expected skipped message, got %q", f.Message)
+	}
+}
+
+func TestContainerWorkflowDriftCurrentTemplate(t *testing.T) {
+	root := fabricateProject(t)
+	rc := containerReleaseConfig()
+	addReleaseBlock(t, root, rc)
+	expected, err := release.RenderContainerWorkflow(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeContainerWorkflow(t, root, expected)
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerWorkflow)
+	if f.Level != LevelOK {
+		t.Errorf("container-workflow-drift: got %s %q, want ok", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "matches current template") {
+		t.Errorf("container-workflow-drift: unexpected message %q", f.Message)
+	}
+}
+
+func TestContainerWorkflowDriftStaleContent(t *testing.T) {
+	root := fabricateProject(t)
+	addReleaseBlock(t, root, containerReleaseConfig())
+	writeContainerWorkflow(t, root, []byte("# stale custom content\nname: container-release\n"))
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerWorkflow)
+	if f.Level != LevelWarn {
+		t.Errorf("container-workflow-drift: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "koryph release setup") {
+		t.Errorf("container-workflow-drift: message should mention koryph release setup, got %q", f.Message)
 	}
 }
 
