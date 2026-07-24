@@ -470,18 +470,22 @@ func (p *wirePriority) UnmarshalJSON(b []byte) error {
 
 // wireIssue mirrors Issue but tolerates bd's looser field shapes.
 type wireIssue struct {
-	ID              string       `json:"id"`
-	Title           string       `json:"title"`
-	Description     string       `json:"description"`
-	Notes           string       `json:"notes"`
-	Status          string       `json:"status"`
-	Priority        wirePriority `json:"priority"`
-	IssueType       string       `json:"issue_type"`
-	Labels          []string     `json:"labels"`
-	DependencyCount int          `json:"dependency_count"`
-	DependentCount  int          `json:"dependent_count"`
-	ParentID        string       `json:"parent"` // bd's wire key is "parent", not "parent_id"
-	UpdatedAt       string       `json:"updated_at"`
+	ID                 string       `json:"id"`
+	Title              string       `json:"title"`
+	Description        string       `json:"description"`
+	AcceptanceCriteria string       `json:"acceptance_criteria"`
+	CloseReason        string       `json:"close_reason"`
+	DependencyType     string       `json:"dependency_type"`
+	Dependencies       []wireIssue  `json:"dependencies"`
+	Notes              string       `json:"notes"`
+	Status             string       `json:"status"`
+	Priority           wirePriority `json:"priority"`
+	IssueType          string       `json:"issue_type"`
+	Labels             []string     `json:"labels"`
+	DependencyCount    int          `json:"dependency_count"`
+	DependentCount     int          `json:"dependent_count"`
+	ParentID           string       `json:"parent"` // bd's wire key is "parent", not "parent_id"
+	UpdatedAt          string       `json:"updated_at"`
 }
 
 func (w wireIssue) toIssue() Issue {
@@ -489,19 +493,27 @@ func (w wireIssue) toIssue() Issue {
 	if labels == nil {
 		labels = []string{}
 	}
+	dependencies := make([]Issue, 0, len(w.Dependencies))
+	for _, dep := range w.Dependencies {
+		dependencies = append(dependencies, dep.toIssue())
+	}
 	return Issue{
-		ID:              w.ID,
-		Title:           w.Title,
-		Description:     w.Description,
-		Notes:           w.Notes,
-		Status:          w.Status,
-		Priority:        int(w.Priority),
-		IssueType:       w.IssueType,
-		Labels:          labels,
-		DependencyCount: w.DependencyCount,
-		DependentCount:  w.DependentCount,
-		ParentID:        w.ParentID,
-		UpdatedAt:       w.UpdatedAt,
+		ID:                 w.ID,
+		Title:              w.Title,
+		Description:        w.Description,
+		AcceptanceCriteria: w.AcceptanceCriteria,
+		CloseReason:        w.CloseReason,
+		DependencyType:     w.DependencyType,
+		Dependencies:       dependencies,
+		Notes:              w.Notes,
+		Status:             w.Status,
+		Priority:           int(w.Priority),
+		IssueType:          w.IssueType,
+		Labels:             labels,
+		DependencyCount:    w.DependencyCount,
+		DependentCount:     w.DependentCount,
+		ParentID:           w.ParentID,
+		UpdatedAt:          w.UpdatedAt,
 	}
 }
 

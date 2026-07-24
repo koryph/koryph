@@ -57,7 +57,7 @@ koryph — central multi-project orchestrator for autonomous AI coding agents.
 | [`koryph status`](#koryph-status) | latest-run per-slot detail |
 | [`koryph tail`](#koryph-tail) | tail a phase's session.log + stderr.log |
 | [`koryph doctor`](#koryph-doctor) | health check: layout, binaries, registry, governor |
-| [`koryph plan`](#koryph-plan) | deterministic corpus conflict analysis (read-only) |
+| [`koryph plan`](#koryph-plan) | deterministic corpus conflict analysis and scoped epic quality gate |
 | [`koryph governor`](#koryph-governor) | inspect and set the machine-wide concurrency cap |
 | ↳ [`koryph governor show`](#koryph-governor-show) | show the cap, active leases, and demand |
 | ↳ [`koryph governor set`](#koryph-governor-set) | set the machine-wide cap |
@@ -702,14 +702,16 @@ health check: layout, binaries, registry, governor
 
 ## `koryph plan` { #koryph-plan }
 
-deterministic corpus conflict analysis (read-only)
+deterministic corpus conflict analysis and scoped epic quality gate
 
 **See also:** [Beads](../concepts/beads) · [Footprints](../concepts/footprints)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--epic` | string |  | scope analysis and quality checks to one epic |
 | `--json` | bool |  | emit the audit report as JSON (for agent consumption) |
 | `--project` | string |  | project id (default: the project containing the current directory) |
+| `--strict` | bool |  | exit non-zero when the scoped epic has quality or scheduling errors |
 
 
 ---

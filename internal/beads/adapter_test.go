@@ -533,9 +533,23 @@ func TestParsersDirect(t *testing.T) {
 		t.Fatalf("envelope+string-priority+null-labels parse: %+v", list)
 	}
 
-	arr, err := parseIssueList([]byte(`[{"id":"z-2","priority":2}]`))
+	arr, err := parseIssueList([]byte(`[{
+		"id":"z-2",
+		"priority":2,
+		"acceptance_criteria":"observable outcome",
+		"close_reason":"merged",
+		"dependency_type":"blocks",
+		"dependencies":[{"id":"z-1","priority":1}]
+	}]`))
 	if err != nil || len(arr) != 1 || arr[0].Priority != 2 {
 		t.Fatalf("array parse: %+v err=%v", arr, err)
+	}
+	if arr[0].AcceptanceCriteria != "observable outcome" ||
+		arr[0].CloseReason != "merged" ||
+		arr[0].DependencyType != "blocks" ||
+		len(arr[0].Dependencies) != 1 ||
+		arr[0].Dependencies[0].ID != "z-1" {
+		t.Fatalf("planning/dependency fields were dropped: %+v", arr[0])
 	}
 
 	bare, err := parseIssue([]byte(`{"id":"z-3","priority":"p1"}`))

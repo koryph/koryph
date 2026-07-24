@@ -4,6 +4,8 @@
 package plan_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/koryph/koryph/internal/beads"
@@ -248,6 +250,25 @@ func TestAudit_ParallelWidth(t *testing.T) {
 	}
 }
 
+func TestAudit_ParallelWidthRespectsDependencies(t *testing.T) {
+	issues := []beads.Issue{
+		makeIssue("a", "task", "fp:a"),
+		makeIssue("b", "task", "fp:b"),
+		makeIssue("c", "task", "fp:c"),
+	}
+	deps := map[string][]string{
+		"b": {"a"},
+		"c": {"b"},
+	}
+	r := plan.Audit(issues, deps, cfg(nil))
+	if r.ParallelWidth.Current != 1 {
+		t.Errorf("Current width: got %d, want 1 for a dependency chain", r.ParallelWidth.Current)
+	}
+	if r.ParallelWidth.Potential != 1 {
+		t.Errorf("Potential width: got %d, want 1 for a dependency chain", r.ParallelWidth.Potential)
+	}
+}
+
 // TestAudit_Stats verifies refactor-core and no-dispatch counts.
 func TestAudit_Stats(t *testing.T) {
 	issues := []beads.Issue{
@@ -277,5 +298,120 @@ func TestAudit_Empty(t *testing.T) {
 	}
 	if r.ParallelWidth.Current != 0 || r.ParallelWidth.Potential != 0 {
 		t.Errorf("expected zero width for empty corpus")
+	}
+}
+
+func TestAuditEpic_QualityFindings(t *testing.T) {
+	root := t.TempDir()
+	epic := makeIssue("epic-1", "epic")
+	children := []beads.Issue{
+		{
+			ID: "child-1", Title: "Broken child", IssueType: "feature",
+			Status: "open", Description: "Decide whether this should use TBD.",
+			Labels: []string{"area:missing", "res:Bad_Kind"},
+		},
+	}
+
+	r := plan.AuditEpic(epic, children, nil, cfg(map[string][]string{"cli": {"go:cli"}}), root)
+	codes := map[string]bool{}
+	for _, finding := range r.Quality {
+		codes[finding.Code] = true
+	}
+	for _, want := range []string{
+		"epic-success-missing",
+		"child-type-nondispatchable",
+		"child-acceptance-missing",
+		"child-traceability-missing",
+		"area-label-unknown",
+		"resource-label-invalid",
+		"unresolved-design-choice",
+	} {
+		if !codes[want] {
+			t.Errorf("missing quality finding %q; got %#v", want, codes)
+		}
+	}
+	if !r.StrictFailure() {
+		t.Error("malformed epic must fail strict gate")
+	}
+}
+
+func TestAuditEpic_ValidGraphPasses(t *testing.T) {
+	root := t.TempDir()
+	design := filepath.Join(root, "docs", "designs", "feature.md")
+	if err := os.MkdirAll(filepath.Dir(design), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(design, []byte("# Design\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "The feature is observable and complete."
+	children := []beads.Issue{
+		{
+			ID: "child-a", Title: "Foundation", IssueType: "task", Status: "open",
+			Description:        "Why: establish the seam. Design: docs/designs/feature.md.",
+			AcceptanceCriteria: "The seam has unit coverage.",
+			Labels:             []string{"area:cli"},
+		},
+		{
+			ID: "child-b", Title: "Consumer", IssueType: "task", Status: "open",
+			Description:        "Why: expose the seam. Design: docs/designs/feature.md.",
+			AcceptanceCriteria: "The command has unit coverage.",
+			Labels:             []string{"fp:go:consumer"},
+		},
+	}
+
+	r := plan.AuditEpic(epic, children, nil, cfg(map[string][]string{"cli": {"go:cli"}}), root)
+	if len(r.Quality) != 0 {
+		t.Fatalf("valid graph quality findings: %#v", r.Quality)
+	}
+	if r.StrictFailure() {
+		t.Fatalf("valid graph failed strict gate: %#v", r)
+	}
+}
+
+func TestAuditEpic_UnorderedSharedWriteFails(t *testing.T) {
+	root := t.TempDir()
+	design := filepath.Join(root, "docs", "designs", "feature.md")
+	if err := os.MkdirAll(filepath.Dir(design), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(design, []byte("# Design\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	child := func(id string) beads.Issue {
+		return beads.Issue{
+			ID: id, Title: id, IssueType: "task", Status: "open",
+			Description:        "Why: work. Design: docs/designs/feature.md.",
+			AcceptanceCriteria: "Done.",
+			Labels:             []string{"fp:shared"},
+		}
+	}
+	r := plan.AuditEpic(epic, []beads.Issue{child("a"), child("b")}, nil, cfg(nil), root)
+	if len(r.Conflicts) != 1 {
+		t.Fatalf("conflicts = %d, want 1", len(r.Conflicts))
+	}
+	if !r.StrictFailure() {
+		t.Error("unordered shared write must fail strict gate")
+	}
+}
+
+func TestAuditEpic_IncidentBugTraceIsAccepted(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	child := beads.Issue{
+		ID: "bug-1", Title: "Repair incident", IssueType: "bug", Status: "open",
+		Description: "Incident run 20260724-120000 exposed the fault.\n\n" +
+			"## Steps to Reproduce\nRun the fixture.",
+		AcceptanceCriteria: "Regression passes.",
+		Labels:             []string{"fp:bug"},
+	}
+	r := plan.AuditEpic(epic, []beads.Issue{child}, nil, cfg(nil), t.TempDir())
+	for _, finding := range r.Quality {
+		if finding.Code == "child-traceability-missing" {
+			t.Fatalf("incident trace rejected: %#v", r.Quality)
+		}
 	}
 }
