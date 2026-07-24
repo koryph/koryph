@@ -69,6 +69,7 @@ func completionState(path string) (string, error) {
 func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidateAssessment {
 	var reasons []string
 	reportedBlock := false
+	genericHostSelfBlock := false
 	capabilityBlock := false
 	structuredBlockMalformed := false
 	capability := ""
@@ -84,6 +85,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 			switch strings.ToLower(completion.State) {
 			case "blocked", "failed", "error", "cancelled", "canceled":
 				reportedBlock = true
+				genericHostSelfBlock = strings.EqualFold(completion.State, "blocked")
 				reasons = append(reasons, "agent reported completion state "+completion.State)
 				switch completion.BlockKind {
 				case "":
@@ -136,7 +138,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 			// capability block. A second generic block is terminal: another
 			// dispatch cannot add classification evidence and must not reach the
 			// final frontier escalation.
-			retryableBlock:   reportedBlock && !capabilityBlock && !structuredBlockMalformed && commits > 0 && clean && sl.Attempts == 1,
+			retryableBlock:   genericHostSelfBlock && reportedBlock && !capabilityBlock && !structuredBlockMalformed && commits > 0 && clean && sl.Attempts == 1,
 			capabilityBlock:  capabilityBlock,
 			capability:       capability,
 			capabilityDetail: capabilityDetail,

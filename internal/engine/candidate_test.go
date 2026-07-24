@@ -128,6 +128,25 @@ func TestAssessCandidateRetriesOnlyCleanCommittedSelfBlocksWithinBudget(t *testi
 	}
 }
 
+func TestAssessCandidateCorrectionRetryOnlyAppliesToGenericBlockedState(t *testing.T) {
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "done\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): work")
+
+	for _, state := range []string{"blocked", "failed", "error", "cancelled", "canceled"} {
+		t.Run(state, func(t *testing.T) {
+			if err := os.WriteFile(sl.StatusPath, []byte(`{"state":"`+state+`"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			a := r.assessCandidate(context.Background(), sl)
+			if got, want := a.retryableBlock, state == "blocked"; got != want {
+				t.Fatalf("retryableBlock=%t, want %t for state=%q: %+v", got, want, state, a)
+			}
+		})
+	}
+}
+
 // TestGenericCompletionBlockGetsOnlyOneCorrectionRetry reproduces the host
 // block sequence: attempt 1 emits an old generic state=blocked heartbeat,
 // attempt 2 repeats it, and the engine parks rather than dispatching an
