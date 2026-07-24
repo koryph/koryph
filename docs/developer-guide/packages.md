@@ -173,6 +173,17 @@ bot credentials, and unvalidated epics; some support `--fix`.
 - **`Finding`** — one result (`Check`, `Level`, `Message`, `Fixed`); levels `ok`/`warn`/`error`
 - **`Matrix`** — the integration-status matrix behind `koryph doctor --matrix`
 
+## dns
+
+Narrowly scoped DNS clients used by koryph. The Cloudflare client manages only
+the GitHub Pages custom-domain record set: the published apex A/AAAA addresses
+and a DNS-only `www` CNAME. Its API token is fetched in memory from a vault
+reference; no raw token is accepted, persisted, or logged.
+
+- **`NewCloudflareClient(config)`** — construct the native Cloudflare v4 client
+- **`EnsureGitHubPages(ctx, domain, pagesDomain)`** — create missing Pages
+  records and make matching records DNS-only with automatic TTL
+
 ## engine
 
 The wave loop: scan → batch → preflight → dispatch → poll → stages → review →
