@@ -43,7 +43,7 @@ func TestCommandRendersSafeCodexExec(t *testing.T) {
 		"codex", "--ask-for-approval", "never", "exec", "--json",
 		"--ignore-user-config",
 		"-c", `default_permissions="koryph_signing"`,
-		"-c", `permissions.koryph_signing.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}`,
+		"-c", signingFilesystemRule("/repo"),
 		"-c", "permissions.koryph_signing.network.enabled=true",
 		"-c", `permissions.koryph_signing.network.unix_sockets={"/run/koryph-signing/signing.sock"="allow"}`,
 		"--dangerously-bypass-hook-trust", "--add-dir", "/phase", "--add-dir", "/repo/.git",
@@ -66,13 +66,37 @@ func TestCommandJSONAllowsOnlySharedGitMetadata(t *testing.T) {
 		"codex", "--ask-for-approval", "never", "exec",
 		"--ignore-user-config",
 		"-c", `default_permissions="koryph_signing"`,
-		"-c", `permissions.koryph_signing.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}`,
+		"-c", signingFilesystemRule("/repo"),
 		"-c", "permissions.koryph_signing.network.enabled=true",
 		"-c", `permissions.koryph_signing.network.unix_sockets={"/run/koryph-signing/signing.sock"="allow"}`,
 		"--dangerously-bypass-hook-trust", "--add-dir", "/repo/.git",
 	}
 	if !reflect.DeepEqual(argv, want) {
 		t.Errorf("argv = %q\\nwant = %q", argv, want)
+	}
+}
+
+func TestSigningFilesystemRuleKeepsWritesScopedAndToolchainsReadable(t *testing.T) {
+	t.Setenv("PATH", "/nix/store/tool/bin:/opt/homebrew/bin:/usr/bin")
+	t.Setenv("HOMEBREW_PREFIX", "/opt/homebrew")
+	rule := signingFilesystemRule("/repo")
+	for _, want := range []string{
+		`":workspace_roots"={"."="write"}`,
+		`":tmpdir"="write"`,
+		`"/nix/store"="read"`,
+		`"/opt/homebrew"="read"`,
+		`"/usr/bin"="read"`,
+		`"~/.gitconfig"="read"`,
+		`"~/.cache/pre-commit"="write"`,
+		`"/repo/.beads/hooks"="read"`,
+		`"/repo/.allowed_signers"="read"`,
+	} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("rule = %q, missing %q", rule, want)
+		}
+	}
+	if strings.Contains(rule, `":root"="read"`) {
+		t.Fatalf("rule = %q, must not grant broad root reads", rule)
 	}
 }
 
@@ -89,6 +113,25 @@ func TestCommandWithoutSigningKeepsWorkspaceWriteSandbox(t *testing.T) {
 	}
 	if strings.Contains(joined, "koryph_signing") {
 		t.Fatalf("argv = %q, signing profile must be absent without a scoped socket", argv)
+	}
+}
+
+func TestCommandSigningCachesAreNarrowlyScoped(t *testing.T) {
+	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+		RepoRoot: "/repo", PhaseDir: "/phase", SSHAuthSock: "/signing/socket",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{
+		"PRE_COMMIT_HOME=" + filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"),
+		"GOCACHE=/phase/go-cache",
+		"XDG_CACHE_HOME=/phase/cache",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("env missing %q:\n%s", want, joined)
+		}
 	}
 }
 

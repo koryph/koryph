@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -154,7 +155,7 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	// never falls back to an interactive approval prompt or exits on argument
 	// parsing before it sees the task.
 	args := []string{"--ask-for-approval", "never", "exec", "--json"}
-	args = append(args, sandboxArgs(spec.SSHAuthSock)...)
+	args = append(args, sandboxArgs(spec.SSHAuthSock, spec.RepoRoot)...)
 	args = append(args, "--dangerously-bypass-hook-trust", "--add-dir", spec.PhaseDir)
 	// A linked worktree's .git is a pointer file whose writable metadata lives
 	// in the primary repository's .git directory. Permit precisely that
@@ -170,7 +171,9 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 		args = append(args, "-c", "model_reasoning_effort="+tomlString(spec.Effort))
 	}
 	args = append(args, "--output-last-message", filepath.Join(spec.PhaseDir, "SUMMARY.md"))
-	return append([]string{c.bin()}, args...), c.childEnv(spec.Profile, spec.Billing, spec.APIKey, spec.CredentialEnvVar, spec.Credential, spec.SSHAuthSock, spec.EnvPassthrough), nil
+	env := c.childEnv(spec.Profile, spec.Billing, spec.APIKey, spec.CredentialEnvVar, spec.Credential, spec.SSHAuthSock, spec.EnvPassthrough)
+	env = append(env, sandboxCacheEnv(spec.SSHAuthSock, spec.PhaseDir)...)
+	return append([]string{c.bin()}, args...), env, nil
 }
 
 func (c Codex) CommandJSON(spec runtime.JSONSpec) ([]string, []string, error) {
@@ -181,10 +184,13 @@ func (c Codex) CommandJSON(spec runtime.JSONSpec) ([]string, []string, error) {
 	// itself (a strict verdict JSON object), while the long-lived dispatch path
 	// above needs lifecycle JSONL for polling.
 	args := []string{"--ask-for-approval", "never", "exec"}
-	args = append(args, sandboxArgs(spec.SSHAuthSock)...)
+	args = append(args, sandboxArgs(spec.SSHAuthSock, spec.RepoRoot)...)
 	args = append(args, "--dangerously-bypass-hook-trust")
 	if spec.RepoRoot != "" {
 		args = append(args, "--add-dir", filepath.Join(spec.RepoRoot, ".git"))
+	}
+	if spec.ScratchDir != "" {
+		args = append(args, "--add-dir", spec.ScratchDir)
 	}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
@@ -192,7 +198,9 @@ func (c Codex) CommandJSON(spec runtime.JSONSpec) ([]string, []string, error) {
 	if spec.Effort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+tomlString(spec.Effort))
 	}
-	return append([]string{c.bin()}, args...), c.childEnv(spec.Profile, spec.Billing, spec.APIKey, spec.CredentialEnvVar, spec.Credential, spec.SSHAuthSock, spec.EnvPassthrough), nil
+	env := c.childEnv(spec.Profile, spec.Billing, spec.APIKey, spec.CredentialEnvVar, spec.Credential, spec.SSHAuthSock, spec.EnvPassthrough)
+	env = append(env, sandboxCacheEnv(spec.SSHAuthSock, spec.ScratchDir)...)
+	return append([]string{c.bin()}, args...), env, nil
 }
 
 func (c Codex) childEnv(profile runtime.Profile, billing runtime.BillingMode, apiKey, credentialEnv, credential, sshAuthSock string, passthrough []string) []string {
@@ -219,7 +227,7 @@ func (c Codex) childEnv(profile runtime.Profile, billing runtime.BillingMode, ap
 // silently overriding default_permissions; Codex authentication still uses
 // CODEX_HOME, per the CLI contract. The operator's ambient SSH agent is never
 // passed into this function or the child environment.
-func sandboxArgs(sshAuthSock string) []string {
+func sandboxArgs(sshAuthSock, repoRoot string) []string {
 	if sshAuthSock == "" {
 		return []string{"--sandbox", "workspace-write"}
 	}
@@ -228,9 +236,90 @@ func sandboxArgs(sshAuthSock string) []string {
 	return []string{
 		"--ignore-user-config",
 		"-c", `default_permissions="koryph_signing"`,
-		"-c", `permissions.koryph_signing.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}`,
+		"-c", signingFilesystemRule(repoRoot),
 		"-c", "permissions.koryph_signing.network.enabled=true",
 		"-c", socketRule,
+	}
+}
+
+// signingFilesystemRule preserves the normal command toolchain without
+// granting broad filesystem writes. Codex's :minimal profile intentionally
+// excludes package-manager/Nix toolchains and the user's Git configuration;
+// without read-only grants for those locations macOS falls back to the
+// /usr/bin/git Xcode shim and fails before Git can request a signature.
+//
+// PATH is already an explicit child-environment allowlist entry. Granting read
+// access to its roots does not expose a new ambient secret surface; it merely
+// lets the subprocess execute the tools koryph deliberately placed on PATH.
+// Homebrew and Nix symlinks resolve outside their bin directories, so collapse
+// those entries to their immutable installation roots. Git config is required
+// for identity and the public signing-key reference; private key material is
+// never stored there or passed to Codex.
+func signingFilesystemRule(repoRoot string) string {
+	roots := map[string]bool{}
+	if prefix := strings.TrimSpace(os.Getenv("HOMEBREW_PREFIX")); filepath.IsAbs(prefix) {
+		roots[filepath.Clean(prefix)] = true
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		dir = filepath.Clean(strings.TrimSpace(dir))
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(dir, "/nix/store/"):
+			roots["/nix/store"] = true
+		case strings.HasPrefix(dir, "/opt/homebrew/"):
+			roots["/opt/homebrew"] = true
+		default:
+			roots[dir] = true
+		}
+	}
+	if _, err := os.Stat("/Library/Developer"); err == nil {
+		roots["/Library/Developer"] = true
+	}
+
+	ordered := make([]string, 0, len(roots))
+	for root := range roots {
+		ordered = append(ordered, root)
+	}
+	sort.Strings(ordered)
+
+	parts := []string{
+		`":minimal"="read"`,
+		`":workspace_roots"={"."="write"}`,
+		`":tmpdir"="write"`,
+		`":slash_tmp"="write"`,
+		`"~/.gitconfig"="read"`,
+		`"~/.config/git"="read"`,
+		`"~/.cache/pre-commit"="write"`,
+	}
+	if repoRoot != "" {
+		parts = append(parts,
+			tomlString(filepath.Join(repoRoot, ".beads", "hooks"))+`="read"`,
+			tomlString(filepath.Join(repoRoot, ".allowed_signers"))+`="read"`,
+		)
+	}
+	for _, root := range ordered {
+		parts = append(parts, tomlString(root)+`="read"`)
+	}
+	return "permissions.koryph_signing.filesystem={" + strings.Join(parts, ",") + "}"
+}
+
+// sandboxCacheEnv redirects general mutable developer-tool caches into the
+// invocation-owned phase directory. pre-commit is the deliberate exception:
+// its already-vetted hook environments are expensive and may require network
+// access to rebuild, so the permission profile grants only its exact cache
+// directory (never all of ~/.cache). It is active only for the signing
+// permission profile.
+func sandboxCacheEnv(sshAuthSock, scratchDir string) []string {
+	if sshAuthSock == "" || scratchDir == "" {
+		return nil
+	}
+	preCommitHome := filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit")
+	return []string{
+		"PRE_COMMIT_HOME=" + preCommitHome,
+		"GOCACHE=" + filepath.Join(scratchDir, "go-cache"),
+		"XDG_CACHE_HOME=" + filepath.Join(scratchDir, "cache"),
 	}
 }
 

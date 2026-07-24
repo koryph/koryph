@@ -80,6 +80,7 @@ func Run(ctx context.Context, o Opts) Result {
 	// per-invocation budget cap.
 	spec := runtime.JSONSpec{
 		RepoRoot:       o.RepoRoot,
+		ScratchDir:     o.PhaseDir,
 		Persona:        o.Persona,
 		Model:          o.Model,
 		Effort:         o.Effort,

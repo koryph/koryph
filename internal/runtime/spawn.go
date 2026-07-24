@@ -31,6 +31,10 @@ type JSONSpec struct {
 	// access to a linked worktree's shared Git metadata may use RepoRoot/.git
 	// as a narrowly-scoped writable root; it is never the working directory.
 	RepoRoot string
+	// ScratchDir is an invocation-owned writable directory for sandboxed
+	// runtime caches (pre-commit, Go, XDG). Mutating stage spawns set it to
+	// their phase directory; read-only spawns may leave it empty.
+	ScratchDir string
 	// Persona is the named subagent/persona to run (claude's --agent).
 	Persona string
 	// Model is the concrete model id (claude's --model).
