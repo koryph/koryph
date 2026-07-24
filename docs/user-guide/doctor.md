@@ -249,6 +249,10 @@ generated GHCR image-release workflow:
   or the file without the configuration, is a **warning**. Re-run `koryph
   release setup` after configuring a container; remove a no-longer-used
   workflow when disabling one.
+- **container-dockerfile** checks for the repository-root `Dockerfile` used by
+  the generated workflow's default `context: .` build. A missing file (or a
+  directory at that path) is a **warning**; add a regular `Dockerfile` or
+  disable the container release.
 - **container-workflow-drift** compares the installed workflow with the
   current renderer output. A mismatch is a **warning** with the exact
   `koryph release setup` remediation. The check is skipped when no container

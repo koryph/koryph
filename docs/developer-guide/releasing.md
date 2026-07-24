@@ -557,10 +557,11 @@ package; that is an operator prerequisite, not a renderer concern.
 
 `koryph doctor --project ID` keeps the rendered contract observable:
 `container-release-block` finds a missing or orphaned workflow, while
-`container-workflow-drift` compares its exact bytes with
-`release.RenderContainerWorkflow`. Keep both checks in lockstep with any
-template or configuration-contract change, and extend their fixtures before
-changing the renderer.
+`container-dockerfile` finds the repository-root Dockerfile the template
+expects, and `container-workflow-drift` compares the workflow's exact bytes
+with `release.RenderContainerWorkflow`. Keep all three checks in lockstep with
+any template or configuration-contract change, and extend their fixtures
+before changing the renderer.
 
 ### Optional generic pre-tag gate
 

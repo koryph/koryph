@@ -163,8 +163,10 @@ workflow when you need to verify or promote the image elsewhere.
 Run `koryph release setup --project myproject` after adding or changing the
 block. `koryph doctor --project myproject` reports `container-release-block`
 when the configuration and workflow disagree, and `container-workflow-drift`
-when the installed workflow no longer matches the renderer. Both findings name
-the appropriate remediation.
+when the installed workflow no longer matches the renderer.
+`container-dockerfile` reports the missing repository-root Dockerfile that
+would otherwise fail the workflow. Every finding names the appropriate
+remediation.
 
 ### Release block reference
 
@@ -345,8 +347,9 @@ write; release-please manages it from that point on.
 secrets, outdated caller or container workflow, missing release block fields,
 and the Actions PR-approval toggle. For a configured image release,
 `container-release-block` catches a missing or orphaned
-`.github/workflows/container.yml`; `container-workflow-drift` catches a
-locally edited or stale generated workflow.
+`.github/workflows/container.yml`; `container-dockerfile` catches the missing
+repository-root Dockerfile; and `container-workflow-drift` catches a locally
+edited or stale generated workflow.
 
 ---
 

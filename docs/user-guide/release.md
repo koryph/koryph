@@ -123,9 +123,10 @@ the repository's `GITHUB_TOKEN` to create or update its GHCR package.
 
 After adding or changing this block, run `koryph release setup` to render
 `.github/workflows/container.yml`. `koryph doctor --project myproject` checks
-that the configured workflow exists and has not drifted from the current
-container-release template. See [Releasing projects](releasing-projects.md#optional-ghcr-image-release)
-for the full release and verification contract.
+that the configured workflow and repository-root `Dockerfile` exist, and that
+the workflow has not drifted from the current container-release template. See
+[Releasing projects](releasing-projects.md#optional-ghcr-image-release) for
+the full release and verification contract.
 
 ## Release block reference (`koryph.project.json`)
 
