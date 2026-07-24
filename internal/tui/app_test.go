@@ -145,7 +145,12 @@ func TestAppStatusBarFleetAndProviderQuota(t *testing.T) {
 			Window5hFrac: 0.42, WeeklyFrac: 0.18,
 			Window5hSpent: 42, WeeklySpent: 90,
 			Source: "jsonl-scan",
+			Windows: []cockpit.QuotaWindowSnapshot{
+				{Label: "5h", Ceiling: 100, Spent: 42, Fraction: 0.42},
+				{Label: "wk", Ceiling: 500, Spent: 90, Fraction: 0.18},
+			},
 		},
+		{Runtime: "codex", Provider: "openai", Source: "advisory"},
 	}
 
 	p := &staticProvider{id: "proj-1", snap: snap}
@@ -159,7 +164,8 @@ func TestAppStatusBarFleetAndProviderQuota(t *testing.T) {
 		return strings.Contains(s, "here 1") &&
 			strings.Contains(s, "fleet 5/6") &&
 			strings.Contains(s, "claude 5h 42%") &&
-			strings.Contains(s, "wk 18%")
+			strings.Contains(s, "wk 18%") &&
+			strings.Contains(s, "codex usage advisory")
 	})
 }
 

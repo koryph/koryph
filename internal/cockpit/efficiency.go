@@ -19,6 +19,7 @@ package cockpit
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
@@ -69,7 +70,7 @@ func computeEfficiency(inp efficiencyInput) EfficiencySnapshot {
 	snap.EstimatorRows = buildEstimatorTable(inp.quotaCfg)
 
 	// --- quota windows (per provider) -----------------------------------------
-	snap.ProviderQuotas = buildQuotaWindows(inp.quotaCfg, inp.quotaUsage)
+	snap.ProviderQuotas = buildQuotaWindows(inp.quotaCfg, inp.quotaUsage, inp.activeSlots, inp.runs)
 
 	// --- token economy (koryph-77r.3, design §3 L1) ---------------------------
 	te := buildTokenEconomy(inp.runs, inp.titles, inp.now)
@@ -475,14 +476,15 @@ func buildEstimatorTable(cfg *quota.Config) []EstimatorRow {
 // provider-keyed join point a future runtime's quota reader appends to,
 // rather than a flat pair of fields that would need a second flat pair
 // bolted on beside it once a second provider exists.
-func buildQuotaWindows(cfg *quota.Config, usage *quota.Usage) []ProviderQuotaSnapshot {
+func buildQuotaWindows(cfg *quota.Config, usage *quota.Usage, active []*ledger.Slot, runs []*ledger.Run) []ProviderQuotaSnapshot {
 	pq := ProviderQuotaSnapshot{Runtime: "claude", Provider: govern.DefaultPool}
 
 	if cfg == nil || (cfg.WindowCeilingUSD == 0 && cfg.WeeklyCeilingUSD == 0) {
 		pq.Source = "uncalibrated"
 		pq.Window5hFrac = -1
 		pq.WeeklyFrac = -1
-		return []ProviderQuotaSnapshot{pq}
+		pq.Windows = claudeQuotaWindows(pq)
+		return appendUnavailableRuntimes([]ProviderQuotaSnapshot{pq}, active, runs)
 	}
 	pq.Window5hCeiling = cfg.WindowCeilingUSD
 	pq.WeeklyCeiling = cfg.WeeklyCeilingUSD
@@ -507,7 +509,52 @@ func buildQuotaWindows(cfg *quota.Config, usage *quota.Usage) []ProviderQuotaSna
 		pq.WeeklyFrac = -1
 		pq.Source = "unavailable"
 	}
-	return []ProviderQuotaSnapshot{pq}
+	pq.Windows = claudeQuotaWindows(pq)
+	return appendUnavailableRuntimes([]ProviderQuotaSnapshot{pq}, active, runs)
+}
+
+func claudeQuotaWindows(pq ProviderQuotaSnapshot) []QuotaWindowSnapshot {
+	return []QuotaWindowSnapshot{
+		{Label: "5h", Ceiling: pq.Window5hCeiling, Spent: pq.Window5hSpent, Fraction: pq.Window5hFrac},
+		{Label: "wk", Ceiling: pq.WeeklyCeiling, Spent: pq.WeeklySpent, Fraction: pq.WeeklyFrac},
+	}
+}
+
+func appendUnavailableRuntimes(out []ProviderQuotaSnapshot, active []*ledger.Slot, runs []*ledger.Run) []ProviderQuotaSnapshot {
+	seen := map[string]bool{"claude": true}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = "claude" // legacy ledgers predate Slot.Runtime
+		}
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		provider := name
+		if name == "codex" {
+			provider = "openai"
+		}
+		out = append(out, ProviderQuotaSnapshot{
+			Runtime: name, Provider: provider, Source: "advisory",
+		})
+	}
+	for _, slot := range active {
+		if slot != nil {
+			add(slot.Runtime)
+		}
+	}
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		for _, slot := range run.Slots {
+			if slot != nil {
+				add(slot.Runtime)
+			}
+		}
+	}
+	return out
 }
 
 // splitBucket splits a "<tier>:<size>" or "<tier>:<size>@<proxyID>" bucket

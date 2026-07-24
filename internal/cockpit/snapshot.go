@@ -407,6 +407,20 @@ type ProviderQuotaSnapshot struct {
 	// Source identifies the data source for the window values: "ccusage",
 	// "jsonl-scan", "unavailable", or "uncalibrated".
 	Source string
+
+	// Windows is the runtime/provider-native display contract. The TUI renders
+	// these labels verbatim instead of assuming Claude's 5h/weekly windows.
+	// The legacy fields above remain populated for API compatibility.
+	Windows []QuotaWindowSnapshot
+}
+
+// QuotaWindowSnapshot is one named usage/allocation window reported by a
+// runtime provider. Fraction is negative when the window is not measurable.
+type QuotaWindowSnapshot struct {
+	Label    string
+	Ceiling  float64
+	Spent    float64
+	Fraction float64
 }
 
 // EfficiencySnapshot is the efficiency + calibration dashboard data assembled

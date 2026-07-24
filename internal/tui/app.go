@@ -552,8 +552,9 @@ func (a App) renderStatusBar() string {
 	return "\n" + line
 }
 
-// renderQuotaStatus renders a compact "<runtime> 5h N% wk M%" segment per AI
-// provider with a configured quota ceiling (cockpit.ProviderQuotaSnapshot).
+// renderQuotaStatus renders one compact, provider-native usage segment per AI
+// runtime. Window labels come from cockpit data; the TUI never assumes
+// Claude's 5h/weekly allocation shape.
 // Different dispatched threads may run under different providers, each
 // billed against its own rate limits — this renders one segment per entry,
 // so a second provider's numbers appear alongside the first with no further
@@ -563,32 +564,44 @@ func (a App) renderStatusBar() string {
 func (a App) renderQuotaStatus() string {
 	var parts []string
 	for _, pq := range a.snap.Efficiency.ProviderQuotas {
-		if pq.Window5hCeiling <= 0 && pq.WeeklyCeiling <= 0 {
-			continue // uncalibrated
-		}
 		label := pq.Runtime
 		if label == "" {
 			label = pq.Provider
 		}
-
-		w5h := "—"
-		if pq.Window5hFrac >= 0 && pq.Window5hCeiling > 0 {
-			w5h = fmt.Sprintf("%.0f%%", pq.Window5hFrac*100)
+		windows := pq.Windows
+		if len(windows) == 0 && (pq.Window5hCeiling > 0 || pq.WeeklyCeiling > 0) {
+			// Compatibility for snapshots written before named windows.
+			windows = []cockpit.QuotaWindowSnapshot{
+				{Label: "5h", Ceiling: pq.Window5hCeiling, Spent: pq.Window5hSpent, Fraction: pq.Window5hFrac},
+				{Label: "wk", Ceiling: pq.WeeklyCeiling, Spent: pq.WeeklySpent, Fraction: pq.WeeklyFrac},
+			}
 		}
-		wk := "—"
-		if pq.WeeklyFrac >= 0 && pq.WeeklyCeiling > 0 {
-			wk = fmt.Sprintf("%.0f%%", pq.WeeklyFrac*100)
+		if len(windows) == 0 {
+			state := pq.Source
+			if state == "" || state == "unavailable" {
+				state = "usage unavailable"
+			} else {
+				state = "usage " + state
+			}
+			parts = append(parts, lipgloss.NewStyle().Foreground(a.theme.Gray).
+				Render(strings.TrimSpace(label+" "+state)))
+			continue
 		}
 
 		// Colour by the worse of the two measurable fractions; gray when
 		// neither window is currently measurable (ceiling set but no live
 		// spend yet) — green would falsely read as "healthy".
 		maxFrac := -1.0
-		if pq.Window5hFrac > maxFrac {
-			maxFrac = pq.Window5hFrac
-		}
-		if pq.WeeklyFrac > maxFrac {
-			maxFrac = pq.WeeklyFrac
+		var windowParts []string
+		for _, window := range windows {
+			value := "—"
+			if window.Fraction >= 0 && window.Ceiling > 0 {
+				value = fmt.Sprintf("%.0f%%", window.Fraction*100)
+			}
+			if window.Fraction > maxFrac {
+				maxFrac = window.Fraction
+			}
+			windowParts = append(windowParts, strings.TrimSpace(window.Label+" "+value))
 		}
 		style := lipgloss.NewStyle().Foreground(a.theme.Gray)
 		switch {
@@ -600,10 +613,7 @@ func (a App) renderQuotaStatus() string {
 			style = lipgloss.NewStyle().Foreground(a.theme.Done)
 		}
 
-		text := fmt.Sprintf("%s 5h %s wk %s", label, w5h, wk)
-		if label == "" {
-			text = fmt.Sprintf("5h %s wk %s", w5h, wk)
-		}
+		text := strings.TrimSpace(strings.Join(append([]string{label}, windowParts...), " "))
 		parts = append(parts, style.Render(text))
 	}
 	if len(parts) == 0 {

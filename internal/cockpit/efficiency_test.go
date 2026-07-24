@@ -11,6 +11,28 @@ import (
 	"github.com/koryph/koryph/internal/quota"
 )
 
+func TestBuildQuotaWindowsUsesRuntimeNativeLabelsAndCodexAdvisory(t *testing.T) {
+	cfg := &quota.Config{WindowCeilingUSD: 100, WeeklyCeilingUSD: 500}
+	usage := &quota.Usage{}
+	usage.Window5h.SpentUSD = 25
+	usage.Window5h.Source = "jsonl-scan"
+	usage.Weekly.SpentUSD = 100
+	active := []*ledger.Slot{{Runtime: "codex"}}
+
+	got := buildQuotaWindows(cfg, usage, active, nil)
+	if len(got) != 2 {
+		t.Fatalf("ProviderQuotas = %#v, want Claude plus Codex", got)
+	}
+	if got[0].Runtime != "claude" || len(got[0].Windows) != 2 ||
+		got[0].Windows[0].Label != "5h" || got[0].Windows[1].Label != "wk" {
+		t.Fatalf("Claude windows = %#v, want provider-supplied labels", got[0])
+	}
+	if got[1].Runtime != "codex" || got[1].Provider != "openai" ||
+		got[1].Source != "advisory" || len(got[1].Windows) != 0 {
+		t.Fatalf("Codex quota = %#v, want explicit advisory state", got[1])
+	}
+}
+
 // TestBuildTokenEconomy_Empty verifies that an empty run list yields zero values
 // and no tripwire fire.
 func TestBuildTokenEconomy_Empty(t *testing.T) {
