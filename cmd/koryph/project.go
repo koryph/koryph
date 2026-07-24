@@ -477,7 +477,6 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 	}
 
 	home := paths.KoryphHome()
-	ghBin := posture.GHBin()
 	ctx := context.Background()
 
 	// Resolve which profile to offer.
@@ -498,7 +497,7 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 
 	// Non-interactive: apply directly without prompting.
 	if profileName != "" {
-		return applyPostureProfile(ctx, root, ghBin, home, offer, nil, stderr)
+		return applyPostureProfile(ctx, root, home, offer, nil, stderr)
 	}
 
 	// Interactive: show the profile description and ask for confirmation.
@@ -512,7 +511,8 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 	fmt.Fprintln(stderr, "")
 
 	// Show the diff (best-effort: skip gracefully if gh is unavailable).
-	repoSlug, ghErr := posture.DetectRepo(ctx, ghBin)
+	ghProv := ghpkg.New()
+	repoSlug, ghErr := ghProv.Repo().DetectCurrent(ctx)
 	if ghErr == nil && repoSlug != "" {
 		profileSrc, cleanup, renderErr := posture.RenderProfile(offer, nil, home)
 		if renderErr == nil {
@@ -563,15 +563,16 @@ func cmdProjectAddPosture(root, profileName string, _, stderr io.Writer) int {
 		return 0
 	}
 
-	return applyPostureProfile(ctx, root, ghBin, home, offer, nil, stderr)
+	return applyPostureProfile(ctx, root, home, offer, nil, stderr)
 }
 
 // applyPostureProfile renders the named profile and applies it to the live
 // GitHub repo, then records the choice in koryph.project.json.
 // params may be nil to use profile defaults.
 // All output goes to w (caller passes stderr to keep stdout clean for JSON).
-func applyPostureProfile(ctx context.Context, root, ghBin, home, profileName string, params map[string]string, w io.Writer) int {
-	repoSlug, err := posture.DetectRepo(ctx, ghBin)
+func applyPostureProfile(ctx context.Context, root, home, profileName string, params map[string]string, w io.Writer) int {
+	ghProv := ghpkg.New()
+	repoSlug, err := ghProv.Repo().DetectCurrent(ctx)
 	if err != nil {
 		fmt.Fprintf(w, "koryph: posture: cannot detect GitHub repo (is gh authenticated?): %v\n", err)
 		return 1
@@ -584,7 +585,6 @@ func applyPostureProfile(ctx context.Context, root, ghBin, home, profileName str
 	}
 	defer cleanup()
 
-	ghProv := ghpkg.New()
 	hasRulesets, hasSettings := posture.EjectCheck(root)
 	localSrc := posture.LocalSource{Root: root}
 

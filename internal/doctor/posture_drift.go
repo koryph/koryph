@@ -90,11 +90,10 @@ func checkPostureDrift(opts ProjectOptions, repoRoot string, cfg *project.Config
 	// Real check: render the profile and call posture.CheckRulesets /
 	// posture.CheckSettings using the gh CLI.
 	home := paths.KoryphHome()
-	ghBin := posture.GHBin()
 	ctx := context.Background()
 	ghProv := ghpkg.New()
 
-	repoSlug, err := posture.DetectRepo(ctx, ghBin)
+	repoSlug, err := ghProv.Repo().DetectCurrent(ctx)
 	if err != nil {
 		// gh unavailable or unauthenticated — degrade gracefully.
 		return Finding{

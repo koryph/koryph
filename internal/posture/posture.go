@@ -6,10 +6,8 @@
 // and administrative settings (.github/repo-settings.json).
 //
 // It is the Go implementation of scripts/ensure-rulesets.sh and
-// scripts/ensure-repo-settings.sh. Authentication is via gh-CLI passthrough:
-// every API call is delegated to "gh api", which honours the authenticated
-// credential already managed by the operator's gh installation. No token
-// management or HTTP client setup is required in this package.
+// scripts/ensure-repo-settings.sh. Forge authentication and provider-specific
+// API access are supplied by the forge services passed to check/apply calls.
 //
 // Named-profile sources (~/.koryph/postures) are the next bead.  The
 // [Source] interface is the planned seam: a profile-based source will
@@ -17,13 +15,10 @@
 package posture
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -97,71 +92,6 @@ func (e *PermissionError) Error() string {
 		return fmt.Sprintf("posture: %s requires %s: %s", e.Action, e.Needed, e.Detail)
 	}
 	return fmt.Sprintf("posture: %s requires %s", e.Action, e.Needed)
-}
-
-// GHBin returns the gh CLI binary path, honouring the KORYPH_GH_BIN
-// environment variable (same convention as the rest of the koryph CLI).
-func GHBin() string {
-	if v := os.Getenv("KORYPH_GH_BIN"); v != "" {
-		return v
-	}
-	return "gh"
-}
-
-// DetectRepo resolves the current repository's "owner/name" slug by calling
-// "gh repo view".  When the caller provides an explicit --repo flag value,
-// pass it directly and skip this function.
-func DetectRepo(ctx context.Context, ghBin string) (string, error) {
-	out, code, err := ghRun(ctx, ghBin, []string{
-		"repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner",
-	}, nil)
-	if err != nil {
-		return "", fmt.Errorf("posture: detect repo: %w", err)
-	}
-	if code != 0 {
-		return "", fmt.Errorf("posture: detect repo: gh exited %d", code)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// ghRun executes the gh binary with the given arguments. input, if non-nil,
-// is written to a temporary file and passed via --input.  It returns the
-// stdout bytes, the process exit code, and any spawn-level error (non-zero
-// exit is not a spawn error).
-func ghRun(ctx context.Context, ghBin string, args []string, input []byte) ([]byte, int, error) {
-	finalArgs := args
-
-	var tmpFile string
-	if input != nil {
-		f, err := os.CreateTemp("", "koryph-posture-*.json")
-		if err != nil {
-			return nil, -1, fmt.Errorf("posture: create temp file: %w", err)
-		}
-		tmpFile = f.Name()
-		defer os.Remove(tmpFile) //nolint:errcheck
-		if _, err := f.Write(input); err != nil {
-			f.Close()
-			return nil, -1, fmt.Errorf("posture: write temp file: %w", err)
-		}
-		if err := f.Close(); err != nil {
-			return nil, -1, fmt.Errorf("posture: close temp file: %w", err)
-		}
-		finalArgs = append(append([]string{}, args...), "--input", tmpFile)
-	}
-
-	cmd := exec.CommandContext(ctx, ghBin, finalArgs...) //nolint:gosec
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-
-	runErr := cmd.Run()
-	if runErr != nil {
-		if ee, ok := runErr.(*exec.ExitError); ok {
-			return out.Bytes(), ee.ExitCode(), nil
-		}
-		return nil, -1, fmt.Errorf("posture: exec gh: %w: %s", runErr, errb.String())
-	}
-	return out.Bytes(), 0, nil
 }
 
 // jsonSortKeys unmarshals raw JSON into a generic map, then re-marshals with

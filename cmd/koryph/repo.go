@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/forge"
 	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/posture"
 )
@@ -97,7 +98,6 @@ func cmdRepoDescribe(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
-	ghBin := posture.GHBin()
 	ghProv := ghpkg.New()
 
 	cwd, err := os.Getwd()
@@ -109,7 +109,7 @@ func cmdRepoDescribe(args []string, stdout, stderr io.Writer) int {
 	// Resolve repo slug only when --repo is given.
 	repoSlug := ""
 	if *repo != "" {
-		repoSlug, err = resolveRepo(ctx, ghBin, *repo)
+		repoSlug, err = resolveRepo(ctx, ghProv.Repo(), *repo)
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -148,10 +148,9 @@ func cmdRepoCheck(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
-	ghBin := posture.GHBin()
 	ghProv := ghpkg.New()
 
-	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
+	repoSlug, err := resolveRepo(ctx, ghProv.Repo(), *repo)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -210,10 +209,9 @@ func cmdRepoApply(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
-	ghBin := posture.GHBin()
 	ghProv := ghpkg.New()
 
-	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
+	repoSlug, err := resolveRepo(ctx, ghProv.Repo(), *repo)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -300,10 +298,9 @@ func runRepoRollback(cmdName string, args []string, stdout, stderr io.Writer) in
 	}
 
 	ctx := context.Background()
-	ghBin := posture.GHBin()
 	ghProv := ghpkg.New()
 
-	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
+	repoSlug, err := resolveRepo(ctx, ghProv.Repo(), *repo)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -319,11 +316,11 @@ func runRepoRollback(cmdName string, args []string, stdout, stderr io.Writer) in
 	return 0
 }
 
-// resolveRepo returns explicit when non-empty; otherwise calls gh to detect
-// the current repository slug.
-func resolveRepo(ctx context.Context, ghBin, explicit string) (string, error) {
+// resolveRepo returns explicit when non-empty; otherwise asks the provider to
+// detect the current repository slug.
+func resolveRepo(ctx context.Context, svc forge.RepoService, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	return posture.DetectRepo(ctx, ghBin)
+	return svc.DetectCurrent(ctx)
 }

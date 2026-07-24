@@ -384,15 +384,16 @@ esac`
 	}
 }
 
-// TestDetectRepo checks that DetectRepo propagates gh failures as errors.
-func TestDetectRepo_Failure(t *testing.T) {
+// TestDetectCurrent_Failure checks that the provider propagates gh failures.
+func TestDetectCurrent_Failure(t *testing.T) {
 	script := `#!/bin/sh
 exit 1`
 	bin := filepath.Join(t.TempDir(), "gh")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := posture.DetectRepo(context.Background(), bin)
+	t.Setenv("KORYPH_GH_BIN", bin)
+	_, err := ghpkg.New().Repo().DetectCurrent(context.Background())
 	if err == nil {
 		t.Error("expected error when gh exits non-zero")
 	}

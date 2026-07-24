@@ -171,6 +171,10 @@ func (s *stubPagesSvc) SetHTTPSEnforced(context.Context, string, string, bool) e
 
 type stubRepoSvc struct{}
 
+func (s *stubRepoSvc) DetectCurrent(_ context.Context) (string, error) {
+	return "", forge.ErrUnsupported
+}
+
 func (s *stubRepoSvc) Get(_ context.Context, _, _ string) (*forge.RepoSettings, error) {
 	return nil, forge.ErrUnsupported
 }
@@ -194,6 +198,12 @@ func (s *stubRepoSvc) ActionsWorkflow(_ context.Context, _, _ string) (json.RawM
 }
 func (s *stubRepoSvc) SetActionsWorkflow(_ context.Context, _, _ string, _ json.RawMessage) error {
 	return forge.ErrUnsupported
+}
+func (s *stubRepoSvc) ListFiles(_ context.Context, _, _, _ string) ([]string, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s *stubRepoSvc) ReadFile(_ context.Context, _, _, _ string) ([]byte, error) {
+	return nil, forge.ErrUnsupported
 }
 
 type stubProtectionSvc struct{}
@@ -283,6 +293,10 @@ func (s *stubCISvc) Render(_ string) ([]byte, error) { return nil, forge.ErrUnsu
 
 type stubBotSvc struct{}
 
+func (s *stubBotSvc) CurrentUser(_ context.Context) (string, error) {
+	return "", forge.ErrUnsupported
+}
+
 func (s *stubBotSvc) ExchangeManifest(_ context.Context, _ string) (forge.BotConfig, error) {
 	return forge.BotConfig{}, forge.ErrUnsupported
 }
@@ -291,6 +305,9 @@ func (s *stubBotSvc) ListInstallations(_ context.Context, _ string) ([]forge.Ins
 }
 func (s *stubBotSvc) MintInstallationToken(_ context.Context, _ string, _ int64) (string, error) {
 	return "", forge.ErrUnsupported
+}
+func (s *stubBotSvc) AttachRepository(_ context.Context, _ string, _ int64) (forge.RepositoryAttachment, error) {
+	return forge.RepositoryAttachment{}, forge.ErrUnsupported
 }
 func (s *stubBotSvc) SetSecrets(_ context.Context, _ forge.BotConfig, _ string) error {
 	return forge.ErrUnsupported

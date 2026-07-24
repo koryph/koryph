@@ -33,6 +33,10 @@ import (
 // Self-managed instances are served by KORYPH_GITLAB_HOST (via [prAPIBase]).
 type gitlabRepoSvc struct{}
 
+func (s *gitlabRepoSvc) DetectCurrent(_ context.Context) (string, error) {
+	return "", forge.ErrUnsupported
+}
+
 // ---------- RepoService methods -----------------------------------------------
 
 // Get fetches current settings for "owner/repo".
@@ -118,6 +122,14 @@ func (s *gitlabRepoSvc) ActionsWorkflow(_ context.Context, _, _ string) (json.Ra
 // SetActionsWorkflow returns [forge.ErrUnsupported] — GitHub Actions only.
 func (s *gitlabRepoSvc) SetActionsWorkflow(_ context.Context, _, _ string, _ json.RawMessage) error {
 	return forge.ErrUnsupported
+}
+
+func (s *gitlabRepoSvc) ListFiles(_ context.Context, _, _, _ string) ([]string, error) {
+	return nil, forge.ErrUnsupported
+}
+
+func (s *gitlabRepoSvc) ReadFile(_ context.Context, _, _, _ string) ([]byte, error) {
+	return nil, forge.ErrUnsupported
 }
 
 // ---------- GitLab REST API types for projects --------------------------------

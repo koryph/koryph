@@ -32,6 +32,10 @@ import (
 // or PUT /groups/{id}/variables (per-group).
 type gitlabBotSvc struct{}
 
+func (s *gitlabBotSvc) CurrentUser(_ context.Context) (string, error) {
+	return "", forge.ErrUnsupported
+}
+
 // glHost returns the GitLab host to use (default: gitlab.com).
 func glHost() string {
 	if v := os.Getenv("KORYPH_GITLAB_HOST"); v != "" {
@@ -79,6 +83,10 @@ func (s *gitlabBotSvc) ListInstallations(ctx context.Context, jwtOrToken string)
 // installID is ignored.
 func (s *gitlabBotSvc) MintInstallationToken(_ context.Context, jwtOrToken string, _ int64) (string, error) {
 	return jwtOrToken, nil
+}
+
+func (s *gitlabBotSvc) AttachRepository(_ context.Context, _ string, _ int64) (forge.RepositoryAttachment, error) {
+	return forge.RepositoryAttachment{}, forge.ErrUnsupported
 }
 
 // SetSecrets sets the bot token as GitLab CI variables on the target project.

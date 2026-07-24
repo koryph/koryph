@@ -42,6 +42,20 @@ func (s *githubBotSvc) ghBin() string {
 	return "gh"
 }
 
+// CurrentUser returns the login associated with the current gh credentials.
+func (s *githubBotSvc) CurrentUser(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, s.ghBin(), "api", "user", "--jq", ".login") //nolint:gosec
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("github bot: current user: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	login := strings.TrimSpace(string(out))
+	if login == "" {
+		return "", fmt.Errorf("github bot: current user: empty login")
+	}
+	return login, nil
+}
+
 // ExchangeManifest exchanges a GitHub App manifest code for bot credentials.
 // This is step 5 of the App Manifest flow:
 //
@@ -229,6 +243,48 @@ func (s *githubBotSvc) MintInstallationToken(ctx context.Context, jwtOrToken str
 	// Log success — the token value itself is never emitted.
 	sp.End(resp.StatusCode, nil)
 	return tok.Token, nil
+}
+
+// AttachRepository adds ownerRepo to a selected GitHub App installation.
+func (s *githubBotSvc) AttachRepository(ctx context.Context, ownerRepo string, installID int64) (forge.RepositoryAttachment, error) {
+	cmd := exec.CommandContext(ctx, s.ghBin(), "api", "/repos/"+ownerRepo) //nolint:gosec
+	raw, err := cmd.Output()
+	if err != nil {
+		return forge.RepositoryAttachment{}, fmt.Errorf("github bot: resolve repository %s: %w", ownerRepo, err)
+	}
+	var repository struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &repository); err != nil || repository.ID == 0 {
+		return forge.RepositoryAttachment{}, fmt.Errorf("github bot: parse repository %s: %w", ownerRepo, err)
+	}
+
+	cmd = exec.CommandContext(ctx, s.ghBin(), "api", //nolint:gosec
+		fmt.Sprintf("/user/installations/%d/repositories", installID))
+	raw, err = cmd.Output()
+	if err == nil {
+		var installations struct {
+			Repositories []struct {
+				ID int64 `json:"id"`
+			} `json:"repositories"`
+		}
+		if json.Unmarshal(raw, &installations) == nil {
+			for _, repo := range installations.Repositories {
+				if repo.ID == repository.ID {
+					return forge.RepositoryAttachment{RepositoryID: repository.ID}, nil
+				}
+			}
+		}
+	}
+
+	cmd = exec.CommandContext(ctx, s.ghBin(), "api", "-X", "PUT", //nolint:gosec
+		fmt.Sprintf("/user/installations/%d/repositories/%d", installID, repository.ID))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return forge.RepositoryAttachment{RepositoryID: repository.ID}, fmt.Errorf("github bot: attach %s to installation %d: %w: %s",
+			ownerRepo, installID, err, strings.TrimSpace(string(out)))
+	}
+	return forge.RepositoryAttachment{RepositoryID: repository.ID, Added: true}, nil
 }
 
 // SetSecrets sets RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY as GitHub

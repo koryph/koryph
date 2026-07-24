@@ -4,13 +4,19 @@
 package bot
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/koryph/koryph/internal/forge"
 )
 
 // fakeGH writes a shell script to a temp dir and returns the path.
@@ -33,6 +39,101 @@ func fakeGH(t *testing.T, script string) string {
 func encodeWorkflow(t *testing.T, yaml string) string {
 	t.Helper()
 	return base64.StdEncoding.EncodeToString([]byte(yaml))
+}
+
+type fakeRepoService struct{ bin string }
+
+func (s fakeRepoService) DetectCurrent(context.Context) (string, error) {
+	return "", forge.ErrUnsupported
+}
+func (s fakeRepoService) Get(context.Context, string, string) (*forge.RepoSettings, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s fakeRepoService) Update(context.Context, string, string, *forge.RepoSettings) error {
+	return forge.ErrUnsupported
+}
+func (s fakeRepoService) GetRaw(context.Context, string, string) (json.RawMessage, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s fakeRepoService) PatchRaw(context.Context, string, string, json.RawMessage) error {
+	return forge.ErrUnsupported
+}
+func (s fakeRepoService) VulnAlerts(context.Context, string, string) (bool, error) {
+	return false, forge.ErrUnsupported
+}
+func (s fakeRepoService) SetVulnAlerts(context.Context, string, string, bool) error {
+	return forge.ErrUnsupported
+}
+func (s fakeRepoService) ActionsWorkflow(context.Context, string, string) (json.RawMessage, error) {
+	return nil, forge.ErrUnsupported
+}
+func (s fakeRepoService) SetActionsWorkflow(context.Context, string, string, json.RawMessage) error {
+	return forge.ErrUnsupported
+}
+func (s fakeRepoService) ListFiles(_ context.Context, owner, repo, path string) ([]string, error) {
+	out, err := exec.Command(s.bin, "api", "/repos/"+owner+"/"+repo+"/contents/"+path).Output() //nolint:gosec
+	if err != nil {
+		return nil, err
+	}
+	return splitLines(string(out)), nil
+}
+func (s fakeRepoService) ReadFile(_ context.Context, owner, repo, path string) ([]byte, error) {
+	out, err := exec.Command(s.bin, "api", "/repos/"+owner+"/"+repo+"/contents/"+path).Output() //nolint:gosec
+	if err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(strings.ReplaceAll(strings.TrimSpace(string(out)), "\n", ""))
+}
+
+type fakeSecretsService struct{ bin string }
+
+func (s fakeSecretsService) ListRepo(_ context.Context, owner, repo string) ([]string, error) {
+	out, err := exec.Command(s.bin, "secret", "list", "--repo", owner+"/"+repo).Output() //nolint:gosec
+	return splitLines(string(out)), err
+}
+func (s fakeSecretsService) ListOrg(_ context.Context, org string) ([]string, error) {
+	out, err := exec.Command(s.bin, "api", "/orgs/"+org+"/actions/secrets").CombinedOutput() //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, out)
+	}
+	return splitLines(string(out)), nil
+}
+func (fakeSecretsService) SetRepo(context.Context, string, string, string, string) error {
+	return forge.ErrUnsupported
+}
+func (fakeSecretsService) SetOrg(context.Context, string, string, string, []string) error {
+	return forge.ErrUnsupported
+}
+
+type fakeBotService struct{ bin string }
+
+func (fakeBotService) CurrentUser(context.Context) (string, error) { return "", forge.ErrUnsupported }
+func (fakeBotService) ExchangeManifest(context.Context, string) (forge.BotConfig, error) {
+	return forge.BotConfig{}, forge.ErrUnsupported
+}
+func (fakeBotService) ListInstallations(context.Context, string) ([]forge.Installation, error) {
+	return nil, forge.ErrUnsupported
+}
+func (fakeBotService) MintInstallationToken(context.Context, string, int64) (string, error) {
+	return "", forge.ErrUnsupported
+}
+func (s fakeBotService) AttachRepository(_ context.Context, ownerRepo string, installationID int64) (forge.RepositoryAttachment, error) {
+	out, err := exec.Command(s.bin, "api", "/repos/"+ownerRepo).Output() //nolint:gosec
+	if err != nil {
+		return forge.RepositoryAttachment{}, err
+	}
+	var id int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &id); err != nil {
+		return forge.RepositoryAttachment{}, err
+	}
+	cmd := exec.Command(s.bin, "api", "-X", "PUT", fmt.Sprintf("/user/installations/%d/repositories/%d", installationID, id)) //nolint:gosec
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return forge.RepositoryAttachment{RepositoryID: id}, fmt.Errorf("%w: %s", err, out)
+	}
+	return forge.RepositoryAttachment{RepositoryID: id, Added: true}, nil
+}
+func (fakeBotService) SetSecrets(context.Context, forge.BotConfig, string) error {
+	return forge.ErrUnsupported
 }
 
 // --------------------------------------------------------------------------
@@ -73,7 +174,7 @@ exit 1
 `)
 
 	cfg := &Config{Name: "test-bot", AppID: 42}
-	finding := checkCallerWorkflow(t.Context(), cfg, ownerRepo, ghBin)
+	finding := checkCallerWorkflow(t.Context(), cfg, ownerRepo, fakeRepoService{bin: ghBin})
 	if finding.Level != CheckOK {
 		t.Errorf("expected CheckOK, got %s: %s", finding.Level, finding.Message)
 	}
@@ -113,7 +214,7 @@ exit 1
 `)
 
 	cfg := &Config{Name: "test-bot", AppID: 42}
-	finding := checkCallerWorkflow(t.Context(), cfg, ownerRepo, ghBin)
+	finding := checkCallerWorkflow(t.Context(), cfg, ownerRepo, fakeRepoService{bin: ghBin})
 	if finding.Level != CheckWarn {
 		t.Errorf("expected CheckWarn, got %s: %s", finding.Level, finding.Message)
 	}
@@ -150,7 +251,7 @@ exit 1
 `)
 
 	cfg := &Config{Name: "test-bot", AppID: 42}
-	finding := checkCallerWorkflow(t.Context(), cfg, ownerRepo, ghBin)
+	finding := checkCallerWorkflow(t.Context(), cfg, ownerRepo, fakeRepoService{bin: ghBin})
 	if finding.Level != CheckOK {
 		t.Errorf("cross-repo ref: expected CheckOK, got %s: %s", finding.Level, finding.Message)
 	}
@@ -226,7 +327,7 @@ echo "unexpected: $ARGS" >&2
 exit 1
 `)
 
-	findings := checkSecrets(ownerRepo, ghBin, "test-bot")
+	findings := checkSecrets(t.Context(), ownerRepo, fakeSecretsService{bin: ghBin}, "test-bot")
 
 	var appIDFound, keyFound bool
 	for _, f := range findings {
@@ -268,7 +369,7 @@ echo "unexpected: $ARGS" >&2
 exit 1
 `)
 
-	findings := checkSecrets(ownerRepo, ghBin, "test-bot")
+	findings := checkSecrets(t.Context(), ownerRepo, fakeSecretsService{bin: ghBin}, "test-bot")
 
 	if len(findings) == 0 {
 		t.Fatal("expected findings, got none")
@@ -303,7 +404,7 @@ echo "unexpected: $ARGS" >&2
 exit 1
 `)
 
-	findings := checkSecrets(ownerRepo, ghBin, "test-bot")
+	findings := checkSecrets(t.Context(), ownerRepo, fakeSecretsService{bin: ghBin}, "test-bot")
 	for _, f := range findings {
 		if f.Level != CheckOK {
 			t.Errorf("expected CheckOK (both at repo level), got %s: %s", f.Level, f.Message)
@@ -422,7 +523,7 @@ exit 1
 
 	var out strings.Builder
 	rid, repoAdded, skipped, err := addRepoToInstallation(
-		t.Context(), ownerRepo, iid, ghBin, botName, &out)
+		t.Context(), ownerRepo, iid, fakeBotService{bin: ghBin}, botName, &out)
 
 	if err != nil {
 		t.Fatalf("expected nil error on 403 skip, got: %v", err)

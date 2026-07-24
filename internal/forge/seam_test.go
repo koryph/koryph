@@ -42,13 +42,11 @@ var forgeCLIPatterns = []*regexp.Regexp{
 //
 // Paths are slash-separated and relative to the module root.
 var preSeamAllowlist = map[string]bool{
-	"internal/posture/posture.go":      true, // hygiene → forge.Protection()/Repo()
 	"internal/merge/pr.go":             true, // PR merge flow → forge.PRs()
 	"internal/doctor/release_infra.go": true, // release-infra probe → forge.Secrets()/Releases()
 	"internal/release/kick.go":         true, // release-please PR flow → forge.PRs()/Releases()
 	"internal/intake/github.go":        true, // issue intake (separate provider family; see design §8)
 	"internal/engine/reviewpr.go":      true, // review-pr flow → forge.PRs()
-	"cmd/koryph/bot.go":                true, // bot identity → forge.Bot()
 }
 
 // TestForgeSeamSealed walks the Go sources under internal/ and cmd/ and fails

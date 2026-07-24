@@ -6,10 +6,12 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/koryph/koryph/internal/forge"
 )
@@ -60,6 +62,20 @@ func (s *githubRepoSvc) ghAPI(ctx context.Context, args []string, input []byte) 
 		return nil, -1, fmt.Errorf("github repo: exec gh: %w: %s", runErr, errb.String())
 	}
 	return out.Bytes(), 0, nil
+}
+
+// DetectCurrent resolves the current working directory's repository slug.
+func (s *githubRepoSvc) DetectCurrent(ctx context.Context) (string, error) {
+	raw, code, err := s.ghAPI(ctx, []string{
+		"repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner",
+	}, nil)
+	if err != nil {
+		return "", fmt.Errorf("github repo: detect current repository: %w", err)
+	}
+	if code != 0 {
+		return "", fmt.Errorf("github repo: detect current repository: gh exited %d", code)
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // Get fetches current repository settings.
@@ -184,6 +200,56 @@ func (s *githubRepoSvc) SetActionsWorkflow(ctx context.Context, owner, repo stri
 		return fmt.Errorf("github repo: set actions workflow: gh exited %d", code)
 	}
 	return nil
+}
+
+// ListFiles returns file names immediately below path.
+func (s *githubRepoSvc) ListFiles(ctx context.Context, owner, repo, path string) ([]string, error) {
+	endpoint := fmt.Sprintf("repos/%s/%s/contents/%s", owner, repo, path)
+	raw, code, err := s.ghAPI(ctx, []string{"api", endpoint}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("github repo: list files: %w", err)
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("github repo: list files: gh exited %d", code)
+	}
+	var entries []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("github repo: parse file list: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type == "file" {
+			names = append(names, entry.Name)
+		}
+	}
+	return names, nil
+}
+
+// ReadFile returns decoded repository file contents.
+func (s *githubRepoSvc) ReadFile(ctx context.Context, owner, repo, path string) ([]byte, error) {
+	endpoint := fmt.Sprintf("repos/%s/%s/contents/%s", owner, repo, path)
+	raw, code, err := s.ghAPI(ctx, []string{"api", endpoint}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("github repo: read file: %w", err)
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("github repo: read file: gh exited %d", code)
+	}
+	var file struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil, fmt.Errorf("github repo: parse file: %w", err)
+	}
+	content := strings.ReplaceAll(file.Content, "\n", "")
+	decoded, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		return nil, fmt.Errorf("github repo: decode file: %w", err)
+	}
+	return decoded, nil
 }
 
 // Compile-time interface check.

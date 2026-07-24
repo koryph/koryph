@@ -5,15 +5,15 @@ package bot
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/koryph/koryph/internal/forge"
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/signing"
 )
 
@@ -46,8 +46,10 @@ type CheckOptions struct {
 	// Repo is the optional "owner/repo" to validate against.
 	// When empty, only the local credentials and app identity are checked.
 	Repo string
-	// GHBin overrides the gh CLI binary path (tests inject a stub).
-	GHBin string
+	// SecretsSvc and RepoSvc route repository checks through the forge seam.
+	// Nil values use the GitHub provider for backwards compatibility.
+	SecretsSvc forge.SecretsService
+	RepoSvc    forge.RepoService
 }
 
 // Check runs the bot validator chain and returns all findings. The chain
@@ -65,9 +67,14 @@ type CheckOptions struct {
 //  6. caller-workflow — any .github/workflows/*.yml calls release-train.yml
 //     (local ./ or koryph/koryph@ reference); message names what it looked for
 func Check(ctx context.Context, cfg *Config, opts CheckOptions) ([]CheckFinding, error) {
-	ghBin := opts.GHBin
-	if ghBin == "" {
-		ghBin = "gh"
+	if opts.SecretsSvc == nil || opts.RepoSvc == nil {
+		provider := ghpkg.New()
+		if opts.SecretsSvc == nil {
+			opts.SecretsSvc = provider.Secrets()
+		}
+		if opts.RepoSvc == nil {
+			opts.RepoSvc = provider.Repo()
+		}
 	}
 
 	var findings []CheckFinding
@@ -101,13 +108,13 @@ func Check(ctx context.Context, cfg *Config, opts CheckOptions) ([]CheckFinding,
 	findings = append(findings, checkInstallationCovers(ctx, jwt, installs, owner, opts))
 
 	// 4. Secrets present (best-effort; degrade gracefully on gh errors).
-	findings = append(findings, checkSecrets(opts.Repo, ghBin, opts.Name)...)
+	findings = append(findings, checkSecrets(ctx, opts.Repo, opts.SecretsSvc, opts.Name)...)
 
 	// 5. Actions toggle.
-	findings = append(findings, checkActionsToggle(opts.Repo, ghBin, opts.Name))
+	findings = append(findings, checkActionsToggle(ctx, opts.Repo, opts.RepoSvc, opts.Name))
 
 	// 6. Caller workflow present.
-	findings = append(findings, checkCallerWorkflow(ctx, cfg, opts.Repo, ghBin))
+	findings = append(findings, checkCallerWorkflow(ctx, cfg, opts.Repo, opts.RepoSvc))
 
 	return findings, nil
 }
@@ -432,8 +439,8 @@ func listInstallationRepos(ctx context.Context, instToken string) ([]string, err
 // are still absent (e.g. provisioned via 'koryph bot attach --org-secrets').
 // A 403 on the org-level check (which requires read:org / org-admin scope) is
 // tolerated: the finding degrades to WARN naming the exact permission needed.
-func checkSecrets(ownerRepo, ghBin, botName string) []CheckFinding {
-	owner, _, splitErr := splitOwnerRepo(ownerRepo)
+func checkSecrets(ctx context.Context, ownerRepo string, svc forge.SecretsService, botName string) []CheckFinding {
+	owner, repo, splitErr := splitOwnerRepo(ownerRepo)
 	if splitErr != nil {
 		// Defensive only — caller already validated.
 		return []CheckFinding{{
@@ -451,13 +458,10 @@ func checkSecrets(ownerRepo, ghBin, botName string) []CheckFinding {
 
 	// --- Repo-level secrets ---
 	names := make(map[string]bool)
-	repoOut, repoErr := exec.Command(ghBin, "secret", "list", //nolint:gosec
-		"--repo", ownerRepo, "--jq", ".[].name").Output()
+	repoNames, repoErr := svc.ListRepo(ctx, owner, repo)
 	if repoErr == nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(repoOut)), "\n") {
-			if l := strings.TrimSpace(line); l != "" {
-				names[l] = true
-			}
+		for _, name := range repoNames {
+			names[name] = true
 		}
 	}
 
@@ -465,17 +469,12 @@ func checkSecrets(ownerRepo, ghBin, botName string) []CheckFinding {
 	orgForbidden := false
 	orgForbiddenMsg := ""
 	if !names[keyAppID] || !names[keyAppKey] {
-		orgCmd := exec.Command(ghBin, "api", //nolint:gosec
-			"/orgs/"+owner+"/actions/secrets",
-			"--jq", ".secrets[].name")
-		orgOut, orgErr := orgCmd.CombinedOutput()
+		orgNames, orgErr := svc.ListOrg(ctx, owner)
 		if orgErr == nil {
-			for _, line := range strings.Split(strings.TrimSpace(string(orgOut)), "\n") {
-				if l := strings.TrimSpace(line); l != "" {
-					names[l] = true
-				}
+			for _, name := range orgNames {
+				names[name] = true
 			}
-		} else if ghOutputIs403(orgOut) {
+		} else if ghOutputIs403([]byte(orgErr.Error())) {
 			orgForbidden = true
 			orgForbiddenMsg = "org-level check skipped (HTTP 403 — " +
 				"requires read:org scope or org-admin role; " +
@@ -521,10 +520,12 @@ func checkSecrets(ownerRepo, ghBin, botName string) []CheckFinding {
 }
 
 // checkActionsToggle checks that can_approve_pull_request_reviews is enabled.
-func checkActionsToggle(ownerRepo, ghBin, botName string) CheckFinding {
-	out, err := exec.Command(ghBin, "api", //nolint:gosec
-		"/repos/"+ownerRepo+"/actions/permissions/workflow",
-		"--jq", ".can_approve_pull_request_reviews").Output()
+func checkActionsToggle(ctx context.Context, ownerRepo string, svc forge.RepoService, botName string) CheckFinding {
+	owner, repo, splitErr := splitOwnerRepo(ownerRepo)
+	if splitErr != nil {
+		return CheckFinding{Check: "toggle-on", Level: CheckWarn, Message: splitErr.Error()}
+	}
+	out, err := svc.ActionsWorkflow(ctx, owner, repo)
 	if err != nil {
 		return CheckFinding{
 			Check:   "toggle-on",
@@ -532,7 +533,10 @@ func checkActionsToggle(ownerRepo, ghBin, botName string) CheckFinding {
 			Message: fmt.Sprintf("%s: cannot read Actions permissions (best-effort check skipped)", ownerRepo),
 		}
 	}
-	if strings.TrimSpace(string(out)) == "true" {
+	var permissions struct {
+		CanApprove bool `json:"can_approve_pull_request_reviews"`
+	}
+	if json.Unmarshal(out, &permissions) == nil && permissions.CanApprove {
 		return CheckFinding{
 			Check:   "toggle-on",
 			Level:   CheckOK,
@@ -554,14 +558,14 @@ func checkActionsToggle(ownerRepo, ghBin, botName string) CheckFinding {
 // This intentionally does NOT hardcode a specific file name: release-please,
 // semantic-release, and other callers use different filenames. The check
 // passes as long as any workflow in the directory delegates to release-train.yml.
-func checkCallerWorkflow(_ context.Context, _ *Config, ownerRepo, ghBin string) CheckFinding {
+func checkCallerWorkflow(ctx context.Context, _ *Config, ownerRepo string, svc forge.RepoService) CheckFinding {
 	const lookingFor = "uses: referencing release-train.yml (./ or koryph/koryph@ prefix)"
 
-	// List workflow files in .github/workflows/.
-	listOut, err := exec.Command(ghBin, "api", //nolint:gosec
-		"/repos/"+ownerRepo+"/contents/.github/workflows",
-		"--jq", `[.[] | select(.type == "file") | .name] | .[]`,
-	).Output()
+	owner, repo, splitErr := splitOwnerRepo(ownerRepo)
+	if splitErr != nil {
+		return CheckFinding{Check: "caller-workflow", Level: CheckWarn, Message: splitErr.Error()}
+	}
+	names, err := svc.ListFiles(ctx, owner, repo, ".github/workflows")
 	if err != nil {
 		return CheckFinding{
 			Check: "caller-workflow",
@@ -571,7 +575,6 @@ func checkCallerWorkflow(_ context.Context, _ *Config, ownerRepo, ghBin string) 
 		}
 	}
 
-	names := splitLines(string(listOut))
 	if len(names) == 0 {
 		return CheckFinding{
 			Check: "caller-workflow",
@@ -586,18 +589,9 @@ func checkCallerWorkflow(_ context.Context, _ *Config, ownerRepo, ghBin string) 
 		if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
 			continue
 		}
-		b64Out, err := exec.Command(ghBin, "api", //nolint:gosec
-			"/repos/"+ownerRepo+"/contents/.github/workflows/"+name,
-			"--jq", ".content",
-		).Output()
+		decoded, err := svc.ReadFile(ctx, owner, repo, ".github/workflows/"+name)
 		if err != nil {
 			continue // skip inaccessible or deleted file
-		}
-		// GitHub returns the file content as base64 with embedded newlines.
-		b64 := strings.ReplaceAll(strings.TrimSpace(string(b64Out)), "\n", "")
-		decoded, decErr := base64.StdEncoding.DecodeString(b64)
-		if decErr != nil {
-			continue
 		}
 		if containsReleaseTrain(string(decoded)) {
 			return CheckFinding{

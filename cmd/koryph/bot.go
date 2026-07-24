@@ -4,15 +4,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/koryph/koryph/internal/bot"
+	"github.com/koryph/koryph/internal/forge"
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 	"github.com/koryph/koryph/internal/signing"
 )
 
@@ -197,7 +196,7 @@ func cmdBotCreate(args []string, stdout, stderr io.Writer) int {
 	name := *flagName
 	if name == "" {
 		// Best-effort: derive from gh CLI.
-		resolved, err := resolveDefaultBotName(*flagOrg)
+		resolved, err := resolveDefaultBotName(context.Background(), *flagOrg, ghpkg.New().Bot())
 		if err != nil {
 			return usageErr(stderr, "bot create: --name is required (could not auto-detect GitHub login: "+err.Error()+")")
 		}
@@ -352,11 +351,15 @@ func cmdBotAttach(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "koryph bot attach: wiring %s to bot %s\n\n", *flagRepo, cfg.Name)
 
 	ctx := context.Background()
+	provider := ghpkg.New()
 	result, err := bot.Attach(ctx, cfg, bot.AttachOptions{
 		Name:       *flagName,
 		Repo:       *flagRepo,
 		OrgSecrets: *flagOrgSecrets,
 		Out:        stdout,
+		BotSvc:     provider.Bot(),
+		SecretsSvc: provider.Secrets(),
+		RepoSvc:    provider.Repo(),
 	})
 	if err != nil {
 		return fail(stderr, fmt.Errorf("bot attach: %w", err))
@@ -400,9 +403,12 @@ func cmdBotCheck(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
+	provider := ghpkg.New()
 	findings, err := bot.Check(ctx, cfg, bot.CheckOptions{
-		Name: *flagName,
-		Repo: *flagRepo,
+		Name:       *flagName,
+		Repo:       *flagRepo,
+		SecretsSvc: provider.Secrets(),
+		RepoSvc:    provider.Repo(),
 	})
 	if err != nil {
 		return fail(stderr, fmt.Errorf("bot check: %w", err))
@@ -423,40 +429,17 @@ func cmdBotCheck(args []string, stdout, stderr io.Writer) int {
 
 // --- helpers ----------------------------------------------------------------
 
-// resolveDefaultBotName derives a default bot name from gh CLI output.
+// resolveDefaultBotName derives a default bot name from provider identity.
 // Org non-empty: <org>-release-bot. Personal: <gh-login>-release-bot.
-func resolveDefaultBotName(org string) (string, error) {
+func resolveDefaultBotName(ctx context.Context, org string, svc forge.BotService) (string, error) {
 	if org != "" {
 		return org + "-release-bot", nil
 	}
-	// Try gh CLI to get the authenticated username.
-	login, err := ghAuthLogin()
+	login, err := svc.CurrentUser(ctx)
 	if err != nil {
 		return "", err
 	}
 	return login + "-release-bot", nil
-}
-
-// ghAuthLogin invokes 'gh auth status --show-token' and extracts the login.
-// It parses the line "Logged in to github.com account <login> (…)".
-func ghAuthLogin() (string, error) {
-	out, err := runGH("auth", "status")
-	if err != nil {
-		return "", fmt.Errorf("gh auth status: %w", err)
-	}
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		// e.g.: "✓ Logged in to github.com account mctocat (keyring)"
-		if strings.Contains(line, "Logged in to github.com account") {
-			parts := strings.Fields(line)
-			for i, p := range parts {
-				if p == "account" && i+1 < len(parts) {
-					return strings.TrimRight(parts[i+1], " ()"), nil
-				}
-			}
-		}
-	}
-	return "", fmt.Errorf("could not extract GitHub login from gh auth status output")
 }
 
 // printBotNextSteps prints the user's next steps after creating a bot.
@@ -484,24 +467,6 @@ func printBotNextSteps(w io.Writer, cfg *bot.Config) {
 		fmt.Fprintln(w, "by the creating account (or the owning org if --org was specified).")
 		fmt.Fprintln(w, "To install in guest orgs, re-create with --public.")
 	}
-}
-
-// runGH runs the gh CLI binary (honouring KORYPH_GH_BIN) with the given
-// arguments and returns combined stdout output.  It is used only for
-// read-only queries such as 'gh auth status'.
-func runGH(args ...string) (string, error) {
-	bin := "gh"
-	if v := os.Getenv("KORYPH_GH_BIN"); v != "" {
-		bin = v
-	}
-	cmd := exec.Command(bin, args...) //nolint:gosec // user-controlled bin is intentional
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("gh %s: %w\n%s", strings.Join(args, " "), err, out.String())
-	}
-	return out.String(), nil
 }
 
 // cmdBotVaultMigrate implements 'koryph bot vault-migrate --name N'.

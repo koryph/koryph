@@ -35,14 +35,11 @@ func (s *githubSecretsSvc) run(ctx context.Context, args ...string) ([]byte, err
 }
 
 // ListRepo returns the names (never the values) of secrets set on owner/repo.
-func (s *githubSecretsSvc) ListRepo(_ context.Context, owner, repo string) ([]string, error) {
+func (s *githubSecretsSvc) ListRepo(ctx context.Context, owner, repo string) ([]string, error) {
 	ownerRepo := owner + "/" + repo
-	out, err := exec.Command(s.ghBin(), "secret", "list", //nolint:gosec
-		"--repo", ownerRepo,
-		"--json", "name",
-	).Output()
+	out, err := s.run(ctx, "secret", "list", "--repo", ownerRepo, "--json", "name")
 	if err != nil {
-		return nil, fmt.Errorf("github secrets: list repo secrets %s: %w", ownerRepo, err)
+		return nil, fmt.Errorf("github secrets: list repo secrets %s: %w: %s", ownerRepo, err, strings.TrimSpace(string(out)))
 	}
 	var items []struct {
 		Name string `json:"name"`
@@ -58,13 +55,10 @@ func (s *githubSecretsSvc) ListRepo(_ context.Context, owner, repo string) ([]st
 }
 
 // ListOrg returns the names of org-level secrets for the given organisation.
-func (s *githubSecretsSvc) ListOrg(_ context.Context, org string) ([]string, error) {
-	out, err := exec.Command(s.ghBin(), "secret", "list", //nolint:gosec
-		"--org", org,
-		"--json", "name",
-	).Output()
+func (s *githubSecretsSvc) ListOrg(ctx context.Context, org string) ([]string, error) {
+	out, err := s.run(ctx, "secret", "list", "--org", org, "--json", "name")
 	if err != nil {
-		return nil, fmt.Errorf("github secrets: list org secrets %s: %w", org, err)
+		return nil, fmt.Errorf("github secrets: list org secrets %s: %w: %s", org, err, strings.TrimSpace(string(out)))
 	}
 	var items []struct {
 		Name string `json:"name"`

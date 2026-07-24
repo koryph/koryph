@@ -240,10 +240,9 @@ func runPostureVerb(args []string, cmdName string, stdout, stderr io.Writer, app
 	}
 
 	ctx := context.Background()
-	ghBin := posture.GHBin()
 	ghProv := ghpkg.New()
 
-	repoSlug, err := resolveRepo(ctx, ghBin, *repo)
+	repoSlug, err := resolveRepo(ctx, ghProv.Repo(), *repo)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -469,7 +468,6 @@ func cmdPostureDescribe(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
-	ghBin := posture.GHBin()
 	ghProv := ghpkg.New()
 	home := paths.KoryphHome()
 
@@ -499,7 +497,7 @@ func cmdPostureDescribe(args []string, stdout, stderr io.Writer) int {
 	// Resolve the repo slug when --repo was given (or skip live comparison).
 	repoSlug := ""
 	if *repo != "" {
-		repoSlug, err = resolveRepo(ctx, ghBin, *repo)
+		repoSlug, err = resolveRepo(ctx, ghProv.Repo(), *repo)
 		if err != nil {
 			return fail(stderr, err)
 		}

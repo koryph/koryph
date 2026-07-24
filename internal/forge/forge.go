@@ -243,6 +243,11 @@ type BotConfig struct {
 
 // RepoService manages repository-level settings.
 type RepoService interface {
+	// DetectCurrent resolves the current working directory's repository as an
+	// "owner/repo" slug. Providers without a CLI-backed repository context
+	// return [ErrUnsupported].
+	DetectCurrent(ctx context.Context) (string, error)
+
 	// Get fetches current settings for the repository identified by
 	// "owner/repo".
 	Get(ctx context.Context, owner, repo string) (*RepoSettings, error)
@@ -280,6 +285,13 @@ type RepoService interface {
 	// SetActionsWorkflow applies raw JSON CI workflow permissions.  Returns
 	// [ErrUnsupported] on providers that lack this feature.
 	SetActionsWorkflow(ctx context.Context, owner, repo string, payload json.RawMessage) error
+
+	// ListFiles returns file names immediately below path in the repository.
+	// It is used by bot validation to inspect forge-hosted workflow files.
+	ListFiles(ctx context.Context, owner, repo, path string) ([]string, error)
+
+	// ReadFile returns the decoded contents of a repository file.
+	ReadFile(ctx context.Context, owner, repo, path string) ([]byte, error)
 }
 
 // ProtectionService manages branch-protection policies (rulesets, protected
@@ -456,6 +468,10 @@ type CIService interface {
 // access token: guided creation (koryph opens the settings URL and validates
 // the pasted token), scope/expiry checking, and CI variable management.
 type BotService interface {
+	// CurrentUser returns the login associated with the current provider
+	// credentials. It is used when a bot name is derived automatically.
+	CurrentUser(ctx context.Context) (string, error)
+
 	// ExchangeManifest exchanges an app-manifest code for bot credentials.
 	// GitHub: POST /app-manifests/{code}/conversions.
 	// GitLab: returns [ErrUnsupported]; use the access-token flow instead.
@@ -471,7 +487,18 @@ type BotService interface {
 	// On GitLab it refreshes and returns the stored PAT.
 	MintInstallationToken(ctx context.Context, jwtOrToken string, installID int64) (string, error)
 
+	// AttachRepository adds ownerRepo to an installation. The result records
+	// the repository's numeric ID and whether the provider changed access.
+	AttachRepository(ctx context.Context, ownerRepo string, installID int64) (RepositoryAttachment, error)
+
 	// SetSecrets stores the bot credentials as CI secrets or variables on the
 	// target repository (and, when applicable, the owning organisation).
 	SetSecrets(ctx context.Context, cfg BotConfig, ownerRepo string) error
+}
+
+// RepositoryAttachment is the result of attaching a repository to a bot
+// installation. Added is false when the repository was already present.
+type RepositoryAttachment struct {
+	RepositoryID int64
+	Added        bool
 }

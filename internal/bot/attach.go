@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/forge"
+	ghpkg "github.com/koryph/koryph/internal/forge/github"
 )
 
 // AttachOptions configures a 'koryph bot attach' run.
@@ -31,14 +31,12 @@ type AttachOptions struct {
 	// Out receives progress messages.
 	Out io.Writer
 
-	// GHBin overrides the gh CLI binary path (tests inject a stub).
-	GHBin string
-
-	// BotSvc is an optional [forge.BotService] for the secret-wiring step.
-	// When non-nil, Attach calls BotSvc.SetSecrets instead of the built-in
-	// gh-CLI path. Use this to route through the forge seam in tests or
-	// for forge-portable invocations. nil = use the built-in gh CLI path.
-	BotSvc forge.BotService
+	// BotSvc, SecretsSvc, and RepoSvc route provider operations through the
+	// forge seam. Nil values use the registered GitHub provider for backwards
+	// compatibility with package callers.
+	BotSvc     forge.BotService
+	SecretsSvc forge.SecretsService
+	RepoSvc    forge.RepoService
 }
 
 // AttachResult summarises what 'koryph bot attach' did.
@@ -93,9 +91,17 @@ func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult
 		out = io.Discard
 	}
 
-	ghBin := opts.GHBin
-	if ghBin == "" {
-		ghBin = "gh"
+	if opts.BotSvc == nil || opts.SecretsSvc == nil || opts.RepoSvc == nil {
+		provider := ghpkg.New()
+		if opts.BotSvc == nil {
+			opts.BotSvc = provider.Bot()
+		}
+		if opts.SecretsSvc == nil {
+			opts.SecretsSvc = provider.Secrets()
+		}
+		if opts.RepoSvc == nil {
+			opts.RepoSvc = provider.Repo()
+		}
 	}
 
 	// Step 1: resolve key (vault fetch or inline) then mint JWT.
@@ -120,7 +126,7 @@ func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult
 	// addRepoToInstallation detects a 403 (OAuth scope insufficient for the
 	// /user/installations family) and returns skipped=true in that case — the
 	// warning + remediations are printed inside the helper.
-	rid, repoAdded, skipped403, err := addRepoToInstallation(ctx, opts.Repo, iid, ghBin, opts.Name, out)
+	rid, repoAdded, skipped403, err := addRepoToInstallation(ctx, opts.Repo, iid, opts.BotSvc, opts.Name, out)
 	if err != nil {
 		return nil, fmt.Errorf("bot attach: %w", err)
 	}
@@ -136,30 +142,13 @@ func Attach(ctx context.Context, cfg *Config, opts AttachOptions) (*AttachResult
 	// Step 4: set secrets (uses the resolved PEM — Action secrets always need
 	// the operational PEM copy, regardless of where it is stored locally).
 	//
-	// When opts.BotSvc is non-nil we route through the forge seam; otherwise
-	// we use the built-in gh CLI path (backward-compatible default).
-	var secrets []string
-	if opts.BotSvc != nil {
-		fCfg := forge.BotConfig{
-			AppID:         cfg.AppID,
-			Slug:          cfg.Slug,
-			PrivateKeyPEM: resolvedPEM,
-		}
-		if err := opts.BotSvc.SetSecrets(ctx, fCfg, opts.Repo); err != nil {
-			return nil, fmt.Errorf("bot attach: forge set secrets: %w", err)
-		}
-		secrets = []string{"RELEASE_BOT_APP_ID", "RELEASE_BOT_PRIVATE_KEY"}
-		fmt.Fprintf(out, "  ✓ secrets set via forge (RELEASE_BOT_APP_ID, RELEASE_BOT_PRIVATE_KEY)\n")
-	} else {
-		var sErr error
-		secrets, sErr = setSecrets(ctx, cfg, resolvedPEM, opts, ghBin, out)
-		if sErr != nil {
-			return nil, fmt.Errorf("bot attach: %w", sErr)
-		}
+	secrets, err := setSecrets(ctx, cfg, resolvedPEM, opts, out)
+	if err != nil {
+		return nil, fmt.Errorf("bot attach: %w", err)
 	}
 
 	// Step 5: enable Actions PR-approval toggle.
-	toggled, err := ensureActionsApproval(opts.Repo, ghBin, out)
+	toggled, err := ensureActionsApproval(ctx, opts.Repo, opts.RepoSvc, out)
 	if err != nil {
 		return nil, fmt.Errorf("bot attach: %w", err)
 	}
@@ -223,33 +212,10 @@ func resolveInstallation(ctx context.Context, jwt, owner string) (int64, error) 
 // OAuth token lacks the read:user scope required by the /user/installations
 // family). In that case the warning and two remediations are written to out
 // and the function returns nil — Attach continues with secrets and toggle.
-func addRepoToInstallation(_ context.Context, ownerRepo string, iid int64, ghBin, botName string, out io.Writer) (int64, bool, bool, error) {
-	// Resolve repo ID.
-	ridOut, err := runGHBin(ghBin, "api", "/repos/"+ownerRepo, "--jq", ".id")
+func addRepoToInstallation(ctx context.Context, ownerRepo string, iid int64, svc forge.BotService, botName string, out io.Writer) (int64, bool, bool, error) {
+	attachment, err := svc.AttachRepository(ctx, ownerRepo, iid)
 	if err != nil {
-		return 0, false, false, fmt.Errorf("resolve repo ID for %s: %w", ownerRepo, err)
-	}
-	var rid int64
-	if _, err := fmt.Sscanf(strings.TrimSpace(ridOut), "%d", &rid); err != nil || rid == 0 {
-		return 0, false, false, fmt.Errorf("parse repo ID %q: %w", strings.TrimSpace(ridOut), err)
-	}
-
-	// Check whether the repo is already in the installation.
-	alreadyOut, _ := runGHBin(ghBin, "api",
-		fmt.Sprintf("/user/installations/%d/repositories", iid),
-		"--jq", fmt.Sprintf(".repositories[] | select(.id == %d) | .id", rid))
-	var existing int64
-	fmt.Sscanf(strings.TrimSpace(alreadyOut), "%d", &existing) //nolint:errcheck
-	if existing == rid {
-		return rid, false, false, nil // already present — idempotent
-	}
-
-	// Add the repo to the installation.
-	putCmd := exec.Command(ghBin, "api", "-X", "PUT", //nolint:gosec
-		fmt.Sprintf("/user/installations/%d/repositories/%d", iid, rid))
-	putOut, putErr := putCmd.CombinedOutput()
-	if putErr != nil {
-		if ghOutputIs403(putOut) {
+		if ghOutputIs403([]byte(err.Error())) {
 			// The /user/installations family requires the read:user OAuth scope,
 			// which gh's default token may not have. Print remediations and
 			// continue — secrets and toggle can still be configured.
@@ -260,12 +226,12 @@ func addRepoToInstallation(_ context.Context, ownerRepo string, iid int64, ghBin
 				botName, ownerRepo)
 			fmt.Fprintf(out, "    Remediation 2: org Settings → GitHub Apps → configure %s → Repository access\n",
 				botName)
-			return rid, false, true, nil // skipped — not a fatal error
+			return attachment.RepositoryID, false, true, nil // skipped — not a fatal error
 		}
-		return 0, false, false, fmt.Errorf("add %s to installation %d: %w\n%s",
-			ownerRepo, iid, putErr, strings.TrimSpace(string(putOut)))
+		return attachment.RepositoryID, false, false, fmt.Errorf("add %s to installation %d: %w",
+			ownerRepo, iid, err)
 	}
-	return rid, true, false, nil
+	return attachment.RepositoryID, attachment.Added, false, nil
 }
 
 // setSecrets writes RELEASE_BOT_APP_ID and RELEASE_BOT_PRIVATE_KEY either
@@ -273,7 +239,7 @@ func addRepoToInstallation(_ context.Context, ownerRepo string, iid int64, ghBin
 // (--org-secrets). resolvedPEM is the operational PEM material obtained via
 // ResolveKey; it is passed directly to GitHub Actions secrets regardless of
 // where the key is stored locally (vault, encrypted file, or inline).
-func setSecrets(_ context.Context, cfg *Config, resolvedPEM string, opts AttachOptions, ghBin string, out io.Writer) ([]string, error) {
+func setSecrets(ctx context.Context, cfg *Config, resolvedPEM string, opts AttachOptions, out io.Writer) ([]string, error) {
 	owner, repo, err := splitOwnerRepo(opts.Repo)
 	if err != nil {
 		return nil, err
@@ -288,7 +254,7 @@ func setSecrets(_ context.Context, cfg *Config, resolvedPEM string, opts AttachO
 			{"RELEASE_BOT_APP_ID", appIDVal},
 			{"RELEASE_BOT_PRIVATE_KEY", resolvedPEM},
 		} {
-			if err := setOrgSecret(ghBin, owner, repo, s.name, s.val); err != nil {
+			if err := opts.SecretsSvc.SetOrg(ctx, owner, s.name, s.val, []string{repo}); err != nil {
 				return nil, fmt.Errorf("set org secret %s: %w", s.name, err)
 			}
 			fmt.Fprintf(out, "  ✓ org secret %s set on %s\n", s.name, owner)
@@ -300,7 +266,7 @@ func setSecrets(_ context.Context, cfg *Config, resolvedPEM string, opts AttachO
 			{"RELEASE_BOT_APP_ID", appIDVal},
 			{"RELEASE_BOT_PRIVATE_KEY", resolvedPEM},
 		} {
-			if err := setRepoSecret(ghBin, opts.Repo, s.name, s.val); err != nil {
+			if err := opts.SecretsSvc.SetRepo(ctx, owner, repo, s.name, s.val); err != nil {
 				return nil, fmt.Errorf("set repo secret %s on %s: %w", s.name, opts.Repo, err)
 			}
 			fmt.Fprintf(out, "  ✓ repo secret %s set on %s/%s\n", s.name, owner, repo)
@@ -310,49 +276,25 @@ func setSecrets(_ context.Context, cfg *Config, resolvedPEM string, opts AttachO
 	return written, nil
 }
 
-// setRepoSecret sets a per-repository Actions secret via gh secret set.
-func setRepoSecret(ghBin, ownerRepo, name, val string) error {
-	cmd := exec.Command(ghBin, "secret", "set", name, "--repo", ownerRepo, //nolint:gosec
-		"--body", val)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("gh secret set %s --repo %s: %w\n%s", name, ownerRepo, err, string(out))
-	}
-	return nil
-}
-
-// setOrgSecret sets an organisation-level Actions secret with selected-repos
-// visibility, adding ownerRepo to the secret's repository list.
-func setOrgSecret(ghBin, org, repo, name, val string) error {
-	// Set the secret at org level with selected visibility.
-	cmd := exec.Command(ghBin, "secret", "set", name, //nolint:gosec
-		"--org", org,
-		"--visibility", "selected",
-		"--repos", repo,
-		"--body", val)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("gh secret set %s --org %s: %w\n%s", name, org, err, string(out))
-	}
-	return nil
-}
-
 // ensureActionsApproval enables the can_approve_pull_request_reviews toggle
 // if it is not already on. Returns true when the toggle was changed (false
 // when it was already enabled — idempotent).
-func ensureActionsApproval(ownerRepo, ghBin string, out io.Writer) (bool, error) {
-	// Check current state.
-	current, err := runGHBin(ghBin, "api",
-		"/repos/"+ownerRepo+"/actions/permissions/workflow",
-		"--jq", ".can_approve_pull_request_reviews")
-	if err == nil && strings.TrimSpace(current) == "true" {
-		fmt.Fprintf(out, "  ✓ Actions can_approve_pull_request_reviews already enabled\n")
-		return false, nil
-	}
-
-	// Enable the toggle.
-	_, err = runGHBin(ghBin, "api", "-X", "PUT",
-		"/repos/"+ownerRepo+"/actions/permissions/workflow",
-		"-F", "can_approve_pull_request_reviews=true")
+func ensureActionsApproval(ctx context.Context, ownerRepo string, svc forge.RepoService, out io.Writer) (bool, error) {
+	owner, repo, err := splitOwnerRepo(ownerRepo)
 	if err != nil {
+		return false, err
+	}
+	current, err := svc.ActionsWorkflow(ctx, owner, repo)
+	if err == nil {
+		var permissions struct {
+			CanApprove bool `json:"can_approve_pull_request_reviews"`
+		}
+		if json.Unmarshal(current, &permissions) == nil && permissions.CanApprove {
+			fmt.Fprintf(out, "  ✓ Actions can_approve_pull_request_reviews already enabled\n")
+			return false, nil
+		}
+	}
+	if err := svc.SetActionsWorkflow(ctx, owner, repo, json.RawMessage(`{"can_approve_pull_request_reviews":true}`)); err != nil {
 		return false, fmt.Errorf("enable Actions PR-approval on %s: %w", ownerRepo, err)
 	}
 	fmt.Fprintf(out, "  ✓ Actions can_approve_pull_request_reviews enabled on %s\n", ownerRepo)
@@ -366,17 +308,6 @@ func splitOwnerRepo(s string) (owner, repo string, err error) {
 		return "", "", fmt.Errorf("invalid owner/repo %q (expected OWNER/REPO)", s)
 	}
 	return parts[0], parts[1], nil
-}
-
-// runGHBin runs the gh CLI with the given args and returns stdout.
-// On error, stderr is included in the returned error message.
-func runGHBin(bin string, args ...string) (string, error) {
-	cmd := exec.Command(bin, args...) //nolint:gosec
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("gh %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
 }
 
 // ghOutputIs403 reports whether the combined output of a gh command indicates
