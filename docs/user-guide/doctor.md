@@ -259,6 +259,14 @@ generated GHCR image-release workflow:
   `koryph release setup` remediation. The check is skipped when no container
   release is configured or when the consistency check already found the file
   missing.
+- **container-publication-gate** confirms that the publish job depends on a
+  detected Release PR merge. A hand edit that could publish on an ordinary
+  `main` push is a **warning**; rerun `koryph release setup` to restore the
+  gate.
+- **container-permission-scope** confirms that `packages: write`, OIDC, and
+  attestation permissions live only on the post-gate publish job. A write
+  permission at workflow scope or another job, or a missing publish permission,
+  is a **warning**; rerun `koryph release setup` to restore least privilege.
 
 See [Releasing projects](releasing-projects.md#optional-ghcr-image-release)
 for the GHCR, Dockerfile, tag, signing, SBOM, and provenance contract.

@@ -449,6 +449,12 @@ func TestContainerWorkflowDriftCurrentTemplate(t *testing.T) {
 	if !strings.Contains(f.Message, "matches current template") {
 		t.Errorf("container-workflow-drift: unexpected message %q", f.Message)
 	}
+	if f = findCheck(r, checkNameContainerGate); f.Level != LevelOK {
+		t.Errorf("container-publication-gate: got %s %q, want ok", f.Level, f.Message)
+	}
+	if f = findCheck(r, checkNameContainerPermissions); f.Level != LevelOK {
+		t.Errorf("container-permission-scope: got %s %q, want ok", f.Level, f.Message)
+	}
 }
 
 func TestContainerWorkflowDriftStaleContent(t *testing.T) {
@@ -467,6 +473,83 @@ func TestContainerWorkflowDriftStaleContent(t *testing.T) {
 	}
 	if !strings.Contains(f.Message, "koryph release setup") {
 		t.Errorf("container-workflow-drift: message should mention koryph release setup, got %q", f.Message)
+	}
+}
+
+func TestContainerPublicationGateDetectsUngatedPublish(t *testing.T) {
+	root := fabricateProject(t)
+	rc := containerReleaseConfig()
+	addReleaseBlock(t, root, rc)
+	expected, err := release.RenderContainerWorkflow(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ungated := strings.Replace(string(expected), "needs: detect-release", "needs: []", 1)
+	writeContainerWorkflow(t, root, []byte(ungated))
+
+	r, err := RunProject(projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerGate)
+	if f.Level != LevelWarn {
+		t.Errorf("container-publication-gate: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "not gated") {
+		t.Errorf("container-publication-gate: unexpected message %q", f.Message)
+	}
+}
+
+func TestContainerPermissionScopeDetectsWorkflowWritePermission(t *testing.T) {
+	root := fabricateProject(t)
+	rc := containerReleaseConfig()
+	addReleaseBlock(t, root, rc)
+	expected, err := release.RenderContainerWorkflow(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongScope := strings.Replace(
+		string(expected),
+		"permissions:\n  contents: read\n",
+		"permissions:\n  contents: read\n  packages: write\n",
+		1,
+	)
+	writeContainerWorkflow(t, root, []byte(wrongScope))
+
+	r, err := RunProject(projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerPermissions)
+	if f.Level != LevelWarn {
+		t.Errorf("container-permission-scope: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "outside the publish job") {
+		t.Errorf("container-permission-scope: unexpected message %q", f.Message)
+	}
+}
+
+func TestContainerPermissionScopeDetectsMissingPublishPermission(t *testing.T) {
+	root := fabricateProject(t)
+	rc := containerReleaseConfig()
+	addReleaseBlock(t, root, rc)
+	expected, err := release.RenderContainerWorkflow(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingPublishPermission := strings.Replace(string(expected), "packages: write", "packages: read", 1)
+	writeContainerWorkflow(t, root, []byte(missingPublishPermission))
+
+	r, err := RunProject(projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerPermissions)
+	if f.Level != LevelWarn {
+		t.Errorf("container-permission-scope: got %s %q, want warn", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "packages: write") {
+		t.Errorf("container-permission-scope: unexpected message %q", f.Message)
 	}
 }
 

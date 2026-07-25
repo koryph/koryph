@@ -5,7 +5,7 @@ package doctor
 
 // release_infra.go — per-project release-infrastructure checks
 //
-// Eight checks are grouped under the "release-infra" umbrella and called from
+// Ten checks are grouped under the "release-infra" umbrella and called from
 // RunProject after the core structural checks:
 //
 //  1. release-block         — release block ↔ caller workflow consistency
@@ -13,10 +13,11 @@ package doctor
 //  3. container-release-block — release.container ↔ container workflow consistency
 //  4. container-dockerfile  — repository-root Dockerfile required by the workflow
 //  5. container-workflow-drift — installed container workflow vs. current template
-//  6. release-bot-secrets   — RELEASE_BOT_APP_ID/PRIVATE_KEY via gh api
-//  7. actions-approval      — can_approve_pull_request_reviews via gh api
-//  8. bot-credentials       — stored bot credentials can form a valid JWT
-//  5. bot-credentials       — offline PEM validity for stored bots
+//  6. container-publication-gate — publish job remains release-gated
+//  7. container-permission-scope — write/OIDC permissions remain job-scoped
+//  8. release-bot-secrets   — RELEASE_BOT_APP_ID/PRIVATE_KEY via gh api
+//  9. actions-approval      — can_approve_pull_request_reviews via gh api
+// 10. bot-credentials       — offline PEM validity for stored bots
 //
 // Checks 3 and 4 use gh(1) under the hood; they degrade gracefully (LevelOK
 // with a "skipped" note) when gh is absent, unauthenticated, or lacks admin
@@ -39,19 +40,22 @@ import (
 	"github.com/koryph/koryph/internal/forge"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/release"
+	"go.yaml.in/yaml/v4"
 )
 
 // --- check name constants ---------------------------------------------------
 
 const (
-	checkNameReleaseBlock        = "release-block"
-	checkNameReleaseWorkflow     = "release-workflow-drift"
-	checkNameContainerBlock      = "container-release-block"
-	checkNameContainerDockerfile = "container-dockerfile"
-	checkNameContainerWorkflow   = "container-workflow-drift"
-	checkNameReleaseBotSecrets   = "release-bot-secrets"
-	checkNameActionsApproval     = "actions-approval"
-	checkNameBotCredentials      = "bot-credentials"
+	checkNameReleaseBlock         = "release-block"
+	checkNameReleaseWorkflow      = "release-workflow-drift"
+	checkNameContainerBlock       = "container-release-block"
+	checkNameContainerDockerfile  = "container-dockerfile"
+	checkNameContainerWorkflow    = "container-workflow-drift"
+	checkNameContainerGate        = "container-publication-gate"
+	checkNameContainerPermissions = "container-permission-scope"
+	checkNameReleaseBotSecrets    = "release-bot-secrets"
+	checkNameActionsApproval      = "actions-approval"
+	checkNameBotCredentials       = "bot-credentials"
 )
 
 // callerWorkflowPath returns the conventional path of the caller workflow
@@ -76,6 +80,8 @@ func checkReleaseInfra(opts ProjectOptions, repoRoot string, cfg *project.Config
 	out = append(out, checkContainerReleaseBlock(repoRoot, cfg)...)
 	out = append(out, checkContainerDockerfile(repoRoot, cfg)...)
 	out = append(out, checkContainerWorkflowDrift(repoRoot, cfg)...)
+	out = append(out, checkContainerPublicationGate(repoRoot, cfg)...)
+	out = append(out, checkContainerPermissionScope(repoRoot, cfg)...)
 	out = append(out, checkReleaseBotSecrets(opts, repoRoot, cfg)...)
 	out = append(out, checkActionsApproval(opts, repoRoot, cfg)...)
 	out = append(out, checkBotCredentials(opts, cfg)...)
@@ -329,6 +335,163 @@ func checkContainerWorkflowDrift(repoRoot string, cfg *project.Config) []Finding
 		Check:   checkNameContainerWorkflow,
 		Level:   LevelWarn,
 		Message: "container workflow differs from current template (run `koryph release setup` to update .github/workflows/container.yml)",
+	}}
+}
+
+// containerWorkflow is the subset of the rendered GitHub workflow whose
+// placement carries release-security meaning. Doctor also compares the full
+// rendered bytes, but these fields give operators a direct diagnosis when a
+// hand edit could publish outside the release gate or broaden token scope.
+type containerWorkflow struct {
+	Permissions map[string]string               `yaml:"permissions"`
+	Jobs        map[string]containerWorkflowJob `yaml:"jobs"`
+}
+
+type containerWorkflowJob struct {
+	Needs       any               `yaml:"needs"`
+	If          string            `yaml:"if"`
+	Permissions map[string]string `yaml:"permissions"`
+}
+
+func readContainerWorkflow(repoRoot string, cfg *project.Config, check string) ([]byte, *Finding) {
+	if cfg == nil || cfg.Release == nil || cfg.Release.Container == nil {
+		return nil, &Finding{Check: check, Level: LevelOK, Message: "container release not configured; check skipped"}
+	}
+
+	path := containerWorkflowPath(repoRoot)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, &Finding{Check: check, Level: LevelOK, Message: "container workflow absent; check skipped (see container-release-block check)"}
+	}
+	if err != nil {
+		return nil, &Finding{Check: check, Level: LevelWarn, Message: fmt.Sprintf("read %s: %v", path, err)}
+	}
+	return data, nil
+}
+
+func parseContainerWorkflow(data []byte) (*containerWorkflow, error) {
+	var workflow containerWorkflow
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		return nil, err
+	}
+	return &workflow, nil
+}
+
+func needsJob(needs any, name string) bool {
+	switch v := needs.(type) {
+	case string:
+		return v == name
+	case []any:
+		for _, need := range v {
+			if s, ok := need.(string); ok && s == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkContainerPublicationGate verifies the semantic release gate in the
+// installed workflow. Byte drift is also reported separately, but this check
+// names the unsafe condition and its release-setup repair directly.
+func checkContainerPublicationGate(repoRoot string, cfg *project.Config) []Finding {
+	data, skip := readContainerWorkflow(repoRoot, cfg, checkNameContainerGate)
+	if skip != nil {
+		return []Finding{*skip}
+	}
+	workflow, err := parseContainerWorkflow(data)
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameContainerGate,
+			Level:   LevelWarn,
+			Message: "container workflow cannot be parsed to verify its publication gate (run `koryph release setup` to restore .github/workflows/container.yml)",
+		}}
+	}
+	publish, ok := workflow.Jobs["publish"]
+	if !ok || !needsJob(publish.Needs, "detect-release") ||
+		!strings.Contains(publish.If, "needs.detect-release.outputs.release") ||
+		!strings.Contains(publish.If, "true") {
+		return []Finding{{
+			Check:   checkNameContainerGate,
+			Level:   LevelWarn,
+			Message: "container publish job is not gated on a release merge (run `koryph release setup` to restore .github/workflows/container.yml)",
+		}}
+	}
+	return []Finding{{
+		Check:   checkNameContainerGate,
+		Level:   LevelOK,
+		Message: "container publish job is gated on the release merge",
+	}}
+}
+
+// checkContainerPermissionScope ensures powerful GHCR and OIDC permissions
+// are available only to the post-gate publish job.
+func checkContainerPermissionScope(repoRoot string, cfg *project.Config) []Finding {
+	data, skip := readContainerWorkflow(repoRoot, cfg, checkNameContainerPermissions)
+	if skip != nil {
+		return []Finding{*skip}
+	}
+	workflow, err := parseContainerWorkflow(data)
+	if err != nil {
+		return []Finding{{
+			Check:   checkNameContainerPermissions,
+			Level:   LevelWarn,
+			Message: "container workflow cannot be parsed to verify permission scope (run `koryph release setup` to restore .github/workflows/container.yml)",
+		}}
+	}
+
+	for name, level := range workflow.Permissions {
+		if level == "write" {
+			return []Finding{{
+				Check:   checkNameContainerPermissions,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("container workflow grants %s: write outside the publish job (run `koryph release setup` to restore job-scoped permissions)", name),
+			}}
+		}
+	}
+	for jobName, job := range workflow.Jobs {
+		if jobName == "publish" {
+			continue
+		}
+		for name, level := range job.Permissions {
+			if level == "write" {
+				return []Finding{{
+					Check:   checkNameContainerPermissions,
+					Level:   LevelWarn,
+					Message: fmt.Sprintf("container workflow grants %s: write to %s outside the publish job (run `koryph release setup` to restore job-scoped permissions)", name, jobName),
+				}}
+			}
+		}
+	}
+
+	publish, ok := workflow.Jobs["publish"]
+	if !ok {
+		return []Finding{{
+			Check:   checkNameContainerPermissions,
+			Level:   LevelWarn,
+			Message: "container workflow has no publish job with required job-scoped permissions (run `koryph release setup` to restore it)",
+		}}
+	}
+	for _, permission := range []string{"packages", "id-token", "attestations"} {
+		if publish.Permissions[permission] != "write" {
+			return []Finding{{
+				Check:   checkNameContainerPermissions,
+				Level:   LevelWarn,
+				Message: fmt.Sprintf("container publish job is missing %s: write (run `koryph release setup` to restore job-scoped permissions)", permission),
+			}}
+		}
+	}
+	if publish.Permissions["contents"] != "read" {
+		return []Finding{{
+			Check:   checkNameContainerPermissions,
+			Level:   LevelWarn,
+			Message: "container publish job is missing contents: read (run `koryph release setup` to restore job-scoped permissions)",
+		}}
+	}
+	return []Finding{{
+		Check:   checkNameContainerPermissions,
+		Level:   LevelOK,
+		Message: "container write and OIDC permissions are scoped to the publish job",
 	}}
 }
 
