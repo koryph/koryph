@@ -527,7 +527,8 @@ func isUnknown(fp sched.Footprint) bool {
 // (distinct filenames) do not. Matched case-insensitively against a bead's
 // title + description.
 var derivedArtifactKeywords = []string{
-	"migration", "atlas.sum", "atlas migrate", ".secrets.baseline",
+	"migration lockfile", "migrations lockfile", "atlas.sum", "atlas migrate",
+	".secrets.baseline",
 	"secrets baseline", "lockfile", "generated index",
 }
 

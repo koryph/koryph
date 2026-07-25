@@ -138,23 +138,23 @@ func TestAudit_DerivedArtifact(t *testing.T) {
 
 	t.Run("write-disjoint derived-artifact beads are flagged", func(t *testing.T) {
 		issues := []beads.Issue{
-			desc("a", "migration", "fp:engine"),
-			desc("b", "migration", "fp:cli"), // write-disjoint from a
-			makeIssue("c", "task", "fp:api"), // no derived-artifact mention
+			desc("a", "migration lockfile", "fp:engine"),
+			desc("b", "migration lockfile", "fp:cli"), // write-disjoint from a
+			makeIssue("c", "task", "fp:api"),          // no derived-artifact mention
 		}
 		r := plan.Audit(issues, nil, cfg(nil))
 		if got := len(r.DerivedArtifactRisks); got != 1 {
 			t.Fatalf("DerivedArtifactRisks: got %d, want 1", got)
 		}
-		if kw := r.DerivedArtifactRisks[0].Keyword; kw != "migration" {
-			t.Errorf("keyword = %q, want migration", kw)
+		if kw := r.DerivedArtifactRisks[0].Keyword; kw != "migration lockfile" {
+			t.Errorf("keyword = %q, want migration lockfile", kw)
 		}
 	})
 
 	t.Run("shared write token clears the risk", func(t *testing.T) {
 		issues := []beads.Issue{
-			desc("a", "migration", "fp:migrations"),
-			desc("b", "migration", "fp:migrations"), // shares the token -> serialized
+			desc("a", "migration lockfile", "fp:migrations"),
+			desc("b", "migration lockfile", "fp:migrations"), // shares the token -> serialized
 		}
 		r := plan.Audit(issues, nil, cfg(nil))
 		if got := len(r.DerivedArtifactRisks); got != 0 {
@@ -164,8 +164,8 @@ func TestAudit_DerivedArtifact(t *testing.T) {
 
 	t.Run("dependency edge clears the risk", func(t *testing.T) {
 		issues := []beads.Issue{
-			desc("a", "migration", "fp:engine"),
-			desc("b", "migration", "fp:cli"),
+			desc("a", "migration lockfile", "fp:engine"),
+			desc("b", "migration lockfile", "fp:cli"),
 		}
 		r := plan.Audit(issues, map[string][]string{"a": {"b"}}, cfg(nil))
 		if got := len(r.DerivedArtifactRisks); got != 0 {

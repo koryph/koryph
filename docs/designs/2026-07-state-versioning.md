@@ -113,20 +113,28 @@ A small package with no koryph dependencies beyond `fsx`/`paths`:
 
 - `Surface` — enumerated names: `registry`, `quota`, `governor`, `slots`,
   `vault`, `project`, `ledger`, `audit`, `telemetry`.
-- `Current(surface) int` — compiled-in schema per surface, sourced from the
-  owning package (registry declares 1, ledger declares 2, …) via a
-  registration table, so the number lives next to the types it describes.
-- The **stamp**: `~/.koryph/version.json` —
-  `{"engine": "0.9.0", "schemas": {"registry": 1, "quota": 1, …}, "updated_at": …}`.
-  Read/written under the home's existing 0700/atomic-write conventions;
-  every mutation is a home git commit (`chore(schemaver): …`).
+- `Current(surface) int` — a typed central const-map. The foundation reserves
+  every surface required by this epic once; sibling wiring beads do not edit
+  the map.
+- The **stamp is the `schema_version` in each persisted file**. There is no
+  `~/.koryph/version.json`: a second aggregate truth can drift from the files
+  it describes, while per-file stamps travel atomically with their data.
 - `CheckWrite(surface, stamped int) error` (I1) and
   `CheckRead(surface, got int) error` (I2) — the two guards, trivially pure
   so every owning package can call them without import cycles.
-- Per-project surfaces (`project`, `ledger`, epic-reviews) are not covered by
-  the home stamp; their ceiling is the per-file `schema_version` itself
-  (CheckWrite compares the file being overwritten). Absent/zero stamps mean
-  "legacy" (see §5).
+- Absent/zero stamps mean "legacy" (see §5).
+
+### Decision ledger
+
+| Decision | Rejected alternative | Invariant / consumers |
+|---|---|---|
+| Per-file `schema_version` is the only stamp | Aggregate `version.json` | No dual truth; every surface bead reads and writes its own stamp |
+| Typed central surface/current map, fully reserved by L1 | Runtime string registration for current versions | Unknown surfaces fail closed without sibling edits to the shared map |
+| Owner-registered migration steps | Central package importing state owners | Avoids import cycles and lets surface siblings add migrations independently |
+| Per-surface append-only fingerprint history in the owning package | One shared editable golden | Siblings are write-disjoint; an existing `(surface, version)` fingerprint is immutable |
+| Governor reads remain fail-open for admission, writes fail closed | Wedging admission on unreadable/newer governor state | Resource governance remains available while an older binary cannot corrupt newer state |
+| Slot leases, operator sentinels, and ledger overrides remain unversioned ephemeral coordination state | Treat every sidecar as durable schema | Durable state is protected without turning disposable control files into migration surfaces |
+| Global signing config is a distinct durable surface | Treat it as part of `signing_vault` | Older binaries cannot strip newly added global defaults |
 
 ### L2 — Write-ceiling wiring (I1)
 
@@ -146,16 +154,16 @@ Each mutating path gains one guard call before its write:
   the ceiling does not apply — readers tolerate mixed-version lines (I2
   applies per line).
 
-The home stamp updates (and commits) whenever a write raises a surface's
-stamped schema — normally only during migration (L4).
+Each successful write stamps that file with the owning surface's current
+version. No aggregate stamp or extra home commit is produced.
 
 ### L3 — Load-time gates (I2)
 
 Symmetric guard calls on every load: `registry.Get`/`List`,
 `quota.LoadConfig`, `govern` config/slot reads, vault load, `project.Load`,
 `ledger.LoadRun`/`LoadManifest`/`LoadLatest`. Refusal errors carry surface,
-got-vs-current, and the stamped engine version so the operator knows *which*
-environment owns the newer state.
+got-vs-current, and upgrade remediation. Engine semver remains diagnostic and
+is not part of the schema gate.
 
 ### L4 — Migration framework and the backfill migrations
 
@@ -166,8 +174,7 @@ environment owns the newer state.
   transform (no struct round-trip during migration).
 - `Migrate(surface, raw) (raw, changed, error)` runs the chain from the
   file's stamped version to `Current`. Loads call it in memory (I4); the
-  first ceiling-guarded write persists the result, bumps the file stamp, and
-  updates+commits the home stamp.
+  first ceiling-guarded write persists the result and bumps that file's stamp.
 - Ships with the backfill set: `governor` 0→1, `slots` 0→1, `quota` "absent
   →1" formalized, `ledger` "absent→2" formalized (v1 rows get explicit
   zero-token semantics instead of accidental ones), `registry`/`vault`/
@@ -175,25 +182,30 @@ environment owns the newer state.
 
 ### L5 — Operator surface
 
-- `koryph doctor` gains a `state-schema` check: per surface, stamped vs
+- `koryph doctor` gains a `state-schema` check: scan actual state files and
+  report, per surface, stamped vs
   binary schema — OK (equal), INFO (older; will migrate on next write), FAIL
-  (newer; this binary is read-only for that surface, upgrade). `--fix`
+  (newer; this binary is read-only for that surface, upgrade). Governor is
+  the explicit exception: admission reads warn and fail open, but every write
+  still fails closed. `--fix`
   eagerly migrates older surfaces (the explicit alternative to
   first-write migration).
-- `koryph version --state` prints the stamp beside the binary's schemas —
-  the one-glance answer to "which env owns this home?".
+- `koryph version --state` prints the per-file stamps beside the binary's
+  schemas — the one-glance answer to "which env owns this state?".
 - `koryph state migrate [--dry-run]` — explicit migration entry point for
   operators who want the commit to happen at a chosen moment (e.g. right
   after bumping every flake pin).
 
 ### L6 — CI fingerprint enforcement (I6)
 
-A test in `internal/schemaver` reflects over every registered surface's
-persisted types, hashes `(field name, JSON tag, type)` tuples, and compares
-against a checked-in golden (`schemaver/fingerprints.golden`). Changing a
-persisted field without bumping the surface schema and regenerating the
-golden fails `make gate`. This is what keeps I1–I5 true after this design's
-authors have moved on.
+Each owning package reflects over its persisted types, hashes `(field name,
+JSON tag, type)` tuples, and calls the shared `VerifyFingerprint` harness
+against an append-only per-surface history under that package's `testdata/`.
+An existing `(surface, schema_version)` entry is immutable: regeneration
+refuses to overwrite it. A shape change therefore requires incrementing
+`Current(surface)` and appending the new version's fingerprint. The harness
+implementation lives in `internal/schemaver`, while golden files remain
+write-disjoint across surface siblings.
 
 ## 4. What we deliberately do NOT build now
 
@@ -213,10 +225,9 @@ authors have moved on.
 
 ## 5. Compatibility
 
-- **Bootstrap.** A home without `version.json` is "legacy": all surfaces at
-  their absent/zero schema. The first versioned binary to write stamps it
-  (that stamping is itself migration v0→v1 of a new `version` surface,
-  committed). Nothing breaks for read-only use of a legacy home.
+- **Bootstrap.** A file without `schema_version` is legacy for its surface.
+  Loads migrate it in memory; the first versioned write stamps the file.
+  Nothing breaks for read-only use of legacy state.
 - **Binaries older than this design** predate the guards and will still
   strip fields if pointed at newer state — nothing can retro-protect them.
   The ratchet protects from the first release carrying L1/L2 onward; the
@@ -235,19 +246,19 @@ authors have moved on.
 - Migration chain: totality (every version 0..current reaches current),
   idempotency (`Migrate` twice ≡ once), raw-field survival (unknown keys
   present after migration).
-- Ratchet integration test: fixture home stamped current+1 → every mutating
+- Ratchet integration test: fixture state stamped current+1 → every mutating
   command exits with the I1 error and identical state bytes after; fixture
-  home stamped current−1 → first write migrates, home git log gains exactly
-  one `chore(schemaver)` commit, second write gains none.
+  state stamped current−1 → first write migrates and stamps the file, while a
+  second write performs no migration.
 - Read-only never ratchets: `tui --read-only`/`doctor` (no `--fix`) against
   an older home leaves bytes identical.
 - Fingerprint golden drift test (L6) wired into `make gate`.
 
 ## 7. Sequencing
 
-1. **L1** `internal/schemaver` package + stamp + guards + fingerprint
-   harness scaffolding (L6 lands with L1 so the discipline exists before the
-   wiring spreads). New package: `area:registry`-adjacent but self-contained.
+1. **L1** `internal/schemaver` migration runner + all surface reservations +
+   fingerprint harness scaffolding (L6 lands with L1 so the discipline exists
+   before the wiring spreads). The existing guards remain.
 2. **L2+L3 per surface, parallel:** registry, quota, govern, vault, ledger,
    project — each surface's guard wiring + gate + backfill migration is an
    independent bead with a clean per-package footprint (`area:registry`,
@@ -260,10 +271,9 @@ authors have moved on.
    + developer-guide section (how to bump a schema, write a migration,
    regenerate the fingerprint golden).
 
-The L1 seam touches conventions every package must follow —
-`refactor-core` candidate (authored on main by the orchestrating session,
-never loop-dispatched). The per-surface wiring beads are normal dispatchable
-work.
+The L1 seam reserves shared identifiers and APIs once. Per-surface wiring
+beads add only owner-package migrations, tests, and per-surface golden files,
+so they are normal write-disjoint dispatchable work.
 
 ## 8. Risks
 
@@ -282,6 +292,6 @@ work.
   another env upgrades. That is the designed behavior, but the error message
   and the doctor check must make the remediation obvious; the user-guide
   chapter owns the operational story.
-- **Stamp contention** — `version.json` is a new shared write hot spot; it
-  changes only on migration (rare) and under the home git commit lock path
-  that registry mutations already serialize through.
+- **Surface enumeration drift** — doctor/version must locate every durable
+  file for a registered surface. The typed surface list and fixture matrix
+  fail when a new durable surface lacks an enumerator.
