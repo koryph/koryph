@@ -295,6 +295,26 @@ func TestContainerReleaseBlockBothAbsent(t *testing.T) {
 	}
 }
 
+func TestContainerReleaseBlockInvalidConfig(t *testing.T) {
+	root := fabricateProject(t)
+	rc := containerReleaseConfig()
+	rc.Container.Registry = "registry.example"
+	addReleaseBlock(t, root, rc)
+
+	opts := projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil)
+	r, err := RunProject(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameProjectConfig)
+	if f.Level != LevelError {
+		t.Errorf("project-config: got %s %q, want error", f.Level, f.Message)
+	}
+	if !strings.Contains(f.Message, "release.container.registry") {
+		t.Errorf("project-config: expected container validation error, got %q", f.Message)
+	}
+}
+
 func TestContainerReleaseBlockBothPresent(t *testing.T) {
 	root := fabricateProject(t)
 	rc := containerReleaseConfig()

@@ -175,6 +175,8 @@ func TestCIRender_ContainerWorkflow(t *testing.T) {
 		"IMAGE: acme/widget",
 		"branches: [main]",
 		"Detect a release-PR merge",
+		"needs: detect-release",
+		"if: ${{ needs.detect-release.outputs.release == 'true' }}",
 		"needs.detect-release.outputs.version",
 		"push-by-digest=true",
 		"steps.build.outputs.digest",
@@ -192,6 +194,12 @@ func TestCIRender_ContainerWorkflow(t *testing.T) {
 		if !strings.Contains(s, frag) {
 			t.Errorf("Render(\"container\") missing %q\ngot:\n%s", frag, s)
 		}
+	}
+	if strings.Contains(s, "permissions:\n  contents: read\n  packages: write") {
+		t.Error("container workflow grants publishing permissions globally")
+	}
+	if !strings.Contains(s, "if: ${{ needs.detect-release.outputs.release == 'true' }}\n    # Registry writes and OIDC are needed only after the release-merge gate.\n    permissions:\n      contents: read\n      packages: write\n      id-token: write\n      attestations: write\n    steps:") {
+		t.Error("container workflow must scope publishing permissions to the gated publish job")
 	}
 }
 
