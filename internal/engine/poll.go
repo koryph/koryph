@@ -214,6 +214,8 @@ func (r *runner) waitTick(ctx context.Context, wake <-chan os.Signal, interval t
 		return true, nil
 	case <-wake:
 		return false, nil
+	case <-r.finalizationWake():
+		return false, nil
 	}
 }
 
@@ -224,6 +226,10 @@ func (r *runner) waitTick(ctx context.Context, wake <-chan os.Signal, interval t
 // only commits the cheap commit-count/heartbeat refresh, which resume
 // recomputes from git anyway — so batching it costs no crash safety.
 func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
+	// Review and merge run on the isolated FIFO lane. Apply all completed
+	// results on this poll goroutine before examining slots so the runner and
+	// ledger retain their single-writer contract.
+	r.drainFinalizationResults(ctx)
 	// Refresh the demand heartbeat on every poll tick so the engine's presence
 	// is visible to `koryph doctor` even under slot saturation — when every
 	// global slot is occupied no new admissions happen, so the admission-time
@@ -247,9 +253,15 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 		if sl.Status == ledger.SlotQueued {
 			continue
 		}
+		// Durable lane states carry no coding process. Re-polling them as dead
+		// agents would re-enter completeSlot and enqueue the same finalization
+		// repeatedly. Their worker result wakes this poll loop instead.
+		if sl.Status == ledger.SlotReview || sl.Status == ledger.SlotMerging {
+			continue
+		}
 		if sl.Status == ledger.SlotFinalizing {
 			if sl.CompletionAccounted {
-				r.finishCandidate(ctx, sl)
+				r.resumeFinalization(ctx, sl)
 			} else {
 				r.completeSlot(ctx, sl)
 			}
@@ -1531,106 +1543,121 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	}
 
 	if r.opts.Review {
-		runtimeName := sl.Runtime
-		if runtimeName == "" {
-			runtimeName = r.rt.Name()
-		}
-		reviewRT, ok := runtimeForName(runtimeName)
-		if !ok {
-			r.blockSlot(sl.PhaseID, dispatchReq{issue: beads.Issue{ID: sl.PhaseID}}, "review runtime is no longer registered")
-			return
-		}
-		ra := r.rec.AccountFor(runtimeName)
-		reviewProfile := account.Profile{Name: r.rec.AccountProfile, ConfigDir: ra.ConfigDir}
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.Status = ledger.SlotReview })
-		outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
-		reviewPersona := modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages)
-		// The reviewer's model tier stays hardcoded opus (quality-critical, never
-		// auto-downgraded — koryph-77r.8 audit). Effort was previously never
-		// threaded through at all, so the persona's own frontmatter `effort:`
-		// hint (koryph-security-reviewer: xhigh) was silently dropped; resolve it
-		// here the same way wave.go's main-dispatch path does, so the already
-		// declared effort actually takes effect.
-		reviewEffort := ""
-		if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, reviewPersona); err == nil {
-			reviewEffort = metaEffort
-		}
-		// Unified reviewer timeout (koryph-w82i): the single wall-clock budget is
-		// the bead > project > system > built-in winner. The bead's
-		// `timeout:<seconds>` label wins, else the project review.timeout_seconds
-		// (EffectiveReview), else the machine-wide default, else the built-in
-		// 1200s. No escalation, no hard cap.
-		issue := r.issueFor(ctx, sl)
-		beadTimeout, _ := timeoutcfg.BeadTimeout(issue.Labels)
-		reviewTimeout := timeoutcfg.Resolve(beadTimeout, r.cfg.EffectiveReview().TimeoutSeconds, r.systemTimeoutSec)
-		reviewModel, rerr := r.resolveModelForRuntime(modelroute.StageReview, issue, "", runtimeName)
-		if rerr != nil {
-			r.blockSlot(sl.PhaseID, dispatchReq{issue: beads.Issue{ID: sl.PhaseID}}, "review model resolution: "+rerr.Error())
-			return
-		}
-		v := review.Review(ctx, review.Opts{
-			RepoRoot:  r.rec.Root,
-			Worktree:  sl.Worktree,
-			Branch:    sl.Branch,
-			Base:      r.rec.DefaultBranch,
-			Persona:   reviewPersona,
-			Model:     reviewModel.Model,
-			Effort:    reviewEffort,
-			Profile:   reviewProfile,
-			OutPath:   outPath,
-			ClaudeBin: os.Getenv(envClaudeBin),
-			Runtime:   reviewRT,
-			Contract: review.Contract{
-				ID: issue.ID, Title: issue.Title, Description: issue.Description,
-				AcceptanceCriteria: issue.AcceptanceCriteria, Labels: issue.Labels,
-				Runtime: runtimeName, CompletionState: func() string {
-					state, _ := completionState(sl.StatusPath)
-					return state
-				}(),
-			},
-			TimeoutSec:   reviewTimeout,
-			ProxyBaseURL: r.proxyBaseURLForSlot(sl),
-		})
-		if v.Degraded {
-			// Fail CLOSED: --review was explicitly requested, so a review we
-			// could not obtain (even after in-reviewer retries) must never wave
-			// the merge through. Block the slot and surface the reason rather
-			// than silently auto-merging unreviewed work (koryph-b2h).
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-				s.Status = ledger.SlotBlocked
-				s.Note = fmt.Sprintf("review degraded after %d attempt(s), NOT merged: %s", v.Attempts, v.Reason)
-			})
-			r.checkpointSlot(sl, "review-degraded")
-			r.releaseGlobalSlot(sl.PhaseID) // terminal
-			r.progress("bead %s: BLOCKED — review could not complete after %d attempt(s) (%s); refusing to auto-merge unreviewed work",
-				sl.PhaseID, v.Attempts, v.Reason)
-			r.reconcileBlockedBead(ctx, sl, "review degraded: "+v.Reason)
-			return
-		}
-		if v.Blocking {
-			if sl.ReviewIters < 2 {
-				_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ReviewIters++ })
-				r.progress("bead %s: blocking review findings (iteration %d) — bouncing back to the implementer",
-					sl.PhaseID, sl.ReviewIters)
-				r.requeueSlot(ctx, sl, outPath, "blocking review findings")
-				return
-			}
-			// Iterations exhausted: unresolved findings are a terminal block,
-			// not a weaker merge policy. "Manual merge" was interpreted as
-			// ready-for-merge and let wrong-scope or unsafe work advance.
-			note := fmt.Sprintf("blocking review findings persist after %d iteration(s) — branch/worktree preserved; resolve findings before retrying", sl.ReviewIters)
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-				s.Status = ledger.SlotBlocked
-				s.Note = note
-			})
-			r.checkpointSlot(sl, "review-blocking")
-			r.releaseGlobalSlot(sl.PhaseID)
-			r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
-			r.auditBlocked(ctx, sl, "review-blocking", v.Raw)
-			return
-		}
+		r.startReview(ctx, sl)
+		return
 	}
 
+	r.finishAfterReview(ctx, sl, policy)
+}
+
+func (r *runner) startReview(ctx context.Context, sl *ledger.Slot) {
+	runtimeName := sl.Runtime
+	if runtimeName == "" {
+		runtimeName = r.rt.Name()
+	}
+	reviewRT, ok := runtimeForName(runtimeName)
+	if !ok {
+		r.blockSlot(sl.PhaseID, dispatchReq{issue: beads.Issue{ID: sl.PhaseID}}, "review runtime is no longer registered")
+		return
+	}
+	ra := r.rec.AccountFor(runtimeName)
+	reviewProfile := account.Profile{Name: r.rec.AccountProfile, ConfigDir: ra.ConfigDir}
+	outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
+	reviewPersona := modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages)
+	// The reviewer's model tier stays hardcoded opus (quality-critical, never
+	// auto-downgraded — koryph-77r.8 audit). Resolve the persona effort before
+	// handing the immutable options to the finalization worker.
+	reviewEffort := ""
+	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, reviewPersona); err == nil {
+		reviewEffort = metaEffort
+	}
+	issue := r.issueFor(ctx, sl)
+	beadTimeout, _ := timeoutcfg.BeadTimeout(issue.Labels)
+	reviewTimeout := timeoutcfg.Resolve(beadTimeout, r.cfg.EffectiveReview().TimeoutSeconds, r.systemTimeoutSec)
+	reviewModel, rerr := r.resolveModelForRuntime(modelroute.StageReview, issue, "", runtimeName)
+	if rerr != nil {
+		r.blockSlot(sl.PhaseID, dispatchReq{issue: beads.Issue{ID: sl.PhaseID}}, "review model resolution: "+rerr.Error())
+		return
+	}
+	opts := review.Opts{
+		RepoRoot:  r.rec.Root,
+		Worktree:  sl.Worktree,
+		Branch:    sl.Branch,
+		Base:      r.rec.DefaultBranch,
+		Persona:   reviewPersona,
+		Model:     reviewModel.Model,
+		Effort:    reviewEffort,
+		Profile:   reviewProfile,
+		OutPath:   outPath,
+		ClaudeBin: os.Getenv(envClaudeBin),
+		Runtime:   reviewRT,
+		Contract: review.Contract{
+			ID: issue.ID, Title: issue.Title, Description: issue.Description,
+			AcceptanceCriteria: issue.AcceptanceCriteria, Labels: append([]string(nil), issue.Labels...),
+			Runtime: runtimeName, CompletionState: func() string {
+				state, _ := completionState(sl.StatusPath)
+				return state
+			}(),
+		},
+		TimeoutSec:   reviewTimeout,
+		ProxyBaseURL: r.proxyBaseURLForSlot(sl),
+	}
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotReview
+		s.FinalizationStage = finalizationReview
+	})
+	r.checkpointSlot(sl, finalizationReview)
+	r.submitFinalization(ctx, finalizationJob{
+		generation: generationFor(sl),
+		stage:      finalizationReview,
+		reviewOpts: opts,
+	})
+}
+
+func (r *runner) applyReviewResult(ctx context.Context, sl *ledger.Slot, v review.Verdict) {
+	outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
+	if v.Degraded {
+		// Fail CLOSED: --review was explicitly requested, so a review we could
+		// not obtain must never wave the merge through.
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = fmt.Sprintf("review degraded after %d attempt(s), NOT merged: %s", v.Attempts, v.Reason)
+		})
+		r.checkpointSlot(sl, "review-degraded")
+		r.releaseGlobalSlot(sl.PhaseID)
+		r.progress("bead %s: BLOCKED — review could not complete after %d attempt(s) (%s); refusing to auto-merge unreviewed work",
+			sl.PhaseID, v.Attempts, v.Reason)
+		r.reconcileBlockedBead(ctx, sl, "review degraded: "+v.Reason)
+		return
+	}
+	if v.Blocking {
+		if sl.ReviewIters < 2 {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ReviewIters++ })
+			r.progress("bead %s: blocking review findings (iteration %d) — bouncing back to the implementer",
+				sl.PhaseID, sl.ReviewIters)
+			r.requeueSlot(ctx, sl, outPath, "blocking review findings")
+			return
+		}
+		note := fmt.Sprintf("blocking review findings persist after %d iteration(s) — branch/worktree preserved; resolve findings before retrying", sl.ReviewIters)
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Status = ledger.SlotBlocked
+			s.Note = note
+		})
+		r.checkpointSlot(sl, "review-blocking")
+		r.releaseGlobalSlot(sl.PhaseID)
+		r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
+		r.auditBlocked(ctx, sl, "review-blocking", v.Raw)
+		return
+	}
+
+	policy := r.mergePolicy(ctx, sl.EpicID)
+	if r.opts.Direct {
+		policy = project.PolicyAuto
+	}
+	r.finishAfterReview(ctx, sl, policy)
+}
+
+func (r *runner) finishAfterReview(ctx context.Context, sl *ledger.Slot, policy project.Policy) {
 	// merge_policy pr never touches the protected default branch directly:
 	// push the branch and open a PR for a later fast-forward landing step.
 	// This is the safe path for protected branches, so — unlike auto-merge —
@@ -1669,12 +1696,12 @@ func mergeReconcilers(cfg *project.Config) []merge.Reconciler {
 }
 
 func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
-	res, err := merge.Merge(ctx, merge.Opts{
+	opts := merge.Opts{
 		RepoRoot:            r.rec.Root,
 		Branch:              sl.Branch,
 		DefaultBranch:       r.rec.DefaultBranch,
-		Gate:                r.cfg.Gate,
-		Extra:               r.cfg.ProtectedPaths,
+		Gate:                append([]string(nil), r.cfg.Gate...),
+		Extra:               append([]string(nil), r.cfg.ProtectedPaths...),
 		Push:                true, // merge itself skips push when no remote exists
 		SlotOwner:           r.owner,
 		SlotRetries:         3,
@@ -1682,8 +1709,26 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		RequireSigned:       r.requireSigned(),
 		RequireConventional: r.cfg.EnforceConventional(),
 		Reconcilers:         mergeReconcilers(r.cfg),
-		Prepare:             r.cfg.MergePrepare,
+		Prepare:             append([]string(nil), r.cfg.MergePrepare...),
+		// Keep the candidate until the poll goroutine has durably applied the
+		// worker result. If the engine dies after landing but before result
+		// application, --resume can detect the retained branch as already
+		// merged and complete finalization without coding redispatch.
+		KeepWorktree: true,
+	}
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotMerging
+		s.FinalizationStage = finalizationMerge
 	})
+	r.checkpointSlot(sl, finalizationMerge)
+	r.submitFinalization(ctx, finalizationJob{
+		generation: generationFor(sl),
+		stage:      finalizationMerge,
+		mergeOpts:  opts,
+	})
+}
+
+func (r *runner) applyMergeResult(ctx context.Context, sl *ledger.Slot, res merge.Result, err error) {
 	if err != nil {
 		// A merge error is usually transient (base moved, push raced). Self-heal
 		// by requeueing — requeueSlot Force-rebases the landed branch onto
@@ -1759,6 +1804,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 			logSlotMerged(r.run.RunID, r.opts.ProjectID, sl.PhaseID, shortSHA(res.MergedSHA), sl2.CostUSD,
 				sl2.Model, sl2.ModelActual, sl2.Attempts)
 		}
+		r.cleanupMergedCandidate(ctx, sl)
 		r.releaseGlobalSlot(sl.PhaseID)
 		return
 	}
@@ -1769,6 +1815,20 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 	r.releaseGlobalSlot(sl.PhaseID)
+}
+
+func (r *runner) cleanupMergedCandidate(ctx context.Context, sl *ledger.Slot) {
+	if sl.Worktree != "" {
+		if err := worktree.Remove(ctx, sl.Worktree, false); err != nil {
+			r.progress("bead %s: merged, but candidate worktree cleanup was deferred: %v", sl.PhaseID, err)
+			return
+		}
+	}
+	if sl.Branch != "" {
+		if err := worktree.DeleteBranch(ctx, r.rec.Root, sl.Branch); err != nil && !strings.Contains(err.Error(), "not found") {
+			r.progress("bead %s: merged, but candidate branch cleanup was deferred: %v", sl.PhaseID, err)
+		}
+	}
 }
 
 // handleMergeFailure records the non-success outcomes shared by the ff-merge
@@ -1939,24 +1999,37 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 // for a later landing step, so the bead parks in pr-opened rather than merged.
 func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 	iss := r.issueFor(ctx, sl)
-	res, err := merge.Merge(ctx, merge.Opts{
+	opts := merge.Opts{
 		RepoRoot:            r.rec.Root,
 		Branch:              sl.Branch,
 		DefaultBranch:       r.rec.DefaultBranch,
-		Gate:                r.cfg.Gate,
-		Extra:               r.cfg.ProtectedPaths,
+		Gate:                append([]string(nil), r.cfg.Gate...),
+		Extra:               append([]string(nil), r.cfg.ProtectedPaths...),
 		SlotOwner:           r.owner,
 		SlotRetries:         3,
 		Slot:                r.slotLocker(ctx),
 		RequireSigned:       r.requireSigned(),
 		RequireConventional: r.cfg.EnforceConventional(),
 		Reconcilers:         mergeReconcilers(r.cfg),
-		Prepare:             r.cfg.MergePrepare,
+		Prepare:             append([]string(nil), r.cfg.MergePrepare...),
 		OpenPR:              true,
 		KeepWorktree:        true, // the branch parks for a later landing step
 		PRTitle:             prTitle(iss),
 		PRBody:              prBody(iss, r.run.RunID),
+	}
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotMerging
+		s.FinalizationStage = finalizationPR
 	})
+	r.checkpointSlot(sl, finalizationPR)
+	r.submitFinalization(ctx, finalizationJob{
+		generation: generationFor(sl),
+		stage:      finalizationPR,
+		mergeOpts:  opts,
+	})
+}
+
+func (r *runner) applyPRResult(ctx context.Context, sl *ledger.Slot, res merge.Result, err error) {
 	if err != nil {
 		// A push or gh error is usually config/auth (not a transient rebase
 		// race), so block with the reason rather than looping. The branch is
@@ -2428,24 +2501,24 @@ func (r *runner) slotLocker(ctx context.Context) merge.SlotLocker {
 	if _, err := r.adapter.Show(ctx, slotID); err != nil {
 		return nil
 	}
-	return &bdSlotLocker{runner: r, slotID: slotID}
+	return &bdSlotLocker{adapter: r.adapter, slotID: slotID}
 }
 
 // bdSlotLocker satisfies merge.SlotLocker over the beads adapter's
 // claim/release lease on the merge-slot bead.
 type bdSlotLocker struct {
-	runner *runner
-	slotID string
+	adapter WorkSource
+	slotID  string
 }
 
 // Acquire claims the merge-slot bead (3 retries with backoff).
 func (l *bdSlotLocker) Acquire(ctx context.Context, owner string) error {
-	return l.runner.adapter.MergeSlotAcquire(ctx, l.slotID, owner, 3)
+	return l.adapter.MergeSlotAcquire(ctx, l.slotID, owner, 3)
 }
 
 // Release reopens the merge-slot bead.
 func (l *bdSlotLocker) Release(ctx context.Context) error {
-	return l.runner.adapter.MergeSlotRelease(ctx, l.slotID)
+	return l.adapter.MergeSlotRelease(ctx, l.slotID)
 }
 
 // checkpointSlot refreshes the slot's manifest v2 (execution state + head

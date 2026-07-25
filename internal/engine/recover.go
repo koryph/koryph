@@ -66,12 +66,22 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 			// A slot that had already entered review has also completed cost
 			// and token accounting; preserve that fact so pollPass does not
 			// charge the same attempt twice after restart.
-			accounted := sl.CompletionAccounted || sl.Status == ledger.SlotReview
+			accounted := sl.CompletionAccounted || sl.Status == ledger.SlotReview || sl.Status == ledger.SlotMerging
+			stage := sl.FinalizationStage
+			if stage == "" {
+				switch sl.Status {
+				case ledger.SlotReview:
+					stage = finalizationReview
+				case ledger.SlotMerging:
+					stage = finalizationMerge
+				}
+			}
 			_ = r.store.UpdateSlot(latest, d.PhaseID, func(s *ledger.Slot) {
 				s.Status = ledger.SlotFinalizing
 				s.PID = 0
 				s.ProcessIdentity = ""
 				s.CompletionAccounted = accounted
+				s.FinalizationStage = stage
 				s.Note = "resume: " + d.Reason + " (finalizing existing candidate; no coding redispatch)"
 			})
 			r.progress("resume: finalizing %s without coding redispatch (%s)", d.PhaseID, d.Reason)
@@ -139,7 +149,7 @@ func (r *runner) completionReady(sl *ledger.Slot) bool {
 	if sl == nil {
 		return false
 	}
-	if sl.Status == ledger.SlotReview || sl.Status == ledger.SlotFinalizing {
+	if sl.Status == ledger.SlotReview || sl.Status == ledger.SlotMerging || sl.Status == ledger.SlotFinalizing {
 		return true
 	}
 	switch sl.DeathReason {

@@ -21,6 +21,7 @@ func TestClassifyTable(t *testing.T) {
 			"blocked": {PhaseID: "blocked", Status: SlotRunning, PID: 7, Attempts: MaxAttempts},
 			// completion-ready dead candidates finalize before attempt exhaustion.
 			"finalize":     {PhaseID: "finalize", Status: SlotReview, PID: 7, Commits: 2},
+			"merging":      {PhaseID: "merging", Status: SlotMerging, PID: 7, Commits: 2},
 			"finalize-max": {PhaseID: "finalize-max", Status: SlotRunning, PID: 7, Commits: 2, Attempts: MaxAttempts},
 			// terminal → skip
 			"merged": {PhaseID: "merged", Status: SlotMerged},
@@ -37,7 +38,7 @@ func TestClassifyTable(t *testing.T) {
 			return 0, nil
 		},
 		CompletionReady: func(sl *Slot) bool {
-			return sl.Status == SlotReview || sl.PhaseID == "finalize-max"
+			return sl.Status == SlotReview || sl.Status == SlotMerging || sl.PhaseID == "finalize-max"
 		},
 	}
 
@@ -49,6 +50,7 @@ func TestClassifyTable(t *testing.T) {
 		"fresh":        ActionRequeueFresh,
 		"blocked":      ActionBlocked,
 		"finalize":     ActionFinalize,
+		"merging":      ActionFinalize,
 		"finalize-max": ActionFinalize,
 		"merged":       ActionSkip,
 		"fallback":     ActionRequeueResume,

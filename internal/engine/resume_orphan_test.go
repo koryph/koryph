@@ -177,6 +177,30 @@ func TestResumeReviewCandidateSkipsCompletionAccounting(t *testing.T) {
 	}
 }
 
+func TestResumeMergingCandidatePreservesFinalizationStage(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	sl := &ledger.Slot{
+		PhaseID: "merging", BeadID: "merging", Status: ledger.SlotMerging,
+		PID: 9999999, Attempts: 2, Commits: 1,
+		CompletionAccounted: true, FinalizationStage: finalizationMerge,
+	}
+	if err := r.store.SetSlot(r.run, sl); err != nil {
+		t.Fatalf("SetSlot: %v", err)
+	}
+	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
+		t.Fatalf("resume = %v, %v; want adopted merge finalization", resumed, err)
+	}
+	got := r.run.Slots["merging"]
+	if got.Status != ledger.SlotFinalizing || got.FinalizationStage != finalizationMerge || !got.CompletionAccounted {
+		t.Fatalf("merge slot = status %q stage %q accounted=%v, want finalizing/merge/true",
+			got.Status, got.FinalizationStage, got.CompletionAccounted)
+	}
+	if got.Attempts != 2 || r.dispatched != 0 {
+		t.Fatalf("attempts=%d dispatched=%d, want 2/0", got.Attempts, r.dispatched)
+	}
+}
+
 func TestResumePartialCommitsWithoutCompletionRemainQueued(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)

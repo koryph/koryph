@@ -35,6 +35,7 @@ const (
 	// another coding agent or consuming an implementation attempt.
 	SlotFinalizing   = "finalizing"
 	SlotReview       = "review"
+	SlotMerging      = "merging"
 	SlotMergePending = "merge-pending"
 	SlotMerged       = "merged"
 	SlotPROpened     = "pr-opened"
@@ -198,6 +199,13 @@ type Slot struct {
 	// Resume uses it to avoid charging/parsing the same completed attempt again
 	// after an engine death during review or merge preparation.
 	CompletionAccounted bool `json:"completion_accounted,omitempty"`
+
+	// FinalizationStage records which durable, process-free finalization step
+	// was in flight when the engine last checkpointed this slot. It lets
+	// restart recovery distinguish "repeat review/finalization checks" from
+	// "resume an already review-clean merge" without dispatching another
+	// coding agent. Values are owned by the engine ("review", "merge", "pr").
+	FinalizationStage string `json:"finalization_stage,omitempty"`
 
 	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are the
 	// per-slot token composition (koryph-77r.1, design

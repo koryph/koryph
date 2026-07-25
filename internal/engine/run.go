@@ -227,6 +227,13 @@ type runner struct {
 	// signal.Notify(SIGCHLD) channel for the poll loop's duration".
 	wakeCh chan os.Signal
 
+	// finalizer is the single FIFO review/merge lane. Its worker executes only
+	// immutable black-box jobs; the poll goroutine drains and applies results.
+	// Every real Run installs it before entering the loop. A nil lane preserves
+	// the historical synchronous seam for focused tests that call
+	// finishCandidate directly.
+	finalizer *finalizationLane
+
 	// resUsage holds the in-memory running resource Usage for each live slot
 	// (keyed by phase id), folded from internal/resmon samples and mirrored to
 	// the ledger slot's Peak/AvgRSSMB, CPUSeconds, and IO*MB fields (koryph
@@ -543,6 +550,8 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	}
 
 	logRunStart(r.run.RunID, r.opts.ProjectID, r.dispatchMode())
+	r.finalizer = newFinalizationLane(ctx)
+	defer r.finalizer.close()
 	// Liveness heartbeat (koryph-lwnq): runs on its own ticker for the whole
 	// loop's lifetime, independent of whatever the loop goroutine is doing at
 	// any instant — see heartbeat.go's doc comment for why that independence
