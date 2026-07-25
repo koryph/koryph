@@ -99,25 +99,29 @@ because time passed. Repeated dead-PID and capability messages are deduplicated
 by durable event key. Scheduling and retry ownership stays in the engine,
 where attempt and fingerprint state are transactional.
 
-### Secure warm caches and Darwin toolchain support
+### Secure warm caches and terminal gate evidence
 
 Keep mutable workspace, test output, telemetry, and generic temporary state
-phase-local. Add a Koryph-managed machine cache for immutable or
-content-addressed dependency artifacts. A phase receives read access to the
-shared cache and writes through a narrowly scoped, lock-safe population path;
-credentials, VCS state, and arbitrary host caches are excluded. Cache identity
-includes toolchain and dependency-lock inputs so corrupt or incompatible
-entries can be discarded deterministically.
+phase-local. Normal repository dispatches share only a project-scoped Go module
+cache under `.git/koryph-cache`; JSON/repo-less spawns remain fully
+scratch-local. The existing sandbox already grants the repository's exact
+`.git` directory for worktree commits, so this adds no ambient host-cache or
+credential access. Go's module cache provides concurrent-writer safety and
+content verification; different repositories never share it.
 
-On Darwin, resolve the platform user temporary directory before sandbox
-construction and grant only that exact directory for toolchain temporary
-database writes. Keep the phase-local `TMPDIR` for normal child processes.
-Tests assert the resolved path is absolute, inside Darwin's per-user temporary
-root, and absent from non-Darwin profiles.
+Observed Darwin `xcrun_db` denial text is a warning emitted during an otherwise
+successful `make gate-agent`, not a blocked capability. Granting the whole
+per-user Darwin temporary root would expose unrelated user data and is
+unnecessary. The worker contract therefore requires the terminal command exit
+and gate `PASS`/`FAIL` verdict before classifying a warning as a capability
+failure. A zero exit wins over warning text.
 
-Network readiness is a host capability probe. A failed probe parks work before
-dispatch; a later successful probe changes the capability fingerprint and
-makes the affected bead eligible without resetting unrelated work.
+Network readiness remains a named capability probe that may update the durable
+capability evidence record. It is intentionally not a mandatory pre-dispatch
+probe: not every bead requires network, and a global probe would suppress
+offline-ready work. When a network-dependent command produces a structured
+block, a later passing probe changes the fingerprint and restores eligibility
+without resetting unrelated work.
 
 ### Planning cohesion and execution budgets
 
@@ -182,10 +186,10 @@ finalization checks, but it does not repeat implementation.
 2. **Sandbox capability and reusable cache envelope**
    - Files: Codex runtime sandbox/environment code and focused tests.
    - Dependencies: none.
-   - Acceptance: Darwin toolchain temporary writes pass under the narrow
-     profile; dependency caches survive phase changes; secrets and mutable
-     workspace state are not shared; failed network readiness prevents a
-     model dispatch.
+   - Acceptance: dependency modules survive phase changes within one project;
+     secrets, ambient caches, other repositories, and mutable workspace state
+     are not shared; a successful gate with Darwin warning text remains
+     successful; capability evidence changes only after a named probe result.
 
 3. **Planning cohesion and implementation effort**
    - Files: plan audit, design/plan commands, architect/scorer/implementer
@@ -221,7 +225,9 @@ finalization checks, but it does not repeat implementation.
   review/merge without another coding attempt.
 - The watcher never calls `bd update` to manufacture eligibility and emits at
   most one alert for an unchanged event key.
-- Codex cache and Darwin temporary-path tests cover positive and denied paths.
+- Codex cache-isolation tests cover same-project reuse, cross-project denial,
+  repo-less spawns, and ambient-cache exclusion; a synthetic successful gate
+  pins the Darwin warning behavior.
 - Strict planning fixtures cover oversized, incoherent, and justified
   integration units.
 - Standard implementation effort is medium in every canonical and projected
