@@ -259,6 +259,9 @@ func TestCIRender_Docs(t *testing.T) {
 	deployPermissions := `  deploy:
     name: deploy to GitHub Pages
     needs: build
+    # Manual dispatches may select any ref. Only the repository default branch
+    # is trusted to publish, and pull requests never trigger this workflow.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     # Only the dedicated deployment job can publish and mint the Pages OIDC token.
     permissions:
@@ -267,6 +270,9 @@ func TestCIRender_Docs(t *testing.T) {
 `
 	if !strings.Contains(s, deployPermissions) {
 		t.Errorf("Render(\"docs\") must scope Pages deployment permissions to deploy\nfull output:\n%s", s)
+	}
+	if strings.Contains(s, "pull_request:") {
+		t.Errorf("Render(\"docs\") must not let pull requests publish:\n%s", s)
 	}
 }
 
