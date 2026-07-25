@@ -97,6 +97,11 @@
       "go:worktree"
     ]
   },
+  "resources": {
+    "codex-fixture": {
+      "mem_mb": 2048
+    }
+  },
   "gate": [
     "test -z \"$(gofmt -l .)\"",
     "go build ./...",
