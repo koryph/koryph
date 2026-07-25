@@ -248,7 +248,8 @@ generated GHCR image-release workflow:
   `.github/workflows/container.yml`. A configured container without the file,
   or the file without the configuration, is a **warning**. Re-run `koryph
   release setup` after configuring a container; remove a no-longer-used
-  workflow when disabling one.
+  workflow when disabling one. Invalid container fields are reported by the
+  **project-config** error before doctor renders any expected workflow.
 - **container-dockerfile** checks for the repository-root `Dockerfile` used by
   the generated workflow's default `context: .` build. A missing file (or a
   directory at that path) is a **warning**; add a regular `Dockerfile` or

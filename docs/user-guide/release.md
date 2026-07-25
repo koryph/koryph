@@ -117,16 +117,16 @@ GitHub Container Registry is the supported registry. `image` is a
 registry-relative OCI image name: do not include `ghcr.io`, a tag, or a digest.
 The generated workflow builds the repository-root `Dockerfile`, pushes an
 immutable digest, promotes only the release's `vX.Y.Z` tag to that digest, then
-signs, SBOMs, and attests the same digest. It needs GitHub Actions permission
-to write packages and publish attestations; ensure your organization permits
-the repository's `GITHUB_TOKEN` to create or update its GHCR package.
+signs, SBOMs, and attests the same digest. Only its gated publishing job has
+permission to write packages and publish attestations; ensure your organization
+permits the repository's `GITHUB_TOKEN` to create or update its GHCR package.
 
 After adding or changing this block, run `koryph release setup` to render
 `.github/workflows/container.yml`. `koryph doctor --project myproject` checks
 that the configured workflow and repository-root `Dockerfile` exist, and that
 the workflow has not drifted from the current container-release template. See
-[Releasing projects](releasing-projects.md#optional-ghcr-image-release) for
-the full release and verification contract.
+[Releasing projects](releasing-projects.md#verify-an-image-release) for the
+full release, verification, and repair contract.
 
 ## Release block reference (`koryph.project.json`)
 

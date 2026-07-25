@@ -153,20 +153,57 @@ On the same `main` push that follows a Release PR merge, the generated
    attaches it with cosign; and
 5. publishes a GitHub build-provenance attestation whose subject is that digest.
 
-The workflow declares `packages: write`, `id-token: write`, and
-`attestations: write`. Before the first release, ensure the repository's
-`GITHUB_TOKEN` is allowed to create and write the GHCR package in the owning
-user or organization. The emitted tag, signature, SBOM attestation, and
-provenance all identify the same immutable digest; record that digest from the
-workflow when you need to verify or promote the image elsewhere.
+The gated publishing job declares `packages: write`, `id-token: write`, and
+`attestations: write`; the release-detection job remains read-only. Before the
+first release, ensure the repository's `GITHUB_TOKEN` is allowed to create and
+write the GHCR package in the owning user or organization. The emitted tag,
+signature, SBOM attestation, and provenance all identify the same immutable
+digest; record that digest from the workflow when you need to verify or
+promote the image elsewhere.
+
+#### Verify an image release
+
+Always verify the digest, not the mutable `vX.Y.Z` tag. Substitute the owning
+source repository for `OWNER/REPOSITORY`, and use the digest reported by the
+container workflow:
+
+```sh
+IMAGE=ghcr.io/acme/widget
+DIGEST=sha256:replace-with-the-published-digest
+REPOSITORY=OWNER/REPOSITORY
+WORKFLOW="https://github.com/$REPOSITORY/.github/workflows/container.yml@refs/heads/main"
+
+# Verify the keyless cosign signature and the exact GitHub Actions identity.
+cosign verify "$IMAGE@$DIGEST" \
+  --certificate-identity "$WORKFLOW" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Verify the Syft SPDX attestation, then inspect its decoded SBOM predicate.
+cosign verify-attestation --type spdxjson "$IMAGE@$DIGEST" \
+  --certificate-identity "$WORKFLOW" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  | jq -r '.payload' | base64 --decode | jq '.predicate'
+
+# Verify the GitHub build-provenance attestation for the same OCI digest.
+gh attestation verify "oci://$IMAGE@$DIGEST" \
+  --repo "$REPOSITORY" \
+  --signer-workflow "$REPOSITORY/.github/workflows/container.yml"
+```
+
+For a private GHCR package, authenticate to `ghcr.io` before running the
+attestation command. Any verification failure means do not deploy the image:
+resolve it by inspecting the release workflow rather than falling back to a
+tag. If the workflow is missing or doctor reports drift, run `koryph release
+setup --project myproject`, review and commit the regenerated
+`.github/workflows/container.yml`, then rerun doctor.
 
 Run `koryph release setup --project myproject` after adding or changing the
 block. `koryph doctor --project myproject` reports `container-release-block`
 when the configuration and workflow disagree, and `container-workflow-drift`
 when the installed workflow no longer matches the renderer.
 `container-dockerfile` reports the missing repository-root Dockerfile that
-would otherwise fail the workflow. Every finding names the appropriate
-remediation.
+would otherwise fail the workflow. Invalid `release.container` values are
+reported by `project-config`; every finding names the appropriate remediation.
 
 ### Release block reference
 

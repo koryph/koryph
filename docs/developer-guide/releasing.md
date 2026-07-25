@@ -550,10 +550,11 @@ Every supply-chain operation addresses `ghcr.io/$IMAGE@$DIGEST`, never a
 mutable tag: cosign keyless-signs the digest, Syft generates an SPDX JSON SBOM
 which cosign attests to that digest, and GitHub's
 `actions/attest-build-provenance` receives the same subject name and digest.
-The template therefore requires `packages: write`, `id-token: write`, and
-`attestations: write` in addition to `contents: read`. Organization package
-policy can still prevent `GITHUB_TOKEN` from creating or writing the GHCR
-package; that is an operator prerequisite, not a renderer concern.
+The template scopes `packages: write`, `id-token: write`, and
+`attestations: write` to the release-gated publishing job; its detection job
+retains only `contents: read`. Organization package policy can still prevent
+`GITHUB_TOKEN` from creating or writing the GHCR package; that is an operator
+prerequisite, not a renderer concern.
 
 `koryph doctor --project ID` keeps the rendered contract observable:
 `container-release-block` finds a missing or orphaned workflow, while
