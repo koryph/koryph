@@ -14,6 +14,7 @@
 //   - Classify(run, probe) []Decision — recovery classification:
 //     terminal statuses are skipped;
 //     PID alive → reattach;
+//     PID dead + completion-ready evidence → finalize without redispatch;
 //     PID dead + commits>0 → requeue with ResumeSHA;
 //     PID dead + no commits → requeue fresh;
 //     attempts >= MaxAttempts → blocked.
@@ -24,10 +25,15 @@ import "github.com/koryph/koryph/internal/sched"
 
 // Slot statuses (superset of the bash engine's, kept wire-compatible).
 const (
-	SlotQueued       = "queued"
-	SlotDispatching  = "dispatching"
-	SlotRunning      = "running"
-	SlotStuck        = "stuck"
+	SlotQueued      = "queued"
+	SlotDispatching = "dispatching"
+	SlotRunning     = "running"
+	SlotStuck       = "stuck"
+	// SlotFinalizing is a dead, completion-ready candidate adopted after an
+	// engine restart. It is deliberately non-terminal and carries no live PID:
+	// the poll loop resumes candidate assessment/review/merge without launching
+	// another coding agent or consuming an implementation attempt.
+	SlotFinalizing   = "finalizing"
 	SlotReview       = "review"
 	SlotMergePending = "merge-pending"
 	SlotMerged       = "merged"
@@ -186,6 +192,12 @@ type Slot struct {
 	LastCommit      string  `json:"last_commit,omitempty"`
 	ResumeSHA       string  `json:"resume_sha,omitempty"`
 	CostUSD         float64 `json:"cost_usd"`
+
+	// CompletionAccounted records that completeSlot already persisted the
+	// attempt's cost/token signals before entering candidate finalization.
+	// Resume uses it to avoid charging/parsing the same completed attempt again
+	// after an engine death during review or merge preparation.
+	CompletionAccounted bool `json:"completion_accounted,omitempty"`
 
 	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are the
 	// per-slot token composition (koryph-77r.1, design
@@ -428,7 +440,7 @@ type Manifest struct {
 // Decision is one recovery classification outcome.
 type Decision struct {
 	PhaseID string
-	Action  string // reattach|requeue-resume|requeue-fresh|blocked|skip
+	Action  string // reattach|finalize|requeue-resume|requeue-fresh|blocked|skip
 	Reason  string
 }
 

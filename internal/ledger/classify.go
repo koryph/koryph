@@ -29,6 +29,7 @@ func RunDead(run *Run, engineAlive bool) bool {
 const (
 	ActionSkip          = "skip"
 	ActionReattach      = "reattach"
+	ActionFinalize      = "finalize"
 	ActionRequeueResume = "requeue-resume"
 	ActionRequeueFresh  = "requeue-fresh"
 	ActionBlocked       = "blocked"
@@ -46,16 +47,21 @@ type Probe struct {
 	// over Alive, allowing resume to reject a recycled PID safely.
 	AliveSlot   func(*Slot) bool
 	CommitCount func(branch string) (int, error)
+	// CompletionReady reports whether a dead slot has durable evidence that
+	// implementation finished and should resume candidate finalization rather
+	// than launch another coding agent.
+	CompletionReady func(*Slot) bool
 }
 
 // Classify computes one recovery Decision per slot, implementing the contract
 // documented in types.go. Precedence per slot:
 //
 //  1. terminal status            → skip
-//  2. Attempts >= MaxAttempts    → blocked   (checked before liveness)
-//  3. PID > 0 and Alive(PID)     → reattach
-//  4. dead and commits > 0       → requeue-resume (reason names last commit)
-//  5. dead and no commits        → requeue-fresh
+//  2. PID > 0 and Alive(PID)     → reattach
+//  3. dead + completion ready    → finalize (even at the attempt ceiling)
+//  4. Attempts >= MaxAttempts    → blocked
+//  5. dead and commits > 0       → requeue-resume (reason names last commit)
+//  6. dead and no commits        → requeue-fresh
 //
 // Commits are taken from slot.Commits, falling back to CommitCount(branch) only
 // when the slot records zero commits and has a branch. SlotStuck is not
@@ -79,13 +85,6 @@ func Classify(run *Run, p Probe) []Decision {
 		case Terminal(sl.Status):
 			out = append(out, Decision{PhaseID: id, Action: ActionSkip, Reason: "terminal: " + sl.Status})
 
-		case sl.Attempts >= MaxAttempts:
-			out = append(out, Decision{
-				PhaseID: id,
-				Action:  ActionBlocked,
-				Reason:  fmt.Sprintf("attempts %d >= max %d", sl.Attempts, MaxAttempts),
-			})
-
 		case sl.PID > 0 && p.AliveSlot != nil && p.AliveSlot(sl):
 			out = append(out, Decision{
 				PhaseID: id,
@@ -98,6 +97,20 @@ func Classify(run *Run, p Probe) []Decision {
 				PhaseID: id,
 				Action:  ActionReattach,
 				Reason:  fmt.Sprintf("pid %d alive", sl.PID),
+			})
+
+		case p.CompletionReady != nil && p.CompletionReady(sl):
+			out = append(out, Decision{
+				PhaseID: id,
+				Action:  ActionFinalize,
+				Reason:  "dead with completion-ready candidate state",
+			})
+
+		case sl.Attempts >= MaxAttempts:
+			out = append(out, Decision{
+				PhaseID: id,
+				Action:  ActionBlocked,
+				Reason:  fmt.Sprintf("attempts %d >= max %d", sl.Attempts, MaxAttempts),
 			})
 
 		default:

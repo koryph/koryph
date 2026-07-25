@@ -19,6 +19,9 @@ func TestClassifyTable(t *testing.T) {
 			"fresh": {PhaseID: "fresh", Status: SlotRunning, PID: 7, Commits: 0},
 			// attempts exhausted → blocked (precedence over liveness)
 			"blocked": {PhaseID: "blocked", Status: SlotRunning, PID: 7, Attempts: MaxAttempts},
+			// completion-ready dead candidates finalize before attempt exhaustion.
+			"finalize":     {PhaseID: "finalize", Status: SlotReview, PID: 7, Commits: 2},
+			"finalize-max": {PhaseID: "finalize-max", Status: SlotRunning, PID: 7, Commits: 2, Attempts: MaxAttempts},
 			// terminal → skip
 			"merged": {PhaseID: "merged", Status: SlotMerged},
 			// stuck + dead + Commits==0 but branch has commits via probe → requeue-resume
@@ -33,17 +36,22 @@ func TestClassifyTable(t *testing.T) {
 			}
 			return 0, nil
 		},
+		CompletionReady: func(sl *Slot) bool {
+			return sl.Status == SlotReview || sl.PhaseID == "finalize-max"
+		},
 	}
 
 	got := Classify(run, p)
 
 	want := map[string]string{
-		"alive":    ActionReattach,
-		"resume":   ActionRequeueResume,
-		"fresh":    ActionRequeueFresh,
-		"blocked":  ActionBlocked,
-		"merged":   ActionSkip,
-		"fallback": ActionRequeueResume,
+		"alive":        ActionReattach,
+		"resume":       ActionRequeueResume,
+		"fresh":        ActionRequeueFresh,
+		"blocked":      ActionBlocked,
+		"finalize":     ActionFinalize,
+		"finalize-max": ActionFinalize,
+		"merged":       ActionSkip,
+		"fallback":     ActionRequeueResume,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d decisions, want %d: %+v", len(got), len(want), got)

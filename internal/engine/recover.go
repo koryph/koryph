@@ -6,10 +6,12 @@ package engine
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/ledger"
@@ -27,6 +29,7 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 		return false, nil // no latest run → fresh
 	}
 
+	r.run = latest
 	decisions := ledger.Classify(latest, ledger.Probe{
 		AliveSlot: func(sl *ledger.Slot) bool {
 			return r.slotProcessMatches(ctx, sl)
@@ -34,9 +37,9 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 		CommitCount: func(branch string) (int, error) {
 			return r.commitCount(ctx, branch)
 		},
+		CompletionReady: r.completionReady,
 	})
 
-	r.run = latest
 	adopted := false
 	for _, d := range decisions {
 		sl := latest.Slots[d.PhaseID]
@@ -54,6 +57,24 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 			_ = r.store.UpdateSlot(latest, d.PhaseID, func(s *ledger.Slot) {
 				s.Status = ledger.SlotRunning
 			})
+			adopted = true
+
+		case ledger.ActionFinalize:
+			// The coding process is dead, but durable candidate state says the
+			// implementation phase finished. Adopt the candidate for
+			// assessment/review/merge without launching another coding agent.
+			// A slot that had already entered review has also completed cost
+			// and token accounting; preserve that fact so pollPass does not
+			// charge the same attempt twice after restart.
+			accounted := sl.CompletionAccounted || sl.Status == ledger.SlotReview
+			_ = r.store.UpdateSlot(latest, d.PhaseID, func(s *ledger.Slot) {
+				s.Status = ledger.SlotFinalizing
+				s.PID = 0
+				s.ProcessIdentity = ""
+				s.CompletionAccounted = accounted
+				s.Note = "resume: " + d.Reason + " (finalizing existing candidate; no coding redispatch)"
+			})
+			r.progress("resume: finalizing %s without coding redispatch (%s)", d.PhaseID, d.Reason)
 			adopted = true
 
 		case ledger.ActionRequeueResume, ledger.ActionRequeueFresh:
@@ -107,6 +128,46 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 	latest.Status = ledger.RunRunning
 	_ = r.store.SaveRun(latest)
 	return true, nil
+}
+
+// completionReady reports durable evidence that a dead agent finished its
+// implementation phase. Commits alone are intentionally insufficient: a
+// crashed or interrupted agent may have useful partial commits that still need
+// a bounded warm resume. Explicit completion state, SUMMARY.md, or an
+// already-started review/finalization is required.
+func (r *runner) completionReady(sl *ledger.Slot) bool {
+	if sl == nil {
+		return false
+	}
+	if sl.Status == ledger.SlotReview || sl.Status == ledger.SlotFinalizing {
+		return true
+	}
+	switch sl.DeathReason {
+	case deathReasonStaleHeartbeat, deathReasonTurnExhausted, deathReasonBudgetKilled:
+		return false
+	}
+	if state, err := completionState(sl.StatusPath); err == nil {
+		switch strings.ToLower(strings.TrimSpace(state)) {
+		case "done", "completed", "complete", "success", "succeeded":
+			return true
+		case "blocked", "failed", "error", "cancelled", "canceled":
+			return false
+		}
+	}
+	if sl.Stream != "" {
+		runtimeName := sl.Runtime
+		if runtimeName == "" && r.rt != nil {
+			runtimeName = r.rt.Name()
+		}
+		if rt, ok := runtimeForName(runtimeName); ok && parseRuntimeSignals(rt, sl.Stream).rateLimited {
+			return false
+		}
+		if dispatch.ParseBudgetKilled(sl.Stream) {
+			return false
+		}
+	}
+	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")
+	return fsx.Exists(summary)
 }
 
 // drainResumeBacklog promotes stalled beads parked in the resume backlog

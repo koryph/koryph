@@ -250,6 +250,14 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 		if sl.Status == ledger.SlotQueued {
 			continue
 		}
+		if sl.Status == ledger.SlotFinalizing {
+			if sl.CompletionAccounted {
+				r.finishCandidate(ctx, sl)
+			} else {
+				r.completeSlot(ctx, sl)
+			}
+			continue
+		}
 		r.pollSlot(ctx, sl, probeProgress, procs)
 	}
 	_ = r.store.SaveRun(r.run)
@@ -782,6 +790,14 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	} else {
 		logBeadTokensUnavailable(sl.PhaseID)
 	}
+	// Persist the accounting boundary before any candidate finalization stage
+	// can block for review, pipeline, or merge. If the engine dies after this
+	// point, resume adopts SlotFinalizing and skips this accounting section
+	// rather than charging the same completed attempt twice.
+	sl.CompletionAccounted = true
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.CompletionAccounted = true
+	})
 
 	// koryph-a1x (F1a): an operator SIGTERM via `koryph stop` is a terminal
 	// intent, not a death to classify. Park the phase — no retry, and no

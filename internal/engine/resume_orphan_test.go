@@ -5,7 +5,9 @@ package engine
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -105,5 +107,90 @@ func TestResumeRejectsRecycledPID(t *testing.T) {
 	got := r.run.Slots["reused"]
 	if got.Status != ledger.SlotQueued || got.PID != 0 {
 		t.Errorf("recycled PID slot = status %q pid %d, want queued with cleared PID", got.Status, got.PID)
+	}
+}
+
+func TestResumeFinalizesCompletedCandidateWithoutCodingRedispatch(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	statusPath := filepath.Join(t.TempDir(), "status.json")
+	if err := os.WriteFile(statusPath, []byte(`{"state":"done"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sl := &ledger.Slot{
+		PhaseID: "complete", BeadID: "complete", Status: ledger.SlotRunning,
+		PID: 9999999, Attempts: ledger.MaxAttempts, Commits: 2,
+		StatusPath: statusPath,
+	}
+	if err := r.store.SetSlot(r.run, sl); err != nil {
+		t.Fatalf("SetSlot: %v", err)
+	}
+
+	resumed, err := r.resume(context.Background())
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if !resumed {
+		t.Fatal("resume returned false for completion-ready candidate")
+	}
+	got := r.run.Slots["complete"]
+	if got.Status != ledger.SlotFinalizing || got.PID != 0 || got.ProcessIdentity != "" {
+		t.Fatalf("completed slot = status %q pid %d identity %q, want finalizing with no process", got.Status, got.PID, got.ProcessIdentity)
+	}
+	if got.Attempts != ledger.MaxAttempts {
+		t.Fatalf("attempts = %d, want unchanged %d", got.Attempts, ledger.MaxAttempts)
+	}
+	if r.dispatched != 0 || len(r.queuedResumeIDs()) != 0 {
+		t.Fatalf("resume dispatched=%d queued=%d, want zero coding redispatch", r.dispatched, len(r.queuedResumeIDs()))
+	}
+
+	// A second engine restart remains in finalization and still cannot turn
+	// the candidate back into coding work.
+	resumed, err = r.resume(context.Background())
+	if err != nil || !resumed {
+		t.Fatalf("second resume = %v, %v; want adopted finalization", resumed, err)
+	}
+	if got = r.run.Slots["complete"]; got.Status != ledger.SlotFinalizing {
+		t.Fatalf("second resume status = %q, want finalizing", got.Status)
+	}
+}
+
+func TestResumeReviewCandidateSkipsCompletionAccounting(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	sl := &ledger.Slot{
+		PhaseID: "reviewing", BeadID: "reviewing", Status: ledger.SlotReview,
+		PID: 9999999, Attempts: 1, Commits: 1,
+	}
+	if err := r.store.SetSlot(r.run, sl); err != nil {
+		t.Fatalf("SetSlot: %v", err)
+	}
+	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
+		t.Fatalf("resume = %v, %v; want adopted review finalization", resumed, err)
+	}
+	got := r.run.Slots["reviewing"]
+	if got.Status != ledger.SlotFinalizing || !got.CompletionAccounted {
+		t.Fatalf("review slot = status %q accounted=%v, want finalizing/accounted", got.Status, got.CompletionAccounted)
+	}
+	if r.dispatched != 0 {
+		t.Fatalf("coding dispatches = %d, want 0", r.dispatched)
+	}
+}
+
+func TestResumePartialCommitsWithoutCompletionRemainQueued(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	sl := &ledger.Slot{
+		PhaseID: "partial", BeadID: "partial", Status: ledger.SlotRunning,
+		PID: 9999999, Attempts: 1, Commits: 2,
+	}
+	if err := r.store.SetSlot(r.run, sl); err != nil {
+		t.Fatalf("SetSlot: %v", err)
+	}
+	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
+		t.Fatalf("resume = %v, %v; want queued partial candidate", resumed, err)
+	}
+	if got := r.run.Slots["partial"]; got.Status != ledger.SlotQueued {
+		t.Fatalf("partial status = %q, want queued for bounded coding resume", got.Status)
 	}
 }
