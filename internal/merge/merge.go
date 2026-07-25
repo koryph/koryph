@@ -283,12 +283,12 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 	// nondeterministic regression is the only edge the retry can hide — an
 	// accepted trade against penalizing every infra flake).
 	if !o.SkipGate && len(o.Gate) > 0 {
-		ok, out := RunGate(ctx, wt.Path, o.Gate)
+		ok, out := runGate(ctx, wt.Path, o.ValidationPhaseDir, o.Gate)
 		if !ok {
 			// pre-commit auto-fixers or a partial step may leave the tree dirty;
 			// discard so the retry runs against the same clean state as the first.
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
-			ok, out = RunGate(ctx, wt.Path, o.Gate)
+			ok, out = runGate(ctx, wt.Path, o.ValidationPhaseDir, o.Gate)
 		}
 		if !ok {
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")

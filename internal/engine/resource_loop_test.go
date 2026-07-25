@@ -43,7 +43,7 @@ func resourceBDScript(beads []resBead) string {
 		for _, l := range s.labels {
 			labels = append(labels, fmt.Sprintf(`\"%s\"`, l))
 		}
-		entry := fmt.Sprintf(`{\"id\":\"%s\",\"title\":\"%s\",\"description\":\"x\",\"status\":\"open\",\"priority\":%d,\"issue_type\":\"task\",\"labels\":[%s]}`,
+		entry := fmt.Sprintf(`{\"id\":\"%s\",\"title\":\"%s\",\"description\":\"x\",\"acceptance_criteria\":\"AC1: selected bead work is committed\",\"status\":\"open\",\"priority\":%d,\"issue_type\":\"task\",\"labels\":[%s]}`,
 			s.id, s.id, s.priority, strings.Join(labels, ","))
 		fmt.Fprintf(&b, "    if ! grep -q '^update %s --claim$' \"$log\" 2>/dev/null && ! grep -q '^close %s ' \"$log\" 2>/dev/null; then\n", s.id, s.id)
 		b.WriteString("      if [ -n \"$items\" ]; then items=\"$items,\"; fi\n")

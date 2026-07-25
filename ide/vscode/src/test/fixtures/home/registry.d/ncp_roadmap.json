@@ -13,7 +13,6 @@
   "allowed_models": ["opus", "sonnet", "haiku", "fable"],
   "planner_model": "opus",
   "impl_model": "sonnet",
-  "recovery_model_policy": "upgrade-opus",
   "batch_policy": "explicit",
   "api_fallback": "explicit",
   "api_key_env_var": "WORK_ANTHROPIC_KEY",

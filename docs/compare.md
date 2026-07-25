@@ -11,7 +11,7 @@ koryph is a local-first, open-source, single-binary **software factory**:
 it plans work into a dependency-aware task graph, *prevents* merge conflicts
 by scheduling declared footprints, enforces review plus your own green gate
 before fast-forward merges, governs cost, rate limits, and subscription
-burn, recovers failed sessions with escalation to stronger models, and
+burn, recovers failed sessions through typed bounded transitions, and
 carries the result through to signed, attested releases.
 
 No tool we know of ships more than a couple of pieces of that combination —
@@ -151,7 +151,7 @@ Jules) are collapsed to their strongest representative, Agent HQ.
 | Enforced review + user-defined merge gate | ✓ | ✗ | ✗ | ~ | ✗ | ~ | ~ | ~ |
 | Operator-tunable cost/rate governors | ✓ | ~ | ~ | ~ | ✗ | ✗ | ~ | ~ |
 | Subscription-burn awareness | ✓ | ✗ | ~ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| Session recovery + model escalation | ✓ | ~ | ~ | ~ | ~ | ✗ | ~ | ~ |
+| Evidence-bound session recovery | ✓ | ~ | ~ | ~ | ~ | ✗ | ~ | ~ |
 | Repo hygiene enforcement (signing, protected paths, postures) | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ~ | ✗ |
 | Signed releases / SBOM / SLSA | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ~ | ✗ |
 | Multi-runtime dispatch | [alpha](user-guide/runtimes.md) | n/a | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |

@@ -276,7 +276,6 @@ export interface ProjectRecord {
   allowed_models: string[];
   planner_model: string;
   impl_model: string;
-  recovery_model_policy: string;
 
   batch_policy: string;
   api_fallback: string;

@@ -6,8 +6,6 @@ package modelroute
 import (
 	"strings"
 	"testing"
-
-	"github.com/koryph/koryph/internal/runtime"
 )
 
 // fableAllowed is the allowlist a fable-enabled project would declare.
@@ -235,64 +233,6 @@ func TestResolveUnknownTier(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown model tier") {
 		t.Errorf("error = %q, want unknown-tier message", err.Error())
-	}
-}
-
-func TestRecoveryUpgrade(t *testing.T) {
-	for _, in := range []string{TierHaiku, TierSonnet, TierOpus, TierFable, "surprise"} {
-		if got := RecoveryUpgrade(in); got != TierOpus {
-			t.Errorf("RecoveryUpgrade(%q) = %q, want opus", in, got)
-		}
-	}
-}
-
-// TestEscalationTier exercises the koryph-qf6.4 policy gate: only haiku and
-// sonnet escalate, only when the target is allowlisted, and opus/fable/empty
-// inputs never change (escalation must never downgrade fable).
-func TestEscalationTier(t *testing.T) {
-	cases := []struct {
-		current string
-		allowed []string
-		want    string
-	}{
-		{TierHaiku, nil, TierOpus},
-		{TierSonnet, nil, TierOpus},
-		{TierSonnet, []string{TierHaiku, TierSonnet, TierOpus}, TierOpus},
-		{TierSonnet, []string{TierHaiku, TierSonnet}, ""}, // opus not allowed
-		{TierOpus, nil, ""},                               // already at ceiling
-		{TierFable, nil, ""},                              // never downgrade fable
-		{"", nil, ""},                                     // adopted/legacy slot: unknown model
-		{"surprise", nil, ""},
-	}
-	for _, tc := range cases {
-		if got := EscalationTier(tc.current, tc.allowed); got != tc.want {
-			t.Errorf("EscalationTier(%q, %v) = %q, want %q", tc.current, tc.allowed, got, tc.want)
-		}
-	}
-}
-
-func TestRecoveryModelUsesSelectedRuntimeFrontier(t *testing.T) {
-	cases := []struct {
-		name        string
-		current     string
-		runtimeName string
-		override    map[string]string
-		allowed     []string
-		want        string
-	}{
-		{"codex terra to frontier", "gpt-5.6-terra", "codex", nil, nil, "gpt-5.6-sol"},
-		{"codex already frontier", "gpt-5.6-sol", "codex", nil, nil, ""},
-		{"codex recovery stays on dedicated Sol target", "gpt-5.6-terra", "codex", map[string]string{"frontier": "codex-top"}, []string{"codex-top"}, runtime.CodexSolModel},
-		{"unknown custom model is not ordered", "custom", "codex", nil, []string{"custom"}, ""},
-		{"claude lower tier", TierSonnet, "claude", nil, nil, TierOpus},
-		{"claude fable never downgrades", TierFable, "claude", nil, fableAllowed, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := RecoveryModel(tc.current, tc.runtimeName, tc.override, tc.allowed); got != tc.want {
-				t.Errorf("RecoveryModel(%q, %q) = %q, want %q", tc.current, tc.runtimeName, got, tc.want)
-			}
-		})
 	}
 }
 

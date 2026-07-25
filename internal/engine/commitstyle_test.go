@@ -16,11 +16,13 @@ import (
 // badSubjectClaudeScript is a well-behaved implementer that nonetheless writes
 // a NON-conventional commit subject, to exercise the commit-style gate.
 const badSubjectClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 echo "work" >> agent-work.txt
 git add agent-work.txt
 git commit -q --no-verify -m "did some work"
 printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+koryph_test_complete agent-work.txt || exit $?
 printf '{"type":"result","total_cost_usd":0.10}\n'
 exit 0
 `

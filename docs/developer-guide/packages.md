@@ -139,6 +139,24 @@ explicit "insufficient history" state below `MinSamples` observations.
 - **`NewLedgerProvider`** / **`NewGraphProvider`** — production constructors
 - **`Snapshot`** — slots, queue, burndown, efficiency, events for one project
 
+## commandguard
+
+Coordinates cooperative single-flight execution of classified broad commands
+within one phase. Durable, strictly decoded owner and result records bind a
+command signature and generation to an authenticated process start identity,
+process group, role, and fixed log path. Worker duplicates wait for that exact
+generation; trusted post-rebase validation is published by an engine-owned Go
+caller before its real tool is released.
+
+- **`ProcessGuard.Acquire`** — publish, reuse, or deny a classified command
+- **`OpenLog`** / **`Observe`** / **`Complete`** / **`Wait`** — generation-bound
+  evidence lifecycle
+- **`CommandRoleWorker`** / **`CommandRoleValidation`** — trusted caller roles,
+  never environment or command-line authority
+- Hookless PATH shims enforce cooperative invocation only; worktree isolation
+  and protected-path merge refusal remain the malicious same-UID boundary,
+  including shim relocation and mutable phase-environment bypass
+
 ## commands
 
 Ships the `koryph-*` Claude slash commands (`//go:embed koryph-*.md`) and
@@ -374,14 +392,13 @@ reporting and quota decisions.
 
 ## modellearn
 
-Closes the escalation feedback loop (koryph-qf6.6): mines run ledgers for
-beads that only merged after their final attempt escalated to a stronger tier,
-aggregates that evidence by the similarity features frozen on each slot (area
-label + size bucket), and recommends a starting tier for future beads sharing
-those features. The actuator is deliberately a bead label, not a routing-table
-entry: `Apply` stamps `model:<tier>` plus a `model-learned:<date>` provenance
-marker on matching ready beads; any pre-existing `model:*` label wins, making
-re-apply idempotent and human overrides durable.
+Reads historical or explicitly typed escalation provenance from run ledgers,
+aggregates it by the similarity features frozen on each slot (area label +
+size bucket), and can recommend a starting tier for future beads sharing those
+features. Retry count does not create escalation evidence. The actuator is a
+bead label, not a routing-table entry: `Apply` stamps `model:<tier>` plus a
+`model-learned:<date>` provenance marker; any pre-existing `model:*` label
+wins, making re-apply idempotent and human overrides durable.
 
 - **`Collect`** / **`Recommend`** / **`Apply`** — mine evidence → propose tiers → label beads
 - **`DefaultMinEvidence`** (2) — minimum escalated-then-merged count per bucket
@@ -390,7 +407,7 @@ re-apply idempotent and human overrides durable.
 ## modelroute
 
 Resolves a (stage, bead-labels, run-defaults, project-config) tuple to a
-`(model, effort)` pair, with persona-file overrides and recovery upgrades.
+`(model, effort)` pair, with persona-file overrides.
 Precedence (koryph-v8u.10): bead `model:<tier>` label > persona `tier` (via
 the active runtime's model map, project-overridable) > persona `model`
 (legacy pin) > hardcoded stage default — see agents/README.md's "Resolution
@@ -401,10 +418,6 @@ precedence" section.
 - **`Resolve(r)`** — main entry; consults label rules, then persona tier/
   model, then defaults
 - **`PersonaFor(stage, stages)`** — picks persona name from stage map
-- **`RecoveryUpgrade(current)`** — the escalation target (always opus)
-- **`EscalationTier(current, allowed)`** — allowlist-checked gate the engine
-  consults before escalating a final bead-fault attempt (koryph-qf6.4);
-  refuses opus/fable/unknown inputs
 - **`TierForModelID(id)`** — normalizes a concrete model id (a result line's
   `modelUsage` key) to its tier for actual-model attribution (koryph-qf6.2)
 - **`PersonaMeta(repoRoot, persona)`** — reads persona file →

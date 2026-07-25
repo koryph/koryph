@@ -6,16 +6,23 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/phasecontrol"
+	"github.com/koryph/koryph/internal/plan"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/worktree"
+	"golang.org/x/sys/unix"
 )
+
+const maxCompletionStatusBytes = 64 << 10
 
 // portableCompletion is the runtime-neutral status.json subset agents update
 // through KORYPH_STATUS_PATH. Unknown fields remain forwards-compatible.
@@ -29,6 +36,7 @@ type portableCompletion struct {
 type candidateAssessment struct {
 	eligible         bool
 	retryableBlock   bool
+	outcome          CandidateOutcomeClass
 	capabilityBlock  bool
 	capability       string
 	capabilityDetail string
@@ -39,12 +47,32 @@ func readCompletion(path string) (portableCompletion, error) {
 	if path == "" {
 		return portableCompletion{}, nil
 	}
-	data, err := os.ReadFile(path)
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return portableCompletion{}, nil
 		}
 		return portableCompletion{}, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		_ = unix.Close(fd)
+		return portableCompletion{}, errors.New("open completion status")
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return portableCompletion{}, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxCompletionStatusBytes {
+		return portableCompletion{}, errors.New("completion status must be a bounded regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxCompletionStatusBytes+1))
+	if err != nil {
+		return portableCompletion{}, err
+	}
+	if len(data) == 0 || len(data) > maxCompletionStatusBytes {
+		return portableCompletion{}, errors.New("completion status must be a bounded regular file")
 	}
 	var status portableCompletion
 	if err := json.Unmarshal(data, &status); err != nil {
@@ -57,11 +85,6 @@ func readCompletion(path string) (portableCompletion, error) {
 	return status, nil
 }
 
-func completionState(path string) (string, error) {
-	status, err := readCompletion(path)
-	return status.State, err
-}
-
 // assessCandidate validates the portable output contract before any pipeline,
 // review, PR, or merge work. The invariant is deliberately outside every
 // runtime adapter: Claude, Codex, and future runtimes all hand the engine the
@@ -69,7 +92,6 @@ func completionState(path string) (string, error) {
 func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidateAssessment {
 	var reasons []string
 	reportedBlock := false
-	genericHostSelfBlock := false
 	capabilityBlock := false
 	structuredBlockMalformed := false
 	capability := ""
@@ -77,7 +99,139 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	commits := 0
 	clean := false
 
-	if sl.StatusPath != "" {
+	dispatchValid := false
+	var dispatch phasecontrol.DispatchContext
+	manifest, manifestErr := r.store.LoadManifest(r.run.RunID, sl.PhaseID)
+	if manifestErr != nil {
+		reasons = append(reasons, "dispatch manifest is missing or unreadable: "+manifestErr.Error())
+	} else {
+		dispatch = phasecontrol.DispatchContext{
+			RunID: r.run.RunID, PhaseID: sl.PhaseID, Attempt: sl.Attempts,
+			SessionID: sl.SessionID, BaseSHA: sl.DispatchBaseSHA,
+		}
+		expectedGeneration := phasecontrol.DispatchGeneration(dispatch)
+		switch {
+		case sl.DispatchBaseSHA == "" || sl.DispatchGeneration == "":
+			reasons = append(reasons, "slot is missing trusted dispatch identity")
+		case sl.SessionID == "":
+			reasons = append(reasons, "slot dispatch session is missing")
+		case manifest.BeadID != sl.PhaseID:
+			reasons = append(reasons, "dispatch manifest phase does not match slot")
+		case manifest.Attempt != sl.Attempts:
+			reasons = append(reasons, "dispatch manifest attempt does not match slot")
+		case manifest.SessionID != sl.SessionID:
+			reasons = append(reasons, "dispatch manifest session does not match slot")
+		case manifest.BaseCommit != sl.DispatchBaseSHA:
+			reasons = append(reasons, "dispatch manifest base SHA does not match slot")
+		case manifest.WorktreePath != sl.Worktree || manifest.Branch != sl.Branch:
+			reasons = append(reasons, "dispatch manifest worktree or branch does not match slot")
+		case sl.DispatchGeneration != expectedGeneration:
+			reasons = append(reasons, "slot dispatch generation is invalid")
+		case manifest.DispatchGeneration != sl.DispatchGeneration:
+			reasons = append(reasons, "dispatch manifest generation does not match slot")
+		default:
+			dispatchValid = true
+		}
+	}
+
+	dirty, err := worktree.IsDirty(ctx, sl.Worktree)
+	if err != nil {
+		reasons = append(reasons, "cannot verify worktree cleanliness: "+err.Error())
+	} else if dirty {
+		reasons = append(reasons, "worktree has staged, unstaged, or untracked changes")
+	} else {
+		clean = true
+	}
+	var head string
+	// A typed dispatch uses only the immutable base. branchProgress is retained
+	// as a legacy diagnostic fallback when identity is missing, but its
+	// current-default-branch count must never poison a valid old-base result.
+	if dispatchValid {
+		state, err := phasecontrol.InspectCandidate(ctx, sl.Worktree, dispatch.BaseSHA)
+		if err != nil {
+			reasons = append(reasons, "cannot inspect candidate against dispatch base: "+err.Error())
+		} else {
+			commits, head, clean = state.CommitCount, state.SHA, state.Clean
+			if commits == 0 {
+				reasons = append(reasons, "branch has no commits beyond the dispatch base")
+			}
+			if !clean && !dirty {
+				reasons = append(reasons, "worktree became dirty during candidate inspection")
+			}
+			observedHead := head
+			if commits == 0 {
+				// Preserve the ledger's established meaning: LastCommit is
+				// the candidate commit beyond the dispatch base, not HEAD
+				// itself when no candidate commit exists.
+				observedHead = ""
+			}
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.Commits = commits
+				s.LastCommit = observedHead
+			})
+			sl.Commits = commits
+			sl.LastCommit = observedHead
+		}
+	} else {
+		commits, head, err = r.branchProgress(ctx, sl.Worktree)
+		if err != nil {
+			reasons = append(reasons, "cannot verify candidate commits: "+err.Error())
+		} else {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.Commits = commits
+				s.LastCommit = head
+			})
+			sl.Commits = commits
+			sl.LastCommit = head
+			if commits == 0 {
+				reasons = append(reasons, "branch has no commits beyond the dispatch base")
+			}
+		}
+	}
+
+	resultValid := false
+	phaseDir := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
+	resultPath := phasecontrol.ResultPath(phaseDir)
+	if _, err := fsx.ReadRegularConfined("SUMMARY.md", 1<<20, phaseDir); err != nil {
+		reasons = append(reasons, "completion summary is missing or unreadable: "+err.Error())
+	}
+	result, resultErr := phasecontrol.LoadResult(phaseDir)
+	resultMissing := errors.Is(resultErr, os.ErrNotExist)
+	var expectedCriteria []plan.Criterion
+	switch {
+	case resultMissing:
+		reasons = append(reasons, "terminal result manifest is missing")
+	case resultErr != nil:
+		reasons = append(reasons, "terminal result manifest is malformed or unreadable: "+resultErr.Error())
+	case !dispatchValid:
+		reasons = append(reasons, "terminal result cannot be matched without a valid dispatch manifest")
+	default:
+		issue := r.issueFor(ctx, sl)
+		expectedCriteria, err = plan.ParseStrictCriteria(issue.AcceptanceCriteria)
+		if err != nil {
+			reasons = append(reasons, "issue acceptance criteria are not strict: "+err.Error())
+			break
+		}
+		if err := phasecontrol.ValidateResult(result, phasecontrol.ValidationContext{
+			PhaseDir:         phaseDir,
+			Worktree:         sl.Worktree,
+			Dispatch:         dispatch,
+			CandidateSHA:     head,
+			CommitCount:      commits,
+			WorktreeClean:    clean,
+			ExpectedCriteria: expectedCriteria,
+		}); err != nil {
+			reasons = append(reasons, "terminal result manifest does not match live candidate: "+err.Error())
+		} else {
+			resultValid = true
+		}
+	}
+
+	// status.json is a heartbeat and optional failure/capability advisory, not
+	// a success owner. Once the current SHA-bound result validates, even a
+	// stale "blocked" heartbeat is ignored. Without a valid result, explicit
+	// failure status can still classify why the candidate must not finalize.
+	if !resultValid && sl.StatusPath != "" {
 		completion, err := readCompletion(sl.StatusPath)
 		if err != nil {
 			reasons = append(reasons, "completion status is malformed or unreadable: "+err.Error())
@@ -85,7 +239,6 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 			switch strings.ToLower(completion.State) {
 			case "blocked", "failed", "error", "cancelled", "canceled":
 				reportedBlock = true
-				genericHostSelfBlock = strings.EqualFold(completion.State, "blocked")
 				reasons = append(reasons, "agent reported completion state "+completion.State)
 				switch completion.BlockKind {
 				case "":
@@ -107,45 +260,49 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 		}
 	}
 
-	commits, head, err := r.branchProgress(ctx, sl.Worktree)
-	if err != nil {
-		reasons = append(reasons, "cannot verify candidate commits: "+err.Error())
-	} else {
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Commits = commits
-			s.LastCommit = head
-		})
-		sl.Commits = commits
-		sl.LastCommit = head
-		if commits == 0 {
-			reasons = append(reasons, "branch has no commits beyond the dispatch base")
-		}
-	}
-
-	dirty, err := worktree.IsDirty(ctx, sl.Worktree)
-	if err != nil {
-		reasons = append(reasons, "cannot verify worktree cleanliness: "+err.Error())
-	} else if dirty {
-		reasons = append(reasons, "worktree has staged, unstaged, or untracked changes")
-	} else {
-		clean = true
-	}
-
 	if len(reasons) > 0 {
+		outcome := OutcomeEngineInvariant
+		if capabilityBlock {
+			outcome = OutcomeCapabilityUnavailable
+		} else if resultMissing && len(reasons) == 1 && dispatchValid && !reportedBlock && commits > 0 && clean {
+			outcome = OutcomeCompletionContractMissing
+		} else if commits == 0 || !clean {
+			// Dirty or commitless exits are code-incomplete but carry no new
+			// validated failure evidence. DecideRetry therefore parks them
+			// immediately instead of treating them as an engine invariant or
+			// feeding the old generic retry ladder.
+			outcome = OutcomeCodeDefect
+		}
+		retryable := false
+		if outcome == OutcomeCompletionContractMissing && !structuredBlockMalformed {
+			decision := DecideRetry(RetryPolicyInput{Outcome: outcome, Budgets: retryBudgets(sl.Retry)})
+			retryable = decision.Action == RecoveryTargetedRepair
+		}
 		return candidateAssessment{
-			// A generic clean self-block receives exactly one same-tier retry so
-			// the updated worker contract can correct it to a structured host
-			// capability block. A second generic block is terminal: another
-			// dispatch cannot add classification evidence and must not reach the
-			// final frontier escalation.
-			retryableBlock:   genericHostSelfBlock && reportedBlock && !capabilityBlock && !structuredBlockMalformed && commits > 0 && clean && sl.Attempts == 1,
+			// Only a clean committed candidate missing exactly its terminal
+			// result receives the one same-tier completion repair. A dirty,
+			// commitless, explicitly blocked, stale, or malformed candidate
+			// parks with its work preserved.
+			retryableBlock:   retryable,
+			outcome:          outcome,
 			capabilityBlock:  capabilityBlock,
 			capability:       capability,
 			capabilityDetail: capabilityDetail,
 			reason:           strings.Join(reasons, "; "),
 		}
 	}
-	return candidateAssessment{eligible: true}
+	if !resultValid {
+		return candidateAssessment{outcome: OutcomeEngineInvariant, reason: "terminal result validation did not produce a verdict"}
+	}
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.CandidateGeneration = result.Generation
+		s.CandidateResultPath = resultPath
+		s.OutcomeClass = string(OutcomeCandidateReady)
+	})
+	sl.CandidateGeneration = result.Generation
+	sl.CandidateResultPath = resultPath
+	sl.OutcomeClass = string(OutcomeCandidateReady)
+	return candidateAssessment{eligible: true, outcome: OutcomeCandidateReady}
 }
 
 // candidateEligible preserves the compact contract used by existing callers
@@ -154,18 +311,6 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 func (r *runner) candidateEligible(ctx context.Context, sl *ledger.Slot) (bool, string) {
 	a := r.assessCandidate(ctx, sl)
 	return a.eligible, a.reason
-}
-
-func (r *runner) parkIncompleteCandidate(ctx context.Context, sl *ledger.Slot, reason string) {
-	note := fmt.Sprintf("candidate is not mergeable: %s — branch/worktree preserved for recovery", reason)
-	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-		s.Status = ledger.SlotBlocked
-		s.Note = note
-	})
-	r.checkpointSlot(sl, "candidate-incomplete")
-	r.releaseGlobalSlot(sl.PhaseID)
-	r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
-	r.auditBlocked(ctx, sl, "candidate-incomplete", reason)
 }
 
 func (r *runner) parkCapabilityBlock(ctx context.Context, sl *ledger.Slot, capability, detail string) {

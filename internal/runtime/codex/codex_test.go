@@ -4,12 +4,16 @@
 package codex
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/runtimetest"
@@ -271,6 +275,188 @@ func TestCommandWithoutRepoRootKeepsModuleCachePhaseLocal(t *testing.T) {
 	if joined := strings.Join(env, "\n"); !strings.Contains(joined, "GOMODCACHE=/phase/go-mod-cache") {
 		t.Errorf("repo-less dispatch must not use an ambient or shared module cache:\n%s", joined)
 	}
+}
+
+func TestCommandInstallsPolicyFreeBinaryForwardingShims(t *testing.T) {
+	phaseDir := canonicalCodexTempDir(t)
+	fakeBin := canonicalCodexTempDir(t)
+	guardBin := writeCodexTestExecutable(t, canonicalCodexTempDir(t), "koryph", "exit 99")
+	real := make(map[string]string)
+	for _, name := range []string{"make", "go", "golangci-lint"} {
+		real[name] = writeCodexTestExecutable(t, fakeBin, name, "exit 0")
+	}
+	previous := commandGuardExecutable
+	commandGuardExecutable = func() (string, error) { return guardBin, nil }
+	t.Cleanup(func() { commandGuardExecutable = previous })
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	t.Setenv("KORYPH_COMMAND_ROLE", "validation")
+	t.Setenv("KORYPH_COMMAND_EVENTS", filepath.Join(t.TempDir(), "outside-events"))
+	t.Setenv("KORYPH_COMMAND_GUARD_DIR", t.TempDir())
+
+	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{PhaseDir: phaseDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := envMap(env)
+	for _, name := range []string{"KORYPH_COMMAND_ROLE", "KORYPH_COMMAND_EVENTS", "KORYPH_COMMAND_GUARD_DIR"} {
+		if _, present := values[name]; present {
+			t.Fatalf("deprecated shell-policy input %s leaked into dispatch", name)
+		}
+	}
+	shimDir := strings.Split(values["PATH"], string(filepath.ListSeparator))[0]
+	for name, realPath := range real {
+		data, err := os.ReadFile(filepath.Join(shimDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := string(data), renderCommandGuardShim(guardBin, realPath); got != want {
+			t.Fatalf("%s shim:\n%s\nwant:\n%s", name, got, want)
+		}
+		for _, forbidden := range []string{"KORYPH_COMMAND_ROLE", "KORYPH_COMMAND_EVENTS", "KORYPH_COMMAND_GUARD_DIR", "mkdir", "kill"} {
+			if strings.Contains(string(data), forbidden) {
+				t.Fatalf("%s shim contains policy token %q:\n%s", name, forbidden, data)
+			}
+		}
+	}
+}
+
+func TestInstallPhaseCommandGuardRejectsSymlinkedPaths(t *testing.T) {
+	t.Run("phase", func(t *testing.T) {
+		link := filepath.Join(canonicalCodexTempDir(t), "phase-link")
+		if err := os.Symlink(canonicalCodexTempDir(t), link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := installPhaseCommandGuard(link, os.Environ()); err == nil {
+			t.Fatal("symlinked phase path was accepted")
+		}
+	})
+	t.Run("shim directory", func(t *testing.T) {
+		phase := canonicalCodexTempDir(t)
+		if err := os.Symlink(canonicalCodexTempDir(t), filepath.Join(phase, "command-guard-bin")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := installPhaseCommandGuard(phase, os.Environ()); err == nil {
+			t.Fatal("symlinked shim directory was accepted")
+		}
+	})
+}
+
+func TestCodexAdapterCommandShimUsesBinarySingleFlight(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildDir := canonicalCodexTempDir(t)
+	guardBin := filepath.Join(buildDir, "koryph")
+	build := exec.Command("go", "build", "-o", guardBin, "./cmd/koryph")
+	build.Dir = repoRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build command guard binary: %v\n%s", err, out)
+	}
+
+	phaseDir := canonicalCodexTempDir(t)
+	fakeBin := canonicalCodexTempDir(t)
+	starts := filepath.Join(canonicalCodexTempDir(t), "starts")
+	writeCodexTestExecutable(t, fakeBin, "go", `echo start >>"`+starts+`"; sleep 1; exit 7`)
+	previous := commandGuardExecutable
+	commandGuardExecutable = func() (string, error) { return guardBin, nil }
+	t.Cleanup(func() { commandGuardExecutable = previous })
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{PhaseDir: phaseDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := envMap(env)
+	shim := filepath.Join(strings.Split(values["PATH"], string(filepath.ListSeparator))[0], "go")
+	outsideEvents := filepath.Join(canonicalCodexTempDir(t), "outside-events")
+	if err := os.WriteFile(outsideEvents, []byte("sentinel\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env = setEnv(env, "KORYPH_PHASE_ID", filepath.Base(phaseDir))
+	env = setEnv(env, "KORYPH_PHASE_DIR", phaseDir)
+	env = setEnv(env, "KORYPH_COMMAND_ROLE", "validation")
+	env = setEnv(env, "KORYPH_COMMAND_EVENTS", outsideEvents)
+	env = setEnv(env, "KORYPH_COMMAND_GUARD_DIR", canonicalCodexTempDir(t))
+
+	first := exec.Command(shim, "test", "./...")
+	second := exec.Command(shim, "test", "./...")
+	first.Env, second.Env = env, env
+	var firstOut, secondOut bytes.Buffer
+	first.Stdout, first.Stderr = &firstOut, &firstOut
+	second.Stdout, second.Stderr = &secondOut, &secondOut
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := second.Start(); err != nil {
+		_ = first.Process.Signal(syscall.SIGTERM)
+		t.Fatal(err)
+	}
+	firstErr, secondErr := first.Wait(), second.Wait()
+	for name, runErr := range map[string]error{"first": firstErr, "second": secondErr} {
+		var exitErr *exec.ExitError
+		if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 7 {
+			t.Fatalf("%s exit = %v\nfirst:\n%s\nsecond:\n%s", name, runErr, firstOut.String(), secondOut.String())
+		}
+	}
+	data, err := os.ReadFile(starts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "start"); got != 1 {
+		t.Fatalf("real broad command starts = %d, want 1:\n%s", got, data)
+	}
+	combined := firstOut.String() + secondOut.String()
+	for _, want := range []string{"koryph command reuse: pid=", "status=running", "log="} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("reuse output missing %q:\n%s", want, combined)
+		}
+	}
+	events, err := os.ReadFile(filepath.Join(phaseDir, ".koryph-command", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"event":"start"`, `"event":"reuse"`, `"event":"complete"`, `"peak_rss_kb":`, `"cpu_seconds":`, `"duration_ms":`} {
+		if !strings.Contains(string(events), want) {
+			t.Fatalf("structured evidence missing %s:\n%s", want, events)
+		}
+	}
+	if outside, err := os.ReadFile(outsideEvents); err != nil || string(outside) != "sentinel\n" {
+		t.Fatalf("forged evidence path was used: %q, %v", outside, err)
+	}
+}
+
+func envMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, pair := range env {
+		name, value, ok := strings.Cut(pair, "=")
+		if ok {
+			out[name] = value
+		}
+	}
+	return out
+}
+
+func canonicalCodexTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func writeCodexTestExecutable(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
 }
 
 func TestCommandJSONUsesScratchLocalMutableCaches(t *testing.T) {

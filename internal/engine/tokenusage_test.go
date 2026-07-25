@@ -16,11 +16,13 @@ import (
 // carries a usage block (koryph-77r.1), the real stream-json shape
 // completeSlot's dispatch.ParseResultUsage parses.
 const tokenUsageClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 echo "work" > agent-work.txt
 git add agent-work.txt
 git commit -q --no-verify -m "feat(tb1): work"
 printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+koryph_test_complete agent-work.txt || exit $?
 printf '{"type":"result","total_cost_usd":0.42,"usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":8000,"cache_creation_input_tokens":200}}\n'
 exit 0
 `
@@ -60,11 +62,13 @@ func TestCompleteSlotPersistsTokenUsageFromResultLine(t *testing.T) {
 // session was dominantly served by a haiku model id even though dispatch
 // requested sonnet — the --fallback-model downgrade shape (koryph-qf6.2).
 const modelFallbackClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 echo "work" > agent-work.txt
 git add agent-work.txt
 git commit -q --no-verify -m "feat(tb1): work"
 printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+koryph_test_complete agent-work.txt || exit $?
 printf '{"type":"result","total_cost_usd":0.10,"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":900},"claude-sonnet-4-5":{"outputTokens":100}}}\n'
 exit 0
 `

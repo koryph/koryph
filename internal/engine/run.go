@@ -174,6 +174,15 @@ type runner struct {
 	// processIdentityProbe is the narrow test seam for PID authentication. Nil
 	// takes a bounded platform process-table snapshot through processIdentity.
 	processIdentityProbe func(context.Context, int) string
+	// launchedSlotPersist and rollbackStop are narrow dispatch-transaction test
+	// seams. Nil persists through ledger.SetSlot and force-stops/reaps through
+	// dispatch.StopForceAndReap.
+	launchedSlotPersist func(*ledger.Slot) error
+	rollbackStop        func(int) error
+	// dispatchCircuitReason is set on an engine invariant that makes further
+	// automated launches unsafe. Direct and wave/rolling dispatch gates both
+	// honor it for the remainder of the run.
+	dispatchCircuitReason string
 
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time

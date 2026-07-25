@@ -69,9 +69,9 @@ flowing — with graceful fallbacks when you can't install one.
   want built in a normal Claude session; koryph routes the ask through
   `/koryph-design` into a reviewed design doc and an implementable,
   conflict-aware bead graph.
-- **[Recovery & escalation](user-guide/recovery.md), hardened** — stall
-  detection, a dead-agent patrol, fault-only escalation to the frontier
-  tier, and operator overrides that a running loop respects instead of
+- **[Typed recovery](user-guide/recovery.md), hardened** — stall detection,
+  a dead-agent patrol, evidence-bound bounded continuation and repair, and
+  operator overrides that a running loop respects instead of
   clobbers (`koryph merge --close-bead`, `koryph inject`,
   `koryph status --frontier`).
 - **[Terminal cockpit](user-guide/tui.md), overhauled** — a live activity
@@ -97,7 +97,7 @@ The full history is in the
 | | Green gate | Your own build/test/lint commands are the merge gate — if it's red, it doesn't land |
 | | Resource governor | Beads declare machine demand (`res:kind-cluster`, `res:docker`); counted capacities keep two 6 GB dev stacks from ever co-dispatching |
 | | Cost governors | Per-provider concurrency caps that adapt to rate limits (AIMD + circuit breakers), plus subscription-burn tracking and quota calibration |
-| | Recovery & escalation | Stalls detected, failures classified and retried; a genuine fault's final attempt escalates to the frontier tier — and koryph learns which work to start there |
+| | Typed recovery | Stalls and failures are classified from evidence; safe continuations and standard-tier repairs are bounded, while hard faults block with a precise reason |
 | | Epic validation | After an epic's last child lands, a validator vets the union against the design — gaps become follow-up beads, then a docs update, then the epic closes |
 | | Account safety | Each project pins its account; identity is verified fail-closed before any dispatch |
 | | Multi-runtime | Runtime-neutral core with portable tiers (frontier / standard / light); **Claude Code and Codex are supported**, while unimplemented adapters remain [fail-closed](user-guide/runtimes.md) |

@@ -12,7 +12,6 @@
   "allowed_models": ["opus"],
   "planner_model": "opus",
   "impl_model": "opus",
-  "recovery_model_policy": "upgrade-opus",
   "batch_policy": "deny",
   "api_fallback": "off",
   "prompt_cache_policy": "on",

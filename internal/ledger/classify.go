@@ -99,7 +99,7 @@ func Classify(run *Run, p Probe) []Decision {
 				Reason:  fmt.Sprintf("pid %d alive", sl.PID),
 			})
 
-		case p.CompletionReady != nil && p.CompletionReady(sl):
+		case completionReady(sl, p):
 			out = append(out, Decision{
 				PhaseID: id,
 				Action:  ActionFinalize,
@@ -119,6 +119,18 @@ func Classify(run *Run, p Probe) []Decision {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PhaseID < out[j].PhaseID })
 	return out
+}
+
+// completionReady prevents advisory artifacts from becoming a recovery
+// transition. Every state, including a previously recorded
+// review/merge/finalizing state, needs the typed dispatch/result stamps and
+// the caller's fresh live validation. Status alone is never an adoption
+// credential.
+func completionReady(sl *Slot, p Probe) bool {
+	return sl.DispatchBaseSHA != "" &&
+		sl.DispatchGeneration != "" &&
+		p.CompletionReady != nil &&
+		p.CompletionReady(sl)
 }
 
 // classifyDead handles a slot whose process is gone (or never confirmed alive):

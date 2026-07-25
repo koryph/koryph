@@ -57,7 +57,7 @@ case "$1" in
       echo '[]'
     else
       touch "$dir/ready_served"
-      echo '[{"id":"tb-codex","title":"Codex bead","description":"do the work","status":"open","priority":0,"issue_type":"task","labels":["fp:codex","runtime:codex","model:gpt-5.6-terra"]},{"id":"tb-claude","title":"Claude bead","description":"do the work","status":"open","priority":1,"issue_type":"task","labels":["fp:claude","runtime:claude"]}]'
+      echo '[{"id":"tb-codex","title":"Codex bead","description":"do the work","acceptance_criteria":"AC1: selected runtime work is committed","status":"open","priority":0,"issue_type":"task","labels":["fp:codex","runtime:codex","model:gpt-5.6-terra"]},{"id":"tb-claude","title":"Claude bead","description":"do the work","acceptance_criteria":"AC1: selected runtime work is committed","status":"open","priority":1,"issue_type":"task","labels":["fp:claude","runtime:claude"]}]'
     fi
     ;;
   version) echo "bd version 1.0.5" ;;

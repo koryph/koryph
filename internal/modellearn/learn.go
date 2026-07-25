@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 The Koryph Developers
 
-// Package modellearn closes the escalation feedback loop (koryph-qf6.6): it
-// mines run ledgers for beads that only merged after their final attempt
-// escalated to a stronger tier (koryph-qf6.4), aggregates that evidence by
+// Package modellearn reads historical or explicitly typed escalation
+// provenance from run ledgers, aggregates that evidence by
 // the similarity features frozen on each slot (koryph-qf6.3 — area label and
 // size bucket), and recommends a starting tier for FUTURE beads that share
 // those features — so similar work stops re-paying the failed-retry tax on a
@@ -32,7 +31,7 @@ import (
 	"github.com/koryph/koryph/internal/quota"
 )
 
-// DefaultMinEvidence is the minimum count of escalated-then-merged beads a
+// DefaultMinEvidence is the minimum count of escalation-provenance beads a
 // (area, size) bucket needs before Recommend proposes a tier for it. Two is
 // the smallest count that is a pattern rather than an incident.
 const DefaultMinEvidence = 2
@@ -46,7 +45,7 @@ const ProvenancePrefix = "model-learned:"
 type Evidence struct {
 	BeadID    string
 	RunID     string
-	Escalated bool     // merged only after the final-attempt escalation
+	Escalated bool     // historical or explicitly typed escalation provenance
 	Tier      string   // the tier the merging attempt ran on (slot.Model)
 	FromTier  string   // the tier it escalated FROM ("" when not escalated)
 	Areas     []string // area:* labels frozen on the slot at first dispatch
@@ -123,8 +122,8 @@ func Collect(store *ledger.Store) ([]Evidence, error) {
 // (<=0 means DefaultMinEvidence) AND strictly exceeds its clean base-tier
 // merges — an area that usually merges fine on the cheap tier keeps its
 // default no matter how loud two outliers are. The recommended tier is the
-// strongest tier the escalations landed on (opus, under today's
-// RecoveryUpgrade policy). Output is sorted by (area, size) for stable
+// strongest tier the recorded escalations landed on. Output is sorted by
+// (area, size) for stable
 // display and deterministic apply order.
 func Recommend(evs []Evidence, minEvidence int) []Recommendation {
 	if minEvidence <= 0 {

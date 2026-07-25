@@ -173,27 +173,26 @@ the current release.
   silent agent within minutes, and a health patrol sweeps for dead agents
   and stuck claims on a fixed cadence, auto-fixing what it safely can.
   *(new: patrol sweep, stale-park detection)*
-  → [Recovery & escalation](user-guide/recovery.md)
+  → [Typed recovery](user-guide/recovery.md)
 - **Classified retries** — every requeue carries its cause (gate, merge,
   conflict, rate-limit, budget-kill) with a bounded retry budget; a
   budget-killed agent warm-resumes its own session instead of starting over.
-  → [Recovery & escalation](user-guide/recovery.md)
-- **Escalation to stronger models** — when a genuine fault is about to burn
-  a bead's final attempt on a cheap tier, that attempt runs on the frontier
-  tier instead, and the escalation is recorded as durable provenance.
-  Escalation counts *faults*, never environment noise. *(new: fault-only
-  counting)*
-  → [Recovery & escalation](user-guide/recovery.md#escalation)
-- **Learned model routing** — `koryph models` mines escalation history
-  and pre-labels similar work to start on the stronger tier directly;
-  enable `adaptive_escalation` to run the pass at every wave boundary.
-  → [Recovery & escalation](user-guide/recovery.md#learned-model-labels)
+  → [Typed recovery](user-guide/recovery.md)
+- **Typed recovery** — evidence classifies completion, code, semantic,
+  security, runtime, budget, turn, mechanical, stop, and invariant outcomes.
+  Bounded standard-tier repairs are distinct from frontier security/recovery
+  analysis; retry count never promotes implementation.
+  → [Typed recovery](user-guide/recovery.md#escalation)
+- **Historical model evidence** — `koryph models` reports historical or
+  explicitly typed provenance; applying a recommendation is an explicit
+  routing override, not a retry side effect.
+  → [Typed recovery](user-guide/recovery.md#learned-model-labels)
 - **Operator overrides that stick** *(new)* — `koryph merge --close-bead` on
   a live loop records your manual merge in an override sidecar the engine
   folds in (instead of clobbering your hand-work); `koryph inject` adds a
   bead to a running loop without a restart; `koryph status --frontier` shows
   exactly why each ready bead did or didn't dispatch last wave.
-  → [Recovery & escalation](user-guide/recovery.md#the-operators-hand)
+  → [Typed recovery](user-guide/recovery.md#the-operators-hand)
 
 ## Operate — watch and steer, from any terminal
 

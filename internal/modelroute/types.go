@@ -10,9 +10,9 @@
 //   - Fable is NEVER selected implicitly. It requires BOTH the project's
 //     AllowedModels to include "fable" AND an explicit source (bead label
 //     model:fable / model:<stage>:fable, or an explicit --model fable flag).
-//   - Recovery upgrades: sonnet→opus, haiku→sonnet? No — recovery upgrades
-//     any tier below opus to opus when confidence is low. Fable is
-//     structurally excluded from recovery upgrades.
+//   - Retry count never changes the implementation tier. Typed recovery owns
+//     continuation and repair; frontier work is reserved for advanced
+//     planning and explicitly authorized structured analysis.
 //   - Every resolution records a human-readable rationale.
 //
 // Label precedence (kept wire-compatible with the bash engine), extended by
@@ -42,7 +42,6 @@
 // Implementation contract (route.go, persona.go):
 //   - Resolve(Req) (Resolution, error) — applies precedence + policy; error
 //     when the resolved tier is not in AllowedModels (fail closed).
-//   - RecoveryUpgrade(current string) string — see policy above.
 //   - PersonaFor(stage, cfg) string — project Stages map with namespaced
 //     engine fallbacks (implement→koryph-implementer, plan→koryph-architect,
 //     review→koryph-security-reviewer, explore→koryph-explorer, debug→

@@ -63,14 +63,24 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 	}
 
 	// Resolve the branch: prefer the recorded slot (land exactly what the
-	// pr-opened run parked), else the canonical agent/<bead> name.
+	// pr-opened run parked), else the canonical agent/<bead> name. A newer run
+	// may not contain this older parked PR, and an interrupted latest ledger
+	// may be unreadable, so scan every run newest-first and skip only corrupt
+	// entries rather than silently dropping the validation phase context.
 	branch := worktree.BranchFor(o.Bead)
 	store := ledger.NewStore(rec.Root)
-	run, runErr := store.LoadLatest()
-	if runErr == nil && run != nil {
-		if sl := run.Slots[o.Bead]; sl != nil && sl.Branch != "" {
-			branch = sl.Branch
+	run, slot, runErr := landingRun(store, o.Bead)
+	if runErr != nil {
+		return LandResult{}, fmt.Errorf("land: resolve recorded run: %w", runErr)
+	}
+	validationPhaseDir := ""
+	if run != nil && slot != nil {
+		branch = slot.Branch
+		phaseID := slot.PhaseID
+		if phaseID == "" {
+			phaseID = o.Bead
 		}
+		validationPhaseDir = store.PhaseDir(run.RunID, phaseID)
 	}
 
 	res, err := merge.Merge(ctx, merge.Opts{
@@ -88,6 +98,7 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 		AllowProtected:      o.AllowProtected,
 		Reconcilers:         mergeReconcilers(cfg),
 		Prepare:             cfg.MergePrepare,
+		ValidationPhaseDir:  validationPhaseDir,
 	})
 	if err != nil {
 		return LandResult{Status: string(res.Status), Branch: branch}, err
@@ -99,7 +110,7 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 	}
 
 	// Landed: mark the parked slot merged (best-effort) and close the bead.
-	if runErr == nil && run != nil {
+	if run != nil {
 		_ = store.UpdateSlot(run, o.Bead, func(s *ledger.Slot) {
 			s.Status = ledger.SlotMerged
 			s.MergedAt = time.Now().UTC().Format(time.RFC3339)
@@ -114,4 +125,22 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 		fmt.Fprintln(o.Out, "land: warning: close bead failed:", cerr)
 	}
 	return LandResult{Status: string(merge.StatusMerged), SHA: res.MergedSHA, Branch: branch}, nil
+}
+
+func landingRun(store *ledger.Store, beadID string) (*ledger.Run, *ledger.Slot, error) {
+	runIDs, err := store.ListRuns()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, runID := range runIDs {
+		run, err := store.LoadRun(runID)
+		if err != nil {
+			continue
+		}
+		slot := run.Slots[beadID]
+		if slot != nil && slot.Branch != "" {
+			return run, slot, nil
+		}
+	}
+	return nil, nil, nil
 }

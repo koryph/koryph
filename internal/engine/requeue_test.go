@@ -168,7 +168,8 @@ func TestRequeueFreezesBeadFeatures(t *testing.T) {
 
 // escalationRunner assembles a runner whose dispatches succeed (capturing
 // backend), so requeue paths run all the way through dispatchBead's slot
-// replacement — the seam the koryph-qf6.4 escalation tests must observe.
+// replacement — the seam where the typed policy must prevent attempt-number
+// model escalation.
 func escalationRunner(t *testing.T, f *fix) (*runner, *capturingBackend) {
 	t.Helper()
 	r := runnerFromFixture(t, f)
@@ -196,12 +197,10 @@ func escalationSlot(t *testing.T, r *runner, id string, attempts int) *ledger.Sl
 	return sl
 }
 
-// TestFinalAttemptEscalatesModel proves koryph-qf6.4: a bead-fault requeue
-// about to burn the FINAL MaxAttempts attempt on sonnet runs it on opus
-// instead, with a rationale that records the escalation (the TUI's ↑ marker
-// and the learner's training signal both key on it). Persona and effort stay
-// frozen — only the tier changes.
-func TestFinalAttemptEscalatesModel(t *testing.T) {
+// TestFinalAttemptNeverEscalatesWithoutTypedModelCapability proves that
+// attempt count alone cannot select frontier implementation. The ordinary
+// low-level requeue freezes the original tier even on MaxAttempts.
+func TestFinalAttemptNeverEscalatesWithoutTypedModelCapability(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r, backend := escalationRunner(t, f)
 	sl := escalationSlot(t, r, "esc1", ledger.MaxAttempts-1)
@@ -212,11 +211,11 @@ func TestFinalAttemptEscalatesModel(t *testing.T) {
 		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
 	}
 	got := r.run.Slots["esc1"]
-	if got.Model != "opus" {
-		t.Errorf("final-attempt model = %q, want opus (escalated)", got.Model)
+	if got.Model != "sonnet" {
+		t.Errorf("final-attempt model = %q, want frozen sonnet", got.Model)
 	}
-	if !strings.Contains(got.ModelWhy, "escalated from sonnet") {
-		t.Errorf("ModelWhy = %q, want an 'escalated from sonnet' rationale", got.ModelWhy)
+	if strings.Contains(got.ModelWhy, "escalat") {
+		t.Errorf("ModelWhy = %q, attempt count must not escalate", got.ModelWhy)
 	}
 	if got.Agent != "koryph-implementer" {
 		t.Errorf("persona = %q, want koryph-implementer (frozen — only the tier escalates)", got.Agent)
@@ -224,8 +223,78 @@ func TestFinalAttemptEscalatesModel(t *testing.T) {
 	if got.Attempts != ledger.MaxAttempts {
 		t.Errorf("Attempts = %d, want %d", got.Attempts, ledger.MaxAttempts)
 	}
-	if backend.specs[0].Model != "opus" {
-		t.Errorf("dispatched spec model = %q, want opus", backend.specs[0].Model)
+	if backend.specs[0].Model != "sonnet" {
+		t.Errorf("dispatched spec model = %q, want sonnet", backend.specs[0].Model)
+	}
+}
+
+func TestTypedMechanicalRepairUsesStandardTierEvenFromFrontierSlot(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "typed-mechanical", ledger.MaxAttempts-1)
+	sl.Model = "opus"
+	sl.ModelWhy = "operator selected frontier"
+
+	if !r.recoverTyped(t.Context(), sl, typedRecoveryRequest{
+		outcome: OutcomeMechanical,
+		reason:  commitStyleRequeueNote,
+	}) {
+		t.Fatal("typed mechanical repair parked unexpectedly")
+	}
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	got := r.run.Slots["typed-mechanical"]
+	if got.Model != "sonnet" || backend.specs[0].Model != "sonnet" {
+		t.Fatalf("typed mechanical repair model = slot %q / spec %q, want standard sonnet",
+			got.Model, backend.specs[0].Model)
+	}
+	if got.Retry.MechanicalRepairs != 1 {
+		t.Fatalf("mechanical retry counter = %d, want 1", got.Retry.MechanicalRepairs)
+	}
+}
+
+func TestStandardRepairRejectsFrontierMappedAsStandard(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, _ := escalationRunner(t, f)
+	r.cfg.ModelMap = map[string]string{"standard": "opus"}
+	sl := escalationSlot(t, r, "bad-standard-map", 1)
+	sl.OutcomeClass = string(OutcomeMechanical)
+
+	if _, err := r.standardRepairModel(t.Context(), sl); err == nil ||
+		!strings.Contains(err.Error(), "resolved to frontier") {
+		t.Fatalf("standardRepairModel error = %v, want frontier rejection", err)
+	}
+}
+
+func TestRepeatedStaleRecoveryUsesBoundedTypedTransientBudget(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "stale-budget", ledger.MaxAttempts)
+
+	for i := 1; i <= 2; i++ {
+		if !r.recoverTyped(t.Context(), sl, typedRecoveryRequest{
+			outcome: OutcomeRuntimeTransient,
+			reason:  staleHeartbeatRequeueNote,
+		}) {
+			t.Fatalf("stale recovery %d parked before budget was spent", i)
+		}
+		sl = r.run.Slots["stale-budget"]
+		if sl.Attempts != ledger.MaxAttempts {
+			t.Fatalf("stale recovery %d changed Attempts to %d", i, sl.Attempts)
+		}
+		if sl.Retry.TransientRetries != i {
+			t.Fatalf("stale recovery %d transient counter = %d", i, sl.Retry.TransientRetries)
+		}
+	}
+	if r.recoverTyped(t.Context(), sl, typedRecoveryRequest{
+		outcome: OutcomeRuntimeTransient,
+		reason:  staleHeartbeatRequeueNote,
+	}) {
+		t.Fatal("third stale recovery dispatched past typed budget")
+	}
+	if len(backend.specs) != 2 || sl.Status != ledger.SlotBlocked {
+		t.Fatalf("bounded stale recovery = dispatches %d, slot %+v", len(backend.specs), sl)
 	}
 }
 

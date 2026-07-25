@@ -6,12 +6,10 @@ package engine
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/koryph/koryph/internal/beads"
-	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/ledger"
@@ -140,44 +138,14 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// completionReady reports durable evidence that a dead agent finished its
-// implementation phase. Commits alone are intentionally insufficient: a
-// crashed or interrupted agent may have useful partial commits that still need
-// a bounded warm resume. Explicit completion state, SUMMARY.md, or an
-// already-started review/finalization is required.
+// completionReady performs the same fresh, live result validation used at
+// normal process exit. No recorded status (including review/finalizing), stale
+// SUMMARY, heartbeat, or stream token can bypass the typed candidate contract.
 func (r *runner) completionReady(sl *ledger.Slot) bool {
 	if sl == nil {
 		return false
 	}
-	if sl.Status == ledger.SlotReview || sl.Status == ledger.SlotMerging || sl.Status == ledger.SlotFinalizing {
-		return true
-	}
-	switch sl.DeathReason {
-	case deathReasonStaleHeartbeat, deathReasonTurnExhausted, deathReasonBudgetKilled:
-		return false
-	}
-	if state, err := completionState(sl.StatusPath); err == nil {
-		switch strings.ToLower(strings.TrimSpace(state)) {
-		case "done", "completed", "complete", "success", "succeeded":
-			return true
-		case "blocked", "failed", "error", "cancelled", "canceled":
-			return false
-		}
-	}
-	if sl.Stream != "" {
-		runtimeName := sl.Runtime
-		if runtimeName == "" && r.rt != nil {
-			runtimeName = r.rt.Name()
-		}
-		if rt, ok := runtimeForName(runtimeName); ok && parseRuntimeSignals(rt, sl.Stream).rateLimited {
-			return false
-		}
-		if dispatch.ParseBudgetKilled(sl.Stream) {
-			return false
-		}
-	}
-	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")
-	return fsx.Exists(summary)
+	return r.assessCandidate(context.Background(), sl).eligible
 }
 
 // drainResumeBacklog promotes stalled beads parked in the resume backlog
@@ -350,12 +318,14 @@ func (r *runner) issueFor(ctx context.Context, sl *ledger.Slot) beads.Issue {
 	if iss, ok := r.issues[sl.PhaseID]; ok {
 		return iss
 	}
-	if iss, err := r.adapter.Show(ctx, sl.PhaseID); err == nil && iss.ID != "" {
-		if r.issues == nil {
-			r.issues = map[string]beads.Issue{}
+	if r.adapter != nil {
+		if iss, err := r.adapter.Show(ctx, sl.PhaseID); err == nil && iss.ID != "" {
+			if r.issues == nil {
+				r.issues = map[string]beads.Issue{}
+			}
+			r.issues[sl.PhaseID] = iss
+			return iss
 		}
-		r.issues[sl.PhaseID] = iss
-		return iss
 	}
 	return beads.Issue{ID: sl.PhaseID, Title: sl.PhaseID, Labels: []string{}}
 }

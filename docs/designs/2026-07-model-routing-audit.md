@@ -3,6 +3,11 @@
 
 # Model-routing audit: is opus spent where it earns it, and does a haiku tier pay off? (2026-07-22)
 
+> Historical audit. The attempt-driven recovery policy described here was
+> removed by
+> [Autonomous loop reliability](2026-07-autonomous-loop-reliability.md);
+> retry count no longer changes an implementation model.
+
 Status: audit complete; one telemetry-correctness fix landed (see §5),
 remaining items filed as follow-ups.
 Origin: bead **koryph-cyq** — "In the latest stampede-games run, opus beads

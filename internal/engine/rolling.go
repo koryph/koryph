@@ -180,7 +180,12 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			if gate.operatorDrain {
 				reason = "operator-drain"
 			}
-			r.run.Status = ledger.RunPausedQuota
+			if gate.engineCircuit {
+				reason = "engine-invariant"
+				r.run.Status = ledger.RunAborted
+			} else {
+				r.run.Status = ledger.RunPausedQuota
+			}
 			_ = r.store.SaveRun(r.run)
 			return r.outcome(ExitOK, reason, false), nil
 		}

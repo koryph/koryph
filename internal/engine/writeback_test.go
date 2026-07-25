@@ -16,9 +16,10 @@ import (
 // labels and comments sync through the beads DB, unlike the gitignored
 // machine-local run ledger where this data was previously stranded.
 
-// TestWriteBackEscalatedMergeLabelsBead proves a bead that merged only after
-// its final attempt escalated gets a model-observed:<tier> label — and that
-// an ordinary (non-escalated) merge writes nothing.
+// TestWriteBackEscalatedMergeLabelsBead preserves read-only provenance for a
+// historical pre-typed-policy ledger that already records an escalation. New
+// runs cannot create this attempt-driven rationale; an ordinary typed-policy
+// merge writes nothing.
 func TestWriteBackEscalatedMergeLabelsBead(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
@@ -27,7 +28,7 @@ func TestWriteBackEscalatedMergeLabelsBead(t *testing.T) {
 
 	r.run.Slots["wb1"] = &ledger.Slot{
 		PhaseID: "wb1", Model: "opus",
-		ModelWhy: "escalated from sonnet after 2 bead-fault attempts (agent died with no commits)",
+		ModelWhy: "historical escalation imported from a pre-typed-policy ledger",
 	}
 	r.run.Slots["wb2"] = &ledger.Slot{
 		PhaseID: "wb2", Model: "sonnet", ModelWhy: "stage default (implement)",
@@ -44,9 +45,10 @@ func TestWriteBackEscalatedMergeLabelsBead(t *testing.T) {
 	}
 }
 
-// TestBlockedAttemptsExhaustedCommentsBead proves the attempts-exhausted
-// block leaves a bd comment carrying model, attempt count, and death summary.
-func TestBlockedAttemptsExhaustedCommentsBead(t *testing.T) {
+// TestTypedBlockedCandidateCommentsBead proves a typed terminal block leaves
+// a bd comment carrying the outcome, model, and attempt count without
+// inventing an attempt-number model escalation.
+func TestTypedBlockedCandidateCommentsBead(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
 	fake := &fakeSource{}
@@ -56,9 +58,9 @@ func TestBlockedAttemptsExhaustedCommentsBead(t *testing.T) {
 	sl := &ledger.Slot{
 		PhaseID:  "wb3",
 		Status:   ledger.SlotRunning,
-		Attempts: ledger.MaxAttempts,
-		Model:    "opus",
-		ModelWhy: "escalated from sonnet after 2 bead-fault attempts (agent died with no commits)",
+		Attempts: 1,
+		Model:    "sonnet",
+		ModelWhy: "persona koryph-implementer standard implementation tier",
 	}
 	r.run.Slots["wb3"] = sl
 	if err := r.store.SaveRun(r.run); err != nil {
@@ -81,10 +83,11 @@ func TestBlockedAttemptsExhaustedCommentsBead(t *testing.T) {
 	}
 	text := fake.comments[0][1]
 	if fake.comments[0][0] != "wb3" ||
-		!strings.Contains(text, "3 attempts exhausted") ||
-		!strings.Contains(text, "opus") ||
-		!strings.Contains(text, "escalated from sonnet") {
-		t.Errorf("blocked comment = %q, want attempts + model + escalation rationale", text)
+		!strings.Contains(text, "code-defect") ||
+		!strings.Contains(text, "1 attempt(s)") ||
+		!strings.Contains(text, "sonnet") ||
+		strings.Contains(strings.ToLower(text), "escalat") {
+		t.Errorf("blocked comment = %q, want typed outcome + attempt + standard model without escalation", text)
 	}
 }
 
@@ -103,6 +106,9 @@ func TestBudgetKillParkCommentsBead(t *testing.T) {
 		Model:              "sonnet",
 		CostUSD:            7.5,
 		BudgetKillRequeues: 1, // at budget: park, don't warm-resume again
+		Retry: ledger.RetryCounters{
+			BudgetContinuations: 1,
+		},
 	}
 	r.run.Slots["wb4"] = sl
 	if err := r.store.SaveRun(r.run); err != nil {

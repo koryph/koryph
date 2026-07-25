@@ -200,17 +200,14 @@ particular runtime:
 model. Use `equiv:<tier>:<effort>` on the bead or `default_equivalent` in the
 project to make the requested capability explicit.
 
-### Final-attempt escalation
+### Typed recovery
 
-Retries re-run the model the bead was first dispatched with (the freeze —
-a mid-run relabel never switches a live retry). The one exception: when a
-bead-fault requeue (gate failure, review bounce, rebase conflict, crash — not
-a transient merge error, rate limit, or budget kill) is about to burn the
-**final** attempt on `haiku`/`sonnet`, that last attempt runs on `opus`
-instead, provided `opus` is in the project's `allowed_models`. The slot's
-model rationale records `escalated from <tier> …`, the TUI marks the row with
-`↑`, and a bead that merges this way gains a `model-observed:<tier>` label as
-durable provenance.
+Retry count never changes the implementation model. Koryph classifies the
+observed outcome and either continues a bounded same-tier session, starts a
+standard-tier repair, or parks the candidate with a precise reason and its
+work preserved. Frontier capacity is reserved for advanced planning and
+explicitly authorized structured security or recovery analysis; analysis
+cannot silently become frontier implementation.
 
 ### Capability requests and capability blocks
 
@@ -258,26 +255,21 @@ fingerprint, passing named probe, or explicit operator nudge admits one bounded
 retry. The hold stores digests only, never raw configuration, probe output, or
 operator text. It does **not** promote the task to a frontier model.
 
-### Learned model labels (adaptive escalation)
+### Historical model evidence
 
-Escalations are also a training signal. `koryph models` (the two-word `models
-learn` still works as an alias) aggregates escalated-then-merged beads by
-`(area:* label, size bucket)` and — once a bucket has enough evidence
-(default 2) that outweighs its clean cheap-tier merges — recommends starting
-similar beads on the stronger tier directly:
+`koryph models` (the two-word `models learn` still works as an alias) can
+inspect historical or explicitly recorded escalation provenance by
+`(area:* label, size bucket)`:
 
 ```console
 $ koryph models            # dry run: show recommendations + evidence
 $ koryph models --apply    # label matching ready beads
 ```
 
-`--apply` stamps `model:<tier>` plus a `model-learned:<yyyy-mm-dd>`
-provenance label on every matching **ready** bead that is a dispatchable type
-and carries no `model:*` label of its own — a human (or earlier) `model:*`
-label always wins, which also makes re-applying a no-op. To undo a learned
-routing, remove the two labels (`bd update <id> --remove-label …`).
-
-Projects can run the same pass automatically at every wave boundary:
+Typed recovery does not generate evidence merely because an attempt number
+increased. Treat `--apply` and the legacy `adaptive_escalation` project option
+as explicit routing overrides: audit any resulting frontier labels before
+dispatch. To undo one, remove its `model:*` and `model-learned:*` labels.
 
 ```json
 "adaptive_escalation": { "enabled": true, "min_evidence": 2 }
@@ -508,9 +500,9 @@ does not delay the merge.
 
 ## Recovery and resume
 
-*For the one-page overview of the whole failure story — detection,
-classified retries, escalation to stronger models, and the operator
-toolkit — see [Recovery & escalation](recovery.md). This section covers
+*For the one-page overview of the whole failure story — detection, typed
+bounded transitions, and the operator toolkit — see
+[Typed recovery](recovery.md). This section covers
 the run-level mechanics.*
 
 Interrupt a run (Ctrl-C, host sleep, etc.) and resume where it left off:

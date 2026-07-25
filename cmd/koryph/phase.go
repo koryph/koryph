@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/phasecontrol"
 )
 
@@ -41,6 +43,13 @@ func init() {
 					"user-guide/running-waves.md",
 				},
 			},
+			{
+				name:    "complete",
+				summary: "write the SHA-bound terminal candidate result",
+				DocLinks: []string{
+					"user-guide/running-waves.md",
+				},
+			},
 		},
 		DocLinks: []string{"user-guide/running-waves.md"},
 	})
@@ -53,6 +62,7 @@ func cmdPhase(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "  koryph phase request label-add --label LABEL")
 		fmt.Fprintln(stdout, "  koryph phase request runtime-canary --runtime NAME")
 		fmt.Fprintln(stdout, "  koryph phase block --capability NAME --detail TEXT")
+		fmt.Fprintln(stdout, "  koryph phase complete --evidence PATH")
 		return 0
 	}
 	switch args[0] {
@@ -72,10 +82,74 @@ func cmdPhase(args []string, stdout, stderr io.Writer) int {
 		}
 	case "block":
 		return cmdPhaseBlock(args[1:], stdout, stderr)
+	case "complete":
+		return cmdPhaseComplete(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "koryph phase: unknown subcommand %q\n", args[0])
 		return engine.ExitUsage
 	}
+}
+
+func cmdPhaseComplete(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("phase complete", stderr)
+	var evidencePath string
+	fs.StringVar(&evidencePath, "evidence", "", "structured focused-test and acceptance evidence JSON")
+	setUsage(fs, stdout, "act as the sole supported product writer for a terminal result; all same-UID artifacts are revalidated fail-closed against the live dispatch and candidate SHA", "--evidence PATH")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if len(pos) != 0 || strings.TrimSpace(evidencePath) == "" {
+		fmt.Fprintln(stderr, "koryph phase complete: --evidence is required")
+		return engine.ExitUsage
+	}
+	phaseDir, phaseID, err := currentPhase()
+	if err != nil {
+		fmt.Fprintf(stderr, "koryph phase complete: %v\n", err)
+		return engine.ExitFatal
+	}
+	runID := strings.TrimSpace(os.Getenv("KORYPH_RUN_ID"))
+	if runID == "" {
+		fmt.Fprintln(stderr, "koryph phase complete: KORYPH_RUN_ID is required")
+		return engine.ExitFatal
+	}
+	var dispatch ledger.Manifest
+	if err := fsx.ReadJSONConfined(
+		filepath.Join(phaseDir, "manifest.json"), &dispatch, 1<<20, phaseDir,
+	); err != nil {
+		fmt.Fprintf(stderr, "koryph phase complete: read dispatch manifest: %v\n", err)
+		return engine.ExitFatal
+	}
+	if dispatch.BeadID != phaseID {
+		fmt.Fprintf(stderr, "koryph phase complete: dispatch manifest phase %q does not match %q\n", dispatch.BeadID, phaseID)
+		return engine.ExitFatal
+	}
+	dispatchContext := phasecontrol.DispatchContext{
+		RunID: runID, PhaseID: phaseID, Attempt: dispatch.Attempt,
+		SessionID: dispatch.SessionID, BaseSHA: dispatch.BaseCommit,
+	}
+	if dispatch.DispatchGeneration == "" ||
+		dispatch.DispatchGeneration != phasecontrol.DispatchGeneration(dispatchContext) {
+		fmt.Fprintln(stderr, "koryph phase complete: dispatch manifest generation is missing or invalid")
+		return engine.ExitFatal
+	}
+	summaryPath := strings.TrimSpace(os.Getenv("KORYPH_SUMMARY_PATH"))
+	if summaryPath == "" {
+		summaryPath = filepath.Join(phaseDir, "SUMMARY.md")
+	}
+	result, err := phasecontrol.Complete(context.Background(), phasecontrol.CompleteOptions{
+		PhaseDir:     phaseDir,
+		Worktree:     dispatch.WorktreePath,
+		SummaryPath:  summaryPath,
+		EvidencePath: evidencePath,
+		Dispatch:     dispatchContext,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "koryph phase complete: %v\n", err)
+		return engine.ExitFatal
+	}
+	fmt.Fprintf(stdout, "completed %s at %s (%d commit(s))\n", phaseID, result.CandidateSHA, result.CommitCount)
+	return 0
 }
 
 func cmdPhaseLabelAdd(args []string, stdout, stderr io.Writer) int {

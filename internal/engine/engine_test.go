@@ -6,14 +6,22 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 
+	"github.com/koryph/koryph/internal/beads"
+	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/phasecontrol"
 	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
 )
 
@@ -53,6 +61,40 @@ type fixOpts struct {
 }
 
 const fakeIdentityEmail = "test@example.com"
+
+var testKoryphBuild struct {
+	once   sync.Once
+	path   string
+	err    error
+	output []byte
+}
+
+// testKoryphBinary builds the real CLI once for fake workers. Completion is an
+// imperative CLI contract, so fixtures invoke the production command instead
+// of synthesizing result.json.
+func testKoryphBinary(t *testing.T) string {
+	t.Helper()
+	testKoryphBuild.once.Do(func() {
+		dir, err := os.MkdirTemp("", "koryph-engine-test-bin-")
+		if err != nil {
+			testKoryphBuild.err = err
+			return
+		}
+		testKoryphBuild.path = filepath.Join(dir, "koryph")
+		wd, err := os.Getwd()
+		if err != nil {
+			testKoryphBuild.err = err
+			return
+		}
+		cmd := exec.Command("go", "build", "-o", testKoryphBuild.path, "./cmd/koryph")
+		cmd.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+		testKoryphBuild.output, testKoryphBuild.err = cmd.CombinedOutput()
+	})
+	if testKoryphBuild.err != nil {
+		t.Fatalf("build test koryph CLI: %v\n%s", testKoryphBuild.err, testKoryphBuild.output)
+	}
+	return testKoryphBuild.path
+}
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
@@ -96,14 +138,35 @@ case "$1" in
 esac
 `
 
+const fakeCompletionFunction = `
+koryph_test_complete() {
+  changed_file="$1"
+  focused_log="$KORYPH_PHASE_DIR/focused-test.log"
+  git diff --check HEAD^ > "$focused_log" 2>&1
+  focused_status=$?
+  printf 'exit_status=%d\n' "$focused_status" >> "$focused_log"
+  evidence="$KORYPH_PHASE_DIR/completion-evidence.json"
+  printf '{"focused_tests":[{"command":"git diff --check HEAD^","exit_status":%d,"log_path":"%s"}],"acceptance":[{"criterion_id":"AC1","references":[{"kind":"file","path":"%s"},{"kind":"focused-test","command":"git diff --check HEAD^"}]}]}\n' \
+    "$focused_status" "$focused_log" "$PWD/$changed_file" > "$evidence"
+  completion_log="$KORYPH_PHASE_DIR/phase-complete.log"
+  "$KORYPH_TEST_KORYPH_BIN" phase complete --evidence "$evidence" > "$completion_log" 2>&1
+  completion_status=$?
+  cat "$completion_log"
+  return "$completion_status"
+}
+`
+
 // fakeClaudeScript acts as a well-behaved implementer: consume the prompt,
-// commit one file in the worktree ($PWD), write SUMMARY.md, report cost.
+// commit one file in the worktree ($PWD), write SUMMARY.md, complete through
+// the production CLI, and report cost.
 const fakeClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 echo "work" > agent-work.txt
 git add agent-work.txt
 git commit -q --no-verify -m "feat(tb1): work"
 printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+koryph_test_complete agent-work.txt || exit $?
 printf '{"type":"result","total_cost_usd":0.42}\n'
 exit 0
 `
@@ -112,6 +175,7 @@ exit 0
 // implementer commit and each pipeline stage commit are distinguishable),
 // writes SUMMARY.md only for the implementer, and reports cost.
 const personaClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 persona=unknown
 while [ $# -gt 0 ]; do
@@ -129,12 +193,13 @@ git add "$persona.txt"
 git commit -q --no-verify -m "chore($persona): work"
 if [ "$persona" = "koryph-implementer" ]; then
   printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+  koryph_test_complete "$persona.txt" || exit $?
 fi
 printf '{"type":"result","total_cost_usd":0.10}\n'
 exit 0
 `
 
-const readyJSON = `[{"id":"tb1","title":"Test bead one","description":"do the work","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]`
+const readyJSON = `[{"id":"tb1","title":"Test bead one","description":"do the work","acceptance_criteria":"AC1: agent work is committed","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]`
 
 // fixtureAccount is the account profile every engine-test fixture runner
 // resolves to (the rec built in newFixture). The concurrency governor pool is
@@ -200,6 +265,7 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 	t.Setenv("KORYPH_HOME", f.home)
 	t.Setenv("KORYPH_BD_BIN", bdBin)
 	t.Setenv("KORYPH_CLAUDE_BIN", claudeBin)
+	t.Setenv("KORYPH_TEST_KORYPH_BIN", testKoryphBinary(t))
 	t.Setenv("FAKE_BD_DIR", f.bdDir)
 	t.Setenv("KORYPH_NO_NPX", "1")
 	t.Setenv("KORYPH_BACKOFF_SEC", "0")
@@ -267,6 +333,7 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 		AllowedModels:    []string{"haiku", "sonnet", "opus"},
 		WorktreeRoot:     f.wtRoot,
 		AgentProxy:       o.agentProxy,
+		EnvPassthrough:   []string{"KORYPH_TEST_KORYPH_BIN"},
 	}
 	if err := st.Add(ctx, rec); err != nil {
 		t.Fatal(err)
@@ -298,6 +365,321 @@ func baseOptions(out *bytes.Buffer) Options {
 	}
 }
 
+type observingBackend struct {
+	observe func(dispatch.Spec) error
+}
+
+type spawnedSleepBackend struct {
+	pid   int
+	calls int
+}
+
+func (b *spawnedSleepBackend) Dispatch(_ context.Context, spec dispatch.Spec) (dispatch.Handle, error) {
+	b.calls++
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return dispatch.Handle{}, err
+	}
+	b.pid = cmd.Process.Pid
+	if err := cmd.Process.Release(); err != nil {
+		_ = dispatch.StopForceAndReap(b.pid)
+		return dispatch.Handle{}, err
+	}
+	return dispatch.Handle{
+		PID: b.pid, SessionID: spec.SessionID, VerifiedIdentity: "agent@example.com",
+		StreamPath: filepath.Join(spec.PhaseDir, "stream.jsonl"),
+		StatusPath: filepath.Join(spec.PhaseDir, "status.json"),
+	}, nil
+}
+
+func (b observingBackend) Dispatch(_ context.Context, spec dispatch.Spec) (dispatch.Handle, error) {
+	if b.observe != nil {
+		if err := b.observe(spec); err != nil {
+			return dispatch.Handle{}, err
+		}
+	}
+	return dispatch.Handle{
+		PID: 1, SessionID: spec.SessionID,
+		StreamPath: filepath.Join(spec.PhaseDir, "stream.jsonl"),
+		StatusPath: filepath.Join(spec.PhaseDir, "status.json"),
+	}, nil
+}
+
+func dispatchIdentityRunner(t *testing.T, f *fix, issue beads.Issue, observe func(dispatch.Spec) error) *runner {
+	t.Helper()
+	r := runnerFromFixture(t, f)
+	r.adapter = &fakeSource{}
+	r.quotaCfg = &quota.Config{}
+	r.backend = observingBackend{observe: observe}
+	r.issues[issue.ID] = issue
+	return r
+}
+
+func TestDispatchPersistsIdentityBeforeFastWorkerCompletes(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	issue := beads.Issue{
+		ID: "fast", Title: "fast worker",
+		AcceptanceCriteria: "AC1: fast worker commit is present",
+	}
+	var r *runner
+	r = dispatchIdentityRunner(t, f, issue, func(spec dispatch.Spec) error {
+		persistedRun, err := r.store.LoadRun(r.run.RunID)
+		if err != nil {
+			return fmt.Errorf("slot was not persisted before backend launch: %w", err)
+		}
+		prelaunch := persistedRun.Slots[issue.ID]
+		if prelaunch == nil || prelaunch.DispatchGeneration == "" ||
+			prelaunch.DispatchBaseSHA == "" || prelaunch.PID != 0 ||
+			prelaunch.Status != ledger.SlotQueued {
+			return fmt.Errorf("prelaunch slot is incomplete or already live: %+v", prelaunch)
+		}
+		manifest, err := r.store.LoadManifest(r.run.RunID, issue.ID)
+		if err != nil {
+			return fmt.Errorf("manifest was not persisted before backend launch: %w", err)
+		}
+		if manifest.DispatchGeneration == "" || manifest.BaseCommit == "" ||
+			manifest.SessionID != spec.SessionID || manifest.ExecutionState != "dispatching" {
+			return fmt.Errorf("prelaunch manifest is incomplete: %+v", manifest)
+		}
+		writeFile(t, filepath.Join(spec.Worktree, "fast.txt"), "fast\n", 0o644)
+		runGit(t, spec.Worktree, "add", "fast.txt")
+		runGit(t, spec.Worktree, "commit", "--no-verify", "-m", "feat(fast): work")
+		summary := filepath.Join(spec.PhaseDir, "SUMMARY.md")
+		writeFile(t, summary, "fast completion\n", 0o644)
+		logPath := filepath.Join(spec.PhaseDir, "focused.log")
+		writeFile(t, logPath, "ok\n", 0o644)
+		evidence := filepath.Join(spec.PhaseDir, "evidence.json")
+		writeFile(t, evidence, fmt.Sprintf(
+			`{"focused_tests":[{"command":"git diff --check HEAD^","exit_status":0,"log_path":%q}],"acceptance":[{"criterion_id":"AC1","references":[{"kind":"file","path":%q}]}]}`,
+			logPath, filepath.Join(spec.Worktree, "fast.txt"),
+		), 0o644)
+		_, err = phasecontrol.Complete(t.Context(), phasecontrol.CompleteOptions{
+			PhaseDir: spec.PhaseDir, Worktree: spec.Worktree,
+			SummaryPath: summary, EvidencePath: evidence,
+			Dispatch: phasecontrol.DispatchContext{
+				RunID: r.run.RunID, PhaseID: issue.ID, Attempt: 1,
+				SessionID: manifest.SessionID, BaseSHA: manifest.BaseCommit,
+			},
+		})
+		return err
+	})
+
+	r.dispatchBead(t.Context(), dispatchReq{issue: issue, attempt: 1})
+	sl := r.run.Slots[issue.ID]
+	if sl == nil || sl.DispatchBaseSHA == "" || sl.DispatchGeneration == "" {
+		t.Fatalf("slot missing trusted identity after fast completion: %+v", sl)
+	}
+	if ok, reason := r.candidateEligible(t.Context(), sl); !ok {
+		t.Fatalf("fast worker result was not accepted: %s", reason)
+	}
+}
+
+func TestDispatchLaunchedSlotPersistenceFailureStopsAndReapsWorker(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	issue := beads.Issue{ID: "rollback-clean", Title: "rollback clean"}
+	r := dispatchIdentityRunner(t, f, issue, nil)
+	backend := &spawnedSleepBackend{}
+	r.backend = backend
+	r.processIdentityProbe = func(context.Context, int) string { return "stable-process" }
+	r.launchedSlotPersist = func(*ledger.Slot) error {
+		return errors.New("injected launched-slot persistence failure")
+	}
+
+	r.dispatchBead(t.Context(), dispatchReq{issue: issue, attempt: 1})
+
+	if backend.pid <= 0 {
+		t.Fatal("backend did not start a worker")
+	}
+	if dispatch.Alive(backend.pid) {
+		t.Fatalf("worker pid %d survived launched-slot rollback", backend.pid)
+	}
+	if got := r.run.Slots[issue.ID]; got == nil || got.Status != ledger.SlotBlocked ||
+		!strings.Contains(got.Note, "persist launched slot") {
+		t.Fatalf("rollback slot = %+v, want terminal persisted failure", got)
+	}
+	manifest, err := r.store.LoadManifest(r.run.RunID, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ExecutionState != "launch-untracked-stopped" {
+		t.Errorf("manifest state = %q, want launch-untracked-stopped", manifest.ExecutionState)
+	}
+	if manifest.ExecutionError == "" {
+		t.Error("manifest did not record the launched-slot persistence failure")
+	}
+}
+
+func TestDispatchRollbackStopFailureRetainsLiveTrackedHandle(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	issue := beads.Issue{ID: "rollback-live", Title: "rollback live"}
+	r := dispatchIdentityRunner(t, f, issue, nil)
+	backend := &spawnedSleepBackend{}
+	r.backend = backend
+	r.processIdentityProbe = func(context.Context, int) string { return "stable-process" }
+	r.launchedSlotPersist = func(*ledger.Slot) error {
+		return errors.New("injected launched-slot persistence failure")
+	}
+	r.rollbackStop = func(int) error {
+		return errors.New("injected stop/reap failure")
+	}
+	t.Cleanup(func() {
+		if backend.pid > 0 {
+			_ = dispatch.StopForceAndReap(backend.pid)
+			r.releaseGlobalSlot(issue.ID)
+		}
+	})
+
+	r.dispatchBead(t.Context(), dispatchReq{issue: issue, attempt: 1})
+
+	got := r.run.Slots[issue.ID]
+	if got == nil || got.Status != ledger.SlotRunning || got.PID != backend.pid ||
+		got.VerifiedIdentity == "" || got.ProcessIdentity == "" ||
+		!strings.Contains(got.Note, "authenticated live worker retained") {
+		t.Fatalf("rollback slot = %+v, want live authenticated handle retained", got)
+	}
+	persisted, err := r.store.LoadRun(r.run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved := persisted.Slots[issue.ID]; saved == nil || saved.PID != backend.pid ||
+		saved.Status != ledger.SlotRunning {
+		t.Fatalf("persisted rollback slot = %+v, want live worker recorded", saved)
+	}
+	if !dispatch.Alive(backend.pid) {
+		t.Fatalf("worker pid %d is not live; test did not exercise stop failure fallback", backend.pid)
+	}
+	manifest, err := r.store.LoadManifest(r.run.RunID, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ExecutionState != "launch-untracked-stop-failed" {
+		t.Errorf("manifest state = %q, want launch-untracked-stop-failed", manifest.ExecutionState)
+	}
+	if manifest.PID != backend.pid || manifest.ExecutionError == "" {
+		t.Errorf("manifest rollback evidence = pid %d / error %q, want pid %d / non-empty",
+			manifest.PID, manifest.ExecutionError, backend.pid)
+	}
+}
+
+func TestDispatchRollbackIdentityUnavailableOpensManualInvariantCircuit(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	issue := beads.Issue{ID: "rollback-manual", Title: "rollback manual"}
+	r := dispatchIdentityRunner(t, f, issue, nil)
+	backend := &spawnedSleepBackend{}
+	r.backend = backend
+	r.processIdentityProbe = func(context.Context, int) string { return "" }
+	r.launchedSlotPersist = func(*ledger.Slot) error {
+		return errors.New("injected launched-slot persistence failure")
+	}
+	stopCalls := 0
+	r.rollbackStop = func(int) error {
+		stopCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		if backend.pid > 0 {
+			_ = dispatch.StopForceAndReap(backend.pid)
+			r.releaseGlobalSlot(issue.ID)
+		}
+	})
+
+	r.dispatchBead(t.Context(), dispatchReq{issue: issue, attempt: 1})
+
+	got := r.run.Slots[issue.ID]
+	if got == nil || got.Status != ledger.SlotBlocked || got.PID != backend.pid ||
+		got.OutcomeClass != string(OutcomeEngineInvariant) ||
+		!strings.Contains(got.Note, "manual hold") ||
+		!strings.Contains(got.Note, "no automatic signal permitted") {
+		t.Fatalf("manual invariant slot = %+v", got)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("PID-only rollback stop called %d time(s), want 0", stopCalls)
+	}
+	if r.dispatchCircuitReason == "" {
+		t.Fatal("dispatch circuit was not opened")
+	}
+	if !dispatch.Alive(backend.pid) {
+		t.Fatalf("manual-hold pid %d is not live; test did not exercise unsignalled fallback", backend.pid)
+	}
+	manifest, err := r.store.LoadManifest(r.run.RunID, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ExecutionState != "launch-untracked-identity-unavailable" ||
+		manifest.PID != backend.pid || manifest.ExecutionError == "" {
+		t.Fatalf("manual-hold manifest = %+v", manifest)
+	}
+
+	second := beads.Issue{ID: "circuit-blocked", Title: "circuit blocked"}
+	r.issues[second.ID] = second
+	r.dispatchBead(t.Context(), dispatchReq{issue: second, attempt: 1})
+	if backend.calls != 1 {
+		t.Fatalf("backend calls = %d, want 1 after circuit opens", backend.calls)
+	}
+	if blocked := r.run.Slots[second.ID]; blocked == nil ||
+		blocked.OutcomeClass != string(OutcomeEngineInvariant) {
+		t.Fatalf("post-circuit slot = %+v, want engine-invariant block", blocked)
+	}
+}
+
+func TestDispatchBaseDoesNotChangeWhenMainAdvancesDuringLaunch(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	before := strings.TrimSpace(runGit(t, f.repo, "rev-parse", "main"))
+	issue := beads.Issue{
+		ID: "base-race", Title: "base race",
+		AcceptanceCriteria: "AC1: dispatch identity remains stable",
+	}
+	var r *runner
+	r = dispatchIdentityRunner(t, f, issue, func(dispatch.Spec) error {
+		writeFile(t, filepath.Join(f.repo, "main-race.txt"), "advanced\n", 0o644)
+		runGit(t, f.repo, "add", "main-race.txt")
+		runGit(t, f.repo, "commit", "--no-verify", "-m", "chore: advance main during launch")
+		return nil
+	})
+
+	r.dispatchBead(t.Context(), dispatchReq{issue: issue, attempt: 1})
+	after := strings.TrimSpace(runGit(t, f.repo, "rev-parse", "main"))
+	if after == before {
+		t.Fatal("test setup did not advance main")
+	}
+	sl := r.run.Slots[issue.ID]
+	manifest, err := r.store.LoadManifest(r.run.RunID, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sl.DispatchBaseSHA != before || manifest.BaseCommit != before ||
+		sl.DispatchGeneration != manifest.DispatchGeneration {
+		t.Fatalf("dispatch identity raced main: slot=%+v manifest=%+v before=%s after=%s",
+			sl, manifest, before, after)
+	}
+	if head := strings.TrimSpace(runGit(t, sl.Worktree, "rev-parse", "HEAD")); head != before {
+		t.Fatalf("worktree HEAD=%s, want captured base %s", head, before)
+	}
+}
+
+func TestEngineMergeJobsCarryTrustedValidationPhaseContext(t *testing.T) {
+	r, sl, _ := candidateFixture(t)
+	r.cfg = &project.Config{}
+	r.adapter = &fakeSource{}
+	lane := &finalizationLane{}
+	lane.ready = sync.NewCond(&lane.mu)
+	r.finalizer = lane
+
+	r.mergeSlot(t.Context(), sl)
+	r.openPRSlot(t.Context(), sl)
+
+	if len(lane.queue) != 2 {
+		t.Fatalf("queued finalization jobs = %d, want merge and PR", len(lane.queue))
+	}
+	want := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
+	for i, job := range lane.queue {
+		if job.mergeOpts.ValidationPhaseDir != want {
+			t.Errorf("job %d validation phase dir = %q, want %q", i, job.mergeOpts.ValidationPhaseDir, want)
+		}
+	}
+}
+
 // branchExists reports whether the repo has a local branch of that name.
 func branchExists(repo, branch string) bool {
 	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
@@ -321,6 +703,13 @@ func TestRunOnceMergesAndDrains(t *testing.T) {
 		t.Errorf("Code = %d, want %d", got.Code, ExitOK)
 	}
 	if got.Dispatched != 1 || got.Merged != 1 || got.Failed != 0 || got.Blocked != 0 {
+		if run, loadErr := ledger.NewStore(f.repo).LoadLatest(); loadErr == nil {
+			if failed := run.Slots["tb1"]; failed != nil {
+				if stream, readErr := os.ReadFile(failed.Stream); readErr == nil {
+					t.Logf("failed worker stream:\n%s", stream)
+				}
+			}
+		}
 		t.Errorf("Outcome = %+v, want 1 dispatched / 1 merged", got)
 	}
 

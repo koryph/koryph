@@ -149,9 +149,9 @@ observable seams and preserving dependencies and integration ownership.
 
 Routine standard-tier implementation uses medium effort by default. High
 effort requires a bead-local rationale; frontier remains mandatory for design,
-decomposition, plan scoring, security review, and recovery analysis. Final
-recovery escalation may use frontier only after deterministic recovery and
-standard retry paths are exhausted.
+decomposition, plan scoring, security review, and recovery analysis. Retry
+count never promotes implementation; frontier recovery is structured analysis
+only unless a separate, recorded policy explicitly authorizes implementation.
 
 Routing vocabulary follows the engine contract: `equiv:<tier>:<effort>` is
 portable and `model:<id>` is an exact runtime-native override. Routine

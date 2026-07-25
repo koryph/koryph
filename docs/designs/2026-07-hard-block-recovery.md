@@ -3,6 +3,10 @@
 
 # Hard-block recovery for runtime-neutral autonomous waves
 
+> Historical design. Its final-attempt model escalation was superseded by
+> [Autonomous loop reliability](2026-07-autonomous-loop-reliability.md),
+> which uses typed recovery and does not infer capability from retry count.
+
 ## Problem
 
 A Codex-driven autonomous wave left five implementation beads blocked even

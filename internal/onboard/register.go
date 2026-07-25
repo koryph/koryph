@@ -207,10 +207,9 @@ func buildRecord(projectID string, inv *Inventory, opts RegisterOpts, identityFi
 		Credential:          opts.Credential,
 		IdentityFingerprint: identityFingerprint,
 
-		AllowedModels:       allowed,
-		PlannerModel:        "opus",
-		ImplModel:           "sonnet",
-		RecoveryModelPolicy: "upgrade-opus",
+		AllowedModels: allowed,
+		PlannerModel:  "opus",
+		ImplModel:     "sonnet",
 
 		BatchPolicy:       "explicit",
 		APIFallback:       "off",

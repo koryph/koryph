@@ -41,7 +41,7 @@ func runGateAgent(t *testing.T, stages string) (output string, exitCode int, log
 	t.Helper()
 	logDir = t.TempDir()
 	cmd := exec.Command("bash", "gate-agent.sh", logDir)
-	cmd.Env = append(os.Environ(), "KORYPH_GATE_AGENT_STAGES="+stages)
+	cmd.Env = gateAgentEnv(map[string]string{"KORYPH_GATE_AGENT_STAGES": stages})
 	out, err := cmd.CombinedOutput()
 	output = string(out)
 	exitCode = 0
@@ -59,6 +59,11 @@ func gateAgentEnv(overrides map[string]string) []string {
 	env := make([]string, 0, len(os.Environ())+len(overrides))
 	for _, pair := range os.Environ() {
 		name, _, _ := strings.Cut(pair, "=")
+		if name == "KORYPH_PHASE_ID" {
+			if _, replaced := overrides[name]; !replaced {
+				continue
+			}
+		}
 		if _, replaced := overrides[name]; !replaced {
 			env = append(env, pair)
 		}
@@ -148,7 +153,6 @@ func TestGateAgentTestStageSanitizesDispatchEnvironment(t *testing.T) {
 		"KORYPH_GATE_AGENT_STAGES": "test|for name in KORYPH_RUN_ID KORYPH_SESSION_ID KORYPH_PHASE_ID KORYPH_SPAWN_KIND KORYPH_PHASE_DIR KORYPH_STATUS_PATH KORYPH_SUMMARY_PATH KORYPH_LOG_PATH KORYPH_DIR; do if printenv \"$name\" >/dev/null; then echo \"$name=present\"; else echo \"$name=unset\"; fi; done; test -d \"$KORYPH_HOME\"; test -x \"$KORYPH_BD_BIN\"; test \"$(command -v bd)\" = \"$KORYPH_BD_BIN\"; \"$KORYPH_BD_BIN\" list --parent live-project; test $? -eq 97; bd list --parent live-project; test $? -eq 97",
 		"KORYPH_RUN_ID":            "host-run",
 		"KORYPH_SESSION_ID":        "host-session",
-		"KORYPH_PHASE_ID":          "host-phase",
 		"KORYPH_SPAWN_KIND":        "host-spawn",
 		"KORYPH_PHASE_DIR":         "/live/phase",
 		"KORYPH_STATUS_PATH":       "/live/status.json",
@@ -229,5 +233,30 @@ func TestGateAgentFailingTestStagePreservesExitCode(t *testing.T) {
 	}
 	if !strings.Contains(string(stageLog), "sanitized-test-failure") {
 		t.Errorf("failing test-stage log missing marker:\n%s", stageLog)
+	}
+}
+
+func TestGateAgentRefusesEveryPhaseDespiteForgedValidationRole(t *testing.T) {
+	logDir := t.TempDir()
+	ran := filepath.Join(t.TempDir(), "ran")
+	cmd := exec.Command("bash", "gate-agent.sh", logDir)
+	cmd.Env = gateAgentEnv(map[string]string{
+		"KORYPH_PHASE_ID":          "worker-phase",
+		"KORYPH_COMMAND_ROLE":      "validation",
+		"KORYPH_GATE_AGENT_STAGES": "one|echo ran >" + ran,
+	})
+	out, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 126 {
+		t.Fatalf("phase gate = %v\n%s", err, out)
+	}
+	if _, err := os.Stat(ran); !os.IsNotExist(err) {
+		t.Fatalf("phase gate ran a stage: %v", err)
+	}
+	if !strings.Contains(string(out), "direct execution inside a worker phase is denied") {
+		t.Fatalf("denial lacked actionable reason:\n%s", out)
+	}
+	if entries, err := os.ReadDir(logDir); err != nil || len(entries) != 0 {
+		t.Fatalf("denied phase wrote into log dir: entries=%v err=%v", entries, err)
 	}
 }

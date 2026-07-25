@@ -1,13 +1,13 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
 
-# Recovery & escalation
+# Typed recovery
 
 A fleet that runs for hours unattended will see agents stall, gates go red,
 rebases collide, rate limits bite, and budgets expire. koryph treats every
-one of those as an *input* with a defined next step — detect, classify,
-retry, escalate, and only then park for a human — so a failure at 2 a.m.
-costs you a retry, not a morning of forensics.
+one of those as an *input* with a defined next step — detect, classify, then
+continue, repair, or park with evidence — so a failure at 2 a.m. does not
+become a morning of forensics.
 
 This page collects the whole story in one place. The mechanics live in
 [Running waves](running-waves.md#recovery-and-resume); the architecture
@@ -49,9 +49,8 @@ Retries are bounded, cause-coded, and visible (the TUI Threads tab shows
 - **Host blocks are structured.** A sandbox or host denial — such as an
   unavailable `ssh-agent`, credential, filesystem, network, tool, or host
   resource — is reported with `koryph phase block`, which parks the bead
-  without a coding-agent retry or model escalation. A legacy generic worker
-  self-block gets a same-tier classification-correction retry; it never
-  spends the final frontier escalation.
+  without a coding-agent retry or model change. A legacy generic worker
+  self-block gets a same-tier classification-correction retry.
 - **Inert live-PID recovery is not a fault.** On a host with safe process-handle
   support, a stale, childless agent is SIGTERMed and resumed on its frozen
   tier/session without consuming an attempt; its no-commit worktree is retained
@@ -70,28 +69,27 @@ Retries are bounded, cause-coded, and visible (the TUI Threads tab shows
 - **Stage timeouts degrade, not park.** A timed-out stage records a
   degraded result and moves on where that's safe, instead of freezing the
   bead.
-- **Frozen model on retry.** Retries re-run the model the bead was first
-  dispatched with — a mid-run relabel never switches a live retry — with
-  exactly one exception, below.
+- **Typed model policy.** Retry count never changes the implementation
+  model. A changed implementation model requires an explicit routing choice
+  or a recorded, authorized capability diagnosis.
 
-## Escalate { #escalation }
+## Typed recovery { #escalation }
 
-- **Final-attempt escalation.** When a bead-fault requeue is about to burn
-  the **final** attempt on a cheap tier (`haiku`/`sonnet`), that last
-  attempt runs on the frontier tier (`opus`) instead — provided the
-  project's `allowed_models` permits it. The slot's model rationale records
-  `escalated from <tier>`, the TUI marks the row `↑`, and a bead that merges
-  this way gains a durable `model-observed:<tier>` label.
-- **Faults only.** Escalation counts genuine faults — never dispatch
-  counts, environment no-ops, or rate limits — so frontier-tier spend goes
-  to problems a stronger model can actually solve.
-- **Tier policy is yours.** A bead's `rt:<n>` label (or the project's
-  `risk_tier_default`) sets the recovery tier; reviewer timeouts have their
-  own per-project adaptive escalation with a hard cap.
+- **Evidence first.** Koryph classifies completion, code, semantic, security,
+  runtime, budget, turn, mechanical, stop, and invariant outcomes before
+  choosing a transition.
+- **Bounded continuation.** Warm resume and fresh continuation have separate
+  small budgets. Mechanical and transient failures never imply a stronger
+  model.
+- **Frontier is analysis.** Frontier models are for advanced planning and
+  explicitly authorized structured security/recovery analysis. The analysis
+  result cannot silently turn into frontier implementation.
+- **Preserve work.** Dirty, commitless, unverifiable, or invariant-breaking
+  candidates park with their branch and worktree intact.
 
 ## Learn { #learned-model-labels }
 
-Escalations are a training signal, not just a save:
+Historical or explicitly typed escalation provenance can still be inspected:
 
 ```console
 $ koryph models            # dry run: recommendations + evidence
@@ -99,11 +97,11 @@ $ koryph models --apply    # pre-label matching ready beads
 ```
 
 `koryph models` (the two-word `models learn` still works as an alias)
-aggregates escalated-then-merged beads by area and size
-bucket; once a bucket has enough evidence, similar ready beads are labelled
-to *start* on the stronger tier — skipping the doomed cheap attempts
-entirely. A human-set `model:*` label always wins. Projects can run the
-pass automatically at every wave boundary:
+aggregates recorded provenance by area and size bucket. Retry count alone no
+longer creates this signal. Applying a recommendation is an explicit routing
+override; audit any frontier label before dispatch. The legacy
+`adaptive_escalation` option remains opt-in while the quality-pipeline
+migration removes automated frontier implementation.
 
 ```json
 "adaptive_escalation": { "enabled": true, "min_evidence": 2 }

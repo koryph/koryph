@@ -27,8 +27,11 @@ import (
 // carries the committed .done marker, so the second invocation finishes
 // immediately instead of tripping again.
 const turnCeilingClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 if [ -f .done ]; then
+  printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+  koryph_test_complete agent-work.txt || exit $?
   printf '{"type":"result","total_cost_usd":0.05,"is_error":false,"num_turns":1}\n'
   exit 0
 fi
@@ -90,5 +93,41 @@ func TestTurnCeilingInterruptsAndFreshRequeues(t *testing.T) {
 	}
 	if sl.TurnExhaustedRequeues != 1 {
 		t.Errorf("TurnExhaustedRequeues = %d, want 1", sl.TurnExhaustedRequeues)
+	}
+	if sl.Retry.TurnContinuations != 1 {
+		t.Errorf("TurnContinuations = %d, want 1", sl.Retry.TurnContinuations)
+	}
+	if sl.Model == "opus" {
+		t.Errorf("turn continuation escalated to frontier model %q", sl.Model)
+	}
+}
+
+func TestTurnCeilingTypedBudgetParksAfterTwoFreshSameTierContinuations(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, backend := escalationRunner(t, f)
+	sl := escalationSlot(t, r, "turn-bounded", 1)
+
+	r.requeueTurnExhausted(t.Context(), sl)
+	sl = r.run.Slots["turn-bounded"]
+	r.requeueTurnExhausted(t.Context(), sl)
+	sl = r.run.Slots["turn-bounded"]
+	r.requeueTurnExhausted(t.Context(), sl)
+
+	if len(backend.specs) != turnContinuationBudget {
+		t.Fatalf("dispatches = %d, want %d bounded continuations", len(backend.specs), turnContinuationBudget)
+	}
+	for i, spec := range backend.specs {
+		if spec.Model != "sonnet" || spec.ResumeSessionID != "" {
+			t.Errorf("dispatch %d = model %q / resume %q, want frozen sonnet / fresh session",
+				i+1, spec.Model, spec.ResumeSessionID)
+		}
+	}
+	got := r.run.Slots["turn-bounded"]
+	if got.Status != ledger.SlotBlocked ||
+		got.Retry.TurnContinuations != turnContinuationBudget ||
+		got.TurnExhaustedRequeues != turnContinuationBudget ||
+		got.OutcomeClass != string(OutcomeTurnExhausted) {
+		t.Errorf("terminal turn state = status %q retry %+v mirror %d outcome %q",
+			got.Status, got.Retry, got.TurnExhaustedRequeues, got.OutcomeClass)
 	}
 }

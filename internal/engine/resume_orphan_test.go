@@ -5,7 +5,6 @@ package engine
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
@@ -111,17 +110,12 @@ func TestResumeRejectsRecycledPID(t *testing.T) {
 }
 
 func TestResumeFinalizesCompletedCandidateWithoutCodingRedispatch(t *testing.T) {
-	f := newFixture(t, fixOpts{})
-	r := runnerFromFixture(t, f)
-	statusPath := filepath.Join(t.TempDir(), "status.json")
-	if err := os.WriteFile(statusPath, []byte(`{"state":"done"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sl := &ledger.Slot{
-		PhaseID: "complete", BeadID: "complete", Status: ledger.SlotRunning,
-		PID: 9999999, Attempts: ledger.MaxAttempts, Commits: 2,
-		StatusPath: statusPath,
-	}
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "done\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): work")
+	completeCandidate(t, r, sl)
+	sl.PID = 9999999
 	if err := r.store.SetSlot(r.run, sl); err != nil {
 		t.Fatalf("SetSlot: %v", err)
 	}
@@ -133,12 +127,12 @@ func TestResumeFinalizesCompletedCandidateWithoutCodingRedispatch(t *testing.T) 
 	if !resumed {
 		t.Fatal("resume returned false for completion-ready candidate")
 	}
-	got := r.run.Slots["complete"]
+	got := r.run.Slots[sl.PhaseID]
 	if got.Status != ledger.SlotFinalizing || got.PID != 0 || got.ProcessIdentity != "" {
 		t.Fatalf("completed slot = status %q pid %d identity %q, want finalizing with no process", got.Status, got.PID, got.ProcessIdentity)
 	}
-	if got.Attempts != ledger.MaxAttempts {
-		t.Fatalf("attempts = %d, want unchanged %d", got.Attempts, ledger.MaxAttempts)
+	if got.Attempts != 1 {
+		t.Fatalf("attempts = %d, want unchanged 1", got.Attempts)
 	}
 	if r.dispatched != 0 || len(r.queuedResumeIDs()) != 0 {
 		t.Fatalf("resume dispatched=%d queued=%d, want zero coding redispatch", r.dispatched, len(r.queuedResumeIDs()))
@@ -150,12 +144,12 @@ func TestResumeFinalizesCompletedCandidateWithoutCodingRedispatch(t *testing.T) 
 	if err != nil || !resumed {
 		t.Fatalf("second resume = %v, %v; want adopted finalization", resumed, err)
 	}
-	if got = r.run.Slots["complete"]; got.Status != ledger.SlotFinalizing {
+	if got = r.run.Slots[sl.PhaseID]; got.Status != ledger.SlotFinalizing {
 		t.Fatalf("second resume status = %q, want finalizing", got.Status)
 	}
 }
 
-func TestResumeReviewCandidateSkipsCompletionAccounting(t *testing.T) {
+func TestResumeLegacyReviewWithoutLiveResultIsPreservedForRequeue(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
 	sl := &ledger.Slot{
@@ -166,18 +160,18 @@ func TestResumeReviewCandidateSkipsCompletionAccounting(t *testing.T) {
 		t.Fatalf("SetSlot: %v", err)
 	}
 	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
-		t.Fatalf("resume = %v, %v; want adopted review finalization", resumed, err)
+		t.Fatalf("resume = %v, %v; want preserved review recovery", resumed, err)
 	}
 	got := r.run.Slots["reviewing"]
-	if got.Status != ledger.SlotFinalizing || !got.CompletionAccounted {
-		t.Fatalf("review slot = status %q accounted=%v, want finalizing/accounted", got.Status, got.CompletionAccounted)
+	if got.Status != ledger.SlotQueued {
+		t.Fatalf("review slot = status %q, want queued without implicit legacy adoption", got.Status)
 	}
 	if r.dispatched != 0 {
 		t.Fatalf("coding dispatches = %d, want 0", r.dispatched)
 	}
 }
 
-func TestResumeMergingCandidatePreservesFinalizationStage(t *testing.T) {
+func TestResumeLegacyMergingWithoutLiveResultCannotBypassValidation(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
 	sl := &ledger.Slot{
@@ -189,12 +183,11 @@ func TestResumeMergingCandidatePreservesFinalizationStage(t *testing.T) {
 		t.Fatalf("SetSlot: %v", err)
 	}
 	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
-		t.Fatalf("resume = %v, %v; want adopted merge finalization", resumed, err)
+		t.Fatalf("resume = %v, %v; want preserved merge recovery", resumed, err)
 	}
 	got := r.run.Slots["merging"]
-	if got.Status != ledger.SlotFinalizing || got.FinalizationStage != finalizationMerge || !got.CompletionAccounted {
-		t.Fatalf("merge slot = status %q stage %q accounted=%v, want finalizing/merge/true",
-			got.Status, got.FinalizationStage, got.CompletionAccounted)
+	if got.Status != ledger.SlotQueued {
+		t.Fatalf("merge slot = status %q, want queued without implicit legacy adoption", got.Status)
 	}
 	if got.Attempts != 2 || r.dispatched != 0 {
 		t.Fatalf("attempts=%d dispatched=%d, want 2/0", got.Attempts, r.dispatched)

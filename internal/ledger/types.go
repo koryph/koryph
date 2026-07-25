@@ -194,11 +194,28 @@ type Slot struct {
 	ResumeSHA       string  `json:"resume_sha,omitempty"`
 	CostUSD         float64 `json:"cost_usd"`
 
+	// DispatchBaseSHA and DispatchGeneration are the immutable identity
+	// captured before the worktree is created or the backend is launched.
+	// Candidate validation trusts these slot-owned fields and requires them
+	// for every newly dispatched slot; a later default-branch advance cannot
+	// rewrite what this attempt was based on.
+	DispatchBaseSHA    string `json:"dispatch_base_sha,omitempty"`
+	DispatchGeneration string `json:"dispatch_generation,omitempty"`
+
 	// CompletionAccounted records that completeSlot already persisted the
 	// attempt's cost/token signals before entering candidate finalization.
 	// Resume uses it to avoid charging/parsing the same completed attempt again
 	// after an engine death during review or merge preparation.
 	CompletionAccounted bool `json:"completion_accounted,omitempty"`
+
+	// CandidateGeneration and CandidateResultPath are stamped only after the
+	// engine validates a terminal, SHA-bound result manifest. Their absence on
+	// an older ledger is intentionally meaningful: legacy status/SUMMARY
+	// artifacts are preserved but cannot independently enter finalization.
+	CandidateGeneration string        `json:"candidate_generation,omitempty"`
+	CandidateResultPath string        `json:"candidate_result_path,omitempty"`
+	OutcomeClass        string        `json:"outcome_class,omitempty"`
+	Retry               RetryCounters `json:"retry,omitempty"`
 
 	// FinalizationStage records which durable, process-free finalization step
 	// was in flight when the engine last checkpointed this slot. It lets
@@ -392,6 +409,23 @@ type PlanState struct {
 	InvalidatedSteps []string `json:"invalidated_steps,omitempty"`
 }
 
+// RetryCounters are durable typed-policy facts. All fields are additive and
+// decode to zero from pre-lifecycle ledgers, preserving backward compatibility
+// without treating a legacy note string as policy state.
+type RetryCounters struct {
+	CompletionRepairs   int `json:"completion_repairs,omitempty"`
+	CodeRepairs         int `json:"code_repairs,omitempty"`
+	SemanticRepairs     int `json:"semantic_repairs,omitempty"`
+	RecoveryAnalyses    int `json:"recovery_analyses,omitempty"`
+	PostAnalysisRepairs int `json:"post_analysis_repairs,omitempty"`
+	SecurityRepairs     int `json:"security_repairs,omitempty"`
+	MechanicalRepairs   int `json:"mechanical_repairs,omitempty"`
+	TransientRetries    int `json:"transient_retries,omitempty"`
+	MergeRevalidations  int `json:"merge_revalidations,omitempty"`
+	BudgetContinuations int `json:"budget_continuations,omitempty"`
+	TurnContinuations   int `json:"turn_continuations,omitempty"`
+}
+
 // Manifest is the per-slot checkpoint (schema v2). It carries everything a
 // resumed koryph or a next-window recovery needs.
 type Manifest struct {
@@ -408,32 +442,39 @@ type Manifest struct {
 	// ModelActual mirrors Slot.ModelActual (koryph-qf6.2) — see its doc.
 	// Refreshed by checkpointSlot at terminal transitions; empty on a
 	// manifest that predates the field or an attempt with no result line.
-	ModelActual    string    `json:"model_actual,omitempty"`
-	WorktreePath   string    `json:"worktree_path"`
-	Branch         string    `json:"branch"`
-	BaseCommit     string    `json:"base_commit"`
-	HeadCommit     string    `json:"head_commit,omitempty"`
-	Attempt        int       `json:"attempt"`
-	ExecutionState string    `json:"execution_state"`
-	LeaseOwner     string    `json:"lease_owner,omitempty"`
-	LeaseExpiresAt string    `json:"lease_expires_at,omitempty"`
-	Plan           PlanState `json:"structured_plan"`
-	ChangedFiles   []string  `json:"changed_files,omitempty"`
-	PatchFiles     []string  `json:"patch_files,omitempty"`
-	WIPCommit      string    `json:"optional_wip_commit,omitempty"`
-	CommandsRun    []string  `json:"commands_run,omitempty"`
-	TestsRun       []string  `json:"tests_run,omitempty"`
-	LatestTest     string    `json:"latest_test_result,omitempty"`
-	ReviewStatus   string    `json:"review_status,omitempty"`
-	OpenQuestions  []string  `json:"open_questions,omitempty"`
-	NextAction     string    `json:"next_action,omitempty"`
-	QuotaSnapshot  any       `json:"quota_snapshot,omitempty"`
-	BatchAllowed   bool      `json:"batch_mode_allowed"`
-	RecoveryConf   string    `json:"recovery_confidence,omitempty"`
-	RecoveryTier   int       `json:"recovery_policy_tier"`
-	MergePolicy    string    `json:"merge_policy,omitempty"`
-	AutoMerge      bool      `json:"auto_merge_allowed"`
-	BillingMode    string    `json:"billing_mode"`
+	ModelActual  string `json:"model_actual,omitempty"`
+	WorktreePath string `json:"worktree_path"`
+	Branch       string `json:"branch"`
+	BaseCommit   string `json:"base_commit"`
+	// DispatchGeneration is optional for manifests written before the typed
+	// candidate lifecycle. Readers derive the same value from immutable
+	// run/phase/attempt/session/base context when it is absent.
+	DispatchGeneration string    `json:"dispatch_generation,omitempty"`
+	HeadCommit         string    `json:"head_commit,omitempty"`
+	Attempt            int       `json:"attempt"`
+	ExecutionState     string    `json:"execution_state"`
+	PID                int       `json:"pid,omitempty"`
+	ProcessIdentity    string    `json:"process_identity,omitempty"`
+	ExecutionError     string    `json:"execution_error,omitempty"`
+	LeaseOwner         string    `json:"lease_owner,omitempty"`
+	LeaseExpiresAt     string    `json:"lease_expires_at,omitempty"`
+	Plan               PlanState `json:"structured_plan"`
+	ChangedFiles       []string  `json:"changed_files,omitempty"`
+	PatchFiles         []string  `json:"patch_files,omitempty"`
+	WIPCommit          string    `json:"optional_wip_commit,omitempty"`
+	CommandsRun        []string  `json:"commands_run,omitempty"`
+	TestsRun           []string  `json:"tests_run,omitempty"`
+	LatestTest         string    `json:"latest_test_result,omitempty"`
+	ReviewStatus       string    `json:"review_status,omitempty"`
+	OpenQuestions      []string  `json:"open_questions,omitempty"`
+	NextAction         string    `json:"next_action,omitempty"`
+	QuotaSnapshot      any       `json:"quota_snapshot,omitempty"`
+	BatchAllowed       bool      `json:"batch_mode_allowed"`
+	RecoveryConf       string    `json:"recovery_confidence,omitempty"`
+	RecoveryTier       int       `json:"recovery_policy_tier"`
+	MergePolicy        string    `json:"merge_policy,omitempty"`
+	AutoMerge          bool      `json:"auto_merge_allowed"`
+	BillingMode        string    `json:"billing_mode"`
 	// ProxyID mirrors Slot.ProxyID (koryph-3l1.1) — see its doc.
 	ProxyID       string   `json:"proxy_id,omitempty"`
 	BootstrapCmds []string `json:"bootstrap_commands,omitempty"`

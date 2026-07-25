@@ -39,7 +39,12 @@ const (
 	latestLink   = "latest"
 	ledgerFile   = "ledger.json"
 	manifestFile = "manifest.json"
-	lockFile     = "koryph.lock"
+	// A manifest is small structured state. Bounding it before allocation and
+	// reading it through the phase directory descriptor prevents a worker-owned
+	// symlink/FIFO/device from turning recovery into an unbounded or blocking
+	// read.
+	maxManifestBytes = 1 << 20
+	lockFile         = "koryph.lock"
 )
 
 // Store owns a single project's koryph run ledgers, all rooted at
@@ -248,8 +253,9 @@ func (s *Store) SaveManifest(runID, phaseID string, m *Manifest) error {
 // LoadManifest reads the per-slot checkpoint for phaseID within runID.
 func (s *Store) LoadManifest(runID, phaseID string) (*Manifest, error) {
 	var m Manifest
-	path := filepath.Join(s.KoryphRoot, runID, phaseID, manifestFile)
-	if err := fsx.ReadJSON(path, &m); err != nil {
+	phaseDir := s.PhaseDir(runID, phaseID)
+	path := filepath.Join(phaseDir, manifestFile)
+	if err := fsx.ReadJSONConfined(path, &m, maxManifestBytes, phaseDir); err != nil {
 		return nil, err
 	}
 	if err := schemaver.CheckRead(schemaver.LedgerManifest, m.SchemaVersion); err != nil {

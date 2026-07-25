@@ -226,7 +226,6 @@ history is `git log ~/.koryph`.
 | `allowed_models` | Model tiers permitted, e.g. `["opus","sonnet","haiku"]`. |
 | `planner_model` | Default planner tier (default `"opus"`). |
 | `impl_model` | Default implementer tier (default `"sonnet"`). |
-| `recovery_model_policy` | Always `"upgrade-opus"`; Fable is never used for recovery. |
 | `batch_policy` | `"deny"` \| `"explicit"` — whether the Batch API is available. |
 | `agent_mcp` | `"inherit"` (default, also when empty) \| `"strict"` — MCP loading for dispatched implementer agents. `"strict"` passes `--strict-mcp-config` so the agent loads **no** ambient MCP servers, trimming the re-read-every-turn prompt prefix; koryph implementer personas use only file/bash tools, so this is a pure context-economy win. Leave unset unless a project's agents genuinely call an MCP. See [Context economy](context-economy.md). |
 | `api_fallback` | `"off"` \| `"explicit"` — whether direct API key use is allowed. |

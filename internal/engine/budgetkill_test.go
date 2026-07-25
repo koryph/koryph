@@ -27,6 +27,7 @@ import (
 // prior attempt (the koryph-137 cold-rebuild path would have wiped it along
 // with the rest of the checkout).
 const budgetKillWarmResumeClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 if [ -f .attempted ]; then
   rm -f .attempted
@@ -34,6 +35,7 @@ if [ -f .attempted ]; then
   git add agent-work.txt
   git commit -q --no-verify -m "feat(tb1): work"
   printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+  koryph_test_complete agent-work.txt || exit $?
   printf '{"type":"result","total_cost_usd":0.05,"is_error":false}\n'
   exit 0
 fi
@@ -119,6 +121,12 @@ func TestBudgetKillPreservesWorktreeForWarmResume(t *testing.T) {
 	if sl.BudgetKillRequeues != 1 {
 		t.Errorf("BudgetKillRequeues = %d, want 1", sl.BudgetKillRequeues)
 	}
+	if sl.Retry.BudgetContinuations != 1 {
+		t.Errorf("BudgetContinuations = %d, want 1", sl.Retry.BudgetContinuations)
+	}
+	if sl.Model == "opus" {
+		t.Errorf("budget continuation escalated to frontier model %q", sl.Model)
+	}
 
 	// A WIP snapshot was captured before the (preserved, not rebuilt)
 	// worktree's requeue — the AC's "WIP snapshot still taken" requirement.
@@ -169,6 +177,13 @@ func TestBudgetKillSecondConsecutiveDeathParks(t *testing.T) {
 	if sl.BudgetKillRequeues != 1 {
 		t.Errorf("BudgetKillRequeues = %d, want 1 (budget exhausted, not exceeded)", sl.BudgetKillRequeues)
 	}
+	if sl.Retry.BudgetContinuations != 1 || sl.OutcomeClass != string(OutcomeBudgetExhausted) {
+		t.Errorf("typed budget state = %+v / %q, want one continuation / budget-exhausted",
+			sl.Retry, sl.OutcomeClass)
+	}
+	if sl.Model == "opus" {
+		t.Errorf("bounded budget recovery escalated to frontier model %q", sl.Model)
+	}
 	if !strings.Contains(out.String(), "preserving worktree and branch") {
 		t.Errorf("engine output missing the FIRST warm-resume's worktree-preservation log line:\n%s", out.String())
 	}
@@ -210,6 +225,10 @@ func TestBudgetKillThrashGuardSkipsFirstWarmResume(t *testing.T) {
 	}
 	if sl.BudgetKillRequeues != 0 {
 		t.Errorf("BudgetKillRequeues = %d, want 0 (never spent — the guard skipped the requeue)", sl.BudgetKillRequeues)
+	}
+	if sl.Retry.BudgetContinuations != 0 || sl.OutcomeClass != string(OutcomeBudgetExhausted) {
+		t.Errorf("typed thrash state = %+v / %q, want no continuation / budget-exhausted",
+			sl.Retry, sl.OutcomeClass)
 	}
 	if strings.Contains(out.String(), "preserving worktree and branch") {
 		t.Errorf("engine output should not attempt a warm-resume requeue when the thrash guard fires:\n%s", out.String())

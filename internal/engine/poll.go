@@ -56,31 +56,25 @@ const commitStyleRequeueNote = "commit-style requeue"
 // resumeRequeueNote marks a slot re-dispatched by the resume backlog after an
 // engine restart or a width-gated deferral. This is NOT a bead fault — the
 // agent did not fail, the engine was interrupted — so requeueSlot must not
-// consume an attempt or drive the final-attempt escalation for it. Counting
-// resume re-dispatches as faults let a mid-run restart push otherwise-healthy
-// beads to "final attempt, escalated to the recovery tier" having genuinely
-// failed zero or one time, spending recovery-tier money on non-faults (D4:
-// faults ≠ dispatches). See requeueSlot's `fault` gate and drainResumeBacklog.
+// consume an attempt. Model selection is frozen independently of attempt
+// count (D4: faults ≠ dispatches). See requeueSlot's `fault` gate and
+// drainResumeBacklog.
 const resumeRequeueNote = "resume: width-gated re-dispatch"
 
 // cleanNoCommitExitNote marks a slot whose agent exited cleanly (exit 0) but
 // produced no commits and no SUMMARY.md — the agent deliberately concluded it
-// could not or need not act (an environment-gated no-op: a resource it needs is
-// absent, the host is too contended, work is already done). Re-dispatching a
-// higher tier just reproduces the identical no-op, so this requeue is excluded
-// from the final-attempt model escalation: it is an environmental signal, not a
-// capability fault (D14). It still counts an attempt, so the bead parks with an
-// environment reason once the attempt budget is spent rather than looping.
+// could not or need not act. It remains only as a low-level compatibility
+// reason for legacy tests; production candidate classification parks this
+// unchanged-evidence shape without dispatching another model.
 const cleanNoCommitExitNote = "agent exited cleanly with no new commits"
 
-// genericCompletionBlockRequeueNote marks a clean, committed worker that
-// self-blocked without the structured host-capability fields. The worker
-// contract instructs the next attempt to report any sandbox/host denial with
-// `phase block`; therefore this is a deterministic classification-correction
-// retry, not evidence that a stronger coding tier is needed. It still consumes
-// the normal attempt, but the final correction attempt stays on the frozen
-// tier so a repeated generic host block cannot spend the frontier escalation.
-const genericCompletionBlockRequeueNote = "agent reported unstructured completion block"
+// completionContractRepairNote selects the typed, single-purpose completion
+// repair prompt. Its one durable typed budget is independent of Attempts.
+const completionContractRepairNote = "completion-contract repair"
+
+// Deprecated test/source compatibility name. It aliases the typed completion
+// path; no production branch emits the former generic classification retry.
+const genericCompletionBlockRequeueNote = completionContractRepairNote
 
 // gateRequeueBudget and mergeRequeueBudget are the per-slot requeue budgets
 // for a post-rebase gate failure and a merge error, respectively — each
@@ -92,14 +86,6 @@ const (
 	mergeRequeueBudget    = 2
 	conflictRequeueBudget = 2
 )
-
-// rateLimitedRequeueBudget bounds how many times a slot may requeue on a
-// classified rate-limit/overload death (koryph-2im.4) WITHOUT burning a normal
-// attempt — the failure is environmental (the account got throttled), not a
-// fault of the bead's work, so it must not count toward ledger.MaxAttempts.
-// It is still budgeted independently so a persistently rate-limited account
-// cannot loop a slot forever; exhausting it blocks with a clear note.
-const rateLimitedRequeueBudget = 5
 
 // mergeErrorRetryable reports whether a slot whose merge just errored should be
 // requeued for another attempt rather than blocked. A merge error is usually
@@ -344,6 +330,26 @@ func (r *runner) processIdentity(ctx context.Context, pid int) string {
 	return id
 }
 
+// captureStableProcessIdentity gives a just-started process a bounded window
+// to appear in the platform process table. A missing identity is never
+// replaced by PID-only trust: callers must fail closed instead.
+func (r *runner) captureStableProcessIdentity(ctx context.Context, pid int) string {
+	pctx, cancel := context.WithTimeout(ctx, resSampleTimeout)
+	defer cancel()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if identity := r.processIdentity(pctx, pid); identity != "" {
+			return identity
+		}
+		select {
+		case <-pctx.Done():
+			return ""
+		case <-ticker.C:
+		}
+	}
+}
+
 // slotProcessMatches proves that the process presently using sl.PID is the
 // exact process the engine dispatched. Legacy slots deliberately do not match:
 // an ordinary requeue is safe, while reattaching or signalling a recycled PID
@@ -526,8 +532,22 @@ func (r *runner) pollSlot(ctx context.Context, sl *ledger.Slot, probeProgress bo
 				r.progress("bead %s: activity resumed — clearing stuck", sl.PhaseID)
 			}
 		}
-		if status == ledger.SlotStuck && r.recoverStaleHeartbeat(ctx, sl, procs) {
-			return
+		if status == ledger.SlotStuck {
+			// A current SHA-bound terminal result is stronger than a stale
+			// heartbeat. The worker may still be unwinding after writing it;
+			// never stamp/signal stale recovery and turn that valid completion
+			// into another coding dispatch.
+			if assessment := r.assessCandidate(ctx, sl); assessment.eligible {
+				r.store.MutateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+					s.Status = ledger.SlotRunning
+					s.Note = "terminal result validated; waiting for worker process exit"
+				})
+				r.checkpointSlot(sl, "terminal-result-awaiting-exit")
+				return
+			}
+			if r.recoverStaleHeartbeat(ctx, sl, procs) {
+				return
+			}
 		}
 		r.checkpointSlot(sl, "running")
 		return
@@ -817,11 +837,41 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 
+	// The tracker is the operator's durable intent. A bead closed or deferred
+	// while its worker was in flight must be released before any stale,
+	// transient, or typed candidate recovery can dispatch another worker.
+	if r.beadClosedMidFlight(ctx, sl.PhaseID) {
+		return
+	}
+
+	budgetKilled := dispatch.ParseBudgetKilled(sl.Stream)
+	hasRecoveryMarker := sl.DeathReason == deathReasonStaleHeartbeat ||
+		sl.DeathReason == deathReasonTurnExhausted ||
+		budgetKilled || signals.rateLimited
+	// After explicit operator stop/closed intent above, one authenticated
+	// terminal transaction outranks every automatic recovery marker. All four
+	// markers can race a worker's final unwind; in particular, a final API call
+	// may 429 after result.json was durably bound to the candidate SHA. Drain
+	// still parks only the retry paths below, never a completed active slot.
+	if hasRecoveryMarker {
+		if assessment := r.assessCandidate(ctx, sl); assessment.eligible {
+			sl.DeathReason = ""
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.DeathReason = ""
+			})
+			r.finishAssessedCandidate(ctx, sl, assessment)
+			return
+		}
+	}
+
 	// A stale, childless agent was deliberately interrupted by the live poll.
 	// This is an engine recovery, not a bead fault: keep its frozen model/tier,
 	// resume its native session, and do not consume an attempt.
 	if sl.DeathReason == deathReasonStaleHeartbeat {
-		r.requeueSlot(ctx, sl, "", staleHeartbeatRequeueNote)
+		r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome: OutcomeRuntimeTransient,
+			reason:  staleHeartbeatRequeueNote,
+		})
 		return
 	}
 
@@ -876,45 +926,18 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// it gets the same warm-resume-then-park treatment via requeueBudgetKilled
 	// (which itself is Attempts-counted, unlike the environmental rate-limit
 	// path).
-	if dispatch.ParseBudgetKilled(sl.Stream) {
+	if budgetKilled {
 		r.requeueBudgetKilled(ctx, sl, commits, attemptUsage)
 		return
 	}
 
-	summary := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "SUMMARY.md")
-	if commits > 0 || fsx.Exists(summary) {
-		r.finishCandidate(ctx, sl)
-		return
-	}
-
-	// No commits on the branch and no SUMMARY.md: distinguish a clean exit
-	// (agent concluded work was done, or finished with an empty result) from an
-	// unclean death (crashed / killed before producing a result line).
-	deathDesc := "agent died with no commits"
-	if sl.Stream != "" && dispatch.ParseCleanExit(sl.Stream) {
-		deathDesc = cleanNoCommitExitNote
-	}
-
-	if sl.Attempts >= ledger.MaxAttempts {
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts)
-		})
-		r.checkpointSlot(sl, "blocked")
-		r.releaseGlobalSlot(sl.PhaseID) // terminal
-		r.progress("bead %s: blocked (%s, %d attempts)", sl.PhaseID, deathDesc, sl.Attempts)
-		logSlotBlocked(sl.PhaseID, fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts),
-			sl.Model, sl.ModelActual, sl.Attempts)
-		// Failure write-back (koryph-qf6.5, koryph-84yu): reconcile the bd claim
-		// to blocked-with-reason. Without this the attempt count, model, and
-		// death summary are stranded in this machine's gitignored ledger AND the
-		// bead stays in_progress with no live agent — invisible to every future
-		// `bd ready` frontier until an operator resets it by hand. Best-effort; a
-		// bd failure never blocks the loop.
-		r.reconcileBlockedBead(ctx, sl, fmt.Sprintf("%s; %d attempts exhausted", deathDesc, sl.Attempts))
-		return
-	}
-	r.requeueSlot(ctx, sl, "", deathDesc)
+	// Every ordinary process exit is now classified by the typed candidate
+	// contract. Only a clean committed candidate missing exactly result.json
+	// receives its one completion-only repair. Dirty, commitless, missing-
+	// SUMMARY, malformed, or crashed candidates park immediately with their
+	// branch/worktree preserved; they never enter a generic retry or
+	// attempt-selected model path.
+	r.finishCandidate(ctx, sl)
 }
 
 // cacheRatioFloor is the cache_read-share floor below which
@@ -1003,23 +1026,29 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 
-	if sl.RateLimitRequeues >= rateLimitedRequeueBudget {
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = fmt.Sprintf("rate-limited requeues exhausted (%d)", rateLimitedRequeueBudget)
-		})
-		r.checkpointSlot(sl, "rate-limit-exhausted")
-		r.releaseGlobalSlot(sl.PhaseID) // terminal
-		r.progress("bead %s: blocked (rate-limited %d times; requeue budget exhausted)", sl.PhaseID, sl.RateLimitRequeues)
-		logSlotBlocked(sl.PhaseID, fmt.Sprintf("rate-limited requeues exhausted (%d)", rateLimitedRequeueBudget),
-			sl.Model, sl.ModelActual, sl.Attempts)
-		r.reconcileBlockedBead(ctx, sl, fmt.Sprintf("rate-limited requeues exhausted (%d)", rateLimitedRequeueBudget))
+	decision := DecideRetry(RetryPolicyInput{
+		Outcome: OutcomeRuntimeTransient,
+		Budgets: retryBudgets(sl.Retry),
+	})
+	if decision.Action != RecoveryRetrySameTier {
+		r.parkTypedRecovery(ctx, sl, OutcomeRuntimeTransient, decision.Reason)
 		return
 	}
+	nextRetry := sl.Retry
+	consumeRetryCounter(&nextRetry, OutcomeRuntimeTransient, decision.Action)
+	if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Retry = nextRetry
+		s.OutcomeClass = string(OutcomeRuntimeTransient)
+	}); err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeRuntimeTransient,
+			"persist transient retry budget: "+err.Error())
+		return
+	}
+	sl.Retry = nextRetry
 
 	requeues := sl.RateLimitRequeues + 1
 	r.progress("bead %s: rate-limited — requeueing without burning an attempt (%d/%d)",
-		sl.PhaseID, requeues, rateLimitedRequeueBudget)
+		sl.PhaseID, requeues, runtimeTransientRetryBudget)
 	r.backoffSleep(ctx, requeues)
 
 	// Rate-limit requeues never preserve a no-commit worktree (koryph-77r.10
@@ -1051,6 +1080,7 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		budgetKillRequeues:    sl.BudgetKillRequeues,
 		turnExhaustedRequeues: sl.TurnExhaustedRequeues,
 		wipSnapshotPath:       wipSnapshot,
+		retry:                 sl.Retry,
 		// Freeze the model resolution from the first attempt (koryph-ehx) —
 		// see requeueSlot's identical comment. A rate-limit requeue is the
 		// same attempt continuing, so it must re-run the same model.
@@ -1086,11 +1116,11 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 	})
 }
 
-// budgetKillRequeueBudget bounds how many warm-resume requeues a slot may
-// spend on a classified budget-kill death (koryph-77r.10, design
+// The typed budget-continuation budget bounds how many warm-resume requeues a
+// slot may spend on a classified budget-kill death (koryph-77r.10, design
 // docs/designs/2026-07-token-economy.md recovery-economics follow-up)
 // before parking needs-attention instead of trying a third time. Unlike
-// rateLimitedRequeueBudget (5, an account-wide throttle that self-heals), a
+// the typed runtime-transient budget (an account-wide throttle that self-heals), a
 // budget-kill is bead-specific: every dispatch already runs under a
 // per-agent cap (dispatchBead's MaxBudgetUSD: r.quotaCfg.PerAgentMaxUSD), so
 // a SECOND consecutive kill on the SAME bead means the bead itself needs
@@ -1099,8 +1129,6 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 // budget-kill requeue DOES still count toward Attempts (see
 // requeueBudgetKilled), so this only bounds the warm-resume leg of that
 // normal attempt accounting.
-const budgetKillRequeueBudget = 1
-
 // thrashGuardTokenFloor is the per-ATTEMPT total token volume (input +
 // output + cache_read + cache_creation — see totalAttemptTokens) above
 // which a ZERO-commit budget-kill death is treated as thrashing rather than
@@ -1135,18 +1163,16 @@ const deathReasonStaleHeartbeat = "stale-heartbeat"
 
 const staleHeartbeatRequeueNote = "stale heartbeat recovery"
 
-// turnExhaustedRequeueBudget bounds how many FRESH-session requeues a slot may
-// spend on the turn ceiling before parking needs-attention (koryph-840). A
+// The typed turn-continuation budget bounds how many FRESH-session requeues a
+// slot may spend on the turn ceiling before parking needs-attention (koryph-840). A
 // fresh restart drops the accreted in-context history but keeps committed
 // work (via resumeSHA), so a bead that genuinely converges in chunks can make
 // progress across a couple of restarts; but a bead that keeps blowing past the
 // ceiling with a clean context each time is not converging and needs a human
 // (split it, or raise PerAgentMaxTurns), not an endless string of cold
-// restarts. Set slightly above budgetKillRequeueBudget (1) because a fresh
+// restarts. It is slightly above the budget-continuation budget because a fresh
 // session is a genuinely different attempt shape — not the same bloated
 // context re-warmed — so a second try is more likely to help here than there.
-const turnExhaustedRequeueBudget = 2
-
 // totalAttemptTokens sums one attempt's token composition — the thrash
 // guard's volume signal (koryph-77r.10). Deliberately the ATTEMPT's own
 // usage (dispatch.ParseResultUsage's/quota.SessionTokens' reading for THIS
@@ -1168,13 +1194,13 @@ func totalAttemptTokens(u dispatch.TokenUsage) int64 {
 // hold, re-paying the entire exploration from an empty context on every
 // requeue. This preserves the worktree and branch instead so --resume
 // --fork-session fires warm, but bounds the warm-resume budget tightly
-// (budgetKillRequeueBudget, far under rateLimitedRequeueBudget) and guards
+// (below the transient retry budget) and guards
 // against thrashing: a bead that keeps dying from budget with nothing
 // committed needs a human, not a third cap. Unlike requeueRateLimited, this
 // DOES increment Attempts (via the normal dispatchReq.attempt =
 // sl.Attempts+1) — a budget-kill is bead-specific, not an environmental
 // throttle — so it can never itself exceed ledger.MaxAttempts; it just
-// stops well short of that ceiling (park after budgetKillRequeueBudget)
+// stops well short of that ceiling (park after the typed continuation budget)
 // rather than blindly spending every remaining attempt cold.
 func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commits int, usage dispatch.TokenUsage) {
 	// Same closed-bead guard as requeueSlot/requeueRateLimited: drop cleanly
@@ -1199,18 +1225,26 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	}
 
 	thrashing := commits == 0 && totalAttemptTokens(usage) >= thrashGuardTokenFloor
-	if sl.BudgetKillRequeues >= budgetKillRequeueBudget || thrashing {
-		why := "budget-killed twice in a row"
+	decision := DecideRetry(RetryPolicyInput{
+		Outcome:          OutcomeBudgetExhausted,
+		Budgets:          retryBudgets(sl.Retry),
+		AttemptThrashing: thrashing,
+	})
+	if decision.Action != RecoveryRetrySameTier {
+		why := decision.Reason
 		switch {
-		case thrashing && sl.BudgetKillRequeues < budgetKillRequeueBudget:
+		case decision.Reason == "budget-continuation-exhausted" && !thrashing:
+			why = "budget-killed twice in a row (budget-continuation-exhausted)"
+		case thrashing && sl.Retry.BudgetContinuations == 0:
 			why = fmt.Sprintf("budget-killed with zero commits and %d tokens burned this attempt (thrash guard)",
 				totalAttemptTokens(usage))
 		case thrashing:
-			why = fmt.Sprintf("budget-killed twice in a row, and zero commits with %d tokens burned this attempt (thrash guard)",
+			why = fmt.Sprintf("budget continuation exhausted, and zero commits with %d tokens burned this attempt (thrash guard)",
 				totalAttemptTokens(usage))
 		}
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
+			s.OutcomeClass = string(OutcomeBudgetExhausted)
 			s.Note = fmt.Sprintf(
 				"needs-attention: %s — parked instead of spending another --max-budget-usd attempt (accumulated cost $%.2f so far); raise the account's per-agent budget or split the bead",
 				why, sl.CostUSD)
@@ -1230,9 +1264,22 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	}
 
 	requeues := sl.BudgetKillRequeues + 1
+	nextRetry := sl.Retry
+	consumeRetryCounter(&nextRetry, OutcomeBudgetExhausted, decision.Action)
+	if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Retry = nextRetry
+		s.OutcomeClass = string(OutcomeBudgetExhausted)
+		s.BudgetKillRequeues = requeues
+	}); err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeBudgetExhausted,
+			"persist budget continuation before dispatch: "+err.Error())
+		return
+	}
+	sl.Retry = nextRetry
+	sl.BudgetKillRequeues = requeues
 	attempt := sl.Attempts + 1
 	r.progress("bead %s: budget-killed — warm-resume requeue, attempt %d (budget-kill %d/%d)",
-		sl.PhaseID, attempt, requeues, budgetKillRequeueBudget)
+		sl.PhaseID, attempt, requeues, budgetContinuationBudget)
 	logSlotRequeue(sl.PhaseID, "budget-killed requeue", attempt)
 	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, "budget-killed requeue", attempt, sl.CostUSD)
 	r.backoffSleep(ctx, sl.Attempts)
@@ -1267,6 +1314,7 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		budgetKillRequeues:    requeues,
 		turnExhaustedRequeues: sl.TurnExhaustedRequeues,
 		wipSnapshotPath:       wipSnapshot,
+		retry:                 nextRetry,
 		// Freeze the model resolution from the first attempt (koryph-ehx) —
 		// see requeueSlot's identical comment. A budget-kill warm-resume must
 		// re-run the same model the bead was originally dispatched with.
@@ -1356,7 +1404,7 @@ func (r *runner) enforceTurnCeiling(sl *ledger.Slot) bool {
 // rather than discarding it when commits landed), so a fresh restart resumes
 // from real progress with a clean context. Like requeueBudgetKilled it counts
 // toward Attempts (bead-specific, not environmental) and bounds itself tightly
-// (turnExhaustedRequeueBudget) before parking needs-attention.
+// (turnContinuationBudget) before parking needs-attention.
 func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
 	// Same closed-bead guard as the other requeue paths: drop cleanly if the
 	// operator retired the bead while the turn-capped agent was winding down.
@@ -1373,14 +1421,19 @@ func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
 		return
 	}
 
-	if sl.TurnExhaustedRequeues >= turnExhaustedRequeueBudget {
+	decision := DecideRetry(RetryPolicyInput{
+		Outcome: OutcomeTurnExhausted,
+		Budgets: retryBudgets(sl.Retry),
+	})
+	if decision.Action != RecoveryRetrySameTier {
 		why := fmt.Sprintf("hit the turn ceiling %d times — a fresh session still isn't converging",
-			turnExhaustedRequeueBudget+1)
+			turnContinuationBudget+1)
 		note := fmt.Sprintf(
 			"needs-attention: %s — parked instead of another fresh restart (accumulated cost $%.2f); split the bead or raise per_agent_max_turns",
 			why, sl.CostUSD)
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
+			s.OutcomeClass = string(OutcomeTurnExhausted)
 			s.Note = note
 		})
 		r.checkpointSlot(sl, "turn-exhausted-parked")
@@ -1392,9 +1445,22 @@ func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
 	}
 
 	requeues := sl.TurnExhaustedRequeues + 1
+	nextRetry := sl.Retry
+	consumeRetryCounter(&nextRetry, OutcomeTurnExhausted, decision.Action)
+	if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Retry = nextRetry
+		s.OutcomeClass = string(OutcomeTurnExhausted)
+		s.TurnExhaustedRequeues = requeues
+	}); err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeTurnExhausted,
+			"persist turn continuation before dispatch: "+err.Error())
+		return
+	}
+	sl.Retry = nextRetry
+	sl.TurnExhaustedRequeues = requeues
 	attempt := sl.Attempts + 1
 	r.progress("bead %s: turn-exhausted — fresh-session requeue, attempt %d (turn-exhausted %d/%d)",
-		sl.PhaseID, attempt, requeues, turnExhaustedRequeueBudget)
+		sl.PhaseID, attempt, requeues, turnContinuationBudget)
 	logSlotRequeue(sl.PhaseID, "turn-exhausted requeue", attempt)
 	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, "turn-exhausted requeue", attempt, sl.CostUSD)
 	r.backoffSleep(ctx, sl.Attempts)
@@ -1423,6 +1489,7 @@ func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
 		turnExhaustedRequeues: requeues,
 		note:                  "turn-exhausted requeue",
 		wipSnapshotPath:       wipSnapshot,
+		retry:                 nextRetry,
 		// Freeze the model resolution from the first attempt (koryph-ehx) — a
 		// requeue re-runs the same model/persona/effort the bead was dispatched
 		// with, exactly like every other requeue path.
@@ -1495,27 +1562,230 @@ func (r *runner) proxyBaseURLForSlot(sl *ledger.Slot) string {
 	return r.rec.ProxyBaseURL()
 }
 
+type typedRecoveryRequest struct {
+	outcome                      CandidateOutcomeClass
+	evidenceChanged              bool
+	deterministicRepairAvailable bool
+	reviewPath                   string
+	reason                       string
+}
+
+// recoverTyped is the sole model-dispatch bridge from a typed failure outcome
+// to another coding attempt. DecideRetry owns the action/model consequence;
+// durable counters are consumed before dispatch so a crash cannot refill a
+// budget. Attempt number is deliberately absent from the policy input.
+func (r *runner) recoverTyped(ctx context.Context, sl *ledger.Slot, req typedRecoveryRequest) bool {
+	decision := DecideRetry(RetryPolicyInput{
+		Outcome:                      req.outcome,
+		Budgets:                      retryBudgets(sl.Retry),
+		EvidenceChanged:              req.evidenceChanged,
+		DeterministicRepairAvailable: req.deterministicRepairAvailable,
+	})
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.OutcomeClass = string(req.outcome)
+	})
+	sl.OutcomeClass = string(req.outcome)
+
+	switch decision.Action {
+	case RecoveryTargetedRepair, RecoveryRetrySameTier:
+		next := sl.Retry
+		consumeRetryCounter(&next, req.outcome, decision.Action)
+		if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Retry = next
+			s.OutcomeClass = string(req.outcome)
+		}); err != nil {
+			r.parkTypedRecovery(ctx, sl, req.outcome,
+				"persist retry budget before dispatch: "+err.Error())
+			return false
+		}
+		sl.Retry = next
+		model := typedRecoveryModel{}
+		if decision.Model == ModelConsequenceStandardImplementation {
+			resolved, err := r.standardRepairModel(ctx, sl)
+			if err != nil {
+				r.parkTypedRecovery(ctx, sl, req.outcome,
+					"resolve standard repair model: "+err.Error())
+				return false
+			}
+			model = resolved
+		}
+		r.requeueSlotWithRecovery(ctx, sl, req.reviewPath, req.reason, retryDispatch{
+			outcome:          req.outcome,
+			decision:         decision,
+			model:            model,
+			completionRepair: req.outcome == OutcomeCompletionContractMissing,
+		})
+		return true
+
+	case RecoveryRebaseRevalidate:
+		// This is an engine-owned git transition, never an implementation
+		// model consequence. Until a transactional rebase/revalidation handler
+		// is attached, park rather than sending the action to any model.
+		r.parkTypedRecovery(ctx, sl, req.outcome,
+			"engine-owned rebase/revalidate handler is unavailable")
+		return false
+
+	case RecoveryDeterministicFix:
+		// Deterministic repair is engine-owned and must never silently fall
+		// through to an implementation model. Current callers set
+		// deterministicRepairAvailable only when they perform that repair
+		// themselves before calling this function.
+		r.parkTypedRecovery(ctx, sl, req.outcome,
+			"deterministic repair was selected without an engine repair handler")
+		return false
+
+	case RecoveryFrontierAnalysis:
+		// Frontier analysis is a distinct non-implementation action. Until an
+		// analysis worker/result transaction is attached, park rather than
+		// misusing the frontier model as an implementer.
+		next := sl.Retry
+		consumeRetryCounter(&next, req.outcome, decision.Action)
+		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Retry = next
+		})
+		sl.Retry = next
+		r.parkTypedRecovery(ctx, sl, req.outcome,
+			"frontier recovery analysis required before another standard repair")
+		return false
+
+	default:
+		reason := decision.Reason
+		if req.reason != "" && req.reason != decision.Reason {
+			reason += ": " + req.reason
+		}
+		r.parkTypedRecovery(ctx, sl, req.outcome, reason)
+		return false
+	}
+}
+
+type typedRecoveryModel struct {
+	model, persona, rationale, effort string
+}
+
+type retryDispatch struct {
+	outcome          CandidateOutcomeClass
+	decision         RecoveryDecision
+	model            typedRecoveryModel
+	completionRepair bool
+}
+
+func (r *runner) standardRepairModel(ctx context.Context, sl *ledger.Slot) (typedRecoveryModel, error) {
+	issue := r.issueFor(ctx, sl)
+	runtimeName := sl.Runtime
+	if runtimeName == "" {
+		runtimeName = "claude"
+	}
+	rt, ok := runtimeForName(runtimeName)
+	if !ok {
+		return typedRecoveryModel{}, fmt.Errorf("runtime %q is not registered", runtimeName)
+	}
+	standard := rt.ModelMap()[runtime.TierStandard]
+	if override := r.modelRequestForRuntime(
+		r.implementationStage(issue), nil, "", runtimeName,
+	).ModelMap[runtime.TierStandard]; override != "" {
+		standard = override
+	}
+	if standard == "" {
+		return typedRecoveryModel{}, fmt.Errorf("runtime %q has no standard-tier model", runtimeName)
+	}
+	res, err := r.resolveModelForRuntime(r.implementationStage(issue), issue, standard, runtimeName)
+	if err != nil {
+		return typedRecoveryModel{}, err
+	}
+	if res.Model == runtime.CodexSolModel {
+		return typedRecoveryModel{}, fmt.Errorf("standard repair resolved to frontier model %q", res.Model)
+	}
+	switch modelroute.TierForModelID(res.Model) {
+	case modelroute.TierOpus, modelroute.TierFable:
+		return typedRecoveryModel{}, fmt.Errorf("standard repair resolved to frontier model %q", res.Model)
+	}
+	return typedRecoveryModel{
+		model: res.Model, persona: res.Persona,
+		rationale: "typed " + string(sl.OutcomeClass) + " repair on standard tier",
+		effort:    res.Effort,
+	}, nil
+}
+
+func consumeRetryCounter(c *ledger.RetryCounters, outcome CandidateOutcomeClass, action RecoveryAction) {
+	switch outcome {
+	case OutcomeCompletionContractMissing:
+		c.CompletionRepairs++
+	case OutcomeCodeDefect:
+		c.CodeRepairs++
+	case OutcomeSemanticDefect:
+		if action == RecoveryFrontierAnalysis {
+			c.RecoveryAnalyses++
+		} else {
+			c.SemanticRepairs++
+		}
+	case OutcomePersistentSemanticDefect:
+		if action == RecoveryFrontierAnalysis {
+			c.RecoveryAnalyses++
+		} else {
+			c.PostAnalysisRepairs++
+		}
+	case OutcomeSecurityDefect:
+		c.SecurityRepairs++
+	case OutcomeRuntimeTransient:
+		c.TransientRetries++
+	case OutcomeBudgetExhausted:
+		c.BudgetContinuations++
+	case OutcomeTurnExhausted:
+		c.TurnContinuations++
+	case OutcomeMergeBaseMoved:
+		c.MergeRevalidations++
+	case OutcomeMechanical:
+		c.MechanicalRepairs++
+	}
+}
+
+func (r *runner) parkTypedRecovery(ctx context.Context, sl *ledger.Slot, outcome CandidateOutcomeClass, reason string) {
+	note := fmt.Sprintf("%s: %s — branch/worktree preserved", outcome, reason)
+	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		s.Status = ledger.SlotBlocked
+		s.OutcomeClass = string(outcome)
+		s.Note = note
+	})
+	r.checkpointSlot(sl, "typed-recovery-park")
+	r.releaseGlobalSlot(sl.PhaseID)
+	r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
+	r.auditBlocked(ctx, sl, string(outcome), reason)
+}
+
 // finishCandidate runs the configured post-implement pipeline stages, the
 // optional review pass, and then applies the merge policy to a completed slot.
 func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
+	r.finishAssessedCandidate(ctx, sl, r.assessCandidate(ctx, sl))
+}
+
+func (r *runner) finishAssessedCandidate(ctx context.Context, sl *ledger.Slot, assessment candidateAssessment) {
 	policy := r.mergePolicy(ctx, sl.EpicID)
 
 	// Completion is runtime-neutral: every adapter ultimately produces a git
 	// branch/worktree plus the shared status document. Refuse incomplete
 	// candidates before pipeline/review can create noise or merge can mistake
 	// the unchanged base commit for agent work.
-	assessment := r.assessCandidate(ctx, sl)
 	if !assessment.eligible {
 		if assessment.capabilityBlock {
+			_ = DecideRetry(RetryPolicyInput{
+				Outcome: OutcomeCapabilityUnavailable,
+				Budgets: retryBudgets(sl.Retry),
+			})
 			r.parkCapabilityBlock(ctx, sl, assessment.capability, assessment.capabilityDetail)
 			return
 		}
-		if assessment.retryableBlock {
-			r.progress("bead %s: clean committed candidate self-blocked without structured capability fields; retrying for classification correction", sl.PhaseID)
-			r.requeueSlot(ctx, sl, "", genericCompletionBlockRequeueNote)
-			return
+		reason := assessment.reason
+		if assessment.outcome == OutcomeCompletionContractMissing {
+			reason = completionContractRepairNote
 		}
-		r.parkIncompleteCandidate(ctx, sl, assessment.reason)
+		if r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome: assessment.outcome,
+			reason:  reason,
+		}) {
+			if assessment.outcome == OutcomeCompletionContractMissing {
+				r.progress("bead %s: terminal result missing; dispatched one standard-tier completion-only repair", sl.PhaseID)
+			}
+		}
 		return
 	}
 
@@ -1532,13 +1802,11 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 	// and merge (koryph-a14). A required stage failure blocks the slot —
 	// never auto-merge past incomplete pipeline work.
 	if ok, failed := r.runPipelineStages(ctx, sl); !ok {
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = "pipeline stage failed: " + failed
+		r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome:         OutcomeCodeDefect,
+			evidenceChanged: true,
+			reason:          "pipeline stage failed: " + failed,
 		})
-		r.checkpointSlot(sl, "stage-failed")
-		r.releaseGlobalSlot(sl.PhaseID) // terminal
-		r.progress("bead %s: blocked (pipeline stage %q failed)", sl.PhaseID, failed)
 		return
 	}
 
@@ -1594,10 +1862,11 @@ func (r *runner) startReview(ctx context.Context, sl *ledger.Slot) {
 		Contract: review.Contract{
 			ID: issue.ID, Title: issue.Title, Description: issue.Description,
 			AcceptanceCriteria: issue.AcceptanceCriteria, Labels: append([]string(nil), issue.Labels...),
-			Runtime: runtimeName, CompletionState: func() string {
-				state, _ := completionState(sl.StatusPath)
-				return state
-			}(),
+			// Reaching review already required a live SHA-bound result.
+			// status.json is only a heartbeat and may still say testing or
+			// blocked from an earlier instant; do not let that advisory value
+			// contradict the authenticated terminal state.
+			Runtime: runtimeName, CompletionState: "done",
 		},
 		TimeoutSec:   reviewTimeout,
 		ProxyBaseURL: r.proxyBaseURLForSlot(sl),
@@ -1617,36 +1886,40 @@ func (r *runner) startReview(ctx context.Context, sl *ledger.Slot) {
 func (r *runner) applyReviewResult(ctx context.Context, sl *ledger.Slot, v review.Verdict) {
 	outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
 	if v.Degraded {
-		// Fail CLOSED: --review was explicitly requested, so a review we could
-		// not obtain must never wave the merge through.
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = fmt.Sprintf("review degraded after %d attempt(s), NOT merged: %s", v.Attempts, v.Reason)
+		decision := DecideRetry(RetryPolicyInput{
+			Outcome: OutcomeRuntimeTransient,
+			Budgets: retryBudgets(sl.Retry),
 		})
-		r.checkpointSlot(sl, "review-degraded")
-		r.releaseGlobalSlot(sl.PhaseID)
-		r.progress("bead %s: BLOCKED — review could not complete after %d attempt(s) (%s); refusing to auto-merge unreviewed work",
-			sl.PhaseID, v.Attempts, v.Reason)
-		r.reconcileBlockedBead(ctx, sl, "review degraded: "+v.Reason)
+		if decision.Action == RecoveryRetrySameTier {
+			next := sl.Retry
+			consumeRetryCounter(&next, OutcomeRuntimeTransient, decision.Action)
+			if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.Retry = next
+				s.OutcomeClass = string(OutcomeRuntimeTransient)
+			}); err == nil {
+				sl.Retry = next
+				r.progress("bead %s: review transient after %d attempt(s) — retrying review (%d/2)",
+					sl.PhaseID, v.Attempts, next.TransientRetries)
+				r.startReview(ctx, sl)
+				return
+			}
+		}
+		r.parkTypedRecovery(ctx, sl, OutcomeRuntimeTransient,
+			fmt.Sprintf("review degraded after %d attempt(s): %s", v.Attempts, v.Reason))
 		return
 	}
 	if v.Blocking {
-		if sl.ReviewIters < 2 {
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ReviewIters++ })
-			r.progress("bead %s: blocking review findings (iteration %d) — bouncing back to the implementer",
-				sl.PhaseID, sl.ReviewIters)
-			r.requeueSlot(ctx, sl, outPath, "blocking review findings")
-			return
-		}
-		note := fmt.Sprintf("blocking review findings persist after %d iteration(s) — branch/worktree preserved; resolve findings before retrying", sl.ReviewIters)
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = note
+			s.ReviewIters++
 		})
-		r.checkpointSlot(sl, "review-blocking")
-		r.releaseGlobalSlot(sl.PhaseID)
-		r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
-		r.auditBlocked(ctx, sl, "review-blocking", v.Raw)
+		r.progress("bead %s: blocking security review findings (iteration %d) — applying typed recovery policy",
+			sl.PhaseID, sl.ReviewIters)
+		r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome:         OutcomeSecurityDefect,
+			evidenceChanged: true,
+			reviewPath:      outPath,
+			reason:          "blocking security review findings",
+		})
 		return
 	}
 
@@ -1700,6 +1973,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 		RepoRoot:            r.rec.Root,
 		Branch:              sl.Branch,
 		DefaultBranch:       r.rec.DefaultBranch,
+		ValidationPhaseDir:  r.store.PhaseDir(r.run.RunID, sl.PhaseID),
 		Gate:                append([]string(nil), r.cfg.Gate...),
 		Extra:               append([]string(nil), r.cfg.ProtectedPaths...),
 		Push:                true, // merge itself skips push when no remote exists
@@ -1730,25 +2004,15 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 
 func (r *runner) applyMergeResult(ctx context.Context, sl *ledger.Slot, res merge.Result, err error) {
 	if err != nil {
-		// A merge error is usually transient (base moved, push raced). Self-heal
-		// by requeueing — requeueSlot Force-rebases the landed branch onto
-		// current main and resumes — rather than stranding the bead. Only after
-		// mergeRequeueBudget requeues does a failure block. Mirrors the
-		// gate-failed path below (koryph-3fs, budget koryph-2im.6).
-		if mergeErrorRetryable(sl) {
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.MergeRequeues++ })
-			r.progress("bead %s: merge error (%v) — requeueing (%d/%d) to retry the merge",
-				sl.PhaseID, err, sl.MergeRequeues, mergeRequeueBudget)
-			r.requeueSlot(ctx, sl, "", mergeErrorRequeueNote)
-			return
+		if sl.Retry.TransientRetries < 2 {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.MergeRequeues++
+			})
 		}
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = "merge error after requeue: " + err.Error()
+		r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome: OutcomeRuntimeTransient,
+			reason:  mergeErrorRequeueNote + ": " + err.Error(),
 		})
-		r.checkpointSlot(sl, "merge-error")
-		r.releaseGlobalSlot(sl.PhaseID) // terminal
-		r.progress("bead %s: blocked (merge error after requeue: %v)", sl.PhaseID, err)
 		return
 	}
 
@@ -1879,39 +2143,27 @@ func (r *runner) auditBlocked(ctx context.Context, sl *ledger.Slot, reason, deta
 func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res merge.Result) (requeued bool) {
 	switch res.Status {
 	case merge.StatusGateFailed:
-		if gateRequeueRetryable(sl) {
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.GateRequeues++ })
-			r.progress("bead %s: gate failed after rebase — requeueing (%d/%d)",
-				sl.PhaseID, sl.GateRequeues, gateRequeueBudget)
-			r.requeueSlot(ctx, sl, "", gateRequeueNote)
-			return true
+		if sl.Retry.CodeRepairs < 1 {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.GateRequeues++
+			})
 		}
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = "gate failed after requeue: " + tailOf(res.GateOutput, 400)
+		return r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome:         OutcomeCodeDefect,
+			evidenceChanged: true,
+			reason:          gateRequeueNote,
 		})
-		r.checkpointSlot(sl, "gate-failed")
-		r.progress("bead %s: blocked (gate failed after requeue)", sl.PhaseID)
-		r.auditBlocked(ctx, sl, "gate-failed", res.GateOutput)
 
 	case merge.StatusCommitStyle:
-		if commitStyleRetryable(sl) {
-			r.progress("bead %s: non-conventional commit subject(s) — bouncing to the implementer to reword",
-				sl.PhaseID)
-			r.requeueSlot(ctx, sl, "", commitStyleRequeueNote)
-			return true
-		}
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = "commit-style: non-conventional commit subject(s) persist after a reword requeue — " +
-				"reword each to 'type(scope): subject' (type ∈ feat|fix|docs|chore|refactor|revert|test|ci|build|perf|style) " +
-				"then re-dispatch with koryph run. Offending: " + tailOf(res.GateOutput, 300)
+		return r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome: OutcomeMechanical,
+			reason:  commitStyleRequeueNote,
 		})
-		r.checkpointSlot(sl, "commit-style")
-		r.progress("bead %s: blocked (non-conventional commit subjects persist after requeue)", sl.PhaseID)
-		r.auditBlocked(ctx, sl, "commit-style", res.GateOutput)
 
 	case merge.StatusDirty:
+		_ = DecideRetry(RetryPolicyInput{
+			Outcome: OutcomeCodeDefect, Budgets: retryBudgets(sl.Retry),
+		})
 		note := "candidate worktree has uncommitted changes — preserved for recovery; commit the intended work before retrying"
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
@@ -1922,6 +2174,9 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.auditBlocked(ctx, sl, "dirty", res.GateOutput)
 
 	case merge.StatusNoChanges:
+		_ = DecideRetry(RetryPolicyInput{
+			Outcome: OutcomeCodeDefect, Budgets: retryBudgets(sl.Retry),
+		})
 		note := "candidate branch has no commits beyond the dispatch base — refusing false merge"
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotBlocked
@@ -1934,33 +2189,21 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.auditBlocked(ctx, sl, "no-changes", res.GateOutput)
 
 	case merge.StatusConflict:
-		// A rebase conflict is the most agent-resolvable merge failure: requeue
-		// so the agent resumes on its branch with CONFLICT.md and resolves it
-		// (koryph-3as). Terminal SlotConflict previously stranded the bead
-		// in_progress — invisible to bd ready — when the run later drained.
-		if sl.ConflictRequeues < conflictRequeueBudget && sl.Attempts < ledger.MaxAttempts {
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) { s.ConflictRequeues++ })
-			r.progress("bead %s: rebase conflict — requeueing (%d/%d) for in-worktree resolution (see CONFLICT.md)",
-				sl.PhaseID, sl.ConflictRequeues, conflictRequeueBudget)
-			r.requeueSlot(ctx, sl, "", conflictRequeueNote)
-			return true
+		if sl.Retry.CodeRepairs < 1 {
+			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.ConflictRequeues++
+			})
 		}
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotConflict
-			s.Note = "rebase conflict after requeue: " + res.ConflictMD
+		return r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome:         OutcomeCodeDefect,
+			evidenceChanged: true,
+			reason:          conflictRequeueNote,
 		})
-		r.checkpointSlot(sl, "conflict")
-		// Reset the bead so the frontier can re-adopt it in a later run — a
-		// terminal conflict slot must never strand the bead in_progress.
-		if err := r.adapter.SetStatus(ctx, sl.PhaseID, "open"); err == nil {
-			_ = r.adapter.Comment(ctx, sl.PhaseID,
-				"engine: rebase conflict unresolved after "+conflictRequeueNote+" budget; bead reset to open — worktree and CONFLICT.md preserved for the next attempt")
-		}
-		r.progress("bead %s: rebase conflict after requeue budget — bead reset to open (details: %s)",
-			sl.PhaseID, res.ConflictMD)
-		logSlotConflict(sl.PhaseID, res.ConflictMD)
 
 	case merge.StatusProtected:
+		_ = DecideRetry(RetryPolicyInput{
+			Outcome: OutcomeEngineInvariant, Budgets: retryBudgets(sl.Retry),
+		})
 		note := "protected paths touched: " + strings.Join(res.Protected, ", ") +
 			" — " + r.protectedResolutionHint(res.Protected, sl.Branch, sl.PhaseID)
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -1972,16 +2215,15 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		r.auditBlocked(ctx, sl, "protected", note)
 
 	case merge.StatusUnsigned:
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = "merge refused: " + tailOf(res.GateOutput, 400)
+		return r.recoverTyped(ctx, sl, typedRecoveryRequest{
+			outcome: OutcomeMechanical,
+			reason:  "unsigned commit repair",
 		})
-		r.checkpointSlot(sl, "unsigned")
-		r.progress("bead %s: blocked (unsigned commits on %s — signing is required; nothing merged)",
-			sl.PhaseID, sl.Branch)
-		r.auditBlocked(ctx, sl, "unsigned", res.GateOutput)
 
 	default:
+		_ = DecideRetry(RetryPolicyInput{
+			Outcome: OutcomeEngineInvariant, Budgets: retryBudgets(sl.Retry),
+		})
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.Status = ledger.SlotFailed
 			s.Note = "merge status " + string(res.Status)
@@ -2003,6 +2245,7 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 		RepoRoot:            r.rec.Root,
 		Branch:              sl.Branch,
 		DefaultBranch:       r.rec.DefaultBranch,
+		ValidationPhaseDir:  r.store.PhaseDir(r.run.RunID, sl.PhaseID),
 		Gate:                append([]string(nil), r.cfg.Gate...),
 		Extra:               append([]string(nil), r.cfg.ProtectedPaths...),
 		SlotOwner:           r.owner,
@@ -2162,6 +2405,9 @@ func (r *runner) parkForOperatorStop(ctx context.Context, sl *ledger.Slot) bool 
 	if !r.store.StopRequested(sl.PhaseID) {
 		return false
 	}
+	_ = DecideRetry(RetryPolicyInput{
+		Outcome: OutcomeOperatorStop, Budgets: retryBudgets(sl.Retry),
+	})
 	r.store.ConsumeStop(sl.PhaseID)
 	const note = "operator-stopped via koryph stop — not auto-retried; re-dispatch explicitly with koryph run"
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -2185,6 +2431,9 @@ func (r *runner) parkForDrain(ctx context.Context, sl *ledger.Slot) bool {
 	if !r.store.DrainRequested() {
 		return false
 	}
+	_ = DecideRetry(RetryPolicyInput{
+		Outcome: OutcomeOperatorStop, Budgets: retryBudgets(sl.Retry),
+	})
 	const note = "drain active — not requeued; re-dispatch after the drain completes"
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 		s.Status = ledger.SlotBlocked
@@ -2212,18 +2461,16 @@ func (r *runner) protectedResolutionHint(hits []string, branch, phaseID string) 
 	return "includes governance or project-policy paths — requires manual review; --allow-protected will not lift these"
 }
 
-// slotEscalated reports whether a slot's model rationale records an in-run
-// escalation (koryph-qf6.4) — the same substring the TUI's ↑ marker keys on
-// (tui/threads.go), so ledger, display, and write-back agree on what counts.
+// slotEscalated reports whether historical or explicit typed model provenance
+// records an in-run escalation. Attempt count never creates this rationale.
 func slotEscalated(sl *ledger.Slot) bool {
 	return sl != nil && strings.Contains(strings.ToLower(sl.ModelWhy), "escalat")
 }
 
 // blockedModelDesc renders the model a blocked slot's failure write-back
-// should cite (koryph-qf6.5): the tier, expanded with the escalation
-// rationale when the final attempt escalated ("opus" alone would hide that
-// the first attempts ran sonnet) and with the actual model when the CLI's
-// fallback diverged from the request (koryph-qf6.2).
+// should cite (koryph-qf6.5): the tier, expanded with any explicit escalation
+// rationale, and with the actual model when the CLI's fallback diverged from
+// the request (koryph-qf6.2).
 func blockedModelDesc(sl *ledger.Slot) string {
 	desc := sl.Model
 	if desc == "" {
@@ -2238,8 +2485,8 @@ func blockedModelDesc(sl *ledger.Slot) string {
 	return desc
 }
 
-// writeBackEscalatedMerge leaves durable provenance ON THE BEAD when it only
-// merged after its final attempt escalated (koryph-qf6.5): a
+// writeBackEscalatedMerge leaves durable provenance ON THE BEAD when an
+// explicit typed or historical escalation is recorded (koryph-qf6.5): a
 // model-observed:<tier> label, which syncs through the beads DB across
 // machines — unlike the gitignored run ledger — and is the evidence the
 // similarity learner (koryph-qf6.6) and humans read. Deliberately NOT a
@@ -2264,6 +2511,15 @@ func (r *runner) writeBackEscalatedMerge(ctx context.Context, phaseID string) {
 // the manifest carries a session id and the worktree survives) a native session
 // resume.
 func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, why string) {
+	r.requeueSlotWithRecovery(ctx, sl, reviewPath, why, retryDispatch{})
+}
+
+func (r *runner) requeueSlotWithRecovery(
+	ctx context.Context,
+	sl *ledger.Slot,
+	reviewPath, why string,
+	recovery retryDispatch,
+) {
 	// Before re-dispatching for any reason (agent death, gate-fail, review
 	// bounce, merge error) re-validate that the bead is still open. The
 	// operator may have closed or deferred it while the previous agent was
@@ -2294,33 +2550,16 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 	logSlotRequeue(sl.PhaseID, why, attempt)
 	logRequeueEvent(r.run.RunID, r.opts.ProjectID, sl.PhaseID, why, attempt, sl.CostUSD)
 
-	// In-run escalation (koryph-qf6.4): the FINAL attempt of a bead-fault
-	// requeue runs on the recovery tier instead of burning the last attempt
-	// on a model that has already failed twice — the one deliberate exception
-	// to the koryph-ehx freeze (a policy decision recorded in the rationale,
-	// not a drifting re-resolution; see resolveModel). Merge errors are
-	// excluded (usually transient — the base moved, a push raced — not a
-	// model-capability failure), as are the rate-limit and budget-kill paths,
-	// which never reach this function. RecoveryModel resolves the selected
-	// runtime's concrete frontier model and enforces the same fail-closed
-	// policy as initial routing; the frozen-model path otherwise bypasses it.
-	// A generic worker self-block is deliberately excluded: its retry exists to
-	// correct the portable host-capability classification, not to retry coding
-	// on a stronger tier.
+	// Attempt number never selects a model. A typed decision may select the
+	// runtime's standard implementation tier; otherwise the initial model is
+	// frozen. Frontier implementation is unavailable here by construction.
 	frozenModel, frozenWhy := sl.Model, sl.ModelWhy
-	if fault && attempt >= ledger.MaxAttempts && why != mergeErrorRequeueNote && why != cleanNoCommitExitNote && why != genericCompletionBlockRequeueNote {
-		runtimeName := sl.Runtime
-		if runtimeName == "" {
-			runtimeName = "claude"
-		}
-		modelMap := r.modelRequestForRuntime(modelroute.StageImplement, nil, "", runtimeName).ModelMap
-		if up := modelroute.RecoveryModel(sl.Model, runtimeName, modelMap, r.rec.AllowedModels); up != "" {
-			frozenModel = up
-			frozenWhy = fmt.Sprintf("escalated from %s after %d bead-fault attempts (%s)", sl.Model, sl.Attempts, why)
-			r.progress("bead %s: escalating final attempt %d to %s (was %s — %s)",
-				sl.PhaseID, attempt, up, sl.Model, why)
-			logModelEscalated(sl.PhaseID, sl.Model, up, attempt, why)
-		}
+	frozenPersona, frozenEffort := sl.Agent, sl.Effort
+	if recovery.model.model != "" {
+		frozenModel = recovery.model.model
+		frozenPersona = recovery.model.persona
+		frozenWhy = recovery.model.rationale
+		frozenEffort = recovery.model.effort
 	}
 
 	r.backoffSleep(ctx, sl.Attempts)
@@ -2363,18 +2602,19 @@ func (r *runner) requeueSlot(ctx context.Context, sl *ledger.Slot, reviewPath, w
 		budgetKillRequeues:    sl.BudgetKillRequeues,
 		turnExhaustedRequeues: sl.TurnExhaustedRequeues,
 		note:                  why,
+		retry:                 sl.Retry,
+		completionRepair:      recovery.completionRepair,
 		// Freeze the model resolution from the first attempt (koryph-ehx): a
 		// requeue re-runs the SAME model/persona/effort the bead was dispatched
 		// with, so a `model:*` relabel mid-run (or non-deterministic
 		// persona-tier resolution) cannot silently switch a retry to the wrong
-		// model. Same freeze rationale as the footprint just below. The one
-		// exception is the deliberate final-attempt escalation above
-		// (koryph-qf6.4), which replaces the frozen tier with a recorded,
-		// allowlist-checked policy decision — never a re-resolution.
+		// model. Same freeze rationale as the footprint just below. Attempt
+		// number never changes the model; only the typed decision supplied in
+		// recovery may select the runtime's standard repair tier.
 		frozenModel:    frozenModel,
-		frozenPersona:  sl.Agent,
+		frozenPersona:  frozenPersona,
 		frozenModelWhy: frozenWhy,
-		frozenEffort:   sl.Effort,
+		frozenEffort:   frozenEffort,
 		// Carry the persisted footprint forward too (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,
@@ -2532,28 +2772,34 @@ func (r *runner) checkpointSlot(sl *ledger.Slot, execState string) {
 	existed := err == nil
 	if err != nil {
 		m = &ledger.Manifest{
-			ProjectID:       r.opts.ProjectID,
-			BeadID:          cur.PhaseID,
-			EpicID:          cur.EpicID,
-			AccountProfile:  cur.AccountProfile,
-			ClaudeConfigDir: cur.ClaudeConfigDir,
-			SessionID:       cur.SessionID,
-			SessionName:     cur.SessionName,
-			Model:           cur.Model,
-			WorktreePath:    cur.Worktree,
-			Branch:          cur.Branch,
-			BillingMode:     cur.BillingMode,
+			ProjectID:          r.opts.ProjectID,
+			BeadID:             cur.PhaseID,
+			EpicID:             cur.EpicID,
+			AccountProfile:     cur.AccountProfile,
+			ClaudeConfigDir:    cur.ClaudeConfigDir,
+			SessionID:          cur.SessionID,
+			SessionName:        cur.SessionName,
+			Model:              cur.Model,
+			WorktreePath:       cur.Worktree,
+			Branch:             cur.Branch,
+			BaseCommit:         cur.DispatchBaseSHA,
+			DispatchGeneration: cur.DispatchGeneration,
+			BillingMode:        cur.BillingMode,
 		}
 	}
 	// Skip the manifest read-modify-write when nothing recovery-relevant moved —
 	// a quietly-running slot re-checkpoints identically every tick otherwise.
-	if existed && m.ExecutionState == execState && m.HeadCommit == cur.LastCommit && m.Attempt == cur.Attempts {
+	if existed && m.ExecutionState == execState && m.HeadCommit == cur.LastCommit &&
+		m.Attempt == cur.Attempts && m.PID == cur.PID &&
+		m.ProcessIdentity == cur.ProcessIdentity {
 		return
 	}
 	m.ExecutionState = execState
 	m.HeadCommit = cur.LastCommit
 	m.Attempt = cur.Attempts
 	m.ModelActual = cur.ModelActual
+	m.PID = cur.PID
+	m.ProcessIdentity = cur.ProcessIdentity
 	_ = r.store.SaveManifest(r.run.RunID, sl.PhaseID, m)
 }
 

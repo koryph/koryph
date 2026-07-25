@@ -5,6 +5,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -38,6 +39,11 @@ type CLIBackend struct {
 	// selection logic) can inject a non-claude runtime.Runtime without
 	// CLIBackend growing runtime-specific branches of its own.
 	Runtime runtime.Runtime
+
+	// releaseProcess and stopAndReap are narrow lifecycle test seams. Nil uses
+	// (*os.Process).Release and StopForceAndReap respectively.
+	releaseProcess func(*os.Process) error
+	stopAndReap    func(int) error
 }
 
 // resolvedRuntime returns b.Runtime, defaulting to the claude adapter built
@@ -266,11 +272,7 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		return Handle{}, fmt.Errorf("dispatch %s: starting launch.sh: %w", s.PhaseID, err)
 	}
 	pid := cmd.Process.Pid
-	if err := cmd.Process.Release(); err != nil {
-		return Handle{}, fmt.Errorf("dispatch %s: releasing pid %d: %w", s.PhaseID, pid, err)
-	}
-
-	return Handle{
+	handle := Handle{
 		PID:              pid,
 		SessionID:        s.SessionID,
 		LaunchPath:       launchPath,
@@ -278,7 +280,36 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 		StderrPath:       stderrPath,
 		StatusPath:       statusPath,
 		VerifiedIdentity: identity,
-	}, nil
+	}
+	release := b.releaseProcess
+	if release == nil {
+		release = func(p *os.Process) error { return p.Release() }
+	}
+	if err := release(cmd.Process); err != nil {
+		cleanup := b.stopAndReap
+		if cleanup == nil {
+			cleanup = StopForceAndReap
+		}
+		if cleanupErr := cleanup(pid); cleanupErr != nil {
+			// Handle-or-cleanup contract: once Start succeeds, Dispatch may
+			// return an error only after the entire spawned session is gone.
+			// Cleanup could not be proven, so return the authenticated handle
+			// and let the engine durably track/stop the live worker.
+			log.Error("dispatch.release.failed_handle_returned",
+				slog.String(obs.KeyPhase, s.PhaseID),
+				slog.String(obs.KeyProject, s.ProjectID),
+				slog.Int("pid", pid),
+				obs.Err(fmt.Errorf("release: %v; cleanup: %w", err, cleanupErr)),
+			)
+			return handle, nil
+		}
+		return Handle{}, fmt.Errorf(
+			"dispatch %s: releasing pid %d: %w (spawned session stopped and reaped)",
+			s.PhaseID, pid, err,
+		)
+	}
+
+	return handle, nil
 }
 
 // sq single-quotes v for /bin/sh. Values are pre-screened for embedded
@@ -517,4 +548,37 @@ func StopForce(pid int) error {
 		return fmt.Errorf("stop: SIGKILL pid %d: %w", pid, err)
 	}
 	return nil
+}
+
+// StopForceAndReap kills the complete detached process group and waits
+// boundedly until its leader is reaped and the group no longer exists. It is
+// the rollback primitive for failures after Start: callers may safely return
+// an error only after this function succeeds.
+func StopForceAndReap(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("stop and reap: invalid pid %d", pid)
+	}
+	stopErr := StopForce(pid)
+	deadline := time.Now().Add(3 * time.Second)
+	leaderGone := false
+	for time.Now().Before(deadline) {
+		var ws syscall.WaitStatus
+		wpid, waitErr := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
+		switch {
+		case waitErr == nil && wpid == pid:
+			leaderGone = true
+		case errors.Is(waitErr, syscall.ECHILD):
+			leaderGone = !procx.Alive(pid)
+		}
+		groupErr := syscall.Kill(-pid, 0)
+		groupGone := errors.Is(groupErr, syscall.ESRCH)
+		if leaderGone && groupGone {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stopErr != nil {
+		return fmt.Errorf("stop process group %d: %w", pid, stopErr)
+	}
+	return fmt.Errorf("process group %d still present after SIGKILL", pid)
 }

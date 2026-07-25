@@ -117,20 +117,30 @@ contract is identical for every dispatch of this engine version.
     - Follow-ups
     - Test evidence
     - Changes requiring orchestrator review
+- Terminal success is imperative. status.json and SUMMARY.md are advisory and
+  cannot finish the phase. Write a structured JSON evidence file under
+  $KORYPH_PHASE_DIR containing:
+    - focused_tests entries with command, exit_status=0, and a regular log_path;
+    - exactly one acceptance entry for every AC<n> above; and
+    - typed references for each entry: {"kind":"file","path":"..."} for a
+      regular in-worktree/phase file, or
+      {"kind":"focused-test","command":"..."} naming a successful focused test.
+  Then run:
+      koryph phase complete --evidence "$KORYPH_PHASE_DIR/completion-evidence.json"
+  This command derives the trusted run, attempt, base, generation, candidate
+  SHA, cleanliness, and digests itself. Do not hand-write result.json.
 - Read INBOX.md in your phase directory when you start, between every step,
   and again right before you finish: a nudge appended right after dispatch
   (before your first heartbeat is even polled) is otherwise invisible until
   your next check-in, and one appended near the end can still change what
   "done" means.
 
-## Output economy
-Gate and Bash output dominate transcript bytes; keep them small:
+## Focused validation and output economy
+The Koryph validation service owns the full project gate. Do not run make
+gate, make gate-agent, full-repository go test, or another broad gate as a
+worker. Run only focused checks needed for your changed packages and acceptance
+criteria. Keep their output small:
 
-- Prefer "make gate-agent" over "make gate". It runs identical checks with
-  the same fail-fast verdict, but prints one PASS/FAIL line per stage and
-  tees each stage's full log to $KORYPH_PHASE_DIR/gate-<stage>.log. On
-  failure it also prints a short tail so the actionable error still reaches
-  you; the full output is always recoverable via the Read tool.
 - File-spill wrappers: for any long-running command, invoke
   hooks/koryph-spill.sh with a label and the command. The wrapper prints a
   head+tail summary, writes the full untruncated output to a file under your
@@ -160,7 +170,7 @@ func projectBlock(in Input) string {
 		b.WriteString("(feat|fix|docs|chore|refactor|revert|test|ci|build|perf|style; imperative, lowercase, <=72 chars).")
 	}
 
-	b.WriteString("\n\nGreen gate (keep these green):")
+	b.WriteString("\n\nProject gate (validation service-owned; do not run as a worker):")
 	if len(in.Gate) == 0 {
 		b.WriteString("\n- (none configured)")
 	} else {
@@ -178,6 +188,22 @@ func projectBlock(in Input) string {
 	}
 
 	return b.String()
+}
+
+// WithCompletionRepair appends the only instructions allowed for the bounded
+// completion-contract repair. The implementation is already committed; this
+// dispatch may construct evidence and the terminal result, but may not reopen
+// source work or broaden validation.
+func WithCompletionRepair(prompt, phaseDir string) string {
+	evidencePath := filepath.Join(phaseDir, "completion-evidence.json")
+	return prompt + "\n\n### COMPLETION REPAIR ONLY\n" +
+		"The committed implementation is complete. Do not edit source files, rewrite commits, " +
+		"change scope, or run the full project gate. Inspect existing focused-test logs; run only " +
+		"a missing focused check needed to authenticate an acceptance reference. Write the exact " +
+		"AC<n> evidence matrix to " + evidencePath + " and finish only with:\n    " +
+		"koryph phase complete --evidence " + evidencePath + "\n" +
+		"If that command cannot validate the existing candidate, report the concrete capability " +
+		"block or exit without modifying implementation."
 }
 
 // volatileTail returns section [3]: the per-dispatch content — bead,

@@ -409,17 +409,12 @@ scoring/review → **Opus**; implement/docs/test → **Sonnet**; explore/debug �
 4. run default (`--default-model`)
 5. stage default
 
-**Opus is the ceiling.** Escalation (`RecoveryUpgrade`, gated by
-`EscalationTier`) always targets `TierOpus` and never Fable; that path is
-structurally excluded. The engine escalates in-run: when a bead-fault requeue
-(gate failure, review bounce, conflict, crash — never a transient merge error,
-rate limit, or budget kill) is about to burn the FINAL `MaxAttempts` attempt on
-a haiku/sonnet slot, that last attempt runs on Opus instead — provided Opus is
-in the project's `AllowedModels`. The decision is recorded in the slot's model
-rationale (`escalated from sonnet after 2 bead-fault attempts (…)`), rendered
-as a trailing `↑` in the TUI's Model column and emitted as
-`engine.slot.escalated` telemetry. Retries below the final attempt keep the
-first attempt's model frozen (koryph-ehx). **Fable is explicit-only.** It resolves
+**Retry count never changes the implementation model.** Typed recovery
+classifies the failure and either continues safely, requests a standard-tier
+repair, or blocks with evidence. Frontier models are reserved for advanced
+planning and explicitly authorized structured security/recovery analysis; an
+analysis result cannot silently become frontier implementation. **Fable is
+explicit-only.** It resolves
 only when the tier is Fable *and* the source was an explicit label/flag *and*
 `TierFable` is in the project's `AllowedModels` (the default allowlist —
 haiku/sonnet/opus — deliberately omits it). Persona frontmatter can contribute

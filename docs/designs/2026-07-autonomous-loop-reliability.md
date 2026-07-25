@@ -446,23 +446,50 @@ gate effort.
 
 The worker contract permits focused package tests and forbids the full project
 gate. Koryph classifies known broad commands (`make gate*`, full-repository
-`go test`, full build/vet/lint) and supervises the phase process cohort:
+`go test`, full build/vet/lint) that pass through its command wrapper and
+supervises those phase process cohorts:
 
-- at most one broad command signature may be live in a phase;
+- at most one guarded broad command signature may be live in a phase;
 - a second matching command receives the existing command's PID, log path, and
-  status instead of starting;
+  status and waits for its identity- and generation-bound result instead of
+  starting the real tool;
 - a worker-started full gate is rejected because the validation service owns it;
+- while trusted post-rebase validation is live, a matching worker gate reuses
+  that validation owner rather than rejecting or disrupting it;
 - focused commands remain available;
 - process identity includes start time and process-group membership to avoid PID
   reuse;
-- a redundant group is terminated gracefully and specifically, never by killing
-  every descendant;
-- command starts, reuse, denial, peak RSS, CPU, and duration are ledger events.
+- the trusted validation supervisor starts suspended, publishes its identity
+  under a syscall lock, and launches the real gate only after ownership is
+  durable, so no real gate exists in the publication window;
+- that authenticated supervisor remains the process-group leader until the
+  direct gate child has reported status and the complete group is drained;
+- command starts, reuse, denial, completion, peak RSS, CPU, and duration are
+  durable phase-local structured events.
+
+The merge runner guards each classified command in the configured gate
+sequence independently; it does not publish one synthetic owner around the
+whole sequence. A worker reuses a live validation command only when the
+signatures match. An unmatched worker attempt to start `make gate*` remains
+denied. Cancellation authenticates the validation command's exact start
+identity and process group before signaling that group, gives TERM a bounded
+grace period, and only then force-stops that same disposable validation cohort
+so finalization cannot hang. A direct gate child that exits while descendants
+remain is also a failed validation: Koryph drains the exact group, reaps the
+supervisor, and publishes a terminal failed result before any retry may start.
 
 Runtimes with pre-tool hooks reject before execution. Runtimes without hooks
-receive phase-local command shims where safe and the process supervisor as a
-backstop. The authoritative validation service uses a separate role token and
-is not blocked by the worker policy.
+receive phase-local PATH shims where safe. Those shims deterministically prevent
+accidental and cooperative duplicate invocations; they are **not** a security
+boundary against a malicious same-UID process that deliberately invokes an
+absolute tool path, copies/renames a tool, overwrites or relocates its own shim
+tree, or unsets/changes the mutable `KORYPH_PHASE_DIR` / `KORYPH_PHASE_ID`
+environment that locates cooperative guard state. Worktree isolation and
+merge-time protected-path refusal remain the security boundary for that threat.
+The bounded release canary therefore retains an overlap tripwire for unguarded
+broad cohorts. The authoritative merge validator supplies its role in trusted
+Go code (never a flag, token, or environment value) and uses the same
+identity-bound state as worker shims.
 
 ### 8. Pressure-aware, fail-safe host admission
 
@@ -648,17 +675,17 @@ returns to the loop.
 
 | Unit | Provides | Exact owned paths/prefixes | Depends on | Resources |
 |---|---|---|---|---|
-| U1 candidate lifecycle | `typed-candidate-lifecycle` | `internal/phasecontrol/result.go`, `internal/phasecontrol/result_test.go`, `cmd/koryph/phase.go`, `cmd/koryph/phase_test.go`, `internal/engine/candidate.go`, `internal/engine/candidate_test.go`, `internal/engine/outcome.go`, `internal/engine/retry_policy.go`, `internal/engine/retry_policy_test.go`, `internal/ledger/types.go`, `internal/ledger/classify.go`, `internal/ledger/classify_test.go` | none | none |
-| U2 acceptance evidence | `atomic-acceptance-evidence` | new child under `koryph-6an8`; `internal/plan/criteria.go`, `internal/plan/criteria_test.go`, `internal/plan/audit.go`, `internal/plan/audit_test.go`, `internal/review/criteria.go`, `internal/review/criteria_test.go`, `internal/commands/koryph-design.md`, `internal/commands/koryph-plan.md` | U1 | none |
-| U3 quality pipeline | `sha-bound-quality-pipeline` | `internal/engine/finalize.go`, `internal/engine/finalize_test.go`, `internal/engine/poll.go`, `internal/engine/poll_test.go`, `internal/merge/gate.go`, `internal/merge/gate_test.go`, `internal/merge/merge.go`, `internal/merge/merge_test.go`, `internal/review/review.go`, `internal/review/review_test.go`, `internal/review/types.go`, `internal/modelroute/persona.go`, `internal/modelroute/persona_test.go` | U1, U2 | none |
-| U4 phase process safety | `phase-command-singleflight` | new child under existing epic `koryph-4rk6.5`; `internal/engine/process_guard.go`, `internal/engine/process_guard_test.go`, `internal/resmon/command.go`, `internal/resmon/command_test.go`, `internal/runtime/codex/codex.go`, `internal/runtime/codex/codex_test.go`, `scripts/gate-agent.sh`, `scripts/gate-agent_test.go` | U1 | `res:codex-fixture` (predeclared in project and host vocabulary) |
-| U5 host admission | `pressure-aware-admission` | `internal/sysmem/sysmem.go`, `internal/sysmem/sysmem_darwin.go`, `internal/sysmem/sysmem_darwin_test.go`, `internal/govern/govern.go`, `internal/govern/govern_test.go`, `internal/govern/types.go`, `internal/engine/govern.go`, `internal/engine/memgate_test.go`, `internal/resmon/usage.go`, `internal/resmon/usage_test.go` | U4 for clean calibration data | none |
+| U1 candidate lifecycle | `typed-candidate-lifecycle` | `internal/phasecontrol/result.go`, `internal/phasecontrol/result_test.go`, `cmd/koryph/phase.go`, `cmd/koryph/phase_test.go`, `internal/fsx/fsx.go`, `internal/fsx/fsx_test.go`, `internal/dispatch/cli.go`, `internal/dispatch/cli_test.go`, `internal/engine/candidate.go`, `internal/engine/candidate_test.go`, `internal/engine/outcome.go`, `internal/engine/obs.go`, `internal/engine/retry_policy.go`, `internal/engine/retry_policy_test.go`, `internal/engine/run.go`, `internal/engine/wave.go`, `internal/engine/poll.go`, `internal/engine/recover.go`, `internal/engine/engine_test.go`, `internal/engine/budgetkill_test.go`, `internal/engine/capability_test.go`, `internal/engine/commitstyle_test.go`, `internal/engine/commit_then_die_test.go`, `internal/engine/conflict_requeue_test.go`, `internal/engine/guard_test.go`, `internal/engine/interrupted_test.go`, `internal/engine/ratelimit_test.go`, `internal/engine/requeue_test.go`, `internal/engine/resource_loop_test.go`, `internal/engine/resume_orphan_test.go`, `internal/engine/rolling_test.go`, `internal/engine/runtime_test.go`, `internal/engine/tokenusage_test.go`, `internal/engine/turnceiling_test.go`, `internal/engine/writeback_test.go`, `internal/engine/autonomous_recovery_test.go`, `internal/engine/merge_recover_test.go`, `internal/engine/resume_backlog_test.go`, `internal/ledger/types.go`, `internal/ledger/classify.go`, `internal/ledger/classify_test.go`, `internal/ledger/store.go`, `internal/ledger/store_test.go`, `internal/promptc/compile.go`, `internal/promptc/compile_test.go`, `internal/modelroute/route.go`, `internal/modelroute/route_test.go`, `internal/modelroute/types.go`, `internal/modellearn/learn.go`, `internal/registry/types.go`, `internal/onboard/register.go`, `internal/onboard/onboard_test.go`, `ide/vscode/src/data/schema.ts`, `ide/vscode/src/test/fixtures/home/registry.d/*.json`, `docs/architecture.md`, `docs/index.md`, `docs/features.md`, `docs/llms.txt`, `docs/compare.md`, `docs/concepts/lifecycle.md`, `docs/developer-guide/packages.md`, `docs/user-guide/describing-work.md`, `docs/user-guide/recovery.md`, `docs/user-guide/running-waves.md`, `docs/user-guide/projects-and-accounts.md`, `docs/designs/2026-07-model-routing-audit.md`, `docs/designs/2026-07-hard-block-recovery.md`, `docs/designs/2026-07-retry-containment-and-throughput.md`, `docs/reference/cli.md` | U2 | none |
+| U2 acceptance evidence | `atomic-acceptance-evidence` | new child under `koryph-6an8`; `internal/plan/criteria.go`, `internal/plan/criteria_test.go`, `internal/plan/audit.go`, `internal/plan/audit_test.go`, `internal/review/criteria.go`, `internal/review/criteria_test.go`, `internal/commands/koryph-design.md`, `internal/commands/koryph-plan.md` | none | none |
+| U3 quality pipeline | `sha-bound-quality-pipeline` | `internal/engine/finalize.go`, `internal/engine/finalize_test.go`, `internal/engine/poll.go`, `internal/engine/poll_test.go`, `internal/engine/recover.go`, `internal/engine/resume_orphan_test.go`, `internal/merge/gate.go`, `internal/merge/gate_test.go`, `internal/merge/merge.go`, `internal/merge/merge_test.go`, `internal/merge/types.go`, `internal/review/review.go`, `internal/review/review_test.go`, `internal/review/types.go`, `internal/modelroute/persona.go`, `internal/modelroute/persona_test.go`, `internal/modelroute/route.go`, `internal/modelroute/route_test.go`, `internal/modelroute/runtime_test.go`, `internal/modelroute/types.go` | U1, U2, U4 | none |
+| U4 phase process safety | `phase-command-singleflight` | new child under existing epic `koryph-4rk6.5`; `internal/commandguard/**`, `internal/resmon/command.go`, `internal/resmon/command_test.go`, `internal/runtime/codex/codex.go`, `internal/runtime/codex/codex_test.go`, `cmd/koryph/command.go`, `cmd/koryph/command_test.go`, `internal/merge/gate.go`, `internal/merge/gate_guard_test.go`, `internal/merge/merge.go`, `internal/merge/types.go`, `internal/engine/land.go`, `internal/engine/land_test.go`, `scripts/gate-agent.sh`, `scripts/gate_agent_test.go`, `docs/developer-guide/packages.md` | U1 | `res:codex-fixture` (predeclared in project and host vocabulary) |
+| U5 host admission | `pressure-aware-admission` | `internal/sysmem/sysmem.go`, `internal/sysmem/sysmem_darwin.go`, `internal/sysmem/sysmem_darwin_test.go`, `internal/govern/govern.go`, `internal/govern/govern_test.go`, `internal/govern/types.go`, `internal/engine/govern.go`, `internal/engine/run.go`, `internal/engine/poll.go`, `internal/engine/poll_test.go`, `internal/engine/memgate_test.go`, `internal/resmon/usage.go`, `internal/resmon/usage_test.go` | U1, U4 for trusted lifecycle and clean calibration data | none |
 | U6 native supervisor | `native-autonomous-loop` | `cmd/koryph/loop.go`, `cmd/koryph/loop_test.go`, `internal/loop`, `internal/engine/run.go`, `internal/engine/rolling.go`, `internal/engine/recover.go`, `internal/commands/koryph-loop.md` | U1, U3, U5 | none; enforces fixed-cohort canary admission, two-slot start, five-terminal width gate, and tripwire drain |
-| U7 usage semantics | `normalized-token-accounting` | `internal/runtime/events.go`, `internal/runtime/codex/events.go`, `internal/runtime/codex/events_test.go`, `internal/ledger/types.go`, `internal/metrics/tokens.go`, `internal/metrics/tokens_test.go`, `internal/metrics/experiment.go`, `internal/metrics/experiment_test.go`, `internal/quota/thrash.go`, `internal/quota/thrash_test.go` | U1 | none |
+| U7 usage semantics | `normalized-token-accounting` | `internal/runtime/events.go`, `internal/runtime/codex/events.go`, `internal/runtime/codex/events_test.go`, `internal/runtime/codex/codex_test.go`, `internal/runtime/claude/events.go`, `internal/engine/poll.go`, `internal/engine/wave.go`, `internal/engine/tokenusage_test.go`, `internal/ledger/types.go`, `internal/ledger/store.go`, `internal/ledger/store_test.go`, `internal/metrics/tokens.go`, `internal/metrics/tokens_test.go`, `internal/metrics/experiment.go`, `internal/metrics/experiment_test.go` | U1, U4 | none |
 | U8 artifact lifecycle | `bounded-runtime-artifacts` | `internal/runtime/codex/codex.go`, `internal/runtime/codex/codex_test.go`, `internal/gc/gc.go`, `internal/gc/gc_test.go`, `internal/gc/policy.go`, `internal/gc/policy_test.go`, `cmd/koryph/gc.go`, `cmd/koryph/gc_test.go` | U4, U6 | none; active/final canary reports are retained |
 | U9 dispatch contract | `single-source-dispatch-contract` | `internal/promptc/compile.go`, `internal/promptc/compile_test.go`, `internal/runtime/codex/persona.go`, `internal/runtime/codex/persona_test.go`, `internal/agentsmd/template.md`, `internal/agentsmd/template_test.go` | U1, U2, U3, U6 | none |
 | U10 protected projections | `orchestrator-contract-projections` | `agents/koryph-implementer.md`, `agents/koryph-architect.md`, `agents/koryph-plan-scorer.md`, `agents/koryph-reviewer.md`, `agents/koryph-security-reviewer.md`, `AGENTS.md`, `commands/koryph-design.md`, `commands/koryph-plan.md`, `commands/koryph-loop.md` | U2, U3, U6, U9 | none; `no-dispatch` |
-| U11 SLO evidence | `autonomy-slo-report` | `internal/metrics/autonomy.go`, `internal/metrics/autonomy_test.go`, `cmd/koryph/metrics.go`, `cmd/koryph/metrics_test.go`, `internal/doctor/autonomy.go`, `internal/doctor/autonomy_test.go`, `docs/user-guide/running-waves.md`, `docs/reference/cli.md` | U3, U5, U6, U7, U8, U10 | none; atomically writes the schema-versioned immutable canary report |
+| U11 SLO evidence | `autonomy-slo-report` | `internal/metrics/autonomy.go`, `internal/metrics/autonomy_test.go`, `cmd/koryph/metrics.go`, `cmd/koryph/metrics_test.go`, `internal/doctor/autonomy.go`, `internal/doctor/autonomy_test.go`, `docs/user-guide/autonomy-slos.md` | U3, U5, U6, U7, U8, U10 | none; atomically writes the schema-versioned immutable canary report |
 | U12 controlled release | `installed-autonomy-canary` | Beads reconciliation, preserved `koryph-bbr.3` worktree recovery, signed commits, `make gate-agent`, `make build`, `make install`, installed-version verification, bounded canary, loop enablement | U1–U11 | local build/signing environment; `no-dispatch` |
 
 U3 is intentionally an integration unit: result identity, gate evidence,

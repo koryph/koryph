@@ -59,7 +59,7 @@ func TestCompileThreeSectionsInOrder(t *testing.T) {
 	// Project block content present.
 	for _, want := range []string{
 		"Run gofmt. Keep commits small.",
-		"Green gate (keep these green):",
+		"Project gate (validation service-owned; do not run as a worker):",
 		"- make lint",
 		"- make test",
 		"Cross-cutting gates:",
@@ -179,8 +179,9 @@ func TestPreambleForbiddenOperations(t *testing.T) {
 func TestPreambleTerseOutputContract(t *testing.T) {
 	p := Preamble("v1")
 	for _, want := range []string{
-		"Output economy",
-		"make gate-agent",
+		"output economy",
+		"Do not run make",
+		"focused checks",
 		"koryph-spill.sh",
 		"full output",
 		"Read tool",
@@ -200,6 +201,38 @@ func TestPreambleTerseOutputContract(t *testing.T) {
 		// (TestNoTimestampsInStableSections) guards against actual timestamps.
 		// So this is informational only; no failure here.
 		_ = p
+	}
+}
+
+func TestPreambleRequiresTypedTerminalEvidence(t *testing.T) {
+	p := Preamble("v1")
+	for _, want := range []string{
+		"status.json and SUMMARY.md are advisory",
+		"focused_tests",
+		`{"kind":"file","path":"..."}`,
+		`{"kind":"focused-test","command":"..."}`,
+		"exactly one acceptance entry for every AC<n>",
+		`koryph phase complete --evidence "$KORYPH_PHASE_DIR/completion-evidence.json"`,
+		"Do not hand-write result.json",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preamble missing terminal-evidence contract %q", want)
+		}
+	}
+}
+
+func TestWithCompletionRepairIsNarrowAndSameWork(t *testing.T) {
+	out := WithCompletionRepair(Compile(baseInput()), "/phases/p1")
+	for _, want := range []string{
+		"COMPLETION REPAIR ONLY",
+		"Do not edit source files",
+		"full project gate",
+		"/phases/p1/completion-evidence.json",
+		"koryph phase complete --evidence",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("completion repair prompt missing %q", want)
+		}
 	}
 }
 

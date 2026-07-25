@@ -4,6 +4,7 @@
 package ledger
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -20,9 +21,21 @@ func TestClassifyTable(t *testing.T) {
 			// attempts exhausted → blocked (precedence over liveness)
 			"blocked": {PhaseID: "blocked", Status: SlotRunning, PID: 7, Attempts: MaxAttempts},
 			// completion-ready dead candidates finalize before attempt exhaustion.
-			"finalize":     {PhaseID: "finalize", Status: SlotReview, PID: 7, Commits: 2},
-			"merging":      {PhaseID: "merging", Status: SlotMerging, PID: 7, Commits: 2},
-			"finalize-max": {PhaseID: "finalize-max", Status: SlotRunning, PID: 7, Commits: 2, Attempts: MaxAttempts},
+			"finalize": {
+				PhaseID: "finalize", Status: SlotReview, PID: 7, Commits: 2,
+				DispatchBaseSHA: "base", DispatchGeneration: "dispatch",
+				CandidateGeneration: "generation", CandidateResultPath: "result.json",
+			},
+			"merging": {
+				PhaseID: "merging", Status: SlotMerging, PID: 7, Commits: 2,
+				DispatchBaseSHA: "base", DispatchGeneration: "dispatch",
+				CandidateGeneration: "generation", CandidateResultPath: "result.json",
+			},
+			"finalize-max": {
+				PhaseID: "finalize-max", Status: SlotRunning, PID: 7, Commits: 2, Attempts: MaxAttempts,
+				DispatchBaseSHA: "base", DispatchGeneration: "dispatch",
+				CandidateGeneration: "generation", CandidateResultPath: "result.json",
+			},
 			// terminal → skip
 			"merged": {PhaseID: "merged", Status: SlotMerged},
 			// stuck + dead + Commits==0 but branch has commits via probe → requeue-resume
@@ -87,6 +100,40 @@ func TestClassifyTable(t *testing.T) {
 		if got[i-1].PhaseID > got[i].PhaseID {
 			t.Fatalf("output not sorted by PhaseID: %v", got)
 		}
+	}
+}
+
+func TestClassifyDoesNotFinalizeAdvisoryLegacyArtifacts(t *testing.T) {
+	run := &Run{Slots: map[string]*Slot{
+		"legacy": {
+			PhaseID: "legacy", Status: SlotRunning, PID: 7, Commits: 1,
+			StatusPath: "status.json",
+		},
+		"legacy-review": {
+			PhaseID: "legacy-review", Status: SlotReview, PID: 7, Commits: 1,
+			CandidateGeneration: "candidate-only", CandidateResultPath: "result.json",
+		},
+	}}
+	got := Classify(run, Probe{
+		CompletionReady: func(*Slot) bool { return true },
+	})
+	if len(got) != 2 || got[0].Action != ActionRequeueResume || got[1].Action != ActionRequeueResume {
+		t.Fatalf("legacy advisory candidate = %+v, want preserved requeue-resume", got)
+	}
+}
+
+func TestLegacySlotJSONDecodesWithZeroTypedLifecycle(t *testing.T) {
+	var slot Slot
+	if err := json.Unmarshal([]byte(`{
+		"phase_id":"legacy","status":"running","attempts":2,
+		"commits":1,"note":"old string policy"
+	}`), &slot); err != nil {
+		t.Fatal(err)
+	}
+	if slot.PhaseID != "legacy" || slot.Attempts != 2 || slot.CandidateGeneration != "" ||
+		slot.CandidateResultPath != "" || slot.DispatchBaseSHA != "" || slot.DispatchGeneration != "" ||
+		slot.OutcomeClass != "" || slot.Retry != (RetryCounters{}) {
+		t.Fatalf("legacy slot decoded incompatibly: %+v", slot)
 	}
 }
 

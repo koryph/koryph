@@ -16,6 +16,7 @@ import (
 )
 
 const capabilityAndHealthyClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 echo "work for $KORYPH_PHASE_ID" > "agent-$KORYPH_PHASE_ID.txt"
 git add "agent-$KORYPH_PHASE_ID.txt"
@@ -24,6 +25,7 @@ if [ "$KORYPH_PHASE_ID" = "blocked" ]; then
   printf '{"state":"blocked","block_kind":"capability","capability":"network","detail":"proxy unavailable"}\n' > "$KORYPH_STATUS_PATH"
 else
   printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+  koryph_test_complete "agent-$KORYPH_PHASE_ID.txt" || exit $?
 fi
 printf '{"type":"result","total_cost_usd":0.10}\n'
 exit 0

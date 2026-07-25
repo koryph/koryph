@@ -14,6 +14,7 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/schemaver"
 	"github.com/koryph/koryph/internal/signing"
 )
 
@@ -112,5 +113,71 @@ func TestLandRefusesSquashUnderSigning(t *testing.T) {
 	_, err := Land(context.Background(), rec, cfg, LandOpts{Bead: "tb1", Method: "squash"})
 	if err == nil || !strings.Contains(err.Error(), "signing.required") {
 		t.Fatalf("Land err=%v, want a signing.required refusal", err)
+	}
+}
+
+func TestLandingRunFindsParkedBeadInOlderRun(t *testing.T) {
+	store := ledger.NewStore(t.TempDir())
+	writeLandingRun(t, store, "20260725-010000", map[string]*ledger.Slot{
+		"tb1": {PhaseID: "tb1-phase", Branch: "agent/tb1"},
+	})
+	writeLandingRun(t, store, "20260725-020000", map[string]*ledger.Slot{
+		"other": {PhaseID: "other", Branch: "agent/other"},
+	})
+	repointTestLatest(t, store, "20260725-020000")
+
+	run, slot, err := landingRun(store, "tb1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || slot == nil || run.RunID != "20260725-010000" ||
+		slot.Branch != "agent/tb1" || slot.PhaseID != "tb1-phase" {
+		t.Fatalf("landing context = run=%+v slot=%+v", run, slot)
+	}
+}
+
+func TestLandingRunSkipsUnreadableLatestLedger(t *testing.T) {
+	store := ledger.NewStore(t.TempDir())
+	writeLandingRun(t, store, "20260725-010000", map[string]*ledger.Slot{
+		"tb1": {PhaseID: "tb1", Branch: "agent/tb1"},
+	})
+	badID := "20260725-020000"
+	badDir := store.RunDir(badID)
+	if err := os.WriteFile(filepath.Join(badDir, "ledger.json"), []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repointTestLatest(t, store, badID)
+
+	run, slot, err := landingRun(store, "tb1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || slot == nil || run.RunID != "20260725-010000" {
+		t.Fatalf("landing context after unreadable latest = run=%+v slot=%+v", run, slot)
+	}
+}
+
+func writeLandingRun(t *testing.T, store *ledger.Store, runID string, slots map[string]*ledger.Slot) {
+	t.Helper()
+	store.RunDir(runID)
+	if err := store.SaveRun(&ledger.Run{
+		SchemaVersion: schemaver.Current(schemaver.LedgerRun),
+		RunID:         runID,
+		ProjectID:     "test",
+		Status:        ledger.RunRunning,
+		Slots:         slots,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func repointTestLatest(t *testing.T, store *ledger.Store, runID string) {
+	t.Helper()
+	link := filepath.Join(store.KoryphRoot, "latest")
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(runID, link); err != nil {
+		t.Fatal(err)
 	}
 }

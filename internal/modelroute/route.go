@@ -147,7 +147,8 @@ func Resolve(r Req) (Resolution, error) {
 	// Sol is intentionally scarce: ordinary implementation work, including a
 	// bead's equiv:frontier request, stays on Terra. Advanced planning stages
 	// select it unless an operator made an explicit model/equivalency or
-	// run-default choice. Final hard-block retries use RecoveryModel below.
+	// run-default choice. Typed engine recovery selects model consequences
+	// explicitly; attempt number never changes the implementation model.
 	if runtimeName == "codex" && advancedPlanningStage(r.Stage) && !hasEquiv && !explicit && r.RunDefault == "" {
 		tier = runtime.CodexSolModel
 		rationale += " (Codex advanced-planning policy)"
@@ -735,64 +736,6 @@ func TierForModelID(id string) string {
 	return ""
 }
 
-// RecoveryUpgrade returns the tier to retry a low-confidence task with. Every
-// tier upgrades to opus. Fable is structurally excluded from recovery: a
-// fable input is deliberately downgraded to opus, because recovery must never
-// select fable.
-func RecoveryUpgrade(current string) string {
-	// current is accepted for documentation and future policy hooks; every
-	// tier — including fable — resolves to opus on recovery.
-	_ = current
-	return TierOpus
-}
-
-// RecoveryModel returns the concrete model to use for a FINAL bead-fault
-// retry. Unlike the legacy Claude-only escalation policy, it resolves the
-// selected runtime's recovery target. Codex uses its dedicated Sol target;
-// other runtimes use their effective frontier mapping. This keeps recovery
-// portable while preserving the frozen first-attempt model for every
-// non-final retry.
-//
-// A declared runtime model is itself a fail-closed policy decision, matching
-// Resolve's treatment of runtime model maps. An explicit project allowlist is
-// still honored for non-declared custom targets. Claude fable is never
-// implicitly selected or downgraded.
-func RecoveryModel(current, runtimeName string, override map[string]string, allowed []string) string {
-	if runtimeName == "" {
-		runtimeName = "claude" // slots written before Runtime was persisted
-	}
-	if runtimeName == "claude" && current == TierFable {
-		return ""
-	}
-	if !validModelForRuntime(current, runtimeName, override, allowed) {
-		return ""
-	}
-	// An operator-allowlisted custom model is valid for dispatch, but has no
-	// known capability ordering. Do not guess whether it is below frontier.
-	if runtimeName != "claude" && !declaredModelForRuntime(current, runtimeName, override) {
-		return ""
-	}
-	target := effectiveModelMapFor(runtimeName, override)[runtime.TierFrontier]
-	if runtimeName == "codex" {
-		target = runtime.CodexSolModel
-	}
-	if target == "" || target == current || (runtimeName == "claude" && target == TierFable) {
-		return ""
-	}
-	if !validModelForRuntime(target, runtimeName, override, allowed) {
-		return ""
-	}
-	if runtimeName == "claude" {
-		if len(allowed) == 0 {
-			allowed = defaultAllowed
-		}
-		if !contains(allowed, target) {
-			return ""
-		}
-	}
-	return target
-}
-
 func advancedPlanningStage(stage string) bool {
 	switch stage {
 	case StagePlan, StageDesign, StageScore:
@@ -800,12 +743,6 @@ func advancedPlanningStage(stage string) bool {
 	default:
 		return false
 	}
-}
-
-// EscalationTier remains the Claude compatibility facade for callers and
-// persisted-policy tests that use the historical tier vocabulary.
-func EscalationTier(current string, allowed []string) string {
-	return RecoveryModel(current, "claude", nil, allowed)
 }
 
 // contains reports whether v is in s.

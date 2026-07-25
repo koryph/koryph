@@ -7,14 +7,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/koryph/koryph/internal/execx"
+	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/runtime"
 )
@@ -174,6 +177,10 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	args = append(args, "--output-last-message", filepath.Join(spec.PhaseDir, "SUMMARY.md"))
 	env := c.childEnv(spec.Profile, spec.Billing, spec.APIKey, spec.CredentialEnvVar, spec.Credential, spec.SSHAuthSock, spec.EnvPassthrough)
 	env = append(env, dispatchCacheEnv(spec.SSHAuthSock, spec.RepoRoot, spec.PhaseDir)...)
+	env, err := installPhaseCommandGuard(spec.PhaseDir, env)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codex: install phase command guard: %w", err)
+	}
 	return append([]string{c.bin()}, args...), env, nil
 }
 
@@ -411,6 +418,173 @@ func sandboxCacheEnvWithModuleCache(sshAuthSock, scratchDir, moduleCache string)
 }
 
 func tomlString(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }
+
+var commandGuardExecutable = os.Executable
+
+// installPhaseCommandGuard installs tiny forwarding shims for Codex releases
+// without usable pre-tool hooks. Policy stays in `koryph command exec`; the
+// shell contains no role, lock, evidence path, or classification logic.
+//
+// A hookless runtime can still bypass PATH by invoking an absolute tool path,
+// relocating/overwriting the shim tree, or changing the mutable phase
+// directory/identity environment. Worktree isolation and merge-time guards
+// remain the security boundary for that case; the release canary must tripwire
+// unexpected unguarded broad work.
+func installPhaseCommandGuard(phaseDir string, env []string) ([]string, error) {
+	env = removeEnv(env, "KORYPH_COMMAND_ROLE", "KORYPH_COMMAND_EVENTS", "KORYPH_COMMAND_GUARD_DIR")
+	if phaseDir == "" {
+		return env, nil
+	}
+	if !filepath.IsAbs(phaseDir) {
+		return nil, errors.New("phase path must be absolute")
+	}
+	info, err := os.Lstat(phaseDir)
+	if os.IsNotExist(err) {
+		return env, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	cleanPhase := filepath.Clean(phaseDir)
+	resolvedPhase, err := filepath.EvalSymlinks(cleanPhase)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedPhase != cleanPhase || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("phase path is not a real directory: %s", phaseDir)
+	}
+
+	shimDir := filepath.Join(phaseDir, "command-guard-bin")
+	if err := os.Mkdir(shimDir, 0o700); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	shimInfo, err := os.Lstat(shimDir)
+	if err != nil || !shimInfo.IsDir() || shimInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("command shim path is not a real directory")
+	}
+	koryphBin, err := commandGuardExecutable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve koryph command guard binary: %w", err)
+	}
+	koryphBin, err = canonicalExecutable(koryphBin)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize koryph command guard binary: %w", err)
+	}
+	pathValue := envValue(env, "PATH")
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+	for _, name := range []string{"make", "go", "golangci-lint"} {
+		realPath, err := lookPathIn(name, pathValue)
+		if err != nil {
+			continue // absent optional tool; the runtime would fail normally.
+		}
+		realPath, err = canonicalExecutable(realPath)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize %s: %w", name, err)
+		}
+		shimPath := filepath.Join(shimDir, name)
+		if existing, err := os.Lstat(shimPath); err == nil &&
+			(existing.Mode()&os.ModeSymlink != 0 || !existing.Mode().IsRegular()) {
+			return nil, fmt.Errorf("command shim %s is a symlink or non-regular file", name)
+		} else if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		script := renderCommandGuardShim(koryphBin, realPath)
+		if err := fsx.WriteAtomic(shimPath, []byte(script), 0o755); err != nil {
+			return nil, err
+		}
+	}
+	pathValue = envValue(env, "PATH")
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+	return setEnv(env, "PATH", shimDir+string(filepath.ListSeparator)+pathValue), nil
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return strings.TrimPrefix(env[i], prefix)
+		}
+	}
+	return ""
+}
+
+func setEnv(env []string, name, value string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(env)+1)
+	for _, pair := range env {
+		if !strings.HasPrefix(pair, prefix) {
+			out = append(out, pair)
+		}
+	}
+	return append(out, prefix+value)
+}
+
+func removeEnv(env []string, names ...string) []string {
+	denied := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		denied[name] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, pair := range env {
+		name, _, _ := strings.Cut(pair, "=")
+		if _, drop := denied[name]; !drop {
+			out = append(out, pair)
+		}
+	}
+	return out
+}
+
+func lookPathIn(name, pathValue string) (string, error) {
+	if strings.ContainsRune(name, filepath.Separator) {
+		return exec.LookPath(name)
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+func canonicalExecutable(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return "", err
+		}
+		path = abs
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		return "", errors.New("not an executable regular file")
+	}
+	return resolved, nil
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func renderCommandGuardShim(koryphBin, realPath string) string {
+	return "#!/bin/sh\nexec " + shellSingleQuote(koryphBin) +
+		" command exec --real " + shellSingleQuote(realPath) + " -- \"$@\"\n"
+}
 
 var _ runtime.Runtime = Codex{}
 var _ runtime.IdentityProber = Codex{}

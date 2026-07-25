@@ -4,6 +4,8 @@
 package fsx_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -109,6 +111,64 @@ func TestReadJSON_MissingFile(t *testing.T) {
 	err := fsx.ReadJSON("/does/not/exist/koryph-test.json", &v)
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestReadRegularConfinedPinsRegularFileUnderRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "nested", "evidence.json")
+	data := []byte(`{"ok":true}`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := fsx.ReadRegularConfined(path, 1024, root)
+	if err != nil {
+		t.Fatalf("ReadRegularConfined: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	if string(got.Data) != string(data) || got.Path != path ||
+		got.Digest != hex.EncodeToString(sum[:]) {
+		t.Fatalf("confined read = %+v, want path/data/digest from the same file", got)
+	}
+}
+
+func TestReadRegularConfinedRejectsSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "evidence.json"), []byte(`{"ok":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "swapped-parent")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fsx.ReadRegularConfined(
+		filepath.Join(root, "swapped-parent", "evidence.json"), 1024, root,
+	); err == nil {
+		t.Fatal("symlinked parent was accepted")
+	}
+}
+
+func TestReadRegularConfinedRejectsFinalSymlinkAndOversize(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fsx.ReadRegularConfined(link, 1024, root); err == nil {
+		t.Fatal("final symlink was accepted")
+	}
+	if _, err := fsx.ReadRegularConfined(target, 3, root); err == nil {
+		t.Fatal("oversized file was accepted")
 	}
 }
 

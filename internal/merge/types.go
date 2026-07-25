@@ -83,6 +83,13 @@ type Opts struct {
 	SlotOwner     string
 	SlotRetries   int // bd merge-slot acquire retries (default 3)
 
+	// ValidationPhaseDir is set only by Koryph's engine-owned finalization
+	// path. It binds the post-rebase green gate to the candidate phase's
+	// command guard using the in-process validation role. Empty keeps explicit
+	// operator merge/land calls outside any worker phase and runs the gate
+	// normally. This is trusted product context, never an environment value.
+	ValidationPhaseDir string
+
 	// RequireSigned verifies every commit on <default>..<branch> carries a
 	// good signature (git %G? == 'G'), TWICE: once BEFORE any mutation
 	// (preflight) and once more immediately before landing (ff-merge or PR),

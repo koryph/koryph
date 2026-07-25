@@ -114,6 +114,7 @@ koryph — central multi-project orchestrator for autonomous AI coding agents.
 | [`koryph phase`](#koryph-phase) | request orchestrator-owned actions from the current worker phase |
 | ↳ [`koryph phase request`](#koryph-phase-request) | submit a typed phase request |
 | ↳ [`koryph phase block`](#koryph-phase-block) | report a structured capability block |
+| ↳ [`koryph phase complete`](#koryph-phase-complete) | write the SHA-bound terminal candidate result |
 | [`koryph tui`](#koryph-tui) | interactive terminal cockpit (threads, queue, events) |
 
 ---
@@ -1371,6 +1372,12 @@ Run `koryph phase request <subcommand> -h` for subcommand flags.
 ## `koryph phase block` { #koryph-phase-block }
 
 report a structured capability block
+
+**See also:** [Running waves](../user-guide/running-waves)
+
+## `koryph phase complete` { #koryph-phase-complete }
+
+write the SHA-bound terminal candidate result
 
 **See also:** [Running waves](../user-guide/running-waves)
 

@@ -25,7 +25,7 @@ exit 1
 
 // ordinaryFailureClaudeScript never commits and dies with an ordinary
 // (non-rate-limit) error — the negative control proving classification does
-// not false-positive and the existing Attempts-budget path is unaffected.
+// not false-positive and commitless work is preserved without blind retries.
 const ordinaryFailureClaudeScript = `#!/bin/sh
 cat > /dev/null
 printf '{"type":"result","total_cost_usd":0.01,"is_error":true,"subtype":"error_max_turns"}\n'
@@ -34,10 +34,10 @@ exit 1
 
 // TestRateLimitedDeathRequeuesWithoutBurningAttempt proves koryph-2im.4's core
 // contract: a death classified as rate-limited requeues via the
-// RateLimitRequeues budget (5) instead of ledger.MaxAttempts, reports the
-// signal to the machine-wide governor every time, and blocks with a clear
-// note once its own budget is exhausted — all while Attempts never moves off
-// its initial value.
+// typed runtime-transient budget (2) instead of ledger.MaxAttempts, reports
+// the signal to the machine-wide governor every time, and parks with a clear
+// typed outcome once its budget is exhausted — all while Attempts never moves
+// off its initial value.
 func TestRateLimitedDeathRequeuesWithoutBurningAttempt(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	claudeBin := os.Getenv("KORYPH_CLAUDE_BIN")
@@ -65,11 +65,12 @@ func TestRateLimitedDeathRequeuesWithoutBurningAttempt(t *testing.T) {
 	if sl.Status != ledger.SlotBlocked {
 		t.Errorf("slot status = %q, want blocked", sl.Status)
 	}
-	if !strings.Contains(sl.Note, "rate-limited requeues exhausted") {
-		t.Errorf("slot note = %q, want it to name the exhausted rate-limit budget", sl.Note)
+	if !strings.Contains(sl.Note, "runtime-transient-exhausted") {
+		t.Errorf("slot note = %q, want typed transient exhaustion", sl.Note)
 	}
-	if sl.RateLimitRequeues != rateLimitedRequeueBudget {
-		t.Errorf("RateLimitRequeues = %d, want %d (budget exhausted)", sl.RateLimitRequeues, rateLimitedRequeueBudget)
+	if sl.RateLimitRequeues != 2 || sl.Retry.TransientRetries != 2 {
+		t.Errorf("typed transient counters = legacy %d / typed %d, want 2 / 2",
+			sl.RateLimitRequeues, sl.Retry.TransientRetries)
 	}
 	// The whole point: Attempts must NEVER move for an environmental failure.
 	if sl.Attempts != 1 {
@@ -83,16 +84,16 @@ func TestRateLimitedDeathRequeuesWithoutBurningAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantEvents := rateLimitedRequeueBudget + 1 // initial dispatch's death + each requeue's death
+	wantEvents := 3 // initial dispatch's death + two typed retries' deaths
 	if status.RateLimitEvents != wantEvents {
 		t.Errorf("governor RateLimitEvents = %d, want %d", status.RateLimitEvents, wantEvents)
 	}
 }
 
-// TestOrdinaryDeathStillUsesAttemptsBudget is the negative control: a death
-// with no rate-limit marker in its stream is unaffected by koryph-2im.4 and
-// still exhausts the normal ledger.MaxAttempts budget before blocking.
-func TestOrdinaryDeathStillUsesAttemptsBudget(t *testing.T) {
+// TestOrdinaryCommitlessDeathParksImmediately is the negative control: a death
+// with no rate-limit marker in its stream is unaffected by transient recovery
+// and parks immediately because there is no changed evidence to repair.
+func TestOrdinaryCommitlessDeathParksImmediately(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	claudeBin := os.Getenv("KORYPH_CLAUDE_BIN")
 	writeFile(t, claudeBin, ordinaryFailureClaudeScript, 0o755)
@@ -119,11 +120,14 @@ func TestOrdinaryDeathStillUsesAttemptsBudget(t *testing.T) {
 	if sl.Status != ledger.SlotBlocked {
 		t.Errorf("slot status = %q, want blocked", sl.Status)
 	}
-	if !strings.Contains(sl.Note, "attempts exhausted") {
-		t.Errorf("slot note = %q, want the ordinary attempts-exhausted note", sl.Note)
+	if !strings.Contains(sl.Note, "code-repair-unchanged-or-exhausted") {
+		t.Errorf("slot note = %q, want unchanged-evidence code-defect park", sl.Note)
 	}
-	if sl.Attempts != ledger.MaxAttempts {
-		t.Errorf("Attempts = %d, want %d (ordinary failure still burns attempts)", sl.Attempts, ledger.MaxAttempts)
+	if sl.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1 (commitless failure parks immediately)", sl.Attempts)
+	}
+	if sl.Retry.CodeRepairs != 0 {
+		t.Errorf("CodeRepairs = %d, want 0 (unchanged evidence is not blindly retried)", sl.Retry.CodeRepairs)
 	}
 	if sl.RateLimitRequeues != 0 {
 		t.Errorf("RateLimitRequeues = %d, want 0 (never classified as rate-limited)", sl.RateLimitRequeues)

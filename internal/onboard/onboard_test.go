@@ -291,8 +291,8 @@ func TestRegisterHappyPath(t *testing.T) {
 	if rec.ProjectID != "demo" || rec.MigrationStatus != registry.StatusRegistered {
 		t.Errorf("record = %+v", rec)
 	}
-	if rec.PlannerModel != "opus" || rec.ImplModel != "sonnet" || rec.RecoveryModelPolicy != "upgrade-opus" {
-		t.Errorf("model defaults = %q/%q/%q", rec.PlannerModel, rec.ImplModel, rec.RecoveryModelPolicy)
+	if rec.PlannerModel != "opus" || rec.ImplModel != "sonnet" {
+		t.Errorf("model defaults = %q/%q", rec.PlannerModel, rec.ImplModel)
 	}
 	if rec.PromptCachePolicy != registry.PromptCacheOn || !rec.PromptCacheEnabled() {
 		t.Errorf("prompt-cache defaults = %q (enabled=%v)", rec.PromptCachePolicy, rec.PromptCacheEnabled())

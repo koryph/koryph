@@ -236,7 +236,7 @@ func TestGuardOffDoesNotAffectRateLimitGoverning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AIMDStatus: %v", err)
 	}
-	wantEvents := rateLimitedRequeueBudget + 1 // initial + each requeue
+	wantEvents := runtimeTransientRetryBudget + 1 // initial + each typed retry
 	if status.RateLimitEvents != wantEvents {
 		t.Errorf("governor RateLimitEvents = %d, want %d — "+
 			"rate-limit governing must not be affected by the billing guard state",

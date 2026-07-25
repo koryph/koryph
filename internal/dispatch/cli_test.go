@@ -6,6 +6,8 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +37,21 @@ env > "$KORYPH_DIR/env.txt.tmp" && mv "$KORYPH_DIR/env.txt.tmp" "$KORYPH_DIR/env
 cat > "$KORYPH_DIR/stdin.txt.tmp" && mv "$KORYPH_DIR/stdin.txt.tmp" "$KORYPH_DIR/stdin.txt"
 printf '{"type":"result","total_cost_usd":1.23}\n'
 sleep 0.2
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func fakeClaudeWithChild(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-claude-with-child")
+	script := `#!/bin/sh
+sleep 30 &
+child=$!
+printf '%s\n' "$child" > "$KORYPH_DIR/child.pid"
+wait "$child"
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -278,6 +295,66 @@ func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 
 	if _, err := os.Stat(h.StderrPath); err != nil {
 		t.Errorf("stderr.log: %v", err)
+	}
+}
+
+func TestDispatchReleaseFailureCleansFullSpawnedSessionBeforeError(t *testing.T) {
+	spec := baseSpec(t)
+	var leaderPID, childPID int
+	b := CLIBackend{
+		ClaudeBin: fakeClaudeWithChild(t),
+		releaseProcess: func(p *os.Process) error {
+			leaderPID = p.Pid
+			childData := waitForFile(t, filepath.Join(spec.PhaseDir, "child.pid"))
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(childData)), "%d", &childPID); err != nil {
+				t.Fatalf("parse child pid: %v", err)
+			}
+			return errors.New("injected release failure")
+		},
+	}
+
+	h, err := b.Dispatch(context.Background(), spec)
+	if err == nil || !strings.Contains(err.Error(), "stopped and reaped") {
+		t.Fatalf("Dispatch error = %v, want release failure after cleanup", err)
+	}
+	if h.PID != 0 {
+		t.Fatalf("handle = %+v, want zero handle after proven cleanup", h)
+	}
+	if Alive(leaderPID) || Alive(childPID) {
+		t.Fatalf("spawned session survived error return: leader %d alive=%v child %d alive=%v",
+			leaderPID, Alive(leaderPID), childPID, Alive(childPID))
+	}
+}
+
+func TestDispatchReleaseFailureReturnsHandleWhenCleanupCannotBeProven(t *testing.T) {
+	spec := baseSpec(t)
+	var childPID int
+	b := CLIBackend{
+		ClaudeBin: fakeClaudeWithChild(t),
+		releaseProcess: func(*os.Process) error {
+			childData := waitForFile(t, filepath.Join(spec.PhaseDir, "child.pid"))
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(childData)), "%d", &childPID); err != nil {
+				t.Fatalf("parse child pid: %v", err)
+			}
+			return errors.New("injected release failure")
+		},
+		stopAndReap: func(int) error {
+			return errors.New("injected cleanup failure")
+		},
+	}
+
+	h, err := b.Dispatch(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Dispatch returned error with an uncleaned live session: %v", err)
+	}
+	if h.PID <= 0 || h.VerifiedIdentity == "" {
+		t.Fatalf("handle = %+v, want authenticated live handle", h)
+	}
+	if !Alive(h.PID) && !Alive(childPID) {
+		t.Fatal("injected cleanup failure left no live process; test did not exercise handle fallback")
+	}
+	if err := StopForceAndReap(h.PID); err != nil {
+		t.Fatalf("test cleanup: %v", err)
 	}
 }
 

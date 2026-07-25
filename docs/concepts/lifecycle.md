@@ -21,7 +21,7 @@ flowchart TD
     F --> G["review — findings block"]
     G --> H["rebase + green gate<br/>(your commands)"]
     H -->|"green"| I["fast-forward merge<br/>signed commits"]
-    H -->|"fault"| R["retry → escalate → park"]
+    H -->|"fault"| R["classify → continue, repair, or park"]
     R --> E
     I --> J{"last child<br/>of its epic?"}
     J -->|"no"| D
@@ -40,9 +40,9 @@ tour:
   run unattended — and everything that runs unattended is governed,
   gated, and recoverable.
 - **Failure re-enters the loop; it never falls out of it.** A red gate, a
-  review bounce, or a dead agent becomes a classified retry, an escalation
-  to a stronger model, or a parked bead waiting for you — with the reason
-  recorded. See [Recovery & escalation](../user-guide/recovery.md).
+  review bounce, or a dead agent becomes a typed bounded continuation, a
+  standard-tier repair, or a parked bead waiting for you — with the reason
+  recorded. See [Typed recovery](../user-guide/recovery.md).
 - **Quality gates run at three altitudes.** Per-branch (review + your green
   gate), per-epic (validation of the union against the design), and
   per-release (gate-before-tag plus a complete, signed, attested asset set).

@@ -55,7 +55,7 @@ func multiBeadBDScript(specs []beadSpec) string {
 			fmt.Fprintf(&b, "      if grep -q '^update %s --claim$' \"$log\" 2>/dev/null; then\n", s.revealAfterClaim)
 			indent = "        "
 		}
-		entry := fmt.Sprintf(`{\"id\":\"%s\",\"title\":\"%s\",\"description\":\"x\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[\"fp:%s\"]}`, s.id, s.id, s.fp)
+		entry := fmt.Sprintf(`{\"id\":\"%s\",\"title\":\"%s\",\"description\":\"x\",\"acceptance_criteria\":\"AC1: agent work is committed\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[\"fp:%s\"]}`, s.id, s.id, s.fp)
 		fmt.Fprintf(&b, "%sif [ -n \"$items\" ]; then items=\"$items,\"; fi\n", indent)
 		fmt.Fprintf(&b, "%sitems=\"$items%s\"\n", indent, entry)
 		if s.revealAfterClaim != "" {
@@ -80,6 +80,7 @@ func multiBeadBDScript(specs []beadSpec) string {
 // $KORYPH_PHASE_ID matches $KORYPH_TEST_SLOW_PHASE — used to hold a slot open
 // long enough for the test to observe a sibling refill happening around it.
 const slowClaudeScript = `#!/bin/sh
+` + fakeCompletionFunction + `
 cat > /dev/null
 if [ -n "$KORYPH_TEST_SLOW_PHASE" ] && [ "$KORYPH_PHASE_ID" = "$KORYPH_TEST_SLOW_PHASE" ]; then
   sleep "$KORYPH_TEST_SLOW_SECONDS"
@@ -88,6 +89,7 @@ echo "work for $KORYPH_PHASE_ID" > "agent-$KORYPH_PHASE_ID.txt"
 git add "agent-$KORYPH_PHASE_ID.txt"
 git commit -q --no-verify -m "feat($KORYPH_PHASE_ID): work"
 printf 'status: ready-for-merge\n' > "$KORYPH_SUMMARY_PATH"
+koryph_test_complete "agent-$KORYPH_PHASE_ID.txt" || exit $?
 printf '{"type":"result","total_cost_usd":0.10}\n'
 exit 0
 `

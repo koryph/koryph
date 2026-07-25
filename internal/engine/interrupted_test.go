@@ -116,6 +116,10 @@ func TestSIGTERMInterruptedFinalizesAndEmitsRunEnd(t *testing.T) {
 	}
 	if sl := run.Slots["tb1"]; sl == nil || ledger.Terminal(sl.Status) {
 		t.Errorf("tb1 slot = %+v, want present and non-terminal (checkpointed in flight)", sl)
+	} else if sl.DispatchBaseSHA == "" || sl.DispatchGeneration == "" {
+		t.Errorf("tb1 slot = %+v, want trusted dispatch base/generation persisted before launch", sl)
+	} else if sl.PID == 0 && sl.Status != ledger.SlotQueued {
+		t.Errorf("tb1 slot = %+v, want a canceled prelaunch dispatch left queued for resume", sl)
 	}
 
 	// engine.run.end must fire on the interrupted path — the structured record

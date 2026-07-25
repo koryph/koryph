@@ -41,6 +41,11 @@
 # (koryph_resolve_log_dir), used directly by hooks/koryph-spill.sh.
 set -uo pipefail
 
+if [[ -n "${KORYPH_PHASE_ID:-}" ]]; then
+  echo "gate-agent: direct execution inside a worker phase is denied; Koryph validation owns the authoritative full project gate" >&2
+  exit 126
+fi
+
 # Run from the repo root regardless of the caller's cwd (make normally
 # invokes recipes from the Makefile's directory already, but this keeps the
 # script correct if ever invoked directly from elsewhere).

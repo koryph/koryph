@@ -19,6 +19,7 @@ import (
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/modelroute"
+	"github.com/koryph/koryph/internal/phasecontrol"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/promptc"
 	"github.com/koryph/koryph/internal/quota"
@@ -60,6 +61,7 @@ type govGate struct {
 	// require_calibration) refuses dispatch because the governor is uncalibrated
 	// (koryph-grz). Distinct reason so the pause is not mislabeled quota-*.
 	uncalibratedBlock bool
+	engineCircuit     bool
 	width             int
 
 	// paused is set when the gate itself already finalized the run — either
@@ -124,6 +126,10 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	r.lastQuotaUsage = usage
 
 	g := govGate{allowDispatch: true, level: level, calibrated: calibrated, advisory: advisory, usage: usage}
+	if r.dispatchCircuitReason != "" {
+		g.allowDispatch = false
+		g.engineCircuit = true
+	}
 
 	// Uncalibrated governor (koryph-grz): the fresh-install state where both
 	// ceilings are 0, so the governor cannot enforce the 5h/weekly spend ladder
@@ -444,7 +450,12 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			if gate.operatorDrain {
 				reason = "operator-drain"
 			}
-			r.run.Status = ledger.RunPausedQuota
+			if gate.engineCircuit {
+				reason = "engine-invariant"
+				r.run.Status = ledger.RunAborted
+			} else {
+				r.run.Status = ledger.RunPausedQuota
+			}
 			_ = r.store.SaveRun(r.run)
 			return r.outcome(ExitOK, reason, false), nil
 		}
@@ -1153,6 +1164,13 @@ type dispatchReq struct {
 	// each attempt's usage rather than overwriting it. Zero value on a fresh
 	// first-attempt dispatch.
 	accumulatedTokens dispatch.TokenUsage
+	// retry carries the typed recovery budgets across slot replacement. It is
+	// independent of Attempts because environmental and resume dispatches do
+	// not consume the same budgets as candidate-contract repair.
+	retry ledger.RetryCounters
+	// completionRepair narrows this dispatch to evidence/result construction;
+	// it must not reopen implementation or use a stronger tier.
+	completionRepair bool
 	// frozenModel/frozenPersona/frozenModelWhy/frozenEffort carry the model
 	// resolution forward from the first attempt so every requeue re-runs the
 	// SAME model, persona, and effort the bead was originally dispatched with
@@ -1163,11 +1181,10 @@ type dispatchReq struct {
 	// which model a retry runs — otherwise a bead dispatched on opus can
 	// silently finish on haiku (or vice-versa). dispatchBead skips
 	// modelroute.Resolve entirely when frozenModel != "". Empty frozenModel on
-	// a fresh first-attempt dispatch means "resolve normally". The ONE
-	// sanctioned mutation is requeueSlot's final-attempt escalation
-	// (koryph-qf6.4): a recorded, allowlist-checked policy decision that
-	// replaces the frozen tier with modelroute.EscalationTier's target and
-	// says so in frozenModelWhy — never a re-resolution from labels.
+	// a fresh first-attempt dispatch means "resolve normally". Attempt number
+	// never mutates this model. Only a typed recovery decision may supply a
+	// different consequence, and ordinary implementation repair is constrained
+	// to the runtime's standard tier.
 	frozenModel    string
 	frozenPersona  string
 	frozenModelWhy string
@@ -1225,6 +1242,13 @@ func mergeStringMaps(base, overlay map[string]string) map[string]string {
 // Failures block the slot and never fall through.
 func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	beadID := q.issue.ID
+	if r.dispatchCircuitReason != "" {
+		r.blockSlot(beadID, q, "dispatch circuit open: "+r.dispatchCircuitReason)
+		_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+			s.OutcomeClass = string(OutcomeEngineInvariant)
+		})
+		return
+	}
 	if !r.consumeCapabilityRetry(beadID) {
 		r.blockSlot(beadID, q, "capability retry denied: unchanged evidence or retry budget exhausted")
 		return
@@ -1284,12 +1308,21 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		return
 	}
 
+	// Capture one canonical dispatch base before Ensure can create a branch
+	// and before any backend process can race a default-branch advance. This
+	// immutable SHA owns the attempt identity even if main moves immediately
+	// after this read.
+	dispatchBaseSHA, err := r.dispatchBase(ctx)
+	if err != nil {
+		r.blockSlot(beadID, q, "capture dispatch base: "+err.Error())
+		return
+	}
 	branch := worktree.BranchFor(beadID)
 	wt, err := worktree.Ensure(ctx, worktree.EnsureOpts{
 		RepoRoot:     r.rec.Root,
 		WorktreeRoot: r.rec.WorktreeRoot,
 		Branch:       branch,
-		Base:         r.rec.DefaultBranch,
+		Base:         dispatchBaseSHA,
 	})
 	if err != nil {
 		r.blockSlot(beadID, q, "worktree: "+err.Error())
@@ -1321,9 +1354,119 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		StatusPath:      filepath.Join(phaseDir, "status.json"),
 		LogPath:         filepath.Join(phaseDir, "session.log"),
 	})
+	if q.completionRepair {
+		prompt = promptc.WithCompletionRepair(prompt, phaseDir)
+	}
 
 	sessionID := newSessionID()
 	sessionName := "koryph/" + r.opts.ProjectID + "/" + beadID + "/a" + strconv.Itoa(q.attempt)
+	dispatchIdentity := phasecontrol.DispatchContext{
+		RunID: r.run.RunID, PhaseID: beadID, Attempt: q.attempt,
+		SessionID: sessionID, BaseSHA: dispatchBaseSHA,
+	}
+	dispatchGeneration := phasecontrol.DispatchGeneration(dispatchIdentity)
+
+	// Resolve every immutable slot fact before launch. The worker can finish
+	// before Dispatch returns, so both the ledger slot and manifest must carry
+	// the same trusted identity before the backend is allowed to start.
+	resKinds, memReserveMB := r.resolveDispatchResources(q)
+	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName, proxyID)
+	feat := featuresFor(q)
+	now := time.Now().UTC().Format(time.RFC3339)
+	prelaunchSlot := &ledger.Slot{
+		PhaseID:               beadID,
+		BeadID:                beadID,
+		EpicID:                q.epicID,
+		Branch:                branch,
+		Worktree:              wt.Path,
+		SessionID:             sessionID,
+		SessionName:           sessionName,
+		Agent:                 res.Persona,
+		Model:                 res.Model,
+		ModelWhy:              res.Rationale,
+		Effort:                effort,
+		Runtime:               runtimeName,
+		AccountProfile:        r.rec.AccountProfile,
+		ClaudeConfigDir:       r.rec.ClaudeConfigDir,
+		BillingMode:           string(r.billing),
+		ProxyID:               proxyID,
+		ProxyConfigured:       proxyConfigured,
+		StatusPath:            filepath.Join(phaseDir, "status.json"),
+		LogPath:               filepath.Join(phaseDir, "session.log"),
+		Status:                ledger.SlotQueued,
+		Attempts:              q.attempt,
+		ResumeSHA:             q.resumeSHA,
+		DispatchBaseSHA:       dispatchBaseSHA,
+		DispatchGeneration:    dispatchGeneration,
+		ReviewIters:           q.reviewIters,
+		GateRequeues:          q.gateRequeues,
+		MergeRequeues:         q.mergeRequeues,
+		ConflictRequeues:      q.conflictRequeues,
+		DispatchedAt:          now,
+		Note:                  q.note,
+		RateLimitRequeues:     q.rateLimitRequeues,
+		BudgetKillRequeues:    q.budgetKillRequeues,
+		TurnExhaustedRequeues: q.turnExhaustedRequeues,
+		Footprint:             q.footprint,
+		Resources:             resKinds,
+		MemReserveMB:          memReserveMB,
+		BeadLabels:            feat.labels,
+		SizeClass:             feat.sizeClass,
+		IssueType:             feat.issueType,
+		EstimateUSD:           estimateUSD,
+		Retry:                 q.retry,
+		CostUSD:               q.accumulatedCostUSD,
+		InputTokens:           q.accumulatedTokens.InputTokens,
+		OutputTokens:          q.accumulatedTokens.OutputTokens,
+		CacheReadTokens:       q.accumulatedTokens.CacheReadTokens,
+		CacheCreationTokens:   q.accumulatedTokens.CacheCreationTokens,
+	}
+	previousSlot, hadPreviousSlot := r.run.Slots[beadID]
+	if err := r.store.SetSlot(r.run, prelaunchSlot); err != nil {
+		// SetSlot mutates the in-memory map before persisting; restore its
+		// prior view so a failed checkpoint cannot masquerade as durable.
+		if hadPreviousSlot {
+			r.run.Slots[beadID] = previousSlot
+		} else {
+			delete(r.run.Slots, beadID)
+		}
+		r.releaseGlobalSlot(beadID)
+		r.progress("bead %s: blocked (persist prelaunch slot: %v)", beadID, err)
+		logSlotBlocked(beadID, "persist prelaunch slot: "+err.Error(), res.Model, "", q.attempt)
+		return
+	}
+
+	// `koryph phase complete` reads the manifest, while candidate validation
+	// trusts the slot. Neither half may exist only after process launch.
+	if err := r.store.SaveManifest(r.run.RunID, beadID, &ledger.Manifest{
+		ProjectID:          r.opts.ProjectID,
+		BeadID:             beadID,
+		EpicID:             q.epicID,
+		AccountProfile:     r.rec.AccountProfile,
+		ClaudeConfigDir:    r.rec.ClaudeConfigDir,
+		SessionID:          sessionID,
+		SessionName:        sessionName,
+		Model:              res.Model,
+		ModelWhy:           res.Rationale,
+		Runtime:            runtimeName,
+		WorktreePath:       wt.Path,
+		Branch:             branch,
+		BaseCommit:         dispatchBaseSHA,
+		DispatchGeneration: dispatchGeneration,
+		Attempt:            q.attempt,
+		ExecutionState:     "dispatching",
+		RecoveryTier:       recoveryTier(q.issue, r.cfg),
+		MergePolicy:        string(policy),
+		AutoMerge:          r.opts.AutoMerge,
+		BillingMode:        string(r.billing),
+		ProxyID:            proxyID,
+		BootstrapCmds:      r.cfg.Bootstrap,
+		BatchAllowed:       r.rec.BatchPolicy == "explicit",
+		ReviewStatus:       reviewStatus(q.reviewPath),
+	}); err != nil {
+		r.blockSlot(beadID, q, "persist dispatch manifest: "+err.Error())
+		return
+	}
 
 	backend := r.backend
 	if r.rt != nil && rt.Name() != r.rt.Name() {
@@ -1367,118 +1510,145 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		StrictMCP:        r.rec.StrictMCP(),
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			// Cancellation can race the backend between the durable prelaunch
+			// checkpoint and process creation. No handle exists to adopt, so
+			// leave the trusted slot queued for --resume instead of converting
+			// an operator interruption into a terminal dispatch failure.
+			note := "dispatch interrupted before launch; queued for resume"
+			_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+				s.Status = ledger.SlotQueued
+				s.Note = note
+			})
+			if m, loadErr := r.store.LoadManifest(r.run.RunID, beadID); loadErr == nil {
+				m.ExecutionState = "dispatch-interrupted"
+				_ = r.store.SaveManifest(r.run.RunID, beadID, m)
+			}
+			r.releaseGlobalSlot(beadID)
+			r.progress("bead %s: %s", beadID, note)
+			return
+		}
 		r.blockSlot(beadID, q, "dispatch refused: "+err.Error())
+		if m, loadErr := r.store.LoadManifest(r.run.RunID, beadID); loadErr == nil {
+			m.ExecutionState = "dispatch-failed"
+			_ = r.store.SaveManifest(r.run.RunID, beadID, m)
+		}
 		return
 	}
 
-	// Resolve the frozen resource claim (koryph-4ql.3, design L2/L3): use the
-	// value threaded from the loop/requeue (q.resources) so the ledger slot
-	// persists exactly what acquireGlobalSlot admitted and what a requeue froze;
-	// only a path that supplied none (a synthetic/legacy dispatch) recomputes
-	// from the bead's live labels here. The resolved tokens — not the labels —
-	// are persisted and re-attached to the lease, so a relabel or vocabulary
-	// edit mid-run cannot re-price a live slot (I8).
-	resKinds, memReserveMB := r.resolveDispatchResources(q)
 	// The numeric PID alone is insufficient across a later engine resume: it
 	// may already belong to an unrelated process after PID reuse.
-	processIdentity := r.processIdentity(ctx, handle.PID)
+	processIdentity := r.captureStableProcessIdentity(ctx, handle.PID)
+
+	runningSlot := *prelaunchSlot
+	runningSlot.VerifiedIdentity = handle.VerifiedIdentity
+	runningSlot.VerifiedAt = now
+	runningSlot.PID = handle.PID
+	runningSlot.ProcessIdentity = processIdentity
+	runningSlot.Stream = handle.StreamPath
+	runningSlot.StatusPath = handle.StatusPath
+	runningSlot.Status = ledger.SlotRunning
+	persistLaunched := r.launchedSlotPersist
+	if persistLaunched == nil {
+		persistLaunched = func(sl *ledger.Slot) error {
+			return r.store.SetSlot(r.run, sl)
+		}
+	}
+	if err := persistLaunched(&runningSlot); err != nil {
+		// The backend may already be spending. A worker whose live handle
+		// cannot be durably attached is unsafe to leave running. Rollback owns
+		// the complete process group and reaps it before recording a terminal
+		// slot. If cleanup itself fails, retain the authenticated handle as a
+		// live tracked slot instead of silently orphaning a worker.
+		identityTrusted := strings.TrimSpace(handle.VerifiedIdentity) != "" &&
+			processIdentity != ""
+		if !identityTrusted {
+			// PID alone is never authority to signal a process. The backend
+			// started something, but provider identity or stable process
+			// identity is missing, so park it as a manual invariant hold and
+			// trip dispatch admission for the rest of this run.
+			_ = DecideRetry(RetryPolicyInput{
+				Outcome: OutcomeEngineInvariant, Budgets: retryBudgets(runningSlot.Retry),
+			})
+			note := fmt.Sprintf(
+				"engine-invariant manual hold: persist launched slot failed: %v; provider/stable process identity unavailable for pid %d — no automatic signal permitted",
+				err, handle.PID,
+			)
+			runningSlot.Status = ledger.SlotBlocked
+			runningSlot.OutcomeClass = string(OutcomeEngineInvariant)
+			runningSlot.Note = note
+			r.run.Slots[beadID] = &runningSlot
+			if recordErr := r.store.SetSlot(r.run, &runningSlot); recordErr != nil {
+				r.progress("bead %s: CRITICAL manual-hold pid %d could not be durably recorded: %v",
+					beadID, handle.PID, recordErr)
+			}
+			if m, loadErr := r.store.LoadManifest(r.run.RunID, beadID); loadErr == nil {
+				m.ExecutionState = "launch-untracked-identity-unavailable"
+				m.PID = handle.PID
+				m.ExecutionError = note
+				_ = r.store.SaveManifest(r.run.RunID, beadID, m)
+			}
+			r.dispatchCircuitReason = note
+			_ = r.adapter.Claim(ctx, beadID)
+			r.holdGlobalSlot(beadID, handle.PID, res.Model, resKinds, memReserveMB)
+			r.dispatched++
+			r.progress("bead %s: %s", beadID, note)
+			return
+		}
+
+		stop := r.rollbackStop
+		if stop == nil {
+			stop = dispatch.StopForceAndReap
+		}
+		stopErr := stop(handle.PID)
+		if stopErr != nil {
+			note := fmt.Sprintf(
+				"persist launched slot failed: %v; rollback stop/reap failed: %v — authenticated live worker retained for supervised recovery",
+				err, stopErr,
+			)
+			runningSlot.OutcomeClass = string(OutcomeEngineInvariant)
+			runningSlot.Note = note
+			r.run.Slots[beadID] = &runningSlot
+			if recordErr := r.store.SetSlot(r.run, &runningSlot); recordErr != nil {
+				r.progress("bead %s: CRITICAL live worker pid %d could not be durably recorded after rollback failure: %v",
+					beadID, handle.PID, recordErr)
+			}
+			if m, loadErr := r.store.LoadManifest(r.run.RunID, beadID); loadErr == nil {
+				m.ExecutionState = "launch-untracked-stop-failed"
+				m.PID = handle.PID
+				m.ProcessIdentity = processIdentity
+				m.ExecutionError = note
+				_ = r.store.SaveManifest(r.run.RunID, beadID, m)
+			}
+			_ = r.adapter.Claim(ctx, beadID)
+			r.holdGlobalSlot(beadID, handle.PID, res.Model, resKinds, memReserveMB)
+			r.dispatched++
+			r.progress("bead %s: %s", beadID, note)
+			return
+		}
+		r.run.Slots[beadID] = prelaunchSlot
+		r.blockSlot(beadID, q, "persist launched slot: "+err.Error())
+		if m, loadErr := r.store.LoadManifest(r.run.RunID, beadID); loadErr == nil {
+			m.ExecutionState = "launch-untracked-stopped"
+			m.ExecutionError = err.Error()
+			_ = r.store.SaveManifest(r.run.RunID, beadID, m)
+		}
+		return
+	}
 
 	_ = r.adapter.Claim(ctx, beadID) // best-effort
 	r.holdGlobalSlot(beadID, handle.PID, res.Model, resKinds, memReserveMB)
-
-	// Stamp the dispatch-time estimate (koryph-6bl). This is the per-attempt
-	// estimate (bias-corrected when enough samples exist), NOT accumulated —
-	// it is the prediction we are making for THIS attempt, used later by
-	// completeSlot to compute estimator error and update ErrorStats.
-	estimateUSD := r.itemEstimate(q.issue, res.Model, runtimeName, proxyID)
-
-	// Similarity features (koryph-qf6.3): frozen from the requeue's persisted
-	// slot when threaded, snapshotted from the live issue on a fresh dispatch.
-	feat := featuresFor(q)
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	sl := &ledger.Slot{
-		PhaseID:               beadID,
-		BeadID:                beadID,
-		EpicID:                q.epicID,
-		Branch:                branch,
-		Worktree:              wt.Path,
-		SessionID:             sessionID,
-		SessionName:           sessionName,
-		Agent:                 res.Persona,
-		Model:                 res.Model,
-		ModelWhy:              res.Rationale,
-		Effort:                effort,
-		Runtime:               runtimeName,
-		AccountProfile:        r.rec.AccountProfile,
-		ClaudeConfigDir:       r.rec.ClaudeConfigDir,
-		VerifiedIdentity:      handle.VerifiedIdentity,
-		VerifiedAt:            now,
-		BillingMode:           string(r.billing),
-		ProxyID:               proxyID,
-		ProxyConfigured:       proxyConfigured,
-		PID:                   handle.PID,
-		ProcessIdentity:       processIdentity,
-		Stream:                handle.StreamPath,
-		StatusPath:            handle.StatusPath,
-		LogPath:               filepath.Join(phaseDir, "session.log"),
-		Status:                ledger.SlotRunning,
-		Attempts:              q.attempt,
-		ResumeSHA:             q.resumeSHA,
-		ReviewIters:           q.reviewIters,
-		GateRequeues:          q.gateRequeues,
-		MergeRequeues:         q.mergeRequeues,
-		ConflictRequeues:      q.conflictRequeues,
-		DispatchedAt:          now,
-		Note:                  q.note,
-		RateLimitRequeues:     q.rateLimitRequeues,
-		BudgetKillRequeues:    q.budgetKillRequeues,
-		TurnExhaustedRequeues: q.turnExhaustedRequeues,
-		Footprint:             q.footprint,
-		Resources:             resKinds,
-		MemReserveMB:          memReserveMB,
-		BeadLabels:            feat.labels,
-		SizeClass:             feat.sizeClass,
-		IssueType:             feat.issueType,
-		EstimateUSD:           estimateUSD,
-		// CostUSD starts from accumulatedCostUSD so prior-attempt spend is
-		// not lost when completeSlot ADDs the new attempt's cost (koryph-6bl).
-		CostUSD: q.accumulatedCostUSD,
-		// Token fields start from accumulatedTokens for the same reason
-		// (koryph-77r.1): applyTokenUsage ADDs each attempt's usage.
-		InputTokens:         q.accumulatedTokens.InputTokens,
-		OutputTokens:        q.accumulatedTokens.OutputTokens,
-		CacheReadTokens:     q.accumulatedTokens.CacheReadTokens,
-		CacheCreationTokens: q.accumulatedTokens.CacheCreationTokens,
-	}
-	_ = r.store.SetSlot(r.run, sl)
 	r.dispatched++
 
-	_ = r.store.SaveManifest(r.run.RunID, beadID, &ledger.Manifest{
-		ProjectID:       r.opts.ProjectID,
-		BeadID:          beadID,
-		EpicID:          q.epicID,
-		AccountProfile:  r.rec.AccountProfile,
-		ClaudeConfigDir: r.rec.ClaudeConfigDir,
-		SessionID:       sessionID,
-		SessionName:     sessionName,
-		Model:           res.Model,
-		ModelWhy:        res.Rationale,
-		Runtime:         runtimeName,
-		WorktreePath:    wt.Path,
-		Branch:          branch,
-		BaseCommit:      r.baseCommit(ctx),
-		Attempt:         q.attempt,
-		ExecutionState:  "running",
-		RecoveryTier:    recoveryTier(q.issue, r.cfg),
-		MergePolicy:     string(policy),
-		AutoMerge:       r.opts.AutoMerge,
-		BillingMode:     string(r.billing),
-		ProxyID:         proxyID,
-		BootstrapCmds:   r.cfg.Bootstrap,
-		BatchAllowed:    r.rec.BatchPolicy == "explicit",
-		ReviewStatus:    reviewStatus(q.reviewPath),
-	})
+	// The identity-bearing manifest already existed before launch; only its
+	// execution state changes after a backend handle is durably attached.
+	if m, err := r.store.LoadManifest(r.run.RunID, beadID); err == nil {
+		m.ExecutionState = "running"
+		m.PID = handle.PID
+		m.ProcessIdentity = processIdentity
+		m.ExecutionError = ""
+		_ = r.store.SaveManifest(r.run.RunID, beadID, m)
+	}
 
 	_ = r.reg.Audit(registry.Event{
 		Kind:      "dispatch",
@@ -1615,6 +1785,24 @@ func (r *runner) baseCommit(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(res.Stdout)
+}
+
+// dispatchBase resolves the default branch to one canonical full commit SHA.
+// Unlike baseCommit's legacy best-effort observation, dispatch cannot proceed
+// when this identity is unavailable.
+func (r *runner) dispatchBase(ctx context.Context) (string, error) {
+	res, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: r.rec.Root, Name: "git",
+		Args: []string{"rev-parse", "--verify", r.rec.DefaultBranch + "^{commit}"},
+	})
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(res.Stdout)
+	if len(sha) != 40 {
+		return "", fmt.Errorf("default branch resolved to non-canonical SHA %q", sha)
+	}
+	return sha, nil
 }
 
 // interruptActiveSlots sends SIGTERM to every non-terminal slot's agent

@@ -218,20 +218,6 @@ func logModelFallback(beadID, requested, actual, rawID string) {
 	)
 }
 
-// logModelEscalated emits an INFO record when a bead's final attempt is
-// escalated to the recovery tier (koryph-qf6.4). This is the durable
-// escalation event the similarity learner (koryph-qf6.6) mines: from/to
-// carry the tier transition, reason the bead-fault cause that triggered it.
-func logModelEscalated(beadID, from, to string, attempt int, reason string) {
-	log.Info("engine.slot.escalated",
-		slog.String(obs.KeyBeadID, beadID),
-		slog.String("from", from),
-		slog.String("to", to),
-		slog.Int(obs.KeyAttempt, attempt),
-		slog.String("reason", reason),
-	)
-}
-
 // logModelLearnApplied emits an INFO record when the wave-boundary learner
 // stamps a learned model label onto a frontier bead (koryph-qf6.6).
 func logModelLearnApplied(beadID, tier, area, size string) {
@@ -240,14 +226,6 @@ func logModelLearnApplied(beadID, tier, area, size string) {
 		slog.String(obs.KeyModel, tier),
 		slog.String("area", area),
 		slog.String("size", size),
-	)
-}
-
-// logSlotConflict emits a WARN record when a slot hits a merge conflict.
-func logSlotConflict(beadID, details string) {
-	log.Warn("engine.slot.conflict",
-		slog.String(obs.KeyBeadID, beadID),
-		slog.String("details", details),
 	)
 }
 

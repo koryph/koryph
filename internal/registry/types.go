@@ -126,10 +126,9 @@ type Record struct {
 	IdentityFingerprint string `json:"identity_fingerprint,omitempty"`
 
 	// Model policy
-	AllowedModels       []string `json:"allowed_models"`        // e.g. ["opus","sonnet","haiku"]; add "fable" to permit explicit Fable
-	PlannerModel        string   `json:"planner_model"`         // default "opus"
-	ImplModel           string   `json:"impl_model"`            // default "sonnet"
-	RecoveryModelPolicy string   `json:"recovery_model_policy"` // "upgrade-opus" (fixed; Fable never)
+	AllowedModels []string `json:"allowed_models"` // e.g. ["opus","sonnet","haiku"]; add "fable" to permit explicit Fable
+	PlannerModel  string   `json:"planner_model"`  // default "opus"
+	ImplModel     string   `json:"impl_model"`     // default "sonnet"
 
 	// AgentMCP controls whether dispatched agents inherit the machine's
 	// ambient MCP servers. "" / "inherit" (default) preserves current
