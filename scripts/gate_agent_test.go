@@ -86,6 +86,23 @@ func TestGateAgentAllPass_ExitsZero(t *testing.T) {
 	}
 }
 
+func TestGateAgentXcrunWarningWithZeroExitReportsPass(t *testing.T) {
+	out, code, logDir := runGateAgent(t, "darwin-toolchain|echo 'xcrun: warning: failed to update xcrun cache' >&2; exit 0")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for successful stage with warning:\n%s", code, out)
+	}
+	if !strings.Contains(out, "==> darwin-toolchain: PASS") {
+		t.Fatalf("successful stage warning was promoted to failure:\n%s", out)
+	}
+	stageLog, err := os.ReadFile(filepath.Join(logDir, "gate-darwin-toolchain.log"))
+	if err != nil {
+		t.Fatalf("read warning stage log: %v", err)
+	}
+	if !strings.Contains(string(stageLog), "xcrun: warning: failed to update xcrun cache") {
+		t.Errorf("warning was not preserved in full stage log:\n%s", stageLog)
+	}
+}
+
 // TestGateAgentSeededFailure_ExitsNonZeroAndNeverSwallowsIt is the
 // verdict-parity property: a failing stage must produce a non-zero
 // gate-agent.sh exit (the same "fail" verdict `make gate` would report for

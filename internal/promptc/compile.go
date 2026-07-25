@@ -92,8 +92,13 @@ contract is identical for every dispatch of this engine version.
 - If a sandbox, host, or environment prevents required work — for example a
   denied ssh-agent or credential, filesystem or network access, unavailable
   tool/runtime, or unavailable host resource — report a structured capability
-  block before exiting. This applies even when no privileged Beads action is
-  involved; do not leave only a generic state=blocked heartbeat:
+  block before exiting. First wait for the required command or gate to reach
+  its terminal exit and inspect that verdict: warning text or intermediate
+  stderr is not a capability failure, and a zero exit is success even when
+  Darwin xcrun printed a cache warning. Use a capability block only after a
+  terminal non-zero exit shows that a required host capability prevented
+  completion. This applies even when no privileged Beads action is involved;
+  do not leave only a generic state=blocked heartbeat:
       koryph phase block --capability <lowercase-token> --detail "sanitized host condition"
   Use a stable, specific capability token such as ssh-agent or
   beads-metadata. The orchestrator preserves your commits and handles the

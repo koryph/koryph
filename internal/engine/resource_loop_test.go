@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/ledger"
 )
 
 // resBead is one synthetic frontier entry for the resource loop tests: an id,
@@ -116,10 +117,12 @@ func TestWaveLoopResourceSkipContinues(t *testing.T) {
 
 // TestRollingLoopResourceSkipContinues is TestWaveLoopResourceSkipContinues for
 // the rolling loop: identical per-bead skip semantics, driven through the
-// continuous-refill path. The run never drains (heavy-1 stays resource-blocked),
-// so it runs in a goroutine and is cancelled once both outcomes are observed.
+// continuous-refill path. The run cannot drain on its own (heavy-1 stays
+// resource-blocked), so after light-1 reaches its terminal merge the fixture
+// requests a clean operator drain and waits for Run to return. Waiting for the
+// merge prevents the fake agent from leaking into subsequent gate stages.
 func TestRollingLoopResourceSkipContinues(t *testing.T) {
-	newFixture(t, fixOpts{
+	f := newFixture(t, fixOpts{
 		claudeScript: slowClaudeScript,
 		bdScript: resourceBDScript([]resBead{
 			// Distinct fp:* tokens so the two beads do NOT footprint-conflict
@@ -136,24 +139,39 @@ func TestRollingLoopResourceSkipContinues(t *testing.T) {
 	opts.Out = out
 	opts.Once = false
 	opts.DispatchMode = "rolling"
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	done := make(chan struct{})
+	type result struct {
+		got Outcome
+		err error
+	}
+	done := make(chan result, 1)
 	go func() {
-		_, _ = Run(ctx, opts)
-		close(done)
+		got, err := Run(context.Background(), opts)
+		done <- result{got: got, err: err}
 	}()
 
 	ok := waitForCondition(10*time.Second, func() bool {
 		s := out.String()
 		return strings.Contains(s, "bead light-1: dispatched") &&
+			strings.Contains(s, "bead light-1: merged") &&
 			strings.Contains(s, "heavy-1: deferred — resource kind-cluster at capacity")
 	})
-	cancel()
-	<-done
 	if !ok {
-		t.Errorf("rolling loop did not both dispatch light-1 and defer heavy-1 on resource capacity:\n%s", out.String())
+		t.Fatalf("rolling loop did not merge light-1 and defer heavy-1 on resource capacity:\n%s", out.String())
+	}
+	if err := ledger.NewStore(f.repo).RequestDrain(); err != nil {
+		t.Fatalf("request drain after terminal merge: %v", err)
+	}
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Run: %v", r.err)
+		}
+		if r.got.Dispatched != 1 || r.got.Merged != 1 {
+			t.Errorf("Outcome = %+v, want 1 dispatched / 1 merged before drain", r.got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Run did not complete after drain; a detached fixture process may still be live:\n%s", out.String())
 	}
 	if strings.Contains(out.String(), "bead heavy-1: dispatched") {
 		t.Errorf("heavy-1 dispatched despite a full capacity-1 kind:\n%s", out.String())

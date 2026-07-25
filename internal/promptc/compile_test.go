@@ -234,6 +234,11 @@ func TestPreambleClassifiesHostBlocks(t *testing.T) {
 		"generic state=blocked heartbeat",
 		"--capability <lowercase-token>",
 		"terminal host-capability recovery",
+		"terminal exit",
+		"warning text or intermediate",
+		"zero exit is success",
+		"Darwin xcrun",
+		"terminal non-zero exit",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("preamble missing host-block guidance %q", want)

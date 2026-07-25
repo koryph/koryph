@@ -173,7 +173,7 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	}
 	args = append(args, "--output-last-message", filepath.Join(spec.PhaseDir, "SUMMARY.md"))
 	env := c.childEnv(spec.Profile, spec.Billing, spec.APIKey, spec.CredentialEnvVar, spec.Credential, spec.SSHAuthSock, spec.EnvPassthrough)
-	env = append(env, sandboxCacheEnv(spec.SSHAuthSock, spec.PhaseDir)...)
+	env = append(env, dispatchCacheEnv(spec.SSHAuthSock, spec.RepoRoot, spec.PhaseDir)...)
 	return append([]string{c.bin()}, args...), env, nil
 }
 
@@ -355,20 +355,41 @@ func signingFilesystemRule(repoRoot string) string {
 	return "permissions.koryph_signing.filesystem={" + strings.Join(parts, ",") + "}"
 }
 
+// dispatchCacheEnv keeps mutable developer-tool state phase-local while
+// allowing ordinary implementation phases in one repository to reuse Go's
+// content-addressed module downloads. The primary repository's Git metadata
+// is already an explicit writable sandbox root for commits, so its
+// koryph-owned cache does not widen the sandbox boundary. JSON/scoring spawns
+// deliberately use sandboxCacheEnv instead and therefore never share it.
+func dispatchCacheEnv(sshAuthSock, repoRoot, phaseDir string) []string {
+	moduleCache := ""
+	if repoRoot != "" {
+		moduleCache = filepath.Join(repoRoot, ".git", "koryph-cache", "go-mod-cache")
+	}
+	return sandboxCacheEnvWithModuleCache(sshAuthSock, phaseDir, moduleCache)
+}
+
 // sandboxCacheEnv redirects mutable developer-tool state into the
-// invocation-owned phase directory. It is active whenever the caller gives us
-// a scratch directory: ordinary workspace-write launches need the same cache
-// isolation as signing launches. pre-commit is the deliberate exception; its
-// already-vetted hook environments are expensive and may require network
+// invocation-owned scratch directory. It is active whenever the caller gives
+// us a scratch directory: ordinary workspace-write launches need the same
+// cache isolation as signing launches. pre-commit is the deliberate exception;
+// its already-vetted hook environments are expensive and may require network
 // access to rebuild, so only the signing profile receives its narrowly granted
 // persistent cache.
 func sandboxCacheEnv(sshAuthSock, scratchDir string) []string {
+	return sandboxCacheEnvWithModuleCache(sshAuthSock, scratchDir, "")
+}
+
+func sandboxCacheEnvWithModuleCache(sshAuthSock, scratchDir, moduleCache string) []string {
 	if scratchDir == "" {
 		return nil
 	}
+	if moduleCache == "" {
+		moduleCache = filepath.Join(scratchDir, "go-mod-cache")
+	}
 	env := []string{
 		"GOCACHE=" + filepath.Join(scratchDir, "go-cache"),
-		"GOMODCACHE=" + filepath.Join(scratchDir, "go-mod-cache"),
+		"GOMODCACHE=" + moduleCache,
 		// GOTELEMETRY is a computed, non-settable Go environment value as of
 		// Go 1.26. TEST_TELEMETRY_DIR is the narrow Go tool override: unlike
 		// HOME, it redirects only Go telemetry and leaves Codex's account

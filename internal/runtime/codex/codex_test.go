@@ -138,7 +138,7 @@ func TestCommandSigningCachesAreNarrowlyScoped(t *testing.T) {
 	for _, want := range []string{
 		"PRE_COMMIT_HOME=" + filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"),
 		"GOCACHE=/phase/go-cache",
-		"GOMODCACHE=/phase/go-mod-cache",
+		"GOMODCACHE=/repo/.git/koryph-cache/go-mod-cache",
 		"TEST_TELEMETRY_DIR=/phase/go-telemetry",
 		"XDG_CACHE_HOME=/phase/cache",
 		"TMPDIR=/phase",
@@ -197,7 +197,7 @@ func TestCommandKeepsTestSocketsShortForDeepPhaseDir(t *testing.T) {
 	}
 }
 
-func TestCommandWithoutSigningStillUsesPhaseLocalMutableCaches(t *testing.T) {
+func TestCommandWithoutSigningKeepsNonModuleCachesPhaseLocal(t *testing.T) {
 	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{RepoRoot: "/repo", PhaseDir: "/phase"})
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestCommandWithoutSigningStillUsesPhaseLocalMutableCaches(t *testing.T) {
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
 		"GOCACHE=/phase/go-cache",
-		"GOMODCACHE=/phase/go-mod-cache",
+		"GOMODCACHE=/repo/.git/koryph-cache/go-mod-cache",
 		"TEST_TELEMETRY_DIR=/phase/go-telemetry",
 		"XDG_CACHE_HOME=/phase/cache",
 		"TMPDIR=/phase",
@@ -216,6 +216,60 @@ func TestCommandWithoutSigningStillUsesPhaseLocalMutableCaches(t *testing.T) {
 	}
 	if strings.Contains(joined, "PRE_COMMIT_HOME=") {
 		t.Errorf("ordinary workspace-write launch inherited signing-only PRE_COMMIT_HOME:\n%s", joined)
+	}
+}
+
+func TestCommandSharesOnlyProjectModuleCacheAcrossPhases(t *testing.T) {
+	t.Setenv("GOMODCACHE", "/ambient/go-mod-cache")
+
+	envFor := func(repo, phase string) map[string]string {
+		t.Helper()
+		_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+			RepoRoot: repo,
+			PhaseDir: phase,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]string)
+		for _, pair := range env {
+			name, value, ok := strings.Cut(pair, "=")
+			if ok {
+				got[name] = value
+			}
+		}
+		return got
+	}
+
+	first := envFor("/repo-a", "/phase-a")
+	second := envFor("/repo-a", "/phase-b")
+	otherRepo := envFor("/repo-b", "/phase-c")
+
+	wantModuleCache := filepath.Join("/repo-a", ".git", "koryph-cache", "go-mod-cache")
+	if first["GOMODCACHE"] != wantModuleCache || second["GOMODCACHE"] != wantModuleCache {
+		t.Fatalf("same-repo module caches = %q, %q; want shared %q",
+			first["GOMODCACHE"], second["GOMODCACHE"], wantModuleCache)
+	}
+	if otherRepo["GOMODCACHE"] == wantModuleCache {
+		t.Fatalf("separate repo reused module cache %q", otherRepo["GOMODCACHE"])
+	}
+	if first["GOMODCACHE"] == os.Getenv("GOMODCACHE") {
+		t.Fatalf("dispatch inherited ambient module cache %q", first["GOMODCACHE"])
+	}
+	for _, name := range []string{"GOCACHE", "TEST_TELEMETRY_DIR", "XDG_CACHE_HOME", "TMPDIR"} {
+		if first[name] == second[name] {
+			t.Errorf("%s unexpectedly shared across phases: %q", name, first[name])
+		}
+	}
+}
+
+func TestCommandWithoutRepoRootKeepsModuleCachePhaseLocal(t *testing.T) {
+	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{PhaseDir: "/phase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(env, "\n"); !strings.Contains(joined, "GOMODCACHE=/phase/go-mod-cache") {
+		t.Errorf("repo-less dispatch must not use an ambient or shared module cache:\n%s", joined)
 	}
 }
 
