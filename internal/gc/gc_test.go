@@ -251,6 +251,125 @@ func TestGCRunDirsLiveSlotExempt(t *testing.T) {
 	}
 }
 
+func TestGCPrunesOnlyRecognizedCachesFromTerminalRuns(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "merged")
+	phaseDir := filepath.Join(runDir, "bead1")
+	for _, name := range []string{"go-cache", "go-mod-cache", "go-build12345"} {
+		cacheDir := filepath.Join(phaseDir, name, "nested")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cacheDir, "cache-data"), []byte("cache"), 0o444); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Go's module cache can contain read-only directories as well as files.
+	if err := os.Chmod(filepath.Join(phaseDir, "go-mod-cache", "nested"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	unknownDir := filepath.Join(phaseDir, "go-build-not-a-number")
+	if err := os.MkdirAll(unknownDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ledger.json", "manifest.json", "status.json", "stream.jsonl", "session.log", "SUMMARY.md"} {
+		if err := os.WriteFile(filepath.Join(phaseDir, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res := runCacheGC(t, repoRoot, false)
+	if got := classResult(t, res, "run-dirs").Deleted; got != 3 {
+		t.Fatalf("deleted cache directories = %d, want 3", got)
+	}
+	for _, name := range []string{"go-cache", "go-mod-cache", "go-build12345"} {
+		if _, err := os.Stat(filepath.Join(phaseDir, name)); !os.IsNotExist(err) {
+			t.Errorf("recognized cache %s was not removed: %v", name, err)
+		}
+	}
+	for _, name := range append([]string{"go-build-not-a-number"}, "ledger.json", "manifest.json", "status.json", "stream.jsonl", "session.log", "SUMMARY.md") {
+		if _, err := os.Stat(filepath.Join(phaseDir, name)); err != nil {
+			t.Errorf("diagnostic evidence %s was removed: %v", name, err)
+		}
+	}
+
+	// A second invocation is a no-op after the caches are gone.
+	if got := classResult(t, runCacheGC(t, repoRoot, false), "run-dirs").Deleted; got != 0 {
+		t.Errorf("idempotent rerun deleted %d entries, want 0", got)
+	}
+}
+
+func TestGCPhaseCachesPreserveNonterminalRuns(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "running")
+	cacheDir := filepath.Join(runDir, "bead1", "go-cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCacheGC(t, repoRoot, false)
+	if got := classResult(t, res, "run-dirs").Deleted; got != 0 {
+		t.Errorf("deleted %d phase caches from nonterminal run", got)
+	}
+	if _, err := os.Stat(cacheDir); err != nil {
+		t.Errorf("cache in nonterminal run was removed: %v", err)
+	}
+}
+
+func TestGCPhaseCachesDryRunReportsWithoutMutation(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "done")
+	cacheFile := filepath.Join(runDir, "bead1", "go-cache", "cache-data")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, make([]byte, 1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runCacheGC(t, repoRoot, true)
+	cr := classResult(t, res, "run-dirs")
+	if cr.Deleted != 1 || cr.ReclaimedMB <= 0 {
+		t.Errorf("dry-run result = deleted %d, reclaimed %f MB; want one positive reclaim", cr.Deleted, cr.ReclaimedMB)
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Errorf("dry-run mutated cache: %v", err)
+	}
+}
+
+func gcCacheFixture(t *testing.T, status string) (string, string) {
+	t.Helper()
+	repoRoot := t.TempDir()
+	runDir := filepath.Join(repoRoot, ".plan-logs", "koryph", "20260724-120000")
+	if err := os.MkdirAll(filepath.Join(runDir, "bead1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ledgerData := `{"run_id":"20260724-120000","slots":{"bead1":{"phase_id":"bead1","status":"` + status + `"}}}`
+	if err := os.WriteFile(filepath.Join(runDir, "ledger.json"), []byte(ledgerData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repoRoot, runDir
+}
+
+func runCacheGC(t *testing.T, repoRoot string, dryRun bool) *Result {
+	t.Helper()
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	cfg := Config{RunDirs: RunDirPolicy{CompressAfterDaysNever: true, DeleteAfterDaysNever: true}}.effective()
+	res, err := Run(Options{RepoRoot: repoRoot, DryRun: dryRun, Config: &cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func classResult(t *testing.T, res *Result, class string) *ClassResult {
+	t.Helper()
+	for i := range res.Classes {
+		if res.Classes[i].Class == class {
+			return &res.Classes[i]
+		}
+	}
+	t.Fatalf("no %s result", class)
+	return nil
+}
+
 // TestGCRotateLogDryRun verifies audit log rotation dry-run.
 func TestGCRotateLogDryRun(t *testing.T) {
 	dir := t.TempDir()

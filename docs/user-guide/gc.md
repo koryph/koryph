@@ -35,6 +35,12 @@ gc covers four artifact classes:
 | `~/.koryph/runs.jsonl` | size-based rotation to `runs-<date>.jsonl.gz` | rotate at 10 MiB, retain rotated files **forever** |
 | Telemetry (`~/.koryph/telemetry/`) | managed by the observability layer, not by `koryph gc` | see [Observability](observability.md) |
 
+For a terminal project run, gc also immediately removes phase-local Go caches
+named `go-cache`, `go-mod-cache`, or `go-build<digits>`. These are the only
+phase contents removed before normal run retention; ledgers, manifests, status,
+streams, logs, summaries, unknown directories, `latest`, and nonterminal runs
+are preserved. `--dry-run` includes these cache bytes in its reclaim estimate.
+
 Safety exemptions, always in force:
 
 - **Active runs are never touched** — the current run and the target of the

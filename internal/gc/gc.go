@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -31,6 +32,8 @@ type ClassResult struct {
 	Errors      []string
 	DryRun      bool
 }
+
+var disposablePhaseCache = regexp.MustCompile(`^(?:go-cache|go-mod-cache|go-build[0-9]+)$`)
 
 // Result is the aggregate output of a GC run.
 type Result struct {
@@ -141,10 +144,16 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 		runDir := filepath.Join(koryphRoot, name)
 
 		// Check if all slots are terminal before touching.
-		if !allSlotsTerminal(runDir) {
+		phaseNames, terminal := terminalPhaseNames(runDir)
+		if !terminal {
 			cr.Skipped++
 			continue
 		}
+
+		// Phase-local Go caches are disposable once every slot is terminal. Prune
+		// them immediately rather than retaining them until the whole run reaches
+		// its archival age; the rest of the phase evidence remains in place.
+		prunePhaseCaches(runDir, phaseNames, &cr, opts.DryRun)
 
 		// Determine run age from the directory mtime.
 		fi, serr := os.Lstat(runDir)
@@ -223,25 +232,91 @@ func resolveLatest(koryphRoot string) string {
 }
 
 // allSlotsTerminal reads ledger.json for the run and returns true only if
-// all slots are terminal (or there are no slots). Returns true when the
-// ledger file is missing (stale/incomplete run).
+// all slots are terminal (or there are no slots). A missing or unreadable
+// ledger is retained conservatively because its run state is unknown.
 func allSlotsTerminal(runDir string) bool {
+	_, terminal := terminalPhaseNames(runDir)
+	return terminal
+}
+
+// terminalPhaseNames returns the direct child directory names that belong to
+// terminal slots. The ledger is the authority for identifying phase dirs, so
+// unrelated run-level directories are never considered for cache pruning.
+func terminalPhaseNames(runDir string) ([]string, bool) {
 	ledgerPath := filepath.Join(runDir, "ledger.json")
 	data, err := os.ReadFile(ledgerPath)
 	if err != nil {
-		// Missing ledger: allow gc (stale/empty directory).
-		return true
+		return nil, false
 	}
 	var run ledger.Run
 	if err := json.Unmarshal(data, &run); err != nil {
-		return true // corrupt ledger: allow gc
+		return nil, false
 	}
+	phaseNames := make([]string, 0, len(run.Slots))
 	for _, sl := range run.Slots {
 		if sl != nil && !ledger.Terminal(sl.Status) {
-			return false
+			return nil, false
+		}
+		if sl != nil && sl.PhaseID != "" && filepath.Base(sl.PhaseID) == sl.PhaseID {
+			phaseNames = append(phaseNames, sl.PhaseID)
 		}
 	}
-	return true
+	return phaseNames, true
+}
+
+// prunePhaseCaches deletes only recognized cache directories directly below a
+// phase directory. It never walks arbitrary phase contents, preserving the
+// ledger, manifests, streams, logs, summaries, and unknown diagnostics.
+func prunePhaseCaches(runDir string, phaseNames []string, cr *ClassResult, dryRun bool) {
+	for _, phaseName := range phaseNames {
+		phaseDir := filepath.Join(runDir, phaseName)
+		entries, rerr := os.ReadDir(phaseDir)
+		if rerr != nil {
+			if !errors.Is(rerr, os.ErrNotExist) {
+				cr.Errors = append(cr.Errors, fmt.Sprintf("read phase %s: %v", phaseName, rerr))
+			}
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || !disposablePhaseCache.MatchString(entry.Name()) {
+				continue
+			}
+			cacheDir := filepath.Join(phaseDir, entry.Name())
+			sz := dirSizeMB(cacheDir)
+			cr.ScannedMB += sz
+			if !dryRun {
+				if rerr := removeAllWritable(cacheDir); rerr != nil {
+					cr.Errors = append(cr.Errors, fmt.Sprintf("remove phase cache %s: %v", cacheDir, rerr))
+					continue
+				}
+			}
+			cr.ReclaimedMB += sz
+			cr.Deleted++
+		}
+	}
+}
+
+// removeAllWritable handles Go module-cache directories whose downloaded
+// contents are intentionally read-only. Only directories inside an already
+// recognized disposable cache are made owner-writable before removal.
+func removeAllWritable(path string) error {
+	err := filepath.WalkDir(path, func(current string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(current, info.Mode().Perm()|0o700)
+	})
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(path)
 }
 
 // compressDir creates a .tar.gz of runDir at archivePath.
