@@ -343,6 +343,9 @@ func AuditEpic(epic beads.Issue, children []beads.Issue, deps map[string][]strin
 		add("error", "epic-success-missing", epic.ID,
 			"epic has no success criteria",
 			"set observable epic-level acceptance/success criteria")
+	} else if _, err := ParseStrictCriteria(epic.AcceptanceCriteria); err != nil {
+		add("error", criteriaFindingCode("epic-success", err), epic.ID,
+			err.Error(), "render one atomic criterion per line as AC1:, AC2:, ...")
 	}
 	if len(active) == 0 {
 		add("warning", "epic-no-active-children", epic.ID,
@@ -362,6 +365,9 @@ func AuditEpic(epic beads.Issue, children []beads.Issue, deps map[string][]strin
 		if strings.TrimSpace(child.AcceptanceCriteria) == "" {
 			add("error", "child-acceptance-missing", child.ID,
 				"child has no acceptance criteria", "add observable, testable completion criteria")
+		} else if _, err := ParseStrictCriteria(child.AcceptanceCriteria); err != nil {
+			add("error", criteriaFindingCode("child-acceptance", err), child.ID,
+				err.Error(), "render one atomic criterion per line as AC1:, AC2:, ...")
 		}
 
 		refs := designPathRE.FindAllString(child.Description, -1)
@@ -431,6 +437,13 @@ func AuditEpic(epic beads.Issue, children []beads.Issue, deps map[string][]strin
 		return r.Quality[i].Code < r.Quality[j].Code
 	})
 	return r
+}
+
+func criteriaFindingCode(prefix string, err error) string {
+	if criteriaErr, ok := err.(*CriteriaError); ok && criteriaErr.Code != "" {
+		return prefix + "-" + criteriaErr.Code
+	}
+	return prefix + "-invalid"
 }
 
 // StrictFailure reports whether a scoped report must block dispatch.

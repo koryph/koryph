@@ -77,20 +77,26 @@ only the mechanical file-writing and reporting yourself.
      material for `area:*`/`fp:*` footprints), anything that must be
      *running* for its acceptance (the raw material for `res:*` labels),
      which earlier units it consumes (the raw material for dependency
-     edges), and its observable acceptance. Give every unit exactly one
-     provided capability slug and exact owned path prefixes; these become
-     its `koryph.unit/v1` design-field contract during planning. A
+     edges), and its observable acceptance as an ordered list with stable
+     IDs (`AC1:`, `AC2:`, ...), one atomic outcome per line. Never pack
+     multiple criteria together with semicolons. Give every unit exactly one
+     provided capability slug and exact owned path prefixes; these become its
+     `koryph.unit/v1` design-field contract during planning. A
      cross-subsystem or docs+production unit must be marked integration-only
      with a concrete cohesion rationale. Prefer a table so the designer can
      compare sibling write sets before decomposition.
-   - **Acceptance criteria** — observable, per-unit where possible.
+   - **Acceptance criteria** — observable and atomic, with stable `AC<n>` IDs;
+     every criterion must name the result and its validation evidence.
    - **Open questions / assumptions** — everything step 1 could not settle.
    Keep the doc self-contained: dispatched agents see only bead text plus
    this doc, never this conversation.
 
    Before review, perform a contradiction pass: every implementation unit
    must agree with the decision ledger, and no acceptance criterion may
-   require an explicitly rejected or removed mechanism.
+   require an explicitly rejected or removed mechanism. The strict post-file
+   gate requires every epic and child criterion to retain its explicit
+   sequential `AC<n>:` ID. Positional IDs synthesized while reading an older
+   plan are migration-only and must be rendered explicitly before filing.
 
 5. **Review gate.** Report the doc path and a one-screen summary: the
    problem, the chosen approach, the unit count, and the expected parallel

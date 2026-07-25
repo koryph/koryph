@@ -346,20 +346,20 @@ func TestAuditEpic_ValidGraphPasses(t *testing.T) {
 		t.Fatal(err)
 	}
 	epic := makeIssue("epic-1", "epic")
-	epic.AcceptanceCriteria = "The feature is observable and complete."
+	epic.AcceptanceCriteria = "AC1: The feature is observable and complete."
 	children := []beads.Issue{
 		{
 			ID: "child-a", Title: "Foundation", IssueType: "task", Status: "open",
 			Description:        "Why: establish the seam. Design: docs/designs/feature.md.",
 			Design:             "koryph.unit/v1 kind=implementation provides=foundation-seam owns=internal/foundation consumes=",
-			AcceptanceCriteria: "The seam has unit coverage.",
+			AcceptanceCriteria: "AC1: The seam has unit coverage.",
 			Labels:             []string{"area:cli"},
 		},
 		{
 			ID: "child-b", Title: "Consumer", IssueType: "task", Status: "open",
 			Description:        "Why: expose the seam. Design: docs/designs/feature.md.",
 			Design:             "koryph.unit/v1 kind=implementation provides=consumer-command owns=cmd/consumer consumes=",
-			AcceptanceCriteria: "The command has unit coverage.",
+			AcceptanceCriteria: "AC1: The command has unit coverage.",
 			Labels:             []string{"fp:go:consumer"},
 		},
 	}
@@ -557,6 +557,54 @@ func TestAuditEpic_UnorderedSharedWriteFails(t *testing.T) {
 	}
 	if !r.StrictFailure() {
 		t.Error("unordered shared write must fail strict gate")
+	}
+}
+
+func TestAuditEpic_RejectsNonAtomicAcceptanceCriteria(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "AC1: Epic outcome"
+	child := beads.Issue{
+		ID: "child-1", Title: "Compound child", IssueType: "task", Status: "open",
+		Description:        "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+		Design:             "koryph.unit/v1 kind=implementation provides=atomic-output owns=internal/atomic consumes=",
+		AcceptanceCriteria: "AC1: feature exists; regression passes",
+		Labels:             []string{"fp:atomic"},
+	}
+	r := plan.AuditEpic(epic, []beads.Issue{child}, nil, cfg(nil), t.TempDir())
+	if !qualityCodes(r)["child-acceptance-compound"] {
+		t.Fatalf("compound acceptance was not rejected: %#v", r.Quality)
+	}
+
+	child.AcceptanceCriteria = "AC1: feature exists\nAC1: regression passes"
+	r = plan.AuditEpic(epic, []beads.Issue{child}, nil, cfg(nil), t.TempDir())
+	if !qualityCodes(r)["child-acceptance-id-duplicate"] {
+		t.Fatalf("duplicate acceptance ID was not rejected: %#v", r.Quality)
+	}
+}
+
+func TestAuditEpic_RequiresExplicitAcceptanceIDs(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Legacy observable epic outcome."
+	child := func(id, acceptance, capability, fp string) beads.Issue {
+		return beads.Issue{
+			ID: id, Title: id, IssueType: "task", Status: "open",
+			Description:        "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+			Design:             "koryph.unit/v1 kind=implementation provides=" + capability + " owns=internal/" + id + " consumes=",
+			AcceptanceCriteria: acceptance,
+			Labels:             []string{fp},
+		}
+	}
+	children := []beads.Issue{
+		child("atomic", "AC1: feature exists\nAC2: focused test passes", "atomic-output", "fp:atomic"),
+		child("legacy", "- Existing valid criterion\n- Existing regression criterion", "legacy-output", "fp:legacy"),
+	}
+	r := plan.AuditEpic(epic, children, nil, cfg(nil), t.TempDir())
+	codes := qualityCodes(r)
+	if !codes["epic-success-id-missing"] || !codes["child-acceptance-id-missing"] {
+		t.Fatalf("strict audit accepted wholly unnumbered criteria: %#v", r.Quality)
+	}
+	if codes["child-acceptance-invalid"] || codes["epic-success-invalid"] {
+		t.Fatalf("strict audit did not return stable id-missing code: %#v", r.Quality)
 	}
 }
 
