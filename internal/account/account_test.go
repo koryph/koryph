@@ -117,6 +117,20 @@ func TestChildEnvDropsSecrets(t *testing.T) {
 	}
 }
 
+func TestChildEnvPreservesTLSCertificateLocations(t *testing.T) {
+	t.Setenv("NIX_SSL_CERT_FILE", "/nix/store/cacert/etc/ssl/certs/ca-bundle.crt")
+	t.Setenv("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
+	env := ChildEnv(ChildEnvSpec{Profile: Profile{Name: "personal"}, Billing: BillingSubscription})
+	for name, want := range map[string]string{
+		"NIX_SSL_CERT_FILE":  "/nix/store/cacert/etc/ssl/certs/ca-bundle.crt",
+		"REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+	} {
+		if got, count := envLookup(env, name); count != 1 || got != want {
+			t.Errorf("%s = %q x%d, want %q exactly once", name, got, count, want)
+		}
+	}
+}
+
 // TestChildEnvPassthrough proves the registry escape hatch forwards a named
 // operator var while still dropping everything else.
 func TestChildEnvPassthrough(t *testing.T) {

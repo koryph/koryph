@@ -35,6 +35,10 @@ var baseAllow = []string{
 	"GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOTOOLCHAIN", "GOPROXY",
 	// Homebrew prefix — macOS PATH/lib resolution for tools agents invoke.
 	"HOMEBREW_PREFIX", "HOMEBREW_CELLAR", "HOMEBREW_REPOSITORY",
+	// Non-secret TLS trust-store locations. Nix/Python/bootstrap tools require
+	// these inside the credential-minimal child environment.
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE",
+	"REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
 }
 
 // baseAllowPrefixes forwards whole non-secret namespaces: locale (LC_*), koryph

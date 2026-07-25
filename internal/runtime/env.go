@@ -25,9 +25,24 @@ var childEnvAllow = []string{
 	"TMPDIR", "TZ", "LANG", "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS",
 	"GOTOOLCHAIN", "GOPROXY", "HOMEBREW_PREFIX", "HOMEBREW_CELLAR",
 	"HOMEBREW_REPOSITORY",
+	// Trust-store locations are non-secret build/runtime inputs. Nix shells in
+	// particular require NIX_SSL_CERT_FILE; dropping it makes package/bootstrap
+	// tools fail TLS verification inside an otherwise network-enabled phase.
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE",
+	"REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
 }
 
 var childEnvPrefixes = []string{"LC_", "KORYPH_", "XDG_"}
+
+// CertificateEnvNames returns the standard non-secret trust-store variables
+// ChildEnv preserves. Runtime sandboxes use the same list to grant exact read
+// access to existing absolute bundle paths.
+func CertificateEnvNames() []string {
+	return []string{
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE",
+		"REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+	}
+}
 
 // ChildEnv builds a complete, credential-minimal environment for an
 // autonomous agent. CredentialEnvVar is authoritative over APIKeyEnvVar so a

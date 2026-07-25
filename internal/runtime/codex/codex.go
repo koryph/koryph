@@ -314,6 +314,19 @@ func signingFilesystemRule(repoRoot string) string {
 	if _, err := os.Stat("/Library/Developer"); err == nil {
 		roots["/Library/Developer"] = true
 	}
+	for _, name := range runtime.CertificateEnvNames() {
+		path := filepath.Clean(strings.TrimSpace(os.Getenv(name)))
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			// Grant only the exact configured file/directory. The variable is
+			// forwarded by runtime.ChildEnv; this filesystem grant makes it
+			// usable under the :minimal signing profile without opening a
+			// broader certificate/config tree.
+			roots[path] = true
+		}
+	}
 
 	ordered := make([]string, 0, len(roots))
 	for root := range roots {

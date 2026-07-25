@@ -80,6 +80,12 @@ func TestCommandJSONAllowsOnlySharedGitMetadata(t *testing.T) {
 func TestSigningFilesystemRuleKeepsWritesScopedAndToolchainsReadable(t *testing.T) {
 	t.Setenv("PATH", "/nix/store/tool/bin:/opt/homebrew/bin:/usr/bin")
 	t.Setenv("HOMEBREW_PREFIX", "/opt/homebrew")
+	bundle := filepath.Join(t.TempDir(), "ca-bundle.crt")
+	if err := os.WriteFile(bundle, []byte("test certificate bundle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NIX_SSL_CERT_FILE", bundle)
+	t.Setenv("CURL_CA_BUNDLE", filepath.Join(t.TempDir(), "missing-ca.pem"))
 	rule := signingFilesystemRule("/repo")
 	for _, want := range []string{
 		`":workspace_roots"={"."="write"}`,
@@ -91,6 +97,7 @@ func TestSigningFilesystemRuleKeepsWritesScopedAndToolchainsReadable(t *testing.
 		`"~/.cache/pre-commit"="write"`,
 		`"/repo/.beads/hooks"="read"`,
 		`"/repo/.allowed_signers"="read"`,
+		tomlString(bundle) + `="read"`,
 	} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("rule = %q, missing %q", rule, want)
@@ -98,6 +105,9 @@ func TestSigningFilesystemRuleKeepsWritesScopedAndToolchainsReadable(t *testing.
 	}
 	if strings.Contains(rule, `":root"="read"`) {
 		t.Fatalf("rule = %q, must not grant broad root reads", rule)
+	}
+	if strings.Contains(rule, "missing-ca.pem") {
+		t.Fatalf("rule = %q, must not grant nonexistent bundle paths", rule)
 	}
 }
 
