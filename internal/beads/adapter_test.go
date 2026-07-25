@@ -536,6 +536,7 @@ func TestParsersDirect(t *testing.T) {
 	arr, err := parseIssueList([]byte(`[{
 		"id":"z-2",
 		"priority":2,
+		"design":"koryph.unit/v1 kind=implementation provides=adapter-parser owns=internal/beads consumes=",
 		"acceptance_criteria":"observable outcome",
 		"close_reason":"merged",
 		"dependency_type":"blocks",
@@ -545,6 +546,7 @@ func TestParsersDirect(t *testing.T) {
 		t.Fatalf("array parse: %+v err=%v", arr, err)
 	}
 	if arr[0].AcceptanceCriteria != "observable outcome" ||
+		arr[0].Design != "koryph.unit/v1 kind=implementation provides=adapter-parser owns=internal/beads consumes=" ||
 		arr[0].CloseReason != "merged" ||
 		arr[0].DependencyType != "blocks" ||
 		len(arr[0].Dependencies) != 1 ||
@@ -560,5 +562,18 @@ func TestParsersDirect(t *testing.T) {
 	wrapped, err := parseIssue([]byte(`{"issue":{"id":"z-4","priority":0}}`))
 	if err != nil || wrapped.ID != "z-4" {
 		t.Fatalf("wrapped parse: %+v err=%v", wrapped, err)
+	}
+}
+
+func TestCreateCarriesDesignField(t *testing.T) {
+	a, log := newFakeAdapter(t)
+	contract := "koryph.unit/v1 kind=implementation provides=create-transport owns=internal/beads consumes="
+	if _, err := a.Create(context.Background(), CreateInput{
+		Title: "Designed", Description: "body", Design: contract, Priority: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if args := lastArgs(t, log)[0]; !strings.Contains(args, "--design "+contract) {
+		t.Fatalf("create argv %q missing design contract", args)
 	}
 }

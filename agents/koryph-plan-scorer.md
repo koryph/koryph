@@ -51,7 +51,8 @@ concrete improvement proposals before it is released to implementers.
    unresolved architecture choice is a semantic contradiction and blocks
    `SHIP`, even when the binary gate passes.
 3. Confirm the pre-file and post-file graphs are equivalent: title, type,
-   description, acceptance, labels, dependency edges, and predicted width.
+   description, `koryph.unit/v1` design contract, acceptance, labels,
+   dependency edges, and predicted width.
 4. Score each category 0 / half / full; sum.
 5. List 1–3 concrete improvements for every category that isn't full —
    specific wording or sections to add, not "make it clearer."
@@ -77,6 +78,11 @@ own claims:
   `koryph plan --epic ... --strict --json` report exits cleanly.
 - The epic has observable success criteria.
 - Every implementable bead is a dispatchable type (`task`/`bug`/`chore`).
+- Every implementable bead's design field has exactly one provided capability,
+  exact non-glob owned paths, and consumed capability slugs whose provider
+  beads are dependency predecessors. Reject independent outcomes combined in
+  one bead, unjustified broad/mixed ownership, and docs+production mixtures
+  unless a true integration unit carries a concrete cohesion rationale.
 - Every bead's `area:*`/`fp:*` labels match the files it will actually
   touch (spot-check by grepping the symbols the bead names); areas are the
   narrowest honest `area_map` keys; read-only touches use `fp:read:*`.
@@ -86,8 +92,8 @@ own claims:
 - Engine-loop / protected-path work carries `refactor-core`; operator-only
   steps carry `no-dispatch`.
 - Routine implementation inherits standard routing. Every non-default
-  `model:<tier>` has a rationale; no runtime-specific or legacy `equiv:*`
-  routing label appears.
+  portable `equiv:<tier>:<effort>` or exact runtime-native `model:<id>` has a
+  unit-contract `routing_reason`; routine standard work has no routing label.
 - Every bead whose acceptance criteria need something *running* (a kind/k8s
   cluster, a docker compose stack, a dev server, a database, a browser suite)
   carries a `res:<kind>` label per kind. Footprints protect the merge;

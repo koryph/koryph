@@ -4,10 +4,12 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/internal/engine"
+	"github.com/koryph/koryph/internal/plan"
 )
 
 func TestPlanStrictRequiresEpic(t *testing.T) {
@@ -18,6 +20,27 @@ func TestPlanStrictRequiresEpic(t *testing.T) {
 	}
 	if !strings.Contains(errb, "--strict requires --epic") {
 		t.Fatalf("stderr missing strict-scope guidance: %s", errb)
+	}
+}
+
+func TestPlanHumanReportRendersActionableUnitFinding(t *testing.T) {
+	var out bytes.Buffer
+	printAuditReport(&out, &plan.AuditReport{
+		ProjectID: "demo", EpicID: "demo-1",
+		Quality: []plan.QualityFinding{{
+			Severity: "error", Code: "unit-outcome-count", IssueID: "demo-1.1",
+			Message:     "unit declares 2 provided outcomes; exactly one is required",
+			Remediation: "split independent outcomes into separate provider beads",
+		}},
+	})
+	for _, want := range []string{
+		"QUALITY GATE — 1 error(s)",
+		"[unit-outcome-count]",
+		"split independent outcomes",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("report missing %q:\n%s", want, out.String())
+		}
 	}
 }
 

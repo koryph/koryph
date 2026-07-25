@@ -30,6 +30,8 @@ Do this:
 5. Run `bd create` with:
    - a clear `--title`,
    - a `--description` that states *why* the issue exists and what "done" looks like,
+   - `--design "koryph.unit/v1 kind=implementation provides=<one-outcome-slug> owns=<exact,path,prefixes> consumes="`; use exact repository paths, never broad roots/globs,
+   - no routine routing label; a portable `equiv:<tier>:<effort>` or exact `model:<id>` override requires `routing_reason=<why>` in that unit contract,
    - `--validate` so required sections are enforced,
    - the `area:*`/`fp:*`/`res:*` labels from step 3 (repeat `--label` per label),
    - `--label refactor-core` **only** if the work changes the koryph engine's own dispatch/merge/governor loop or a protected path (those are never loop-dispatched, so their footprint labels are advisory).

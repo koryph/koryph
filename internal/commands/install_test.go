@@ -71,13 +71,25 @@ func TestPlanningWorkflowsCarryTwoKeyQualityGate(t *testing.T) {
 	for name, wants := range map[string][]string{
 		"koryph-design.md": {
 			"decision ledger",
+			"koryph.unit/v1",
 			"koryph plan --epic <id> --strict",
 		},
 		"koryph-plan.md": {
 			"Score the exact graph before filing",
 			"--acceptance",
+			"--design",
+			"equiv:<tier>:<effort>",
+			"model:<id>",
 			"koryph plan --project <project-id> --epic <epic-id> --strict",
 			"Routine implementation inherits the project's **standard** default",
+		},
+		"koryph-issue.md": {
+			"koryph.unit/v1",
+			"routing_reason",
+		},
+		"koryph-import.md": {
+			"koryph.unit/v1",
+			"provides exactly one outcome",
 		},
 	} {
 		data, err := commands.FS.ReadFile(name)

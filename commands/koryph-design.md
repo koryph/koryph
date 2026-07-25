@@ -77,8 +77,12 @@ only the mechanical file-writing and reporting yourself.
      material for `area:*`/`fp:*` footprints), anything that must be
      *running* for its acceptance (the raw material for `res:*` labels),
      which earlier units it consumes (the raw material for dependency
-     edges), and its observable acceptance. Prefer a table so the designer
-     can compare sibling write sets before decomposition.
+     edges), and its observable acceptance. Give every unit exactly one
+     provided capability slug and exact owned path prefixes; these become
+     its `koryph.unit/v1` design-field contract during planning. A
+     cross-subsystem or docs+production unit must be marked integration-only
+     with a concrete cohesion rationale. Prefer a table so the designer can
+     compare sibling write sets before decomposition.
    - **Acceptance criteria** — observable, per-unit where possible.
    - **Open questions / assumptions** — everything step 1 could not settle.
    Keep the doc self-contained: dispatched agents see only bead text plus

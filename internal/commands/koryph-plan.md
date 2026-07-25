@@ -74,6 +74,15 @@ build, ...).
    `--acceptance` field. After drafting, compare description and acceptance
    against the design decision ledger; stale or contradictory architecture is
    a hard stop, not an implementer problem.
+   Put this machine-readable contract in the dedicated `--design` field:
+   ```
+   koryph.unit/v1 kind=<implementation|integration> provides=<one-capability-slug> owns=<exact,path,prefixes> consumes=<provider-slugs-or-empty> [cohesion_reason=<why inseparable>] [routing_reason=<why default is insufficient>]
+   ```
+   `provides` names exactly one observable outcome. `owns` contains exact
+   repository file/package prefixes—never a broad root or glob. Every
+   `consumes` slug requires a dependency edge to its provider. Use
+   `kind=integration` plus `cohesion_reason` only when cross-subsystem or
+   docs+production ownership is genuinely atomic; otherwise split the bead.
 
 3. **Discover footprints — do not guess.** For every bead, enumerate the
    concrete files/packages/dirs it will touch by *inspecting the
@@ -136,12 +145,13 @@ build, ...).
 
 7. **Route + guard.**
    - Routine implementation inherits the project's **standard** default and
-     needs no routing label. Add a portable `model:<tier>` only for a
-     non-default route, with a one-line rationale. Frontier is reserved for
+     needs no routing label. Add portable `equiv:<tier>:<effort>` only for a
+     non-default runtime-agnostic route; use `model:<id>` only to request one
+     exact runtime-native model. Either override requires `routing_reason` in
+     the unit contract. Frontier is reserved for
      design, decomposition/scoring, security review, recovery analysis, and
      final eligible hard-block escalation — never routine implementation just
-     because it touches important code. Do not emit runtime-specific or
-     legacy `equiv:*` labels.
+     because it touches important code.
    - `refactor-core` on any bead touching the engine's own
      dispatch/merge/governor loop, or a protected path — these are never
      loop-dispatched (self-hosting safety rule); file them for the
@@ -152,8 +162,9 @@ build, ...).
 8. **Score the exact graph before filing.** Materialize the proposed graph as
    canonical JSON under `.plan-logs/koryph-plan/<slug>.json` with:
    `schema_version`, design path, epic title/description/acceptance, every
-   child title/type/description/acceptance/labels, every dependency edge, and
-   predicted parallel width. This is scratch review evidence, not task state.
+   child title/type/description/design-unit-contract/acceptance/labels, every
+   dependency edge, and predicted parallel width. This is scratch review
+   evidence, not task state.
    Have `koryph-plan-scorer` read the design and this exact snapshot. Apply at
    most one correction iteration and require `SHIP` before any bead becomes
    visible. The scorer is pinned `tier: frontier` at `effort: xhigh`; never
@@ -161,7 +172,8 @@ build, ...).
 
 9. **File.** Create the epic with explicit `--acceptance`/success criteria and
    `--validate`, then each child with `--parent <epic-id>`, dedicated
-   `--acceptance`, labels, and `--validate`; wire dependencies per step 5.
+   `--design` unit contract, `--acceptance`, labels, and `--validate`; wire
+   dependencies per step 5.
    Mechanical filing must reproduce the scored snapshot exactly. This part is
    mechanical — running already-decided commands is fine at any model
    tier.
@@ -213,6 +225,8 @@ bd create --parent proj-101 --type task \
   --description "Why: docs/designs/2026-06-rate-limiting.md#limiter.
 Done: a per-client token-bucket middleware in internal/api/middleware/
 with unit tests for burst and steady-state behavior." \
+  --design "koryph.unit/v1 kind=implementation provides=rate-limit-middleware owns=internal/api/middleware consumes=" \
+  --acceptance "Burst and steady-state middleware tests pass." \
   --label area:api --validate --silent
 # -> A=proj-102
 
@@ -222,6 +236,8 @@ bd create --parent proj-101 --type task \
   --description "Why: docs/designs/2026-06-rate-limiting.md#config.
 Done: per-route limit fields in internal/config/, validated on load,
 with defaults matching the design doc's table." \
+  --design "koryph.unit/v1 kind=implementation provides=rate-limit-config owns=internal/config consumes=" \
+  --acceptance "Schema validation and default tests pass." \
   --label area:config --validate --silent
 # -> B=proj-103
 
@@ -231,6 +247,8 @@ bd create --parent proj-101 --type task \
   --description "Why: docs/designs/2026-06-rate-limiting.md#wiring.
 Done: internal/api/server.go constructs the middleware from loaded
 config and registers it on every route." \
+  --design "koryph.unit/v1 kind=implementation provides=rate-limit-startup owns=internal/api/server.go consumes=rate-limit-middleware,rate-limit-config" \
+  --acceptance "Every route receives configured rate limiting." \
   --label area:api --validate --silent
 # -> C=proj-104
 bd dep add proj-104 --blocked-by proj-102
@@ -242,6 +260,8 @@ bd create --parent proj-101 --type task \
   --description "Why: docs/designs/2026-06-rate-limiting.md#docs.
 Done: docs/user-guide/rate-limiting.md explains per-client limits and
 how to tune them via config." \
+  --design "koryph.unit/v1 kind=implementation provides=rate-limit-guide owns=docs/user-guide/rate-limiting.md consumes=rate-limit-startup" \
+  --acceptance "The user guide documents configuration and tuning." \
   --label area:docs --label fp:read:api --label fp:read:config \
   --validate --silent
 # -> D=proj-105

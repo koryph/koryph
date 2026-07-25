@@ -6,6 +6,7 @@ package plan_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/internal/beads"
@@ -350,12 +351,14 @@ func TestAuditEpic_ValidGraphPasses(t *testing.T) {
 		{
 			ID: "child-a", Title: "Foundation", IssueType: "task", Status: "open",
 			Description:        "Why: establish the seam. Design: docs/designs/feature.md.",
+			Design:             "koryph.unit/v1 kind=implementation provides=foundation-seam owns=internal/foundation consumes=",
 			AcceptanceCriteria: "The seam has unit coverage.",
 			Labels:             []string{"area:cli"},
 		},
 		{
 			ID: "child-b", Title: "Consumer", IssueType: "task", Status: "open",
 			Description:        "Why: expose the seam. Design: docs/designs/feature.md.",
+			Design:             "koryph.unit/v1 kind=implementation provides=consumer-command owns=cmd/consumer consumes=",
 			AcceptanceCriteria: "The command has unit coverage.",
 			Labels:             []string{"fp:go:consumer"},
 		},
@@ -368,6 +371,113 @@ func TestAuditEpic_ValidGraphPasses(t *testing.T) {
 	if r.StrictFailure() {
 		t.Fatalf("valid graph failed strict gate: %#v", r)
 	}
+}
+
+func TestAuditEpic_UnitContractRejectsIndependentOutcomesAndBroadOwnership(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	child := beads.Issue{
+		ID: "wide", Title: "Do several things", IssueType: "task", Status: "open",
+		Description:        "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+		Design:             "koryph.unit/v1 kind=implementation provides=api,cli owns=internal/*,docs consumes=",
+		AcceptanceCriteria: "Done.",
+		Labels:             []string{"fp:wide"},
+	}
+	r := plan.AuditEpic(epic, []beads.Issue{child}, nil, cfg(nil), t.TempDir())
+	codes := qualityCodes(r)
+	for _, want := range []string{"unit-outcome-count", "unit-ownership-broad"} {
+		if !codes[want] {
+			t.Errorf("missing %s in %#v", want, r.Quality)
+		}
+	}
+}
+
+func TestAuditEpic_UnitContractRequiresProviderDependency(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	child := func(id, design, fp string) beads.Issue {
+		return beads.Issue{
+			ID: id, Title: id, IssueType: "task", Status: "open",
+			Description:        "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+			Design:             design,
+			AcceptanceCriteria: "Done.",
+			Labels:             []string{fp},
+		}
+	}
+	provider := child("provider",
+		"koryph.unit/v1 kind=implementation provides=stable-api owns=internal/api consumes=", "fp:api")
+	consumer := child("consumer",
+		"koryph.unit/v1 kind=implementation provides=cli-command owns=cmd/tool consumes=stable-api", "fp:cli")
+
+	missing := plan.AuditEpic(epic, []beads.Issue{provider, consumer}, nil, cfg(nil), t.TempDir())
+	if !qualityCodes(missing)["unit-consumer-edge-missing"] {
+		t.Fatalf("missing provider-edge finding: %#v", missing.Quality)
+	}
+	ordered := plan.AuditEpic(epic, []beads.Issue{provider, consumer},
+		map[string][]string{"consumer": {"provider"}}, cfg(nil), t.TempDir())
+	if qualityCodes(ordered)["unit-consumer-edge-missing"] {
+		t.Fatalf("valid provider edge rejected: %#v", ordered.Quality)
+	}
+	provider.Status = "closed"
+	closedProvider := plan.AuditEpic(epic, []beads.Issue{provider, consumer},
+		map[string][]string{"consumer": {"provider"}}, cfg(nil), t.TempDir())
+	if codes := qualityCodes(closedProvider); codes["unit-consumer-provider-missing"] || codes["unit-consumer-edge-missing"] {
+		t.Fatalf("closed provider contract/edge rejected: %#v", closedProvider.Quality)
+	}
+}
+
+func TestAuditEpic_JustifiedIntegrationBreadthPasses(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	child := beads.Issue{
+		ID: "integration", Title: "Keep generated contract aligned", IssueType: "task", Status: "open",
+		Description: "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+		Design: "koryph.unit/v1 kind=integration provides=aligned-contract " +
+			"owns=internal/plan,cmd/koryph/plan.go,commands/koryph-plan.md,agents/koryph-architect.md,docs/contract.md " +
+			"consumes= cohesion_reason=one embedded contract must be updated atomically",
+		AcceptanceCriteria: "Done.",
+		Labels:             []string{"area:beads", "area:cli", "area:assets", "fp:integration"},
+	}
+	r := plan.AuditEpic(epic, []beads.Issue{child}, nil,
+		cfg(map[string][]string{"beads": {"go:beads"}, "cli": {"go:cli"}, "assets": {"assets"}}), t.TempDir())
+	for _, finding := range r.Quality {
+		if strings.HasPrefix(finding.Code, "unit-") {
+			t.Fatalf("justified integration unit rejected: %#v", r.Quality)
+		}
+	}
+}
+
+func TestAuditEpic_RoutingVocabularyAndRationale(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	base := beads.Issue{
+		ID: "routed", Title: "Routed", IssueType: "task", Status: "open",
+		Description:        "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+		Design:             "koryph.unit/v1 kind=implementation provides=routed-output owns=internal/routed consumes=",
+		AcceptanceCriteria: "Done.",
+		Labels:             []string{"fp:routed", "model:implement:sonnet"},
+	}
+	r := plan.AuditEpic(epic, []beads.Issue{base}, nil, cfg(nil), t.TempDir())
+	codes := qualityCodes(r)
+	if !codes["routing-model-invalid"] || !codes["routing-rationale-missing"] {
+		t.Fatalf("legacy route was not rejected: %#v", r.Quality)
+	}
+
+	base.Labels = []string{"fp:routed", "equiv:frontier:xhigh"}
+	base.Design += " routing_reason=final deterministic recovery exhausted standard paths"
+	r = plan.AuditEpic(epic, []beads.Issue{base}, nil, cfg(nil), t.TempDir())
+	codes = qualityCodes(r)
+	if codes["routing-equivalent-invalid"] || codes["routing-rationale-missing"] {
+		t.Fatalf("portable justified route rejected: %#v", r.Quality)
+	}
+}
+
+func qualityCodes(r *plan.AuditReport) map[string]bool {
+	codes := map[string]bool{}
+	for _, finding := range r.Quality {
+		codes[finding.Code] = true
+	}
+	return codes
 }
 
 func TestAuditEpic_UnorderedSharedWriteFails(t *testing.T) {

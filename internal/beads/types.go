@@ -46,9 +46,13 @@ import "time"
 
 // Issue is the subset of bd's JSON the engine consumes.
 type Issue struct {
-	ID                 string  `json:"id"`
-	Title              string  `json:"title"`
-	Description        string  `json:"description,omitempty"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	// Design carries the machine-readable planning contract recorded by bd's
+	// dedicated design field. Keep it separate from Description: the latter is
+	// prose presented to implementers, while Design is durable planner input.
+	Design             string  `json:"design,omitempty"`
 	AcceptanceCriteria string  `json:"acceptance_criteria,omitempty"`
 	CloseReason        string  `json:"close_reason,omitempty"`
 	DependencyType     string  `json:"dependency_type,omitempty"`

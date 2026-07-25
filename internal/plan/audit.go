@@ -405,10 +405,6 @@ func AuditEpic(epic beads.Issue, children []beads.Issue, deps map[string][]strin
 						fmt.Sprintf("resource %q is absent from project resources", kind),
 						"declare its planning-time cost in koryph.project.json")
 				}
-			case strings.HasPrefix(label, "equiv:"):
-				add("warning", "routing-label-deprecated", child.ID,
-					fmt.Sprintf("label %q is a legacy concrete-equivalence override", label),
-					"inherit standard implementation routing or use a portable non-default tier with rationale")
 			}
 		}
 
@@ -422,6 +418,8 @@ func AuditEpic(epic beads.Issue, children []beads.Issue, deps map[string][]strin
 			}
 		}
 	}
+
+	r.Quality = append(r.Quality, auditUnitContracts(active, children, deps)...)
 
 	sort.Slice(r.Quality, func(i, j int) bool {
 		if r.Quality[i].Severity != r.Quality[j].Severity {

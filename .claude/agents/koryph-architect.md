@@ -49,8 +49,12 @@ shape, boundary decisions, data-ownership changes, security-model changes.
    leave it as an explicit design blocker; never delegate it to an
    implementation bead.
 7. Before decomposition, build a unit table with exact write/read paths,
-   dependencies, runtime resources, and observable acceptance. Verify every
-   child description and acceptance field against the decision ledger; a
+   dependencies, runtime resources, and observable acceptance. Give every
+   unit exactly one provided capability slug, exact owned path prefixes, and
+   consumed capability slugs. These become its `koryph.unit/v1` design-field
+   contract. Cross-subsystem or docs+production ownership is valid only for
+   `kind=integration` with a concrete cohesion rationale. Verify every child
+   description and acceptance field against the decision ledger; a
    contradiction blocks filing.
 8. When you decompose a design into implementation beads, make each one
    **loop-dispatchable by construction** — the wave loop silently skips beads
@@ -84,8 +88,9 @@ shape, boundary decisions, data-ownership changes, security-model changes.
      declares a `merge_reconcilers` / `merge_prepare` entry so a residual
      collision self-heals (docs/user-guide/merge-reconcilers.md).
    - **Routing**: routine implementation inherits the standard tier. Use a
-     portable non-default `model:<tier>` only with a rationale; frontier is
-     for design/scoring/security/recovery, not routine implementation.
+     portable non-default `equiv:<tier>:<effort>` or an exact runtime-native
+     `model:<id>` only with a unit-contract `routing_reason`; frontier is for
+     design/scoring/security/recovery, not routine implementation.
 9. Require the planner's schema-versioned pre-file graph snapshot and the
    post-file `koryph plan --epic <id> --strict --json` report before declaring
    the graph ready.

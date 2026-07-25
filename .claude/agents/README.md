@@ -52,8 +52,9 @@ see `internal/personas.InstallForRuntime`.
 
 For a persona-run stage, the implement-stage model is chosen in this order:
 
-1. a bead `model:<tier>` label (`model:opus`, `model:implement:opus`, ...) —
-   wins unconditionally, unchanged from before this bead.
+1. a bead's portable `equiv:<tier>:<effort>` label or exact runtime-native
+   `model:<id>` label — wins unconditionally. Stage-scoped `model:*:*`
+   spellings are not part of the planning contract.
 2. this stage's persona `tier` scalar, resolved through the active runtime's
    model map (today: the hardcoded Claude map — frontier→opus, standard→
    sonnet, light→haiku; a project may override any entry via

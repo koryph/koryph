@@ -126,9 +126,14 @@ batches. For each item:
    ```
    bd create --type <type> --title "<title>" \
      --description "<description>" \
+     --design "koryph.unit/v1 kind=implementation provides=<one-outcome-slug> owns=<exact,path,prefixes> consumes=" \
      --label area:<key> [--label area:<key2>] [--label res:<kind>] [--label fp:<shared-token>] \
      --validate --silent
    ```
+   Every imported implementation unit provides exactly one outcome. Use
+   exact owned repository prefixes, never roots/globs. If it consumes another
+   imported unit's capability, name that slug in `consumes=` and add the
+   matching provider dependency edge.
 
 For **inline TODO/FIXME clusters**: group nearby hits by file and create one
 bead per logical cluster (not one per hit). Each bead's description lists the

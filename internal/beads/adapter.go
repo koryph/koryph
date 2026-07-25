@@ -177,6 +177,7 @@ func (a *Adapter) ListByExternalRef(ctx context.Context, ref string) ([]Issue, e
 type CreateInput struct {
 	Title       string
 	Description string   // piped on stdin (--body-file -); may be multi-line
+	Design      string   // bd's dedicated design field; omit when empty
 	Labels      []string // comma-joined into --labels
 	Priority    int      // 0..4 (0 = highest); passed to --priority
 	IssueType   string   // bug|feature|task|epic|chore|decision; "" = bd default
@@ -198,6 +199,9 @@ func (a *Adapter) Create(ctx context.Context, in CreateInput) (string, error) {
 	}
 	if in.ExternalRef != "" {
 		args = append(args, "--external-ref", in.ExternalRef)
+	}
+	if in.Design != "" {
+		args = append(args, "--design", in.Design)
 	}
 	if in.Parent != "" {
 		args = append(args, "--parent", in.Parent)
@@ -473,6 +477,7 @@ type wireIssue struct {
 	ID                 string       `json:"id"`
 	Title              string       `json:"title"`
 	Description        string       `json:"description"`
+	Design             string       `json:"design"`
 	AcceptanceCriteria string       `json:"acceptance_criteria"`
 	CloseReason        string       `json:"close_reason"`
 	DependencyType     string       `json:"dependency_type"`
@@ -501,6 +506,7 @@ func (w wireIssue) toIssue() Issue {
 		ID:                 w.ID,
 		Title:              w.Title,
 		Description:        w.Description,
+		Design:             w.Design,
 		AcceptanceCriteria: w.AcceptanceCriteria,
 		CloseReason:        w.CloseReason,
 		DependencyType:     w.DependencyType,
