@@ -224,7 +224,7 @@ func TestAssessCandidateCapabilityBlockNeverRetries(t *testing.T) {
 	}
 }
 
-func TestFinishCandidateCapabilityBlockWakesWithoutAttemptOrModelChange(t *testing.T) {
+func TestFinishCandidateCapabilityBlockParksSlotWithoutRunHandoff(t *testing.T) {
 	r, sl, wt := candidateFixture(t)
 	writeFile(t, filepath.Join(wt, "work.txt"), "preserved\n", 0o644)
 	runGit(t, wt, "add", "work.txt")
@@ -239,6 +239,7 @@ func TestFinishCandidateCapabilityBlockWakesWithoutAttemptOrModelChange(t *testi
 	source := &fakeSource{}
 	r.adapter = source
 	r.cfg = &project.Config{}
+	r.issues = map[string]beads.Issue{sl.PhaseID: {ID: sl.PhaseID, Title: "candidate"}}
 	r.opts.ProjectID = "demo"
 
 	capH := &capturingHandler{}
@@ -253,11 +254,16 @@ func TestFinishCandidateCapabilityBlockWakesWithoutAttemptOrModelChange(t *testi
 	if sl.Status != ledger.SlotBlocked || sl.Attempts != beforeAttempts || sl.Model != "sonnet" {
 		t.Fatalf("slot = %+v", sl)
 	}
-	if !r.capabilityBlocked || r.capabilityBlockBead != sl.PhaseID {
-		t.Fatalf("handoff state = blocked:%v bead:%q", r.capabilityBlocked, r.capabilityBlockBead)
-	}
 	if !fakeBlocked(source, sl.PhaseID) {
 		t.Fatalf("tracker was not reconciled to blocked: %+v", source.setStatus)
+	}
+	hold, ok, err := r.store.LoadCapabilityHold(sl.PhaseID)
+	if err != nil || !ok {
+		t.Fatalf("capability hold = %+v, %v, %v", hold, ok, err)
+	}
+	if hold.Capability != "beads-metadata" || len(hold.EvidenceHash) != 64 ||
+		hold.RetryLimit != 1 {
+		t.Fatalf("capability hold = %+v", hold)
 	}
 	var wakeEvent bool
 	for _, rec := range capH.recs {
@@ -271,9 +277,8 @@ func TestFinishCandidateCapabilityBlockWakesWithoutAttemptOrModelChange(t *testi
 	if !wakeEvent {
 		t.Fatalf("missing ERROR capability wake event: %+v", capH.recs)
 	}
-	outcome, err := r.capabilityHandoff()
-	if err != nil || outcome.Code != ExitFatal || !strings.Contains(outcome.Reason, sl.PhaseID) {
-		t.Fatalf("handoff outcome=%+v err=%v", outcome, err)
+	if r.activeCount() != 0 {
+		t.Fatalf("blocked slot remained active: %+v", r.activeIDs())
 	}
 }
 

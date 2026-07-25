@@ -250,10 +250,13 @@ koryph phase block --capability beads-metadata \
 
 Capability blocks are not implementation failures. Koryph preserves the
 branch/worktree, marks the bead visibly blocked, emits the ERROR-level
-`engine.slot.capability_blocked` event, and exits the current engine boundary
-so an outer watcher wakes. It does **not** consume another implementation
-attempt, re-dispatch a coding agent, or promote the task to a frontier model.
-Transient runtime-canary failures use a separate bounded orchestrator retry.
+`engine.slot.capability_blocked` event, and releases only that slot. Unrelated
+slots continue and the run finishes normally. A project-level capability hold
+survives later runs: changing only the bead status or update timestamp cannot
+dispatch another backend. A changed candidate/base, runtime/config/build
+fingerprint, passing named probe, or explicit operator nudge admits one bounded
+retry. The hold stores digests only, never raw configuration, probe output, or
+operator text. It does **not** promote the task to a frontier model.
 
 ### Learned model labels (adaptive escalation)
 
@@ -732,7 +735,9 @@ Exit 0 is also success but indicates the run stopped for another reason (quota p
 ## Nudge, stop, and tail
 
 **nudge** — append an operator message to a running agent's `INBOX.md`. The agent polls
-the inbox between steps and adjusts course:
+the inbox between steps and adjusts course. For a capability-blocked bead, the same
+command records a durable Beads note, arms its one evidence-gated retry, and reopens it;
+no dead `INBOX.md` is written:
 
 ```sh
 koryph nudge --project myproject beads-042 "prefer the interface approach from issue 38"

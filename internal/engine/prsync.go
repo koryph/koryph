@@ -77,6 +77,7 @@ func SyncPROpened(ctx context.Context, rec *registry.Record, host PRHost, out io
 				s.Note = "PR merged externally: " + meta.URL
 			})
 			_ = adapter.Close(ctx, id, "PR merged: "+meta.URL)
+			_ = store.ClearCapabilityHold(id)
 			clearPRState(rec, meta.Number)
 			oc.Action = "merged"
 		case "CLOSED":

@@ -25,6 +25,7 @@ type CapabilityHold struct {
 	Capability    string `json:"capability"`
 	EvidenceHash  string `json:"evidence_hash"`
 	ProbeHash     string `json:"probe_hash,omitempty"`
+	ProbePassed   bool   `json:"probe_passed,omitempty"`
 	OperatorHash  string `json:"operator_hash,omitempty"`
 	RetryCount    int    `json:"retry_count,omitempty"`
 	RetryLimit    int    `json:"retry_limit"`
@@ -105,6 +106,7 @@ func (s *Store) SetCapabilityHold(hold CapabilityHold) error {
 		hold.RetryCount = old.RetryCount
 		hold.OperatorHash = old.OperatorHash
 		hold.ProbeHash = old.ProbeHash
+		hold.ProbePassed = old.ProbePassed
 		hold.LastRetryAt = old.LastRetryAt
 		hold.LastRetryHash = old.LastRetryHash
 	}
@@ -172,6 +174,7 @@ func (s *Store) RecordCapabilityProbe(beadID, name, result string, passed bool) 
 		verdict = "passed"
 	}
 	hold.ProbeHash = capabilityDigest("probe", strings.TrimSpace(name), verdict, result)
+	hold.ProbePassed = passed
 	state.Holds[beadID] = hold
 	return s.saveCapabilityHolds(state)
 }

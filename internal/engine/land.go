@@ -105,6 +105,7 @@ func Land(ctx context.Context, rec *registry.Record, cfg *project.Config, o Land
 			s.MergedAt = time.Now().UTC().Format(time.RFC3339)
 		})
 	}
+	_ = store.ClearCapabilityHold(o.Bead)
 	adapter := beads.New(rec.Root)
 	if v := os.Getenv(envBDBin); v != "" {
 		adapter.Bin = v

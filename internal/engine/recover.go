@@ -341,6 +341,9 @@ func (r *runner) issueFor(ctx context.Context, sl *ledger.Slot) beads.Issue {
 		return iss
 	}
 	if iss, err := r.adapter.Show(ctx, sl.PhaseID); err == nil && iss.ID != "" {
+		if r.issues == nil {
+			r.issues = map[string]beads.Issue{}
+		}
 		r.issues[sl.PhaseID] = iss
 		return iss
 	}

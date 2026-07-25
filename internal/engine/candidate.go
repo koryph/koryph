@@ -179,12 +179,21 @@ func (r *runner) parkCapabilityBlock(ctx context.Context, sl *ledger.Slot, capab
 		s.Status = ledger.SlotBlocked
 		s.Note = note
 	})
+	issue := r.issueFor(ctx, sl)
+	hold, _, _ := r.store.LoadCapabilityHold(sl.PhaseID)
+	evidence := r.capabilityEvidenceHash(ctx, issue, hold)
+	if err := r.store.SetCapabilityHold(ledger.CapabilityHold{
+		BeadID:       sl.PhaseID,
+		Capability:   capability,
+		EvidenceHash: evidence,
+		RetryLimit:   capabilityRetryLimit,
+	}); err != nil {
+		r.progress("bead %s: warning: capability hold persistence failed: %v", sl.PhaseID, err)
+	}
 	r.checkpointSlot(sl, "capability-blocked")
 	r.releaseGlobalSlot(sl.PhaseID)
-	r.capabilityBlocked = true
-	r.capabilityBlockBead = sl.PhaseID
 	r.progress("ERROR: bead %s capability-blocked (%s)", sl.PhaseID, note)
-	logCapabilityBlocked(r.run.RunID, r.opts.ProjectID, sl.PhaseID, capability, detail, sl.Model, sl.Attempts)
+	logCapabilityBlocked(r.run.RunID, r.opts.ProjectID, sl.PhaseID, capability, detail, evidence, sl.Model, sl.Attempts)
 	r.reconcileBlockedBead(ctx, sl, "capability "+capability+": "+detail)
 	if r.reg != nil {
 		_ = r.reg.Audit(registry.Event{
@@ -196,6 +205,7 @@ func (r *runner) parkCapabilityBlock(ctx context.Context, sl *ledger.Slot, capab
 				"capability": capability,
 				"detail":     detail,
 				"branch":     sl.Branch,
+				"evidence":   evidence,
 			},
 		})
 	}

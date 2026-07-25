@@ -146,6 +146,10 @@ type runner struct {
 	// resize` of THIS run (SetAt changed) from one inherited across runs (koryph-bzf).
 	startupResizeSetAt string
 	issues             map[string]beads.Issue
+	// capabilityRetryEvidence holds changed, non-secret evidence digests for
+	// held beads admitted by the frontier. dispatchBead consumes the digest
+	// transactionally immediately before launching a backend.
+	capabilityRetryEvidence map[string]string
 
 	// memProbe reads current system memory (total + available) for the memory
 	// admission gate (koryph-930). nil means "use the real platform probe"
@@ -238,12 +242,6 @@ type runner struct {
 	// exactly one sanitized result on its buffered channel.
 	phaseCanaries    map[string]<-chan phaseCanaryCompletion
 	runtimeCanaryRun func(context.Context, runtimecanary.Options) runtimecanary.Result
-
-	// capabilityBlocked requests an immediate engine-boundary handoff after a
-	// structured host-capability block. It never interrupts another worker;
-	// their checkpoints remain resumable by the outer recovery loop.
-	capabilityBlocked   bool
-	capabilityBlockBead string
 
 	// lastResSampleAt throttles resource sampling to at most once per poll
 	// interval, decoupling it from pollPass frequency (which also fires on every
@@ -704,22 +702,6 @@ func (r *runner) interrupted() (Outcome, error) {
 	_ = r.store.SaveRun(r.run)
 	r.progress("interrupted: run %s left running for --resume", r.run.RunID)
 	return r.outcome(ExitOK, "interrupted", false), nil
-}
-
-// capabilityHandoff leaves unrelated live workers resumable and exits
-// non-zero so the zero-token outer watcher wakes immediately. Unlike an agent
-// retry, this does not increment any slot attempt or select another model.
-func (r *runner) capabilityHandoff() (Outcome, error) {
-	for _, id := range r.activePhaseIDs() {
-		r.checkpointSlot(r.run.Slots[id], "capability-block-handoff")
-	}
-	_ = r.store.SaveRun(r.run)
-	r.dropDemand()
-	reason := "capability-blocked"
-	if r.capabilityBlockBead != "" {
-		reason += ":" + r.capabilityBlockBead
-	}
-	return r.outcome(ExitFatal, reason, false), nil
 }
 
 // activeIDs returns the set of non-terminal slot phase ids.

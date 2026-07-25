@@ -156,9 +156,6 @@ func (r *runner) pollUntilIdle(ctx context.Context) error {
 
 	tick := 0
 	for {
-		if r.capabilityBlocked {
-			return nil
-		}
 		// A wave can sit inside this loop for many minutes while its slots run —
 		// waveLoop's own syncObsConfig() call only fires once, BEFORE this loop is
 		// entered, so without a call here a mid-wave `koryph obs level` change
@@ -1717,6 +1714,7 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 			s.MergedAt = now
 		})
 		r.checkpointSlot(sl, "merged")
+		_ = r.store.ClearCapabilityHold(sl.PhaseID)
 		_ = r.adapter.Close(ctx, sl.PhaseID, "merged: "+res.MergedSHA)
 		r.writeBackEscalatedMerge(ctx, sl.PhaseID)
 		r.noteEpicCandidate(ctx, sl.PhaseID)
@@ -1981,6 +1979,7 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 			s.Note = fmt.Sprintf("PR #%d opened: %s", res.PRNumber, res.PRURL)
 		})
 		r.checkpointSlot(sl, "pr-opened")
+		_ = r.store.ClearCapabilityHold(sl.PhaseID)
 		_ = r.reg.Audit(registry.Event{
 			Kind:      "pr-open",
 			ProjectID: r.opts.ProjectID,

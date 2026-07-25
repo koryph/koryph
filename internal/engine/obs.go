@@ -193,13 +193,14 @@ func logPhaseRequest(runID, project, beadID, requestID, operation, state, detail
 	log.Info("engine.phase.request", attrs...)
 }
 
-func logCapabilityBlocked(runID, project, beadID, capability, detail, model string, attempt int) {
+func logCapabilityBlocked(runID, project, beadID, capability, detail, evidenceHash, model string, attempt int) {
 	log.Error("engine.slot.capability_blocked",
 		slog.String(obs.KeyRunID, runID),
 		slog.String(obs.KeyProject, project),
 		slog.String(obs.KeyBeadID, beadID),
 		slog.String("capability", capability),
 		slog.String("detail", obs.RedactValue(detail)),
+		slog.String("evidence_hash", evidenceHash),
 		slog.String(obs.KeyModel, model),
 		slog.Int(obs.KeyAttempt, attempt),
 	)

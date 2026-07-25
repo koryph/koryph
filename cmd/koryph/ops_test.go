@@ -460,6 +460,40 @@ func TestCmdNudgeDispatchedWritesInboxAndComments(t *testing.T) {
 	}
 }
 
+func TestCmdNudgeCapabilityBlockedArmsDurableRetry(t *testing.T) {
+	isolate(t)
+	log := installFakeBD(t)
+	rec := registerMinimalProject(t, "proj-nudge-capability")
+	seedTestRun(t, rec, []*ledger.Slot{{PhaseID: "held-bead", Status: ledger.SlotBlocked}})
+	capabilityStore := ledger.NewStore(rec.Root)
+	if err := capabilityStore.SetCapabilityHold(ledger.CapabilityHold{
+		BeadID: "held-bead", Capability: "network", EvidenceHash: "old", RetryLimit: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errb := runCmd("nudge", "--project", rec.ProjectID, "held-bead", "network repaired")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, errb)
+	}
+	if !strings.Contains(out, "capability retry armed") {
+		t.Fatalf("stdout = %q", out)
+	}
+	args := readArgvLog(t, log)
+	if len(args) != 2 ||
+		!strings.HasPrefix(args[0], "update held-bead --append-notes") ||
+		args[1] != "update held-bead --status open" {
+		t.Fatalf("bd argv log = %+v", args)
+	}
+	hold, ok, err := capabilityStore.LoadCapabilityHold("held-bead")
+	if err != nil || !ok || len(hold.OperatorHash) != 64 {
+		t.Fatalf("hold = %+v, %v, %v", hold, ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.KoryphRoot(rec.Root), "held-bead", "INBOX.md")); !os.IsNotExist(err) {
+		t.Fatalf("terminal held bead received a dead INBOX: %v", err)
+	}
+}
+
 // TestCmdNudgePreDispatchNoBDErrorsLoudly asserts the loud-error edge case:
 // when the bead is not dispatched yet AND bd is unavailable, the nudge must
 // not silently no-op — the operator has no other reliable channel, so it

@@ -27,7 +27,7 @@ koryph — central multi-project orchestrator for autonomous AI coding agents.
 | [`koryph validate`](#koryph-validate) | run the pre-dispatch gate |
 | [`koryph run`](#koryph-run) | execute one engine run over a project |
 | [`koryph intake`](#koryph-intake) | poll external issue trackers into planning beads |
-| [`koryph nudge`](#koryph-nudge) | append an operator note to a phase INBOX |
+| [`koryph nudge`](#koryph-nudge) | record an operator note for a running or capability-blocked phase |
 | [`koryph stop`](#koryph-stop) | stop an agent (or every agent with --all) |
 | [`koryph drain`](#koryph-drain) | gracefully wind down a run: finish active slots, dispatch nothing new |
 | [`koryph resize`](#koryph-resize) | live width override for a running loop |
@@ -289,7 +289,7 @@ poll external issue trackers into planning beads
 
 ## `koryph nudge` { #koryph-nudge }
 
-append an operator note to a phase INBOX
+record an operator note for a running or capability-blocked phase
 
 **See also:** [Running waves](../user-guide/running-waves)
 

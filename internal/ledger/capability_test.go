@@ -57,6 +57,9 @@ func TestCapabilityHoldStoresOnlyDigestsForOperatorAndProbe(t *testing.T) {
 	if err != nil || !ok || len(hold.OperatorHash) != 64 || len(hold.ProbeHash) != 64 {
 		t.Fatalf("hold = %+v, %v, %v", hold, ok, err)
 	}
+	if !hold.ProbePassed {
+		t.Fatal("passing probe was not recorded")
+	}
 }
 
 func TestSetCapabilityHoldPreservesSpentBudget(t *testing.T) {

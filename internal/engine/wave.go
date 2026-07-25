@@ -351,6 +351,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		if r.opts.Only != "" {
 			issues = onlyBead(issues, r.opts.Only)
 		}
+		issues = r.filterCapabilityHolds(ctx, issues)
 		// Learned-model pass (koryph-qf6.6): stamp escalation-history
 		// recommendations onto the frontier BEFORE the wave builds, so this
 		// very wave routes on them.
@@ -578,9 +579,6 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		// Poll this wave's slots (and any adopted ones) to a terminal state.
 		if err := r.pollUntilIdle(ctx); err != nil {
 			return r.interrupted()
-		}
-		if r.capabilityBlocked {
-			return r.capabilityHandoff()
 		}
 
 		if r.opts.Once {
@@ -1227,6 +1225,10 @@ func mergeStringMaps(base, overlay map[string]string) map[string]string {
 // Failures block the slot and never fall through.
 func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	beadID := q.issue.ID
+	if !r.consumeCapabilityRetry(beadID) {
+		r.blockSlot(beadID, q, "capability retry denied: unchanged evidence or retry budget exhausted")
+		return
+	}
 
 	// Holdout-arm assignment (koryph-3l1.3, design §3 L6): computed once,
 	// here, from beadID alone — BEFORE anything else in this function reads

@@ -135,10 +135,11 @@ koryph run --project <id> --dry-run
 
 ## MANAGE — in-flight operations
 
-### Nudge a running agent
+### Nudge a running or capability-blocked agent
 
 Append an operator note to the agent's `INBOX.md`; the agent polls it between
-steps and adjusts course:
+steps and adjusts course. For a capability-blocked bead, this instead persists
+the note in Beads and arms its single evidence-gated retry:
 
 ```sh
 koryph nudge --project <id> <phase-id> "prefer the interface approach from issue 38"
