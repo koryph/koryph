@@ -176,37 +176,60 @@ finalization checks, but it does not repeat implementation.
 
 ## Implementation units
 
-1. **Slot-local capability state and retry evidence**
-   - Files: `internal/engine/`, engine telemetry and tests.
+1. **Slot-local capability state**
+   - Files: engine candidate, poll, run, rolling, and wave control.
    - Dependencies: none.
-   - Acceptance: one capability-blocked slot parks without ending the run;
-     unrelated work completes; unchanged fingerprints do not retry; an
-     observed capability change makes the bead eligible within budget.
+   - Acceptance: one capability-blocked slot parks without ending the run and
+     unrelated work completes.
 
-2. **Sandbox capability and reusable cache envelope**
+2. **Durable capability evidence hold**
+   - Files: capability ledger, engine frontier filter, operator nudge, tests.
+   - Dependencies: none.
+   - Acceptance: unchanged fingerprints consume zero backend dispatches; an
+     observed branch/note/config/build/probe change makes the bead eligible
+     once within budget; concurrent writers lose no update.
+
+3. **Reusable module cache envelope**
    - Files: Codex runtime sandbox/environment code and focused tests.
    - Dependencies: none.
    - Acceptance: dependency modules survive phase changes within one project;
      secrets, ambient caches, other repositories, and mutable workspace state
-     are not shared; a successful gate with Darwin warning text remains
-     successful; capability evidence changes only after a named probe result.
+     are not shared.
 
-3. **Planning cohesion and implementation effort**
-   - Files: plan audit, design/plan commands, architect/scorer/implementer
-     personas, asset projections, docs, and tests.
+4. **Terminal gate evidence**
+   - Files: prompt compiler and gate-wrapper regression tests.
+   - Dependencies: none.
+   - Acceptance: a successful gate that emits Darwin warning text remains
+     successful and workers wait for a terminal verdict before blocking.
+
+5. **Resource-loop test isolation**
+   - Files: focused rolling resource fixture.
+   - Dependencies: none.
+   - Acceptance: the fixture awaits merge and engine exit and leaks no detached
+     process across 20 repeated runs.
+
+6. **Planning unit quality gate**
+   - Files: unit-contract transport/audit, CLI, canonical planning/scoring
+     workflow assets, and focused tests.
    - Dependencies: none.
    - Acceptance: oversized and incoherent fixtures produce actionable strict
-     findings; coherent integration fixtures pass; standard implementation
-     defaults to medium effort.
+     findings and coherent integration fixtures pass.
 
-4. **Responsive completion and restart finalization**
+7. **Routine effort policy**
+   - Files: implementer/test personas, installed projections, engine policy
+     test.
+   - Dependencies: none.
+   - Acceptance: standard implementation/test work defaults to medium effort;
+     frontier quality roles remain unchanged.
+
+8. **Responsive completion and restart finalization**
    - Owner: existing `koryph-lv07.14`.
-   - Dependencies: unit 1 where shared engine state requires it.
+   - Dependencies: unit 1.
    - Acceptance: completed slots are reaped and other slots continue while
      review and merge gates execute, without weakening merge ordering; dead
      completion-ready slots resume finalization with zero coding dispatches.
 
-5. **Release and controlled restart**
+9. **Release and controlled restart**
    - Actions: full quiet gate, signed commits, build, install, version check,
      operational watcher update, one controlled canary, then autonomous
      restart.
