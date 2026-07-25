@@ -126,6 +126,27 @@ func TestInstallForRuntimeStubRendersTierPins(t *testing.T) {
 	}
 }
 
+func TestRoutinePersonasUseMediumEffortAndFrontierRolesStayXHigh(t *testing.T) {
+	for _, name := range []string{"koryph-implementer.md", "koryph-test-engineer.md"} {
+		data, err := agents.FS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "tier: standard\neffort: medium") {
+			t.Errorf("%s does not carry the routine standard/medium policy:\n%s", name, data)
+		}
+	}
+	for _, name := range []string{"koryph-architect.md", "koryph-plan-scorer.md"} {
+		data, err := agents.FS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "tier: frontier\neffort: xhigh") {
+			t.Errorf("%s lost the mandatory frontier/xhigh policy:\n%s", name, data)
+		}
+	}
+}
+
 // TestInstallForRuntimeSparseModelMapLeavesPersonaVerbatim proves a persona
 // whose `tier:` the target runtime's ModelMap does not cover is installed
 // UNCHANGED (still carrying claude's legacy model: pin) rather than having

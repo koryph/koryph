@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -106,6 +108,35 @@ func TestRuntimeEquivalentMapsNormalSourceModelToTargetRuntime(t *testing.T) {
 	}
 	if res.Model != "gpt-5.6-terra" || res.Effort != "xhigh" || !strings.Contains(res.Rationale, "runtime equivalent codex") {
 		t.Errorf("resolution = %+v, want Codex equivalent provenance", res)
+	}
+}
+
+func TestOrdinaryCodexImplementationUsesStandardMediumPolicy(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "koryph-implementer.md"), []byte(
+		"---\nmodel: sonnet\ntier: standard\neffort: medium\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{
+		cfg: &project.Config{
+			DefaultRuntime: "codex",
+			Runtimes:       map[string]project.RuntimeConfig{"codex": {Enabled: true}},
+		},
+		rec: &registry.Record{
+			Root: root, AllowedModels: []string{"haiku", "sonnet", "opus"},
+		},
+	}
+	res, effort, err := r.resolveModel(dispatchReq{
+		issue: beads.Issue{ID: "routine", IssueType: "task", Labels: []string{"fp:routine"}},
+	}, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Model != "gpt-5.6-terra" || res.Persona != "koryph-implementer" || effort != "medium" {
+		t.Fatalf("ordinary Codex implementation = (%+v, effort %q), want Terra/implementer/medium", res, effort)
 	}
 }
 

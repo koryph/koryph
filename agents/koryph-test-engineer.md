@@ -3,7 +3,7 @@ name: koryph-test-engineer
 description: Test engineer — authors and runs unit, integration, and e2e tests; triages flakes; reports coverage deltas
 model: sonnet
 tier: standard
-effort: high
+effort: medium
 allowed-tools:
   - Read
   - Glob
