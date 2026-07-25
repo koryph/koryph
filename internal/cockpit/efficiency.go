@@ -337,7 +337,7 @@ func topDeferralTokens(slots []*ledger.Slot) []DeferralToken {
 			continue
 		}
 		switch sl.Status {
-		case ledger.SlotRunning, ledger.SlotDispatching, ledger.SlotReview, ledger.SlotMergePending:
+		case ledger.SlotRunning, ledger.SlotDispatching, ledger.SlotFinalizing, ledger.SlotReview, ledger.SlotMerging, ledger.SlotMergePending:
 			// Slot is consuming footprint.
 		default:
 			continue
@@ -626,7 +626,7 @@ func sizeOrder(size string) int {
 }
 
 // activeSlots returns the slots that are still consuming a footprint
-// (running, dispatching, review, merge-pending).
+// (running, dispatching, finalizing, review, merging, merge-pending).
 func activeSlots(run *ledger.Run) []*ledger.Slot {
 	if run == nil {
 		return nil
@@ -637,7 +637,7 @@ func activeSlots(run *ledger.Run) []*ledger.Slot {
 			continue
 		}
 		switch sl.Status {
-		case ledger.SlotRunning, ledger.SlotDispatching, ledger.SlotReview, ledger.SlotMergePending:
+		case ledger.SlotRunning, ledger.SlotDispatching, ledger.SlotFinalizing, ledger.SlotReview, ledger.SlotMerging, ledger.SlotMergePending:
 			out = append(out, sl)
 		}
 	}
