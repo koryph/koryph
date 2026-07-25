@@ -237,10 +237,10 @@ func auditUnitContracts(active, allChildren []beads.Issue, deps map[string][]str
 }
 
 func auditOneUnitContract(child beads.Issue, contract UnitContract, add func(string, string, string, string, string)) {
-	if contract.Kind != "implementation" && contract.Kind != "integration" {
+	if !validUnitKind(contract.Kind) {
 		add("error", "unit-kind-invalid", child.ID,
-			fmt.Sprintf("unit kind %q is not implementation or integration", contract.Kind),
-			"use kind=implementation for one subsystem or kind=integration for a justified cross-subsystem unit")
+			fmt.Sprintf("unit kind %q is not a koryph.unit/v1 kind", contract.Kind),
+			"use foundation, implementation, integration, docs, test, or operator")
 	}
 	if len(contract.Provides) != 1 {
 		add("error", "unit-outcome-count", child.ID,
@@ -276,7 +276,8 @@ func auditOneUnitContract(child beads.Issue, contract UnitContract, add func(str
 			"remove the duplicate owned path")
 	}
 
-	integrationRationale := contract.Kind == "integration" && strings.TrimSpace(contract.CohesionReason) != ""
+	breadthRationale := (contract.Kind == "integration" || contract.Kind == "operator") &&
+		strings.TrimSpace(contract.CohesionReason) != ""
 	areaSet := map[string]bool{}
 	for _, label := range child.Labels {
 		if area, ok := strings.CutPrefix(label, "area:"); ok && area != "" {
@@ -293,20 +294,20 @@ func auditOneUnitContract(child beads.Issue, contract UnitContract, add func(str
 		hasProduction = true
 		groupSet[productionOwnershipGroup(owned)] = true
 	}
-	if !integrationRationale && len(areaSet) > 2 {
+	if !breadthRationale && len(areaSet) > 2 {
 		add("error", "unit-area-breadth", child.ID,
 			fmt.Sprintf("ordinary unit spans %d write areas", len(areaSet)),
-			"split by outcome/area or use kind=integration with a concrete cohesion_reason")
+			"split by outcome/area; only true integration/operator units may use a concrete cohesion_reason exception")
 	}
-	if !integrationRationale && (len(groupSet) > 4 || len(contract.Owns) > 8) {
+	if !breadthRationale && (len(groupSet) > 4 || len(contract.Owns) > 8) {
 		add("error", "unit-package-breadth", child.ID,
 			fmt.Sprintf("ordinary unit owns %d subsystem groups across %d path prefixes", len(groupSet), len(contract.Owns)),
 			"split along observable provider seams or justify a true integration unit")
 	}
-	if hasDocs && hasProduction && !integrationRationale {
+	if hasDocs && hasProduction && !breadthRationale {
 		add("error", "unit-docs-production-mixed", child.ID,
 			"unit mixes documentation and production ownership without an integration rationale",
-			"split docs from production or use kind=integration with a concrete cohesion_reason")
+			"split docs from production; only true integration/operator units may use a concrete cohesion_reason exception")
 	}
 
 	equivLabels, modelLabels, effortLabels := []string{}, []string{}, []string{}
@@ -351,6 +352,15 @@ func auditOneUnitContract(child beads.Issue, contract UnitContract, add func(str
 
 func portableTier(value string) bool {
 	return value == "frontier" || value == "standard" || value == "light"
+}
+
+func validUnitKind(value string) bool {
+	switch value {
+	case "foundation", "implementation", "integration", "docs", "test", "operator":
+		return true
+	default:
+		return false
+	}
 }
 
 func portableEffort(value string) bool {

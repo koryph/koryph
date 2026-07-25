@@ -447,6 +447,58 @@ func TestAuditEpic_JustifiedIntegrationBreadthPasses(t *testing.T) {
 	}
 }
 
+func TestAuditEpic_TestAndOperatorUnitKindsPass(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	child := func(id, design string, labels ...string) beads.Issue {
+		return beads.Issue{
+			ID: id, Title: id, IssueType: "task", Status: "open",
+			Description:        "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+			Design:             design,
+			AcceptanceCriteria: "Done.",
+			Labels:             labels,
+		}
+	}
+	testUnit := child("release-test",
+		"koryph.unit/v1 kind=test provides=release-canary owns=internal/release/canary_test.go consumes=",
+		"fp:release-test")
+	operatorUnit := child("release-operator",
+		"koryph.unit/v1 kind=operator provides=installed-release "+
+			"owns=cmd/koryph/install.go,internal/release,commands/koryph-build.md,docs/user-guide/install.md,.github/workflows/release.yml "+
+			"consumes=release-canary cohesion_reason=release installation and its operator evidence form one atomic handoff",
+		"area:cli", "area:release", "area:docs", "fp:release-operator")
+	r := plan.AuditEpic(epic, []beads.Issue{testUnit, operatorUnit},
+		map[string][]string{"release-operator": {"release-test"}},
+		cfg(map[string][]string{
+			"cli": {"go:cli"}, "release": {"go:release"}, "docs": {"docs"},
+		}), t.TempDir())
+	for _, finding := range r.Quality {
+		if strings.HasPrefix(finding.Code, "unit-") {
+			t.Fatalf("valid test/operator release units rejected: %#v", r.Quality)
+		}
+	}
+}
+
+func TestAuditEpic_OrdinaryKindsCannotClaimBreadthException(t *testing.T) {
+	epic := makeIssue("epic-1", "epic")
+	epic.AcceptanceCriteria = "Complete."
+	child := beads.Issue{
+		ID: "wide-test", Title: "Wide test", IssueType: "task", Status: "open",
+		Description: "Incident run 20260724-120000. Steps to Reproduce: run fixture.",
+		Design: "koryph.unit/v1 kind=test provides=wide-suite " +
+			"owns=internal/a,internal/b,internal/c,internal/d,internal/e,docs/test.md " +
+			"consumes= cohesion_reason=claiming a rationale must not make a test unit integration-wide",
+		AcceptanceCriteria: "Done.",
+		Labels:             []string{"area:a", "area:b", "area:c", "fp:wide-test"},
+	}
+	r := plan.AuditEpic(epic, []beads.Issue{child}, nil,
+		cfg(map[string][]string{"a": {"a"}, "b": {"b"}, "c": {"c"}}), t.TempDir())
+	codes := qualityCodes(r)
+	if !codes["unit-area-breadth"] || !codes["unit-package-breadth"] || !codes["unit-docs-production-mixed"] {
+		t.Fatalf("ordinary test unit escaped breadth checks: %#v", r.Quality)
+	}
+}
+
 func TestAuditEpic_RoutingVocabularyAndRationale(t *testing.T) {
 	epic := makeIssue("epic-1", "epic")
 	epic.AcceptanceCriteria = "Complete."
