@@ -500,6 +500,32 @@ func TestContainerPublicationGateDetectsUngatedPublish(t *testing.T) {
 	}
 }
 
+func TestContainerPublicationGateDetectsBypassCondition(t *testing.T) {
+	root := fabricateProject(t)
+	rc := containerReleaseConfig()
+	addReleaseBlock(t, root, rc)
+	expected, err := release.RenderContainerWorkflow(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bypassed := strings.Replace(
+		string(expected),
+		"needs.detect-release.outputs.release == 'true'",
+		"needs.detect-release.outputs.release == 'true' || github.ref == 'refs/heads/main'",
+		1,
+	)
+	writeContainerWorkflow(t, root, []byte(bypassed))
+
+	r, err := RunProject(projectOptsWithRelease(root, "owner/repo", nil, nil, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findCheck(r, checkNameContainerGate)
+	if f.Level != LevelWarn {
+		t.Errorf("container-publication-gate: got %s %q, want warn", f.Level, f.Message)
+	}
+}
+
 func TestContainerPermissionScopeDetectsWorkflowWritePermission(t *testing.T) {
 	root := fabricateProject(t)
 	rc := containerReleaseConfig()

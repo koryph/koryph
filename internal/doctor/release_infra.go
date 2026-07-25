@@ -353,6 +353,8 @@ type containerWorkflowJob struct {
 	Permissions map[string]string `yaml:"permissions"`
 }
 
+const containerReleaseGateCondition = "${{ needs.detect-release.outputs.release == 'true' }}"
+
 func readContainerWorkflow(repoRoot string, cfg *project.Config, check string) ([]byte, *Finding) {
 	if cfg == nil || cfg.Release == nil || cfg.Release.Container == nil {
 		return nil, &Finding{Check: check, Level: LevelOK, Message: "container release not configured; check skipped"}
@@ -409,8 +411,7 @@ func checkContainerPublicationGate(repoRoot string, cfg *project.Config) []Findi
 	}
 	publish, ok := workflow.Jobs["publish"]
 	if !ok || !needsJob(publish.Needs, "detect-release") ||
-		!strings.Contains(publish.If, "needs.detect-release.outputs.release") ||
-		!strings.Contains(publish.If, "true") {
+		strings.TrimSpace(publish.If) != containerReleaseGateCondition {
 		return []Finding{{
 			Check:   checkNameContainerGate,
 			Level:   LevelWarn,
