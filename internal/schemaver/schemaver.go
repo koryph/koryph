@@ -158,59 +158,62 @@ func Surfaces() []Surface {
 }
 
 // Migrate lifts raw, versioned JSON state to the version understood by this
-// binary. It changes only the returned bytes; callers decide whether and when
-// to persist them. Unknown surfaces, newer state, malformed input, and a
-// missing version step all return errors.
-func Migrate(s Surface, raw []byte) ([]byte, error) {
+// binary. changed reports whether one or more schema-version steps ran; callers
+// use it to keep read-only loads in memory and persist only an actual upgrade.
+// Unknown surfaces, newer state, malformed input, and a missing version step
+// all return errors.
+func Migrate(s Surface, raw []byte) ([]byte, bool, error) {
 	if _, ok := current[s]; !ok {
-		return nil, fmt.Errorf("schemaver: cannot migrate unknown surface %q", s)
+		return nil, false, fmt.Errorf("schemaver: cannot migrate unknown surface %q", s)
 	}
 
 	var state map[string]json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(&state); err != nil {
-		return nil, fmt.Errorf("schemaver: decode %s state: %w", s, err)
+		return nil, false, fmt.Errorf("schemaver: decode %s state: %w", s, err)
 	}
 	if state == nil {
-		return nil, fmt.Errorf("schemaver: %s state must be a JSON object", s)
+		return nil, false, fmt.Errorf("schemaver: %s state must be a JSON object", s)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, fmt.Errorf("schemaver: decode %s state: multiple JSON values", s)
+			return nil, false, fmt.Errorf("schemaver: decode %s state: multiple JSON values", s)
 		}
-		return nil, fmt.Errorf("schemaver: decode %s state: %w", s, err)
+		return nil, false, fmt.Errorf("schemaver: decode %s state: %w", s, err)
 	}
 
 	version, err := rawVersion(state["schema_version"])
 	if err != nil {
-		return nil, fmt.Errorf("schemaver: decode %s schema_version: %w", s, err)
+		return nil, false, fmt.Errorf("schemaver: decode %s schema_version: %w", s, err)
 	}
 	if err := CheckRead(s, version); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	steps := migrations[s]
+	changed := false
 	for version < Current(s) {
 		if version < 0 || version >= len(steps) || steps[version] == nil {
-			return nil, fmt.Errorf("schemaver: no migration for %s v%d to v%d", s, version, version+1)
+			return nil, false, fmt.Errorf("schemaver: no migration for %s v%d to v%d", s, version, version+1)
 		}
 		state, err = steps[version](state)
 		if err != nil {
-			return nil, fmt.Errorf("schemaver: migrate %s v%d to v%d: %w", s, version, version+1, err)
+			return nil, false, fmt.Errorf("schemaver: migrate %s v%d to v%d: %w", s, version, version+1, err)
 		}
 		if state == nil {
-			return nil, fmt.Errorf("schemaver: migrate %s v%d to v%d returned nil state", s, version, version+1)
+			return nil, false, fmt.Errorf("schemaver: migrate %s v%d to v%d returned nil state", s, version, version+1)
 		}
 		version++
 		state["schema_version"] = json.RawMessage(strconv.Itoa(version))
+		changed = true
 	}
 
 	result, err := json.Marshal(state)
 	if err != nil {
-		return nil, fmt.Errorf("schemaver: encode %s state: %w", s, err)
+		return nil, false, fmt.Errorf("schemaver: encode %s state: %w", s, err)
 	}
-	return result, nil
+	return result, changed, nil
 }
 
 func rawVersion(raw json.RawMessage) (int, error) {
@@ -296,6 +299,9 @@ func parseFingerprintHistory(history []byte) (map[int]string, error) {
 			return nil, fmt.Errorf("schemaver: fingerprint history line %d: invalid version %q", lineNo+1, fields[0])
 		}
 		if len(fields[1]) != sha256.Size*2 {
+			return nil, fmt.Errorf("schemaver: fingerprint history line %d: invalid sha256", lineNo+1)
+		}
+		if _, err := hex.DecodeString(fields[1]); err != nil {
 			return nil, fmt.Errorf("schemaver: fingerprint history line %d: invalid sha256", lineNo+1)
 		}
 		if _, duplicate := entries[version]; duplicate {

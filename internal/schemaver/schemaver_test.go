@@ -93,9 +93,12 @@ func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
 		t.Fatalf("RegisterMigration() = %v", err)
 	}
 
-	raw, err := Migrate(Registry, []byte(`{"old_name":"value","unknown":{"keep":true}}`))
+	raw, changed, err := Migrate(Registry, []byte(`{"old_name":"value","unknown":{"keep":true}}`))
 	if err != nil {
 		t.Fatalf("Migrate = %v", err)
+	}
+	if !changed {
+		t.Fatal("Migrate() changed = false, want true after v0-to-v1 step")
 	}
 	var got map[string]any
 	if err := json.Unmarshal(raw, &got); err != nil {
@@ -108,9 +111,12 @@ func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
 		t.Errorf("unknown field was not preserved: %#v", got["unknown"])
 	}
 
-	again, err := Migrate(Registry, raw)
+	again, changed, err := Migrate(Registry, raw)
 	if err != nil {
 		t.Fatalf("second Migrate = %v", err)
+	}
+	if changed {
+		t.Fatal("second Migrate() changed = true, want false for current state")
 	}
 	if string(again) != string(raw) {
 		t.Errorf("Migrate must be idempotent: first %s, second %s", raw, again)
@@ -139,10 +145,10 @@ func TestRegisterMigrationRejectsDuplicateAndUnknownSurface(t *testing.T) {
 }
 
 func TestMigrateRejectsUnknownSurfaceAndMissingStep(t *testing.T) {
-	if _, err := Migrate(Surface("unknown"), []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "unknown surface") {
+	if _, _, err := Migrate(Surface("unknown"), []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "unknown surface") {
 		t.Fatalf("Migrate(unknown) error = %v, want unknown-surface error", err)
 	}
-	if _, err := Migrate(Quota, []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "no migration") {
+	if _, _, err := Migrate(Quota, []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "no migration") {
 		t.Fatalf("Migrate(missing step) error = %v, want missing-step error", err)
 	}
 }
@@ -154,9 +160,12 @@ func TestMigrateLiftsLegacyLedgerState(t *testing.T) {
 			[]byte(`{"schema_version":1,"legacy":"v1","unknown":{"keep":true}}`),
 		} {
 			t.Run(string(surface)+"/"+string(raw), func(t *testing.T) {
-				migrated, err := Migrate(surface, raw)
+				migrated, changed, err := Migrate(surface, raw)
 				if err != nil {
 					t.Fatalf("Migrate(%s) = %v", surface, err)
+				}
+				if !changed {
+					t.Fatalf("Migrate(%s) changed = false, want true", surface)
 				}
 				var got map[string]any
 				if err := json.Unmarshal(migrated, &got); err != nil {
@@ -174,9 +183,12 @@ func TestMigrateLiftsLegacyLedgerState(t *testing.T) {
 }
 
 func TestMigrateLiftsProjectV1State(t *testing.T) {
-	migrated, err := Migrate(Project, []byte(`{"schema_version":1,"project_id":"demo"}`))
+	migrated, changed, err := Migrate(Project, []byte(`{"schema_version":1,"project_id":"demo"}`))
 	if err != nil {
 		t.Fatalf("Migrate(Project) = %v", err)
+	}
+	if !changed {
+		t.Fatal("Migrate(Project) changed = false, want true")
 	}
 	var got map[string]any
 	if err := json.Unmarshal(migrated, &got); err != nil {
@@ -188,10 +200,17 @@ func TestMigrateLiftsProjectV1State(t *testing.T) {
 }
 
 func TestMigrateRefusesNewerState(t *testing.T) {
-	_, err := Migrate(SigningVault, []byte(`{"schema_version":2}`))
+	_, _, err := Migrate(SigningVault, []byte(`{"schema_version":2}`))
 	var tooNew *TooNewError
 	if !errors.As(err, &tooNew) {
 		t.Fatalf("Migrate(newer) error = %v, want *TooNewError", err)
+	}
+}
+
+func TestVerifyFingerprintRejectsMalformedHash(t *testing.T) {
+	err := VerifyFingerprint(Registry, []byte("1 "+strings.Repeat("z", 64)), struct{}{})
+	if err == nil || !strings.Contains(err.Error(), "invalid sha256") {
+		t.Fatalf("VerifyFingerprint() error = %v, want invalid-sha256 error", err)
 	}
 }
 
