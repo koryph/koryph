@@ -60,8 +60,9 @@ func TestCurrentPanicsOnUnknownSurface(t *testing.T) {
 
 func TestSurfacesCoversAll(t *testing.T) {
 	want := map[Surface]bool{
-		Registry: true, Quota: true, SigningVault: true,
-		Project: true, LedgerRun: true, LedgerManifest: true,
+		Registry: true, Quota: true, Governor: true, SigningVault: true,
+		GlobalConfig: true, Project: true, LedgerRun: true, LedgerManifest: true,
+		AuditLog: true, Telemetry: true,
 	}
 	got := Surfaces()
 	if len(got) != len(want) {
@@ -76,11 +77,7 @@ func TestSurfacesCoversAll(t *testing.T) {
 
 func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
 	original, hadOriginal := migrations[Registry]
-	migrations[Registry] = []Migration{func(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
-		state["renamed"] = state["old_name"]
-		delete(state, "old_name")
-		return state, nil
-	}}
+	delete(migrations, Registry)
 	t.Cleanup(func() {
 		if hadOriginal {
 			migrations[Registry] = original
@@ -88,6 +85,13 @@ func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
 			delete(migrations, Registry)
 		}
 	})
+	if err := RegisterMigration(Registry, 0, func(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		state["renamed"] = state["old_name"]
+		delete(state, "old_name")
+		return state, nil
+	}); err != nil {
+		t.Fatalf("RegisterMigration() = %v", err)
+	}
 
 	raw, err := Migrate(Registry, []byte(`{"old_name":"value","unknown":{"keep":true}}`))
 	if err != nil {
@@ -110,6 +114,27 @@ func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
 	}
 	if string(again) != string(raw) {
 		t.Errorf("Migrate must be idempotent: first %s, second %s", raw, again)
+	}
+}
+
+func TestRegisterMigrationRejectsDuplicateAndUnknownSurface(t *testing.T) {
+	if err := RegisterMigration(Surface("unknown"), 0, noOpMigration); err == nil || !strings.Contains(err.Error(), "unknown surface") {
+		t.Fatalf("RegisterMigration(unknown) error = %v, want unknown-surface error", err)
+	}
+	original, hadOriginal := migrations[Quota]
+	delete(migrations, Quota)
+	t.Cleanup(func() {
+		if hadOriginal {
+			migrations[Quota] = original
+		} else {
+			delete(migrations, Quota)
+		}
+	})
+	if err := RegisterMigration(Quota, 0, noOpMigration); err != nil {
+		t.Fatalf("RegisterMigration() = %v", err)
+	}
+	if err := RegisterMigration(Quota, 0, noOpMigration); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("RegisterMigration(duplicate) error = %v, want duplicate refusal", err)
 	}
 }
 
@@ -167,5 +192,38 @@ func TestMigrateRefusesNewerState(t *testing.T) {
 	var tooNew *TooNewError
 	if !errors.As(err, &tooNew) {
 		t.Fatalf("Migrate(newer) error = %v, want *TooNewError", err)
+	}
+}
+
+func TestVerifyFingerprintRejectsShapeMismatchAtExistingVersion(t *testing.T) {
+	err := VerifyFingerprint(Registry, []byte("1 "+strings.Repeat("a", 64)), struct {
+		Name string `json:"name"`
+	}{})
+	if err == nil || !strings.Contains(err.Error(), "fingerprint mismatch") {
+		t.Fatalf("VerifyFingerprint() error = %v, want shape mismatch", err)
+	}
+}
+
+func TestAppendFingerprintAddsVersionBumpAndRefusesOverwrite(t *testing.T) {
+	original := current[Registry]
+	current[Registry] = original + 1
+	t.Cleanup(func() { current[Registry] = original })
+
+	history := []byte("# schema-version persisted-shape-sha256\n1 " + strings.Repeat("a", 64) + "\n")
+	type v2Record struct {
+		Name string `json:"name"`
+	}
+	appended, err := AppendFingerprint(Registry, history, v2Record{})
+	if err != nil {
+		t.Fatalf("AppendFingerprint() = %v", err)
+	}
+	if !strings.HasPrefix(string(appended), string(history)) {
+		t.Fatalf("AppendFingerprint() rewrote history:\n%s", appended)
+	}
+	if err := VerifyFingerprint(Registry, appended, v2Record{}); err != nil {
+		t.Fatalf("VerifyFingerprint(appended) = %v", err)
+	}
+	if _, err := AppendFingerprint(Registry, appended, v2Record{}); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("AppendFingerprint(existing version) error = %v, want overwrite refusal", err)
 	}
 }

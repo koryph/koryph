@@ -49,10 +49,14 @@ type Surface string
 const (
 	Registry       Surface = "registry"        // ~/.koryph/projects/<id>.json (registry.Record)
 	Quota          Surface = "quota"           // ~/.koryph/quota/<account>.json (quota.Config)
+	Governor       Surface = "governor"        // ~/.koryph/governor.json (govern.File)
 	SigningVault   Surface = "signing_vault"   // ~/.koryph/vault.json (signing.VaultConfig)
+	GlobalConfig   Surface = "global_config"   // ~/.koryph/config.json (signing.GlobalConfig)
 	Project        Surface = "project"         // <repo>/koryph.project.json (project.Config)
 	LedgerRun      Surface = "ledger_run"      // <run>/ledger.json (ledger.Run)
 	LedgerManifest Surface = "ledger_manifest" // <run>/<phase>/manifest.json (ledger.Manifest)
+	AuditLog       Surface = "audit_log"       // ~/.koryph/audit.jsonl (registry.Event)
+	Telemetry      Surface = "telemetry"       // ~/.koryph/telemetry/*.jsonl (obs.TelemetryRecord)
 )
 
 // current is the schema version this binary writes and fully understands for
@@ -67,10 +71,14 @@ const (
 var current = map[Surface]int{
 	Registry:       2,
 	Quota:          1,
+	Governor:       1,
 	SigningVault:   1,
+	GlobalConfig:   1,
 	Project:        2,
 	LedgerRun:      2,
 	LedgerManifest: 2,
+	AuditLog:       1,
+	Telemetry:      1,
 }
 
 // Migration transforms raw JSON from one schema version to the next. The map
@@ -94,6 +102,34 @@ var migrations = map[Surface][]Migration{
 	// Project v2 adds the optional release.container block. Existing v1 files
 	// remain valid; the no-op step makes that additive compatibility explicit.
 	Project: {nil, noOpMigration},
+}
+
+// RegisterMigration registers surface's vFrom-to-vFrom+1 migration. Owners
+// register their steps beside the persisted type they evolve; the runner then
+// applies them in version order. Registration refuses unknown surfaces,
+// out-of-range versions, and duplicate steps so a missing migration remains a
+// fail-closed error rather than an implicit no-op.
+func RegisterMigration(surface Surface, from int, step Migration) error {
+	currentVersion, ok := current[surface]
+	if !ok {
+		return fmt.Errorf("schemaver: cannot register migration for unknown surface %q", surface)
+	}
+	if from < 0 || from >= currentVersion {
+		return fmt.Errorf("schemaver: migration for %s must start before current v%d, got v%d", surface, currentVersion, from)
+	}
+	if step == nil {
+		return fmt.Errorf("schemaver: migration for %s v%d to v%d is nil", surface, from, from+1)
+	}
+	steps := migrations[surface]
+	if from < len(steps) && steps[from] != nil {
+		return fmt.Errorf("schemaver: migration already registered for %s v%d to v%d", surface, from, from+1)
+	}
+	if from >= len(steps) {
+		steps = append(steps, make([]Migration, from-len(steps)+1)...)
+	}
+	steps[from] = step
+	migrations[surface] = steps
+	return nil
 }
 
 func noOpMigration(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
@@ -191,89 +227,83 @@ func rawVersion(raw json.RawMessage) (int, error) {
 	return version, nil
 }
 
-// VerifyFingerprint compares each persisted surface type's schema fingerprint
-// with one shared golden file. The golden format is one line per surface:
+// VerifyFingerprint compares value's persisted shape with the entry for the
+// current version of surface. Each owning package keeps its own append-only
+// history; one history entry is never rewritten to make a changed shape pass.
+// The history format is one line per schema version:
 //
-//	<surface> <schema-version> <sha256>
-//
-// Call this from an external schemaver test package so persisted packages can
-// be reflected without creating an import cycle back into schemaver.
-func VerifyFingerprint(golden []byte, types map[Surface]any) error {
-	want, err := parseFingerprints(golden)
+//	<schema-version> <sha256>
+func VerifyFingerprint(surface Surface, history []byte, value any) error {
+	if _, ok := current[surface]; !ok {
+		return fmt.Errorf("schemaver: fingerprint for unknown surface %q", surface)
+	}
+	entries, err := parseFingerprintHistory(history)
 	if err != nil {
 		return err
 	}
-	if len(types) != len(current) {
-		return fmt.Errorf("schemaver: fingerprint types cover %d surfaces, want %d", len(types), len(current))
+	version := Current(surface)
+	want, ok := entries[version]
+	if !ok {
+		return fmt.Errorf("schemaver: fingerprint history for %s has no v%d entry; got %s", surface, version, fingerprint(reflect.TypeOf(value)))
 	}
-	surfaces := Surfaces()
-	sort.Slice(surfaces, func(i, j int) bool { return surfaces[i] < surfaces[j] })
-	var problems []string
-	for _, surface := range surfaces {
-		value, ok := types[surface]
-		if !ok {
-			problems = append(problems, fmt.Sprintf("type missing for %s", surface))
-			continue
-		}
-		got := fingerprint(reflect.TypeOf(value))
-		entry, ok := want[surface]
-		if !ok {
-			problems = append(problems, fmt.Sprintf("golden missing for %s; got %s %d %s", surface, surface, Current(surface), got))
-			continue
-		}
-		if entry.version != Current(surface) || entry.hash != got {
-			problems = append(problems, fmt.Sprintf("mismatch for %s: got %s %d %s, want %s %d %s", surface, surface, Current(surface), got, surface, entry.version, entry.hash))
-		}
-	}
-	for _, surface := range sortedFingerprintSurfaces(want) {
-		if _, ok := current[surface]; !ok {
-			problems = append(problems, fmt.Sprintf("golden has unknown surface %s", surface))
-		}
-	}
-	if len(problems) > 0 {
-		return fmt.Errorf("schemaver: fingerprint verification failed:\n%s", strings.Join(problems, "\n"))
+	got := fingerprint(reflect.TypeOf(value))
+	if want != got {
+		return fmt.Errorf("schemaver: fingerprint mismatch for %s v%d: got %s, want %s", surface, version, got, want)
 	}
 	return nil
 }
 
-type fingerprintEntry struct {
-	version int
-	hash    string
+// AppendFingerprint prepares a new append-only history entry for surface's
+// current version. It never replaces an existing (surface, version) entry,
+// including when the computed fingerprint is unchanged. Callers write the
+// returned bytes only after reviewing the intentional schema-version bump.
+func AppendFingerprint(surface Surface, history []byte, value any) ([]byte, error) {
+	if _, ok := current[surface]; !ok {
+		return nil, fmt.Errorf("schemaver: fingerprint for unknown surface %q", surface)
+	}
+	entries, err := parseFingerprintHistory(history)
+	if err != nil {
+		return nil, err
+	}
+	version := Current(surface)
+	if _, exists := entries[version]; exists {
+		return nil, fmt.Errorf("schemaver: fingerprint history already has %s v%d; refusing to overwrite it", surface, version)
+	}
+	for existing := range entries {
+		if existing > version {
+			return nil, fmt.Errorf("schemaver: fingerprint history for %s has newer v%d than current v%d", surface, existing, version)
+		}
+	}
+	trimmed := bytes.TrimSpace(history)
+	if len(trimmed) == 0 {
+		trimmed = []byte("# schema-version persisted-shape-sha256")
+	}
+	return append(append(trimmed, '\n'), fmt.Sprintf("%d %s\n", version, fingerprint(reflect.TypeOf(value)))...), nil
 }
 
-func parseFingerprints(golden []byte) (map[Surface]fingerprintEntry, error) {
-	entries := make(map[Surface]fingerprintEntry)
-	for lineNo, line := range strings.Split(strings.TrimSpace(string(golden)), "\n") {
+func parseFingerprintHistory(history []byte) (map[int]string, error) {
+	entries := make(map[int]string)
+	for lineNo, line := range strings.Split(strings.TrimSpace(string(history)), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			return nil, fmt.Errorf("schemaver: fingerprint golden line %d: want surface version sha256", lineNo+1)
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("schemaver: fingerprint history line %d: want version sha256", lineNo+1)
 		}
-		version, err := strconv.Atoi(fields[1])
+		version, err := strconv.Atoi(fields[0])
 		if err != nil || version < 0 {
-			return nil, fmt.Errorf("schemaver: fingerprint golden line %d: invalid version %q", lineNo+1, fields[1])
+			return nil, fmt.Errorf("schemaver: fingerprint history line %d: invalid version %q", lineNo+1, fields[0])
 		}
-		if len(fields[2]) != sha256.Size*2 {
-			return nil, fmt.Errorf("schemaver: fingerprint golden line %d: invalid sha256", lineNo+1)
+		if len(fields[1]) != sha256.Size*2 {
+			return nil, fmt.Errorf("schemaver: fingerprint history line %d: invalid sha256", lineNo+1)
 		}
-		surface := Surface(fields[0])
-		if _, duplicate := entries[surface]; duplicate {
-			return nil, fmt.Errorf("schemaver: fingerprint golden duplicates %s", surface)
+		if _, duplicate := entries[version]; duplicate {
+			return nil, fmt.Errorf("schemaver: fingerprint history duplicates v%d", version)
 		}
-		entries[surface] = fingerprintEntry{version: version, hash: fields[2]}
+		entries[version] = fields[1]
 	}
 	return entries, nil
-}
-
-func sortedFingerprintSurfaces(entries map[Surface]fingerprintEntry) []Surface {
-	surfaces := make([]Surface, 0, len(entries))
-	for surface := range entries {
-		surfaces = append(surfaces, surface)
-	}
-	sort.Slice(surfaces, func(i, j int) bool { return surfaces[i] < surfaces[j] })
-	return surfaces
 }
 
 func fingerprint(t reflect.Type) string {
