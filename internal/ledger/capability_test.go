@@ -6,6 +6,7 @@ package ledger
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -28,6 +29,31 @@ func TestCapabilityHoldPersistsAndBoundsChangedEvidence(t *testing.T) {
 	hold, ok, err := store.LoadCapabilityHold("bead-1")
 	if err != nil || !ok || hold.RetryCount != 1 || hold.EvidenceHash != "new" {
 		t.Fatalf("hold = %+v, %v, %v", hold, ok, err)
+	}
+}
+
+func TestCapabilityHoldConcurrentWritersDoNotLoseUpdates(t *testing.T) {
+	store := NewStore(t.TempDir())
+	var wg sync.WaitGroup
+	for _, id := range []string{"bead-a", "bead-b", "bead-c", "bead-d"} {
+		id := id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := store.SetCapabilityHold(CapabilityHold{
+				BeadID: id, Capability: "network", EvidenceHash: id, RetryLimit: 1,
+			}); err != nil {
+				t.Errorf("SetCapabilityHold(%s): %v", id, err)
+			}
+		}()
+	}
+	wg.Wait()
+	holds, err := store.ListCapabilityHolds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(holds) != 4 {
+		t.Fatalf("holds = %+v, want four concurrent updates", holds)
 	}
 }
 

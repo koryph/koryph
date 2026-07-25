@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/koryph/koryph/internal/fsx"
 )
 
 const capabilityHoldsFile = "capability-holds.json"
+const capabilityHoldsLockFile = "capability-holds.lock"
 
 // CapabilityHold is the durable, project-level dispatch hold created by a
 // structured capability block. It deliberately contains digests rather than
@@ -41,6 +43,24 @@ type capabilityHolds struct {
 
 func (s *Store) capabilityHoldsPath() string {
 	return filepath.Join(s.KoryphRoot, capabilityHoldsFile)
+}
+
+func (s *Store) lockCapabilityHolds() (func(), error) {
+	if err := os.MkdirAll(s.KoryphRoot, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(s.KoryphRoot, capabilityHoldsLockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func (s *Store) loadCapabilityHolds() (capabilityHolds, error) {
@@ -98,6 +118,11 @@ func (s *Store) ListCapabilityHolds() ([]CapabilityHold, error) {
 // SetCapabilityHold records a structured block without resetting a retry
 // budget already spent for the same bead.
 func (s *Store) SetCapabilityHold(hold CapabilityHold) error {
+	unlock, err := s.lockCapabilityHolds()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	state, err := s.loadCapabilityHolds()
 	if err != nil {
 		return err
@@ -124,6 +149,11 @@ func (s *Store) SetCapabilityHold(hold CapabilityHold) error {
 // bounded retry counter. It returns false when the evidence is unchanged or
 // the capability retry budget is exhausted.
 func (s *Store) ConsumeCapabilityRetry(beadID, evidenceHash string) (bool, error) {
+	unlock, err := s.lockCapabilityHolds()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	state, err := s.loadCapabilityHolds()
 	if err != nil {
 		return false, err
@@ -144,6 +174,11 @@ func (s *Store) ConsumeCapabilityRetry(beadID, evidenceHash string) (bool, error
 // RequestCapabilityRetry records an explicit operator request as a digest.
 // The caller may pass arbitrary text; no text is persisted.
 func (s *Store) RequestCapabilityRetry(beadID, text string) error {
+	unlock, err := s.lockCapabilityHolds()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	state, err := s.loadCapabilityHolds()
 	if err != nil {
 		return err
@@ -161,6 +196,11 @@ func (s *Store) RequestCapabilityRetry(beadID, text string) error {
 // caller should record a successful result after its deterministic health
 // check; changing the digest then becomes retry evidence.
 func (s *Store) RecordCapabilityProbe(beadID, name, result string, passed bool) error {
+	unlock, err := s.lockCapabilityHolds()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	state, err := s.loadCapabilityHolds()
 	if err != nil {
 		return err
@@ -182,6 +222,11 @@ func (s *Store) RecordCapabilityProbe(beadID, name, result string, passed bool) 
 // ClearCapabilityHold removes a hold after successful completion or an
 // explicit administrative repair.
 func (s *Store) ClearCapabilityHold(beadID string) error {
+	unlock, err := s.lockCapabilityHolds()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	state, err := s.loadCapabilityHolds()
 	if err != nil {
 		return err
