@@ -158,7 +158,14 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	// as of Codex 0.145. Keep it before the subcommand so a dispatched agent
 	// never falls back to an interactive approval prompt or exits on argument
 	// parsing before it sees the task.
-	args := []string{"--ask-for-approval", "never", "exec", "--json"}
+	// Codex normally runs tool commands through the user's login shell. Login
+	// startup files can replace the adapter-injected PATH and bypass the
+	// phase command shims even for a cooperative agent. Force the documented
+	// non-login mode so tool subprocesses retain Koryph's guarded PATH.
+	args := []string{
+		"--ask-for-approval", "never", "exec", "--json",
+		"-c", "allow_login_shell=false",
+	}
 	args = append(args, sandboxArgs(spec.SSHAuthSock, spec.RepoRoot, spec.PhaseDir)...)
 	args = append(args, "--dangerously-bypass-hook-trust", "--add-dir", spec.PhaseDir)
 	// A linked worktree's .git is a pointer file whose writable metadata lives

@@ -3,8 +3,8 @@
 
 # Autonomous loop reliability: simplify control, preserve safety, restore quality
 
-Status: approved by the operator on 2026-07-25; pre-file plan scoring in
-progress before Beads decomposition.
+Status: approved by the operator on 2026-07-25; decomposed into Beads and in
+implementation.
 
 Origin: a 36-hour Koryph self-hosting incident in which the autonomous loop
 produced useful, reviewed commits but failed the product objective: cost-effective,
@@ -457,8 +457,14 @@ supervises those phase process cohorts:
 - while trusted post-rebase validation is live, a matching worker gate reuses
   that validation owner rather than rejecting or disrupting it;
 - focused commands remain available;
-- process identity includes start time and process-group membership to avoid PID
-  reuse;
+- every broad owner passes one locked open-file description through the real
+  command and its descendants; the kernel therefore retains the signature
+  lease for the complete cohort lifetime even if the wrapper crashes or the
+  direct child exits, so duplicate liveness and crash recovery do not depend
+  on a sandbox-forbidden process-table probe;
+- trusted validation additionally binds kernel start time and process-group
+  membership to avoid PID reuse during exact-group teardown; a sandboxed
+  worker may use a random lease identity that can never authorize signaling;
 - the trusted validation supervisor starts suspended, publishes its identity
   under a syscall lock, and launches the real gate only after ownership is
   durable, so no real gate exists in the publication window;
@@ -477,19 +483,30 @@ grace period, and only then force-stops that same disposable validation cohort
 so finalization cannot hang. A direct gate child that exits while descendants
 remain is also a failed validation: Koryph drains the exact group, reaps the
 supervisor, and publishes a terminal failed result before any retry may start.
+For both workers and validation, completion first closes the parent's lease
+descriptor and reacquires the signature lease through a fresh descriptor while
+holding the signature state lock. Only after every inherited cohort descriptor
+has drained can Koryph publish the generation-bound terminal result and release
+the transferred lease. No observer can see a terminal owner while the old
+cohort still owns the lane.
 
 Runtimes with pre-tool hooks reject before execution. Runtimes without hooks
-receive phase-local PATH shims where safe. Those shims deterministically prevent
-accidental and cooperative duplicate invocations; they are **not** a security
+receive phase-local PATH shims where safe. Codex dispatch forces its documented
+non-login shell mode so user login startup cannot replace the guarded PATH.
+The shims and cohort-inherited kernel lease deterministically prevent accidental and
+cooperative duplicate invocations; they are **not** a security
 boundary against a malicious same-UID process that deliberately invokes an
 absolute tool path, copies/renames a tool, overwrites or relocates its own shim
 tree, or unsets/changes the mutable `KORYPH_PHASE_DIR` / `KORYPH_PHASE_ID`
 environment that locates cooperative guard state. Worktree isolation and
 merge-time protected-path refusal remain the security boundary for that threat.
 The bounded release canary therefore retains an overlap tripwire for unguarded
-broad cohorts. The authoritative merge validator supplies its role in trusted
-Go code (never a flag, token, or environment value) and uses the same
-identity-bound state as worker shims.
+broad cohorts. It runs a real standard-tier Codex session that launches the
+same slow broad command twice concurrently and requires one real start, one
+reuse, one generation-bound result, and no survivor. The authoritative merge
+validator supplies its role in trusted Go code (never a flag, token, or
+environment value) and uses stable process identity plus the same lease-bound
+state as worker shims.
 
 ### 8. Pressure-aware, fail-safe host admission
 

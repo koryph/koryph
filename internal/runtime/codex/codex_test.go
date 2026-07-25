@@ -5,6 +5,8 @@ package codex
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/commandguard"
+	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/runtimetest"
 )
@@ -46,6 +50,7 @@ func TestCommandRendersSafeCodexExec(t *testing.T) {
 	}
 	want := []string{
 		"codex", "--ask-for-approval", "never", "exec", "--json",
+		"-c", "allow_login_shell=false",
 		"--ignore-user-config",
 		"-c", `default_permissions="koryph_signing"`,
 		"-c", signingFilesystemRule("/repo"),
@@ -423,6 +428,174 @@ func TestCodexAdapterCommandShimUsesBinarySingleFlight(t *testing.T) {
 	}
 	if outside, err := os.ReadFile(outsideEvents); err != nil || string(outside) != "sentinel\n" {
 		t.Fatalf("forged evidence path was used: %q, %v", outside, err)
+	}
+}
+
+// TestRealCodexSingleFlightCanary is an opt-in release canary. It asks the
+// real standard-tier Codex runtime to launch the same slow broad command
+// twice concurrently through the adapter-installed PATH shim. The fake tool's
+// overlap tripwire catches any unguarded second start; generation-bound event
+// and result checks prove the duplicate reused the authoritative worker.
+func TestRealCodexSingleFlightCanary(t *testing.T) {
+	if os.Getenv("KORYPH_REAL_CODEX_CANARY") != "1" {
+		t.Skip("set KORYPH_REAL_CODEX_CANARY=1 for the bounded release canary")
+	}
+	codexBin, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatal("real Codex CLI is unavailable:", err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	phaseDir := canonicalCodexTempDir(t)
+	guardBin := filepath.Join(phaseDir, "koryph")
+	build := exec.Command("go", "build", "-o", guardBin, "./cmd/koryph")
+	build.Dir = repoRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build command guard binary: %v\n%s", err, out)
+	}
+
+	worktree := canonicalCodexTempDir(t)
+	initRepo := exec.Command("git", "init", "-q")
+	initRepo.Dir = worktree
+	if out, err := initRepo.CombinedOutput(); err != nil {
+		t.Fatalf("initialize canary repo: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "go.mod"), []byte("module canary.invalid/singleflight\n\ngo 1.25.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeBin := filepath.Join(phaseDir, "real-bin")
+	if err := os.Mkdir(fakeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	starts := filepath.Join(phaseDir, "real-starts")
+	overlaps := filepath.Join(phaseDir, "overlap-violations")
+	tripwire := filepath.Join(phaseDir, "real-tool-active")
+	body := "if ! mkdir " + shellSingleQuote(tripwire) + "; then\n" +
+		"  echo overlap >>" + shellSingleQuote(overlaps) + "\n" +
+		"  exit 89\n" +
+		"fi\n" +
+		"trap 'rmdir " + shellSingleQuote(tripwire) + " 2>/dev/null || true' EXIT INT TERM\n" +
+		"echo start >>" + shellSingleQuote(starts) + "\n" +
+		"sleep 3\n" +
+		"echo guarded-ok\n"
+	realGo := writeCodexTestExecutable(t, fakeBin, "go", body)
+
+	previous := commandGuardExecutable
+	commandGuardExecutable = func() (string, error) { return guardBin, nil }
+	t.Cleanup(func() { commandGuardExecutable = previous })
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	model := runtime.CodexModelMap[runtime.TierStandard]
+	argv, env, err := (Codex{Bin: codexBin}).Command(runtime.DispatchSpec{
+		RepoRoot: worktree, PhaseDir: phaseDir, Model: model, Effort: "medium",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phaseID := filepath.Base(phaseDir)
+	env = setEnv(env, "KORYPH_RUN_ID", "real-codex-singleflight-canary")
+	env = setEnv(env, "KORYPH_PHASE_ID", phaseID)
+	env = setEnv(env, "KORYPH_PHASE_DIR", phaseDir)
+	env = setEnv(env, "KORYPH_DIR", phaseDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = worktree
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(
+		"Run exactly this one shell command and wait for it to finish:\n\n" +
+			"go test ./... & go test ./... & wait\n\n" +
+			"Do not inspect or modify files and do not run any other command. " +
+			"After it finishes, reply CANARY_DONE.",
+	)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("real Codex canary failed: %v (context=%v)\n%s", err, ctx.Err(), output.String())
+	}
+	if !strings.Contains(output.String(), "CANARY_DONE") {
+		t.Fatalf("real Codex did not report canary completion:\n%s", output.String())
+	}
+
+	startData, err := os.ReadFile(starts)
+	if err != nil {
+		t.Fatalf("read real-start marker: %v\n%s", err, output.String())
+	}
+	if got := strings.Count(string(startData), "start"); got != 1 {
+		t.Fatalf("real broad command starts = %d, want 1:\n%s\nCodex:\n%s", got, startData, output.String())
+	}
+	if data, err := os.ReadFile(overlaps); err == nil && len(bytes.TrimSpace(data)) > 0 {
+		t.Fatalf("overlap tripwire fired:\n%s\nCodex:\n%s", data, output.String())
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	eventsPath := filepath.Join(phaseDir, ".koryph-command", "events.jsonl")
+	eventData, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	generation := ""
+	for _, line := range bytes.Split(bytes.TrimSpace(eventData), []byte{'\n'}) {
+		var event resmon.CommandEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode command event: %v\n%s", err, line)
+		}
+		counts[event.Event]++
+		if event.Event == "start" || event.Event == "reuse" || event.Event == "complete" {
+			if generation == "" {
+				generation = event.Generation
+			}
+			if event.Generation != generation {
+				t.Fatalf("event generation = %q, want %q:\n%s", event.Generation, generation, eventData)
+			}
+		}
+		if event.Event == "reuse" && (event.Role != "worker" || event.ExistingRole != "worker") {
+			t.Fatalf("reuse roles = %q/%q, want worker/worker", event.Role, event.ExistingRole)
+		}
+	}
+	for _, kind := range []string{"start", "reuse", "complete"} {
+		if counts[kind] != 1 {
+			t.Fatalf("%s events = %d, want 1:\n%s", kind, counts[kind], eventData)
+		}
+	}
+
+	results, err := filepath.Glob(filepath.Join(phaseDir, ".koryph-command", "result-*.json"))
+	if err != nil || len(results) != 1 {
+		t.Fatalf("result files = %v, err=%v", results, err)
+	}
+	resultData, err := os.ReadFile(results[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result commandguard.CommandResult
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Generation != generation || result.Role != commandguard.CommandRoleWorker ||
+		result.Status != "passed" || result.ExitCode != 0 {
+		t.Fatalf("unexpected authoritative result: %+v", result)
+	}
+	if _, err := os.Stat(tripwire); !os.IsNotExist(err) {
+		t.Fatalf("real-command tripwire survived completion: %v", err)
+	}
+	held, err := commandguard.NewProcessGuard(phaseDir).OwnerLeaseHeld(
+		[]string{realGo, "test", "./..."},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("authoritative command owner lease survived completion")
+	}
+	if err := syscall.Kill(-result.Identity.ProcessGroup, 0); err == nil {
+		t.Fatalf("authoritative command process group survived completion: %+v", result.Identity)
+	} else if !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("probe authoritative process group: %v", err)
 	}
 }
 

@@ -56,6 +56,17 @@ func broadRequest(pid int, start string) ProcessGuardRequest {
 	}
 }
 
+func releaseTestOwnerLease(t *testing.T, decision *ProcessGuardDecision) {
+	t.Helper()
+	if decision.lease == nil {
+		t.Fatal("start decision has no owner lease")
+	}
+	if err := decision.lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	decision.lease = nil
+}
+
 func TestProcessGuardSingleFlightReusesLiveCommandAndResult(t *testing.T) {
 	g, live := testProcessGuard(t)
 	ownerReq := broadRequest(101, "birth:owner")
@@ -102,7 +113,7 @@ func TestProcessGuardConcurrentFlockPublishesExactlyOneOwner(t *testing.T) {
 	for i := range claimers {
 		live["birth:"+strconv.Itoa(i)] = true
 	}
-	actions := make(chan ProcessGuardAction, claimers)
+	decisions := make(chan ProcessGuardDecision, claimers)
 	errs := make(chan error, claimers)
 	var wg sync.WaitGroup
 	for i := range claimers {
@@ -114,20 +125,22 @@ func TestProcessGuardConcurrentFlockPublishesExactlyOneOwner(t *testing.T) {
 				errs <- err
 				return
 			}
-			actions <- decision.Action
+			decisions <- decision
 		}(i)
 	}
 	wg.Wait()
-	close(actions)
+	close(decisions)
 	close(errs)
 	for err := range errs {
 		t.Errorf("Acquire: %v", err)
 	}
 	starts, reuses := 0, 0
-	for action := range actions {
-		switch action {
+	var owner ProcessGuardDecision
+	for decision := range decisions {
+		switch decision.Action {
 		case ProcessGuardStart:
 			starts++
+			owner = decision
 		case ProcessGuardReuse:
 			reuses++
 		}
@@ -135,6 +148,7 @@ func TestProcessGuardConcurrentFlockPublishesExactlyOneOwner(t *testing.T) {
 	if starts != 1 || reuses != claimers-1 {
 		t.Fatalf("starts/reuses = %d/%d, want 1/%d", starts, reuses, claimers-1)
 	}
+	releaseTestOwnerLease(t, &owner)
 }
 
 func TestProcessGuardRolesFailClosedAndWorkerGateDenied(t *testing.T) {
@@ -210,6 +224,7 @@ func TestProcessGuardReplacesOnlyAuthenticatedStaleOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	live[old.Identity.StartID] = false
+	releaseTestOwnerLease(t, &first)
 	replacement := broadRequest(101, "birth:new")
 	live[replacement.Identity.StartID] = true
 	got, err := g.Acquire(context.Background(), replacement)
@@ -259,7 +274,8 @@ func TestProcessGuardWaitIsBoundedWhenOwnerExitsWithoutResult(t *testing.T) {
 	g.waitTimeout = 40 * time.Millisecond
 	ownerReq := broadRequest(101, "birth:owner")
 	live[ownerReq.Identity.StartID] = true
-	if _, err := g.Acquire(context.Background(), ownerReq); err != nil {
+	owner, err := g.Acquire(context.Background(), ownerReq)
+	if err != nil {
 		t.Fatal(err)
 	}
 	reuse, err := g.Acquire(context.Background(), broadRequest(102, "birth:duplicate"))
@@ -267,6 +283,9 @@ func TestProcessGuardWaitIsBoundedWhenOwnerExitsWithoutResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	live[ownerReq.Identity.StartID] = false
+	// Simulate an owner process crash: the kernel releases its flock even
+	// though no generation-bound result was published.
+	releaseTestOwnerLease(t, &owner)
 	if _, err := g.Wait(context.Background(), reuse); err == nil ||
 		!strings.Contains(err.Error(), "without its generation-bound result") {
 		t.Fatalf("Wait error = %v", err)
@@ -531,18 +550,23 @@ func TestProcessGuardCompleteRequiresStart(t *testing.T) {
 	}
 }
 
-func TestProcessGuardInspectErrorFailsClosed(t *testing.T) {
+func TestProcessGuardOwnerLeaseSurvivesResourceProbeFailure(t *testing.T) {
 	g, live := testProcessGuard(t)
 	req := broadRequest(101, "birth")
 	live["birth"] = true
-	if _, err := g.Acquire(context.Background(), req); err != nil {
+	owner, err := g.Acquire(context.Background(), req)
+	if err != nil {
 		t.Fatal(err)
 	}
 	g.inspect = func(context.Context, resmon.CommandIdentity) (resmon.Sample, bool, error) {
 		return resmon.Sample{}, false, errors.New("probe failed")
 	}
-	if _, err := g.Acquire(context.Background(), broadRequest(102, "other")); err == nil {
-		t.Fatal("owner probe failure was treated as stale")
+	reuse, err := g.Acquire(context.Background(), broadRequest(102, "other"))
+	if err != nil || reuse.Action != ProcessGuardReuse {
+		t.Fatalf("owner lease was not authoritative after probe failure: (%+v, %v)", reuse, err)
+	}
+	if _, err := g.Observe(context.Background(), owner); err == nil {
+		t.Fatal("resource probe failure was hidden")
 	}
 }
 

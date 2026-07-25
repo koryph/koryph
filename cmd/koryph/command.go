@@ -87,7 +87,7 @@ func cmdCommandExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "koryph command exec: phase directory does not match phase identity")
 		return engine.ExitFatal
 	}
-	identity, err := resmon.EnsureIndependentProcessGroup(context.Background())
+	identity, err := resmon.EnsureIndependentProcessGroupForGuard(context.Background())
 	if err != nil {
 		fmt.Fprintf(stderr, "koryph command exec: %v\n", err)
 		return engine.ExitFatal
@@ -178,6 +178,19 @@ func runGuardedWorkerTool(
 	// performs this before exec, so the full descendant cohort is observable
 	// from the authenticated wrapper identity.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: identity.ProcessGroup}
+	if decision.Class.Scope != resmon.CommandFocused {
+		leaseFile, err := decision.OwnerLeaseFile()
+		if err != nil {
+			fmt.Fprintf(stderr, "koryph command exec: inherit owner lease: %v\n", err)
+			_, _ = guard.Complete(decision, "failed", engine.ExitFatal)
+			return engine.ExitFatal
+		}
+		// ExtraFiles duplicates this descriptor as fd 3 in the real command.
+		// Descendants inherit the same locked open-file description, so
+		// wrapper death or direct-child exit cannot release single-flight
+		// ownership while any cooperative cohort member survives.
+		cmd.ExtraFiles = []*os.File{leaseFile}
+	}
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(stderr, "koryph command exec: start %s: %v\n", real, err)
 		if decision.Class.Scope != resmon.CommandFocused {

@@ -5,8 +5,10 @@ package resmon
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -269,6 +271,40 @@ func EnsureIndependentProcessGroup(ctx context.Context) (CommandIdentity, error)
 		return CommandIdentity{}, fmt.Errorf("command process group is not independent: pid=%d pgid=%d", identity.PID, identity.ProcessGroup)
 	}
 	return identity, nil
+}
+
+// EnsureIndependentProcessGroupForGuard returns the strongest identity the
+// host permits for a phase-local command guard. Normal hosts use the stable
+// process-start identity above. Some macOS sandboxes deny both ps and
+// KERN_PROC sysctl; after the independent group is established, those
+// permission errors fall back to a process-local random lease identity.
+//
+// A lease identity must never authorize signalling or reattachment. The
+// command guard authenticates its liveness with a kernel-released flock held
+// by the owner process instead.
+func EnsureIndependentProcessGroupForGuard(ctx context.Context) (CommandIdentity, error) {
+	identity, err := EnsureIndependentProcessGroup(ctx)
+	if err == nil {
+		return identity, nil
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		return CommandIdentity{}, err
+	}
+	pid := os.Getpid()
+	pgid, pgErr := unix.Getpgid(0)
+	if pgErr != nil {
+		return CommandIdentity{}, fmt.Errorf("get guarded command process group: %w", pgErr)
+	}
+	if pgid != pid {
+		return CommandIdentity{}, fmt.Errorf("guarded command process group is not independent: pid=%d pgid=%d", pid, pgid)
+	}
+	var nonce [16]byte
+	if _, randErr := rand.Read(nonce[:]); randErr != nil {
+		return CommandIdentity{}, fmt.Errorf("generate guarded command lease identity: %w", randErr)
+	}
+	return CommandIdentity{
+		PID: pid, ProcessGroup: pgid, StartID: "lease:" + hex.EncodeToString(nonce[:]),
+	}, nil
 }
 
 // CommandEvent is the durable, provider-neutral command evidence envelope.

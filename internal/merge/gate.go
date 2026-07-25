@@ -110,24 +110,37 @@ func runGateCommandWithTiming(
 		return execx.Run(ctx, spec)
 	}
 
-	supervisor, err := startValidationSupervisor(spec)
+	guard := commandguard.NewProcessGuard(validationPhaseDir)
+	ownerLease, err := guard.PrepareOwnerLease(classArgv)
 	if err != nil {
+		return execx.Result{ExitCode: -1}, fmt.Errorf("prepare validation owner lease: %w", err)
+	}
+	leaseFile, err := ownerLease.ExtraFile()
+	if err != nil {
+		_ = ownerLease.Close()
+		return execx.Result{ExitCode: -1}, fmt.Errorf("open validation owner lease: %w", err)
+	}
+	supervisor, err := startValidationSupervisor(spec, leaseFile)
+	if err != nil {
+		_ = ownerLease.Close()
 		return execx.Result{ExitCode: -1}, err
 	}
 
 	identity, err := resmon.CurrentCommandIdentity(ctx, supervisor.cmd.Process.Pid)
 	if err != nil {
 		_ = supervisor.stopSuspended(validationTiming{forceWait: 2 * time.Second})
+		_ = ownerLease.Close()
 		return execx.Result{ExitCode: -1}, fmt.Errorf("identify validation command: %w", err)
 	}
 	supervisor.identity = identity
-	guard := commandguard.NewProcessGuard(validationPhaseDir)
 	request := commandguard.ProcessGuardRequest{
 		Argv: classArgv, Role: commandguard.CommandRoleValidation, Identity: identity,
+		OwnerLease: ownerLease,
 	}
 	decision, err := guard.Acquire(ctx, request)
 	if err != nil {
 		_ = supervisor.stopSuspended(timing)
+		_ = ownerLease.Close()
 		return execx.Result{ExitCode: -1}, fmt.Errorf("publish validation command: %w", err)
 	}
 
@@ -138,12 +151,14 @@ func runGateCommandWithTiming(
 		decision.Existing.Role == commandguard.CommandRoleWorker {
 		if _, err := guard.Wait(ctx, decision); err != nil {
 			_ = supervisor.stopSuspended(timing)
+			_ = ownerLease.Close()
 			return execx.Result{ExitCode: -1},
 				fmt.Errorf("wait for worker command before validation: %w", err)
 		}
 		decision, err = guard.Acquire(ctx, request)
 		if err != nil {
 			_ = supervisor.stopSuspended(timing)
+			_ = ownerLease.Close()
 			return execx.Result{ExitCode: -1},
 				fmt.Errorf("publish validation command after worker completion: %w", err)
 		}
@@ -151,6 +166,7 @@ func runGateCommandWithTiming(
 	if decision.Action == commandguard.ProcessGuardReuse {
 		if decision.Existing.Role != commandguard.CommandRoleValidation {
 			_ = supervisor.stopSuspended(timing)
+			_ = ownerLease.Close()
 			return execx.Result{ExitCode: guardedValidationInternalExit},
 				errors.New("trusted validation command reused a non-validation owner")
 		}
@@ -158,9 +174,11 @@ func runGateCommandWithTiming(
 		// validation owner remains untouched and supplies the authoritative
 		// result.
 		if err := supervisor.stopSuspended(timing); err != nil {
+			_ = ownerLease.Close()
 			return execx.Result{ExitCode: guardedValidationInternalExit},
 				fmt.Errorf("stop duplicate validation supervisor: %w", err)
 		}
+		_ = ownerLease.Close()
 		result, err := guard.Wait(ctx, decision)
 		return execx.Result{
 			ExitCode: result.ExitCode, Duration: time.Since(supervisor.started),
@@ -171,6 +189,7 @@ func runGateCommandWithTiming(
 	}
 	if decision.Action != commandguard.ProcessGuardStart {
 		_ = supervisor.stopSuspended(timing)
+		_ = ownerLease.Close()
 		return execx.Result{ExitCode: guardedValidationInternalExit},
 			errors.New("trusted validation command received a non-start decision")
 	}
@@ -198,7 +217,7 @@ type validationSupervisor struct {
 	reaped        bool
 }
 
-func startValidationSupervisor(spec execx.Cmd) (*validationSupervisor, error) {
+func startValidationSupervisor(spec execx.Cmd, ownerLease *os.File) (*validationSupervisor, error) {
 	releaseRead, releaseWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -226,11 +245,12 @@ func startValidationSupervisor(spec execx.Cmd) (*validationSupervisor, error) {
 		finalizeWrite.Close()
 	}
 
-	// fd 3 releases the real child, fd 4 reports that direct child's exit
-	// status, and fd 5 lets the trusted parent release the supervisor only
-	// after the complete process group has drained. The supervisor ignores
-	// TERM, while an explicit subshell resets TERM to default before exec'ing
-	// the real child. The leader therefore remains authenticatable through the
+	// fd 3 releases the real child, fd 4 reports that direct child's exit,
+	// fd 5 lets the trusted parent release the supervisor only after the
+	// complete process group has drained, and fd 6 carries the owner lease
+	// through the complete validation cohort. The supervisor ignores TERM,
+	// while an explicit subshell resets TERM to default before exec'ing the
+	// real child. The leader therefore remains authenticatable through the
 	// graceful-stop window without teaching the gate to ignore cancellation.
 	const trampoline = `trap '' TERM
 IFS= read -r koryph_release <&3 || exit 125
@@ -257,7 +277,7 @@ exit "$koryph_status"`
 	s.cmd.Dir = spec.Dir
 	s.cmd.Env = spec.Env
 	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	s.cmd.ExtraFiles = []*os.File{releaseRead, statusWrite, finalizeRead}
+	s.cmd.ExtraFiles = []*os.File{releaseRead, statusWrite, finalizeRead, ownerLease}
 	s.cmd.Stdout = io.MultiWriter(&s.stdout, &s.log)
 	s.cmd.Stderr = io.MultiWriter(&s.stderr, &s.log)
 	if err := s.cmd.Start(); err != nil {

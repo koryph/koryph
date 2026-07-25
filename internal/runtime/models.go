@@ -61,7 +61,8 @@ var ClaudeModelMap = ModelMap{
 
 // CodexSolModel is the deliberately scarce top reasoning model. Normal
 // implementation routing stays on Terra; modelroute selects Sol only for
-// advanced planning/design/scoring stages and final hard-block recovery.
+// advanced planning/design/scoring and explicitly authorized structured
+// analysis. Retry count never selects it for implementation.
 const CodexSolModel = "gpt-5.6-sol"
 
 // CodexModelMap is the default capability mapping for ordinary portable work.

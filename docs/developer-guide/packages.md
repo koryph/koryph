@@ -142,10 +142,15 @@ explicit "insufficient history" state below `MinSamples` observations.
 ## commandguard
 
 Coordinates cooperative single-flight execution of classified broad commands
-within one phase. Durable, strictly decoded owner and result records bind a
-command signature and generation to an authenticated process start identity,
-process group, role, and fixed log path. Worker duplicates wait for that exact
-generation; trusted post-rebase validation is published by an engine-owned Go
+within one phase. Every owner passes a kernel-released signature lease through
+the real command and its descendants. The lease therefore covers the complete
+cohort even after wrapper death or direct-child exit. Completion transfers the
+lease to a fresh parent descriptor under the signature state lock before
+publishing terminal evidence. Durable, strictly decoded owner and result
+records bind the lease's command signature and generation to an authenticated
+start/lease identity, process group, role, and fixed log path. Worker duplicates
+wait for that exact generation; trusted post-rebase validation additionally
+carries a stable kernel process identity and is published by an engine-owned Go
 caller before its real tool is released.
 
 - **`ProcessGuard.Acquire`** — publish, reuse, or deny a classified command
@@ -153,9 +158,13 @@ caller before its real tool is released.
   evidence lifecycle
 - **`CommandRoleWorker`** / **`CommandRoleValidation`** — trusted caller roles,
   never environment or command-line authority
+- Codex uses non-login tool shells so login startup cannot replace the guarded
+  PATH; owner leases remain authoritative even where its sandbox denies process
+  table probes
 - Hookless PATH shims enforce cooperative invocation only; worktree isolation
   and protected-path merge refusal remain the malicious same-UID boundary,
-  including shim relocation and mutable phase-environment bypass
+  including absolute/copied tools, shim relocation, and mutable phase-
+  environment bypass
 
 ## commands
 

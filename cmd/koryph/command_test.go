@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/koryph/koryph/internal/commandguard"
+	"github.com/koryph/koryph/internal/engine"
 )
 
 func TestCommandExecHelper(t *testing.T) {
@@ -147,6 +150,117 @@ func TestCommandExecConcurrentBroadToolStartsOnceAndSharesExit(t *testing.T) {
 		if !strings.Contains(string(events), want) {
 			t.Fatalf("evidence missing %s:\n%s", want, events)
 		}
+	}
+}
+
+func TestCommandExecOwnerLeaseOutlivesDirectChild(t *testing.T) {
+	phase := canonicalTestDir(t)
+	starts := filepath.Join(canonicalTestDir(t), "starts")
+	descendantDone := filepath.Join(canonicalTestDir(t), "descendant-done")
+	tool := writeTool(t,
+		`echo start >>"`+starts+`"
+(sleep 1; echo done >"`+descendantDone+`") &
+exit 0`)
+	first := commandHelper(t, phase, tool, "test", "./...")
+	second := commandHelper(t, phase, tool, "test", "./...")
+	var firstOut, secondOut bytes.Buffer
+	first.Stdout, first.Stderr = &firstOut, &firstOut
+	second.Stdout, second.Stderr = &secondOut, &secondOut
+	started := time.Now()
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(starts); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = first.Process.Signal(syscall.SIGTERM)
+			t.Fatal("real tool did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := second.Start(); err != nil {
+		_ = first.Process.Signal(syscall.SIGTERM)
+		t.Fatal(err)
+	}
+	if err := first.Wait(); err != nil {
+		t.Fatalf("first exit = %v\n%s", err, firstOut.String())
+	}
+	if err := second.Wait(); err != nil {
+		t.Fatalf("second exit = %v\n%s", err, secondOut.String())
+	}
+	if elapsed := time.Since(started); elapsed < 900*time.Millisecond {
+		t.Fatalf("wrappers returned before inherited lease drained: %s", elapsed)
+	}
+	data, err := os.ReadFile(starts)
+	if err != nil || strings.Count(string(data), "start") != 1 {
+		t.Fatalf("real tool starts = %q, err=%v", data, err)
+	}
+	if data, err := os.ReadFile(descendantDone); err != nil || strings.TrimSpace(string(data)) != "done" {
+		t.Fatalf("descendant completion = %q, err=%v", data, err)
+	}
+	if combined := firstOut.String() + secondOut.String(); !strings.Contains(combined, " role=worker status=") {
+		t.Fatalf("duplicate did not reuse cohort-held lease:\n%s", combined)
+	}
+}
+
+func TestCommandExecOwnerLeaseOutlivesKilledWrapper(t *testing.T) {
+	phase := canonicalTestDir(t)
+	starts := filepath.Join(canonicalTestDir(t), "starts")
+	descendantDone := filepath.Join(canonicalTestDir(t), "descendant-done")
+	tool := writeTool(t,
+		`echo start >>"`+starts+`"
+sleep 1
+echo done >"`+descendantDone+`"`)
+	first := commandHelper(t, phase, tool, "test", "./...")
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(starts); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = first.Process.Signal(syscall.SIGKILL)
+			t.Fatal("real tool did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := first.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+
+	guard := commandguard.NewProcessGuard(phase)
+	held, err := guard.OwnerLeaseHeld([]string{tool, "test", "./..."})
+	if err != nil || !held {
+		t.Fatalf("owner lease after wrapper death = %v, %v; want held", held, err)
+	}
+
+	second := commandHelper(t, phase, tool, "test", "./...")
+	out, err := second.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != engine.ExitFatal {
+		t.Fatalf("duplicate exit = %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "koryph command reuse:") ||
+		!strings.Contains(string(out), "authoritative command exited without its generation-bound result") {
+		t.Fatalf("duplicate did not wait on the inherited cohort lease:\n%s", out)
+	}
+	if data, err := os.ReadFile(starts); err != nil || strings.Count(string(data), "start") != 1 {
+		t.Fatalf("real tool starts = %q, err=%v; want exactly one", data, err)
+	}
+	if data, err := os.ReadFile(descendantDone); err != nil || strings.TrimSpace(string(data)) != "done" {
+		t.Fatalf("surviving real tool completion = %q, err=%v", data, err)
+	}
+	held, err = guard.OwnerLeaseHeld([]string{tool, "test", "./..."})
+	if err != nil || held {
+		t.Fatalf("owner lease after cohort exit = %v, %v; want released", held, err)
+	}
+	if err := first.Wait(); err == nil {
+		t.Fatal("killed wrapper unexpectedly succeeded")
 	}
 }
 

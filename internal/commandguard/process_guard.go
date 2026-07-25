@@ -51,9 +51,10 @@ const (
 )
 
 type ProcessGuardRequest struct {
-	Argv     []string
-	Role     CommandRole
-	Identity resmon.CommandIdentity
+	Argv       []string
+	Role       CommandRole
+	Identity   resmon.CommandIdentity
+	OwnerLease *OwnerLease
 }
 
 type ProcessGuardDecision struct {
@@ -61,6 +62,17 @@ type ProcessGuardDecision struct {
 	Class    resmon.CommandClass
 	Existing CommandOwner
 	Reason   string
+	lease    *OwnerLease
+}
+
+// OwnerLease is an open file description prepared by ProcessGuard. Trusted
+// validation can pass it to a suspended supervisor before Acquire; workers
+// inherit the lease returned on a start decision. Its fields are deliberately
+// private so a caller cannot forge a lease for another phase or signature.
+type OwnerLease struct {
+	file      *os.File
+	signature string
+	guardPath string
 }
 
 // CommandOwner is the durable identity of one authoritative broad command.
@@ -107,6 +119,8 @@ type ProcessGuard struct {
 	waitPoll      time.Duration
 	waitTimeout   time.Duration
 	resultGrace   time.Duration
+	drainPoll     time.Duration
+	drainTimeout  time.Duration
 }
 
 func NewProcessGuard(phaseDir string) *ProcessGuard {
@@ -118,6 +132,8 @@ func NewProcessGuard(phaseDir string) *ProcessGuard {
 		waitPoll:      500 * time.Millisecond,
 		waitTimeout:   30 * time.Minute,
 		resultGrace:   2 * time.Second,
+		drainPoll:     20 * time.Millisecond,
+		drainTimeout:  10 * time.Second,
 	}
 }
 
@@ -141,7 +157,7 @@ func (g *ProcessGuard) Acquire(ctx context.Context, req ProcessGuardRequest) (Pr
 		return ProcessGuardDecision{}, fmt.Errorf("command role %q is not trusted", req.Role)
 	}
 	if !validIdentity(req.Identity) {
-		return ProcessGuardDecision{}, errors.New("command requires stable start-time and independent process-group identity")
+		return ProcessGuardDecision{}, errors.New("command requires authenticated start/lease and independent process-group identity")
 	}
 	if class.Scope == resmon.CommandFocused {
 		return decision, nil
@@ -151,6 +167,11 @@ func (g *ProcessGuard) Acquire(ctx context.Context, req ProcessGuardRequest) (Pr
 	}
 
 	err := g.withSignatureLock(class.Signature, func(fs *commandGuardFS) error {
+		if req.OwnerLease != nil {
+			if err := req.OwnerLease.validate(class.Signature, fs.path); err != nil {
+				return fmt.Errorf("invalid prepared owner lease: %w", err)
+			}
+		}
 		ownerName := ownerFileName(class.Signature)
 		var owner CommandOwner
 		exists, err := fs.readJSON(ownerName, &owner)
@@ -162,7 +183,7 @@ func (g *ProcessGuard) Acquire(ctx context.Context, req ProcessGuardRequest) (Pr
 				return err
 			}
 			if owner.Status == "running" {
-				_, live, err := g.inspect(ctx, owner.Identity)
+				live, err := fs.ownerLeaseHeld(class.Signature)
 				if err != nil {
 					return fmt.Errorf("authenticate command owner: %w", err)
 				}
@@ -195,6 +216,21 @@ func (g *ProcessGuard) Acquire(ctx context.Context, req ProcessGuardRequest) (Pr
 			event.Reason = decision.Reason
 			return fs.appendEvent(event)
 		}
+
+		lease := req.OwnerLease
+		var held bool
+		if lease == nil {
+			lease, held, err = fs.tryOwnerLease(class.Signature)
+		} else {
+			held, err = lease.tryLock()
+		}
+		if err != nil {
+			return fmt.Errorf("acquire command owner lease: %w", err)
+		}
+		if held {
+			return errors.New("command owner lease is held without a valid running owner")
+		}
+		decision.lease = lease
 
 		generation, err := g.newGeneration()
 		if err != nil {
@@ -231,7 +267,95 @@ func (g *ProcessGuard) Acquire(ctx context.Context, req ProcessGuardRequest) (Pr
 		decision.Existing = owner
 		return nil
 	})
+	if err != nil && decision.lease != nil {
+		_ = decision.lease.Close()
+		decision.lease = nil
+	}
 	return decision, err
+}
+
+// PrepareOwnerLease opens the exact signature lease before a trusted
+// validation supervisor starts. The supervisor inherits this open file
+// description while suspended; Acquire subsequently locks the same
+// description, so an orchestrator crash cannot release ownership while the
+// validation cohort survives.
+func (g *ProcessGuard) PrepareOwnerLease(argv []string) (*OwnerLease, error) {
+	class := resmon.ClassifyCommand(argv)
+	if class.Scope != resmon.CommandBroad && class.Scope != resmon.CommandGate {
+		return nil, errors.New("owner lease requires a broad command")
+	}
+	fs, err := openCommandGuardFS(g.phaseDir)
+	if err != nil {
+		return nil, err
+	}
+	defer fs.close()
+	file, err := fs.openLock(ownerLeaseFileName(class.Signature))
+	if err != nil {
+		return nil, err
+	}
+	return &OwnerLease{file: file, signature: class.Signature, guardPath: fs.path}, nil
+}
+
+// OwnerLeaseFile returns the descriptor a start decision's real command must
+// inherit. Reuse and deny decisions never carry one.
+func (d ProcessGuardDecision) OwnerLeaseFile() (*os.File, error) {
+	if d.Action != ProcessGuardStart || d.lease == nil {
+		return nil, errors.New("start decision has no owner lease")
+	}
+	return d.lease.ExtraFile()
+}
+
+// ExtraFile returns the descriptor that a command supervisor must inherit.
+// exec.Cmd duplicates ExtraFiles without closing this parent descriptor.
+func (l *OwnerLease) ExtraFile() (*os.File, error) {
+	if l == nil || l.file == nil {
+		return nil, errors.New("owner lease is closed")
+	}
+	return l.file, nil
+}
+
+// Close releases only this process's descriptor. It deliberately does not
+// issue LOCK_UN: inherited cohort descriptors must keep the kernel lease live.
+func (l *OwnerLease) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	err := l.file.Close()
+	l.file = nil
+	return err
+}
+
+func (l *OwnerLease) validate(signature, guardPath string) error {
+	if l == nil || l.file == nil || l.signature != signature || l.guardPath != guardPath {
+		return errors.New("owner lease does not match command signature and guard path")
+	}
+	return requireSingleRegular(l.file, ownerLeaseFileName(signature))
+}
+
+// tryLock locks a prepared descriptor. held is true when another open file
+// description already owns the kernel lease.
+func (l *OwnerLease) tryLock() (held bool, err error) {
+	if l == nil || l.file == nil {
+		return false, errors.New("owner lease is closed")
+	}
+	err = syscall.Flock(int(l.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		return false, nil
+	}
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return true, nil
+	}
+	return false, err
+}
+
+// OwnerLeaseHeld reports whether the classified command still has a live
+// owner/cohort lease. It is a read-only diagnostic used by release canaries.
+func (g *ProcessGuard) OwnerLeaseHeld(argv []string) (bool, error) {
+	class := resmon.ClassifyCommand(argv)
+	if class.Scope != resmon.CommandBroad && class.Scope != resmon.CommandGate {
+		return false, errors.New("owner lease probe requires a broad command")
+	}
+	return g.ownerLeaseHeld(class.Signature)
 }
 
 // OpenLog creates the generation-specific command log without following a
@@ -260,11 +384,15 @@ func (g *ProcessGuard) Observe(ctx context.Context, decision ProcessGuardDecisio
 	if err := g.validateDecisionShape(decision); err != nil {
 		return false, err
 	}
-	sample, live, err := g.inspect(ctx, decision.Existing.Identity)
-	if err != nil || !live {
-		return live, err
+	sample := resmon.Sample{}
+	if !strings.HasPrefix(decision.Existing.Identity.StartID, "lease:") {
+		observed, live, err := g.inspect(ctx, decision.Existing.Identity)
+		if err != nil || !live {
+			return live, err
+		}
+		sample = observed
 	}
-	err = g.withSignatureLock(decision.Class.Signature, func(fs *commandGuardFS) error {
+	err := g.withSignatureLock(decision.Class.Signature, func(fs *commandGuardFS) error {
 		var owner CommandOwner
 		exists, err := fs.readJSON(ownerFileName(decision.Class.Signature), &owner)
 		if err != nil {
@@ -309,6 +437,17 @@ func (g *ProcessGuard) Complete(decision ProcessGuardDecision, status string, ex
 	}
 	var result CommandResult
 	err := g.withSignatureLock(decision.Class.Signature, func(fs *commandGuardFS) error {
+		if decision.lease == nil {
+			return errors.New("command owner decision has no cohort lease")
+		}
+		if err := g.awaitCohortLeaseDrain(fs, decision.Class.Signature, decision.lease); err != nil {
+			return err
+		}
+		// Release inside the signature serialization boundary on every
+		// persistence path. Close, rather than LOCK_UN, so an unexpected
+		// inherited descriptor would continue to hold the lease.
+		defer decision.lease.Close()
+
 		var owner CommandOwner
 		exists, err := fs.readJSON(ownerFileName(decision.Class.Signature), &owner)
 		if err != nil {
@@ -356,6 +495,43 @@ func (g *ProcessGuard) Complete(decision ProcessGuardDecision, status string, ex
 	return result, err
 }
 
+// awaitCohortLeaseDrain transfers the owner's lock from the original
+// description (shared with the real command cohort) to a fresh parent-only
+// description. The signature state lock is held by the caller throughout, so
+// no replacement generation can publish in the transfer window.
+func (g *ProcessGuard) awaitCohortLeaseDrain(
+	fs *commandGuardFS,
+	signature string,
+	lease *OwnerLease,
+) error {
+	if err := lease.Close(); err != nil {
+		return fmt.Errorf("close parent owner lease: %w", err)
+	}
+	timeout := g.drainTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	poll := g.drainPoll
+	if poll <= 0 {
+		poll = 20 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		next, held, err := fs.tryOwnerLease(signature)
+		if err != nil {
+			return fmt.Errorf("reacquire drained owner lease: %w", err)
+		}
+		if !held {
+			*lease = *next
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return errors.New("real command cohort retained its owner lease after direct-child exit")
+		}
+		time.Sleep(poll)
+	}
+}
+
 // Wait returns only the result for the reused owner's full identity and
 // generation. The wait is bounded and never signals either process.
 func (g *ProcessGuard) Wait(ctx context.Context, decision ProcessGuardDecision) (CommandResult, error) {
@@ -393,7 +569,7 @@ func (g *ProcessGuard) Wait(ctx context.Context, decision ProcessGuardDecision) 
 			}
 			return result, nil
 		}
-		_, live, err := g.inspect(waitCtx, decision.Existing.Identity)
+		live, err := g.ownerLeaseHeld(decision.Class.Signature)
 		if err != nil {
 			return CommandResult{}, err
 		}
@@ -535,6 +711,18 @@ func logFileName(signature, generation string) string {
 	return "command-" + signature + "-" + generation + ".log"
 }
 func lockFileName(signature string) string { return "lock-" + signature }
+func ownerLeaseFileName(signature string) string {
+	return "owner-lease-" + signature
+}
+
+func (g *ProcessGuard) ownerLeaseHeld(signature string) (bool, error) {
+	fs, err := openCommandGuardFS(g.phaseDir)
+	if err != nil {
+		return false, err
+	}
+	defer fs.close()
+	return fs.ownerLeaseHeld(signature)
+}
 
 func (g *ProcessGuard) withSignatureLock(signature string, fn func(*commandGuardFS) error) error {
 	fs, err := openCommandGuardFS(g.phaseDir)
@@ -640,6 +828,31 @@ func (fs *commandGuardFS) openLock(name string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+func (fs *commandGuardFS) tryOwnerLease(signature string) (*OwnerLease, bool, error) {
+	lease, err := fs.openLock(ownerLeaseFileName(signature))
+	if err != nil {
+		return nil, false, err
+	}
+	err = syscall.Flock(int(lease.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		return &OwnerLease{file: lease, signature: signature, guardPath: fs.path}, false, nil
+	}
+	_ = lease.Close()
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return nil, true, nil
+	}
+	return nil, false, err
+}
+
+func (fs *commandGuardFS) ownerLeaseHeld(signature string) (bool, error) {
+	lease, held, err := fs.tryOwnerLease(signature)
+	if err != nil || held {
+		return held, err
+	}
+	_ = lease.Close()
+	return false, nil
 }
 
 func (fs *commandGuardFS) createExclusiveRegular(name string, perm uint32) (*os.File, error) {

@@ -7,9 +7,13 @@ package resmon
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Snapshot builds a ProcTable from a single `ps` sweep. macOS has no cgo-free
@@ -24,11 +28,56 @@ func Snapshot(ctx context.Context) (*ProcTable, error) {
 	// ps exposes without privileged/cgo APIs; an empty/unparseable value makes
 	// reattach and recovery fail closed rather than trusting PID alone.
 	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=,pgid=,rss=,time=,lstart=").Output()
+	if err == nil {
+		return newProcTable(parsePSTable(string(out)), false), nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	// Codex's macOS workspace sandbox forbids executing /bin/ps. Fall back to
+	// the native KERN_PROC_ALL sysctl so command guards can still authenticate
+	// PID start identity and process-group membership. KinfoProc does not expose
+	// a dependable resident-byte count on current Darwin, so this fallback
+	// intentionally records zero RSS rather than inventing a value; ordinary
+	// host monitoring continues to use the richer ps path above.
+	procs, nativeErr := nativeDarwinProcTable(ctx)
+	if nativeErr != nil {
+		return nil, fmt.Errorf("darwin process snapshot: ps: %v; sysctl: %w", err, nativeErr)
+	}
+	return newProcTable(procs, false), nil
+}
+
+func nativeDarwinProcTable(ctx context.Context) ([]procInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	kprocs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {
 		return nil, err
 	}
-	procs := parsePSTable(string(out))
-	return newProcTable(procs, false), nil
+	procs := make([]procInfo, 0, len(kprocs))
+	for _, kp := range kprocs {
+		pid := int(kp.Proc.P_pid)
+		pgid := int(kp.Eproc.Pgid)
+		if pid <= 0 || pgid <= 0 {
+			continue
+		}
+		startSec, startNsec := kp.Proc.P_starttime.Unix()
+		birthID := ""
+		if startSec != 0 || startNsec != 0 {
+			birthID = fmt.Sprintf("darwin-kern:%d.%09d", startSec, startNsec)
+		}
+		runSec, runNsec := kp.Proc.P_rtime.Unix()
+		procs = append(procs, procInfo{
+			pid: pid, ppid: int(kp.Eproc.Ppid), pgid: pgid,
+			birthID: birthID,
+			cpuSec:  float64(runSec) + float64(runNsec)/float64(time.Second),
+		})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return procs, nil
 }
 
 // parsePSTable parses the whitespace-columned output of
