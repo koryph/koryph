@@ -4,10 +4,11 @@
 # Data retention & gc
 
 `koryph gc` applies koryph's data lifecycle policy: it compresses and
-eventually deletes old run phase-directories, and size-rotates the
-append-only audit logs. It is the **only** koryph command that deletes data,
-and it never runs automatically unless you explicitly opt in (see
-[Automatic gc](#automatic-gc-gc_auto) below).
+eventually deletes old run phase-directories, bounds project-scoped Go
+caches, and size-rotates append-only audit logs. The binary-native autonomous
+loop runs this same policy at terminal and idle boundaries. Manual engine
+health patrols remain opt-in (see [Automatic gc](#automatic-gc-gc_auto)
+below).
 
 ```sh
 koryph gc [--dry-run] [--project ID] [--json]
@@ -33,20 +34,35 @@ gc covers four artifact classes:
 | Run phase-dirs (`<repo>/.plan-logs/koryph/<run-id>/`) | compress whole run dir to `.tar.gz` after N days; delete after M days | compress at 7 days, delete at 90 days |
 | `~/.koryph/audit.jsonl` | size-based rotation to `audit-<date>.jsonl.gz` | rotate at 10 MiB, retain rotated files **forever** |
 | `~/.koryph/runs.jsonl` | size-based rotation to `runs-<date>.jsonl.gz` | rotate at 10 MiB, retain rotated files **forever** |
+| Project artifacts (shared Go caches, eligible terminal transcripts and filed planning snapshots) | age-based retention plus soft/hard byte budget | warn at 2 GiB, reclaim toward 2 GiB above a 5 GiB hard limit |
 | Telemetry (`~/.koryph/telemetry/`) | managed by the observability layer, not by `koryph gc` | see [Observability](observability.md) |
 
-For a terminal project run, gc also immediately removes phase-local Go caches
-named `go-cache`, `go-mod-cache`, or `go-build<digits>`. These are the only
-phase contents removed before normal run retention; ledgers, manifests, status,
-streams, logs, summaries, unknown directories, `latest`, and nonterminal runs
-are preserved. `--dry-run` includes these cache bytes in its reclaim estimate.
+As soon as an individual slot becomes terminal, gc removes only its recognized
+mutable roots: current `cache`, `go-cache`, `go-mod-cache`,
+`go-build<digits>`, `go-tmp`, and `go-telemetry` directories; known legacy
+`gocache`, `gomodcache`, `go-build-cache`, and `runtime-cache` layouts; and
+engine-private reviewer `.runtime-scratch`. A live sibling slot is untouched.
+Ledgers, manifests, status, streams, logs, summaries, unknown directories,
+`latest`, and nonterminal slot trees are preserved. The `latest` symlink
+protects durable evidence from archival, but does not retain disposable
+compiler state. `--dry-run` reports exact known cache bytes but conservatively
+reports zero for unknown future compression savings.
 
 Safety exemptions, always in force:
 
-- **Active runs are never touched** — the current run and the target of the
-  `latest` symlink are skipped.
-- **Runs with live slots are never touched** — gc reads each run's
-  `ledger.json` and skips any run whose slots are not all terminal.
+- **Active runs are never archived or deleted** — gc reads `ledger.json` and
+  requires a terminal run plus terminal slots. Only already-terminal slot
+  scratch is eligible for immediate cleanup.
+- **Shared caches are admission-coordinated** — engine startup and cache
+  pruning use one kernel-backed guard, so a new run cannot enter while gc is
+  deleting a project cache.
+- **Durable evidence is authenticated before deletion** — a compact archive
+  must be a regular, readable gzip/tar containing the expected terminal
+  ledger. Symlinks, empty files, corrupt archives, and wrong-run ledgers fail
+  closed. Selected transcript tails are created before source compression.
+- **Filed planning evidence is authenticated** — only snapshots under
+  `.plan-logs/koryph-plan/` with exact snapshot/post-file digests, a committed
+  design blob, and the matching digest in the epic's Beads notes age out.
 - **Posture snapshots are exempt by design** — they are your rollback
   evidence and are never auto-deleted.
 - When a run dir is compressed, a companion `<run-id>.manifest.json` is
@@ -54,6 +70,8 @@ Safety exemptions, always in force:
   history queries can introspect archived runs without decompressing them.
 - Rotation retention defaults to *forever* for both audit logs — they are
   audit trails; you must explicitly configure `retain_days` to prune them.
+  Appenders and rotation take the same inode lock, so copy/truncate cannot
+  lose a concurrent audit record.
 
 ## The retention policy: `retention.json`
 
@@ -76,6 +94,13 @@ mean "defaults". All fields are optional.
     "rotate_size_mb": 10,
     "retain_days": "never"
   },
+  "project_budget": {
+    "soft_mb": 2048,
+    "hard_mb": 5120,
+    "transcript_retain_days": 14,
+    "failure_retain_days": 30,
+    "log_tail_kb": 64
+  },
   "footprint_warn_gb": 1.0,
   "gc_auto": false
 }
@@ -91,6 +116,11 @@ Field reference:
 | `audit_log.retain_days` | days to keep rotated `audit-*.jsonl.gz` files; `0` or `"never"` means keep forever | never |
 | `runs_index.rotate_size_mb` | size (MiB) at which `runs.jsonl` is rotated | 10 |
 | `runs_index.retain_days` | days to keep rotated `runs-*.jsonl.gz` files; `0` or `"never"` means keep forever | never |
+| `project_budget.soft_mb` | project artifact target and warning threshold | 2048 |
+| `project_budget.hard_mb` | threshold that makes eligible successful transcripts, full archives with compact evidence, and idle shared caches immediately reclaimable | 5120 |
+| `project_budget.transcript_retain_days` | minimum age for successful terminal transcripts and filed planning snapshots | 14 |
+| `project_budget.failure_retain_days` | minimum age for failed terminal transcripts, even above the hard budget | 30 |
+| `project_budget.log_tail_kb` | tail retained when a full transcript is pruned | 64 |
 | `footprint_warn_gb` | pending-gc footprint (GiB) above which the health patrol and `koryph doctor` warn | 1.0 |
 | `gc_auto` | opt-in: let the health patrol run a live gc pass automatically | `false` |
 
@@ -117,7 +147,14 @@ its own.
 
 ## Automatic gc (`gc_auto`)
 
-Setting `"gc_auto": true` in `retention.json` opts the **health patrol** into
+The binary-native `koryph loop` always performs bounded maintenance at idle
+and terminal boundaries; this is part of its autonomous disk-safety contract.
+It preserves live runs, retained failures, compact evidence, audit records,
+posture snapshots, and active/final canary reports even when that means
+reporting an unreclaimable hard-budget overage.
+
+Setting `"gc_auto": true` in `retention.json` separately opts the **in-run
+health patrol** into
 running a live (non-dry-run) gc pass whenever the reclaimable footprint
 exceeds `footprint_warn_gb` during a run. The patrol finding then reports
 what was reclaimed instead of warning.

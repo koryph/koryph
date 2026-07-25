@@ -88,6 +88,12 @@ func init() {
 				// book (a design-doc DocLink renders a dead link).
 				DocLinks: []string{"user-guide/billing-and-quota.md"},
 			},
+			{
+				name:     "autonomy",
+				summary:  "inspect or explicitly publish fixed-cohort autonomy SLO evidence",
+				run:      cmdMetricsAutonomy,
+				DocLinks: []string{"user-guide/autonomy-slos.md"},
+			},
 		},
 	})
 }
@@ -481,6 +487,8 @@ func cmdMetricsDispatch(args []string, stdout, stderr io.Writer) int {
 			return cmdMetricsEstimator(args[1:], stdout, stderr)
 		case "tokens":
 			return cmdMetricsTokens(args[1:], stdout, stderr)
+		case "autonomy":
+			return cmdMetricsAutonomy(args[1:], stdout, stderr)
 		}
 	}
 	return cmdMetrics(args, stdout, stderr)

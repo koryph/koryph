@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
 	"github.com/koryph/koryph/internal/ledger"
@@ -46,5 +47,21 @@ func TestResizeApplies(t *testing.T) {
 					tc.startupSet, tc.optsMax, tc.ov.SetAt, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAuthoritativeWidthIgnoresLiveResizeOverride(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	r.opts.AuthoritativeWidth = true
+	r.opts.Max = 2
+	r.width = 2
+	if err := r.store.SetResize(ledger.ResizeOverride{Max: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	gate := r.governorGate(context.Background())
+	if gate.width != 2 {
+		t.Fatalf("governor width = %d, want authoritative 2", gate.width)
 	}
 }

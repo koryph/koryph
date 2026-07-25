@@ -109,6 +109,21 @@ func (r *runner) resolveModelForRuntime(stage string, issue beads.Issue, explici
 	return modelroute.Resolve(r.modelRequestForRuntime(stage, issue.Labels, explicitModel, effectiveRuntime))
 }
 
+// resolveReviewModelForRuntime enforces the quality-lane capability policy.
+// Bead labels and run/project implementation defaults must not upgrade routine
+// acceptance review to frontier spend or downgrade security review. Runtime
+// model maps may choose the concrete model for the fixed stage tier; project
+// stage maps may still choose the persona.
+func (r *runner) resolveReviewModelForRuntime(stage, runtimeName string) (modelroute.Resolution, error) {
+	req := r.modelRequestForRuntime(stage, nil, "", runtimeName)
+	req.Labels = nil
+	req.RunDefault = ""
+	req.RunEquivalent = ""
+	req.ExplicitModel = ""
+	req.RepoRoot = "" // persona metadata cannot override the fixed stage tier
+	return modelroute.Resolve(req)
+}
+
 func (r *runner) implementationStage(issue beads.Issue) string {
 	if issue.HasLabel(epicreview.LabelDocs) {
 		return modelroute.StageDocs

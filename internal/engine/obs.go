@@ -17,6 +17,7 @@ package engine
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/phasecontrol"
@@ -25,6 +26,15 @@ import (
 // log is the package-level logger for the engine component. Safe to use at
 // package-init time because obs.For performs lazy bootstrap.
 var log = obs.For("engine")
+
+func logFinalizationStage(beadID, stage string, queueWait, service time.Duration) {
+	log.Info("engine.finalization.stage",
+		slog.String(obs.KeyBeadID, beadID),
+		slog.String("stage", stage),
+		slog.Int64("queue_ms", queueWait.Milliseconds()),
+		slog.Int64("service_ms", service.Milliseconds()),
+	)
+}
 
 // syncObsConfig re-reads ~/.koryph/observability.json so a mid-run
 // `koryph obs level|enable|disable` takes effect on the NEXT scheduler tick

@@ -170,7 +170,10 @@ exit 0`)
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// The full repository gate starts many package test binaries concurrently.
+	// Give this subprocess a scheduling budget that does not turn host load into
+	// a false lease-lifecycle failure.
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err := os.Stat(starts); err == nil {
 			break
@@ -218,7 +221,10 @@ echo done >"`+descendantDone+`"`)
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// The full repository gate starts many package test binaries concurrently.
+	// Give this subprocess a scheduling budget that does not turn host load into
+	// a false lease-lifecycle failure.
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err := os.Stat(starts); err == nil {
 			break

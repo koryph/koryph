@@ -16,15 +16,30 @@ import (
 	"github.com/koryph/koryph/internal/worktree"
 )
 
-// resume classifies the latest run and re-adopts it: alive agents are
+// resume classifies the requested run and re-adopts it: alive agents are
 // reattached (polling continues), dead-with-work and dead-without-work slots
 // are re-dispatched per ledger.Classify, and exhausted slots are blocked.
 // It reports false (fresh run) when there is no latest run or everything in
 // it is terminal.
-func (r *runner) resume(ctx context.Context) (bool, error) {
-	latest, err := r.store.LoadLatest()
+func (r *runner) resume(ctx context.Context, recoveryRunID string) (bool, error) {
+	var latest *ledger.Run
+	var err error
+	if recoveryRunID != "" {
+		latest, err = r.store.LoadRun(recoveryRunID)
+	} else {
+		latest, err = r.store.LoadLatest()
+	}
 	if err != nil {
+		if recoveryRunID != "" {
+			return false, fmt.Errorf("load pinned recovery run %s: %w", recoveryRunID, err)
+		}
 		return false, nil // no latest run → fresh
+	}
+	if err := r.validateAllowedResume(latest); err != nil {
+		r.run = latest
+		r.emitSafetyTripwire(SafetyTripwireCohortAdmission, "", err.Error())
+		r.run = nil
+		return false, err
 	}
 
 	r.run = latest
@@ -129,6 +144,11 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 		// "running" with only terminal slots (the stale-running fix), then
 		// let the caller start fresh.
 		_ = r.store.FinalizeRun(latest)
+		if recoveryRunID != "" {
+			r.run = latest
+			r.pinnedTerminal = true
+			return true, nil
+		}
 		r.run = nil
 		return false, nil
 	}
@@ -144,6 +164,19 @@ func (r *runner) resume(ctx context.Context) (bool, error) {
 func (r *runner) completionReady(sl *ledger.Slot) bool {
 	if sl == nil {
 		return false
+	}
+	if sl.FinalizationStage != "" && sl.Branch != "" {
+		// Finalization may have rebased the branch after the worker-authored
+		// result manifest was sealed. That expected SHA change must never cause
+		// a coding redispatch on restart. A durable stage plus an extant branch
+		// is enough to re-enter fail-closed validation; gate evidence and live
+		// SHAs are authenticated by resumeFinalization before review/landing.
+		if _, err := execx.MustSucceed(context.Background(), execx.Cmd{
+			Dir: r.rec.Root, Name: "git",
+			Args: []string{"rev-parse", "--verify", sl.Branch + "^{commit}"},
+		}); err == nil {
+			return true
+		}
 	}
 	return r.assessCandidate(context.Background(), sl).eligible
 }
@@ -166,6 +199,12 @@ func (r *runner) drainResumeBacklog(ctx context.Context, width int, allowDispatc
 		return
 	}
 	for _, id := range r.queuedResumeIDs() {
+		if !r.idAllowed(id) {
+			note := "fixed cohort found a queued resume bead outside AllowedIDs: " + id
+			r.dispatchCircuitReason = note
+			r.emitSafetyTripwire(SafetyTripwireCohortAdmission, id, note)
+			return
+		}
 		if r.liveActiveCount() >= width {
 			return
 		}
@@ -215,6 +254,9 @@ func (r *runner) reconcileOrphans(ctx context.Context) {
 	reopened := 0
 	for id, sl := range latest.Slots {
 		if sl == nil || ledger.Terminal(sl.Status) || slotAlive(sl.PID) {
+			continue
+		}
+		if !r.idAllowed(id) {
 			continue
 		}
 		// Orphan: a non-terminal slot whose agent is gone. Drop any stale

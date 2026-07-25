@@ -10,6 +10,7 @@ import (
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/runtimetest"
 )
 
@@ -26,13 +27,14 @@ import (
 func seedQueued(t *testing.T, r *runner, id string) {
 	t.Helper()
 	sl := &ledger.Slot{
-		PhaseID:  id,
-		BeadID:   id,
-		Status:   ledger.SlotQueued,
-		Model:    "sonnet",
-		Agent:    "koryph-implementer",
-		ModelWhy: "test frozen",
-		Commits:  1,
+		PhaseID:   id,
+		BeadID:    id,
+		Status:    ledger.SlotQueued,
+		Model:     "sonnet",
+		ModelTier: runtime.TierStandard,
+		Agent:     "koryph-implementer",
+		ModelWhy:  "test frozen",
+		Commits:   1,
 	}
 	if err := r.store.SetSlot(r.run, sl); err != nil {
 		t.Fatalf("SetSlot(%s): %v", id, err)
@@ -75,7 +77,7 @@ func TestResumeParksStalledBeadsAsBacklog(t *testing.T) {
 		}
 	}
 
-	resumed, err := r.resume(context.Background())
+	resumed, err := r.resume(context.Background(), "")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -155,7 +157,8 @@ func TestResumeRedispatchDoesNotConsumeAttempt(t *testing.T) {
 	// backlog when the engine was interrupted.
 	sl := &ledger.Slot{
 		PhaseID: "tb1", BeadID: "tb1", Status: ledger.SlotQueued,
-		Model: "sonnet", Agent: "koryph-implementer", ModelWhy: "test frozen",
+		Model: "sonnet", ModelTier: runtime.TierStandard,
+		Agent: "koryph-implementer", ModelWhy: "test frozen",
 		Commits: 1, Attempts: 2,
 	}
 	if err := r.store.SetSlot(r.run, sl); err != nil {

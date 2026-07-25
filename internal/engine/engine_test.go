@@ -15,12 +15,15 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/merge"
 	"github.com/koryph/koryph/internal/phasecontrol"
 	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/promptc"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
 )
@@ -293,6 +296,8 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 	runGit(t, f.repo, "config", "user.email", "fixture@example.com")
 	runGit(t, f.repo, "config", "commit.gpgsign", "false")
 	writeFile(t, filepath.Join(f.repo, "README.md"), "seed\n", 0o644)
+	writeFile(t, filepath.Join(f.repo, "AGENTS.md"),
+		promptc.RepositoryClauseMarker+"\nFixture repository contract.\n", 0o644)
 	writeFile(t, filepath.Join(f.repo, ".claude", "agents", "koryph-implementer.md"),
 		"---\nmodel: sonnet\neffort: high\n---\n\n# implementer\n", 0o644)
 	cfg := &project.Config{
@@ -662,18 +667,32 @@ func TestEngineMergeJobsCarryTrustedValidationPhaseContext(t *testing.T) {
 	r, sl, _ := candidateFixture(t)
 	r.cfg = &project.Config{}
 	r.adapter = &fakeSource{}
+	candidate := strings.TrimSpace(runGit(t, sl.Worktree, "rev-parse", sl.Branch))
+	base := strings.TrimSpace(runGit(t, r.rec.Root, "rev-parse", r.rec.DefaultBranch))
+	buildIdentity, err := exactBuildIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := merge.GateEvidence{
+		Schema: merge.GateEvidenceSchema, CandidateSHA: candidate, BaseSHA: base,
+		DiffDigest:       "sha256:" + strings.Repeat("1", 64),
+		GateConfigDigest: "sha256:" + strings.Repeat("2", 64),
+		CommandDigest:    "sha256:" + strings.Repeat("3", 64), EngineVersion: EngineVersion,
+		BuildIdentity: buildIdentity, CompletedAt: time.Now().UTC(),
+	}
+	installTestGateEvidence(t, r, sl, evidence)
 	lane := &finalizationLane{}
-	lane.ready = sync.NewCond(&lane.mu)
+	lane.merges.ready = sync.NewCond(&lane.merges.mu)
 	r.finalizer = lane
 
 	r.mergeSlot(t.Context(), sl)
 	r.openPRSlot(t.Context(), sl)
 
-	if len(lane.queue) != 2 {
-		t.Fatalf("queued finalization jobs = %d, want merge and PR", len(lane.queue))
+	if len(lane.merges.queue) != 2 {
+		t.Fatalf("queued finalization jobs = %d, want merge and PR", len(lane.merges.queue))
 	}
 	want := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
-	for i, job := range lane.queue {
+	for i, job := range lane.merges.queue {
 		if job.mergeOpts.ValidationPhaseDir != want {
 			t.Errorf("job %d validation phase dir = %q, want %q", i, job.mergeOpts.ValidationPhaseDir, want)
 		}

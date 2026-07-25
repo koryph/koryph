@@ -5,13 +5,18 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/sysmem"
 )
 
@@ -41,6 +46,18 @@ func TestClassifyAdmitSkipVsBreak(t *testing.T) {
 		{"pure floor breach → break", govern.AdmitResult{
 			Outcome: govern.AdmitDeniedMemory, CandidateTipped: false,
 		}, admitBreak},
+		{"pressure → break", govern.AdmitResult{
+			Outcome: govern.AdmitDeniedPressure, Pressure: sysmem.PressureWarning,
+			ProbeOrigin: sysmem.SampleFresh, Detail: "kernel-pressure-warning",
+		}, admitBreak},
+		{"candidate reservation budget → skip", govern.AdmitResult{
+			Outcome: govern.AdmitDeniedReservation, CandidateTipped: true,
+			LiveRSSMB: 1000, CandidateMemoryMB: 4096, MemoryBudgetMB: 4000,
+		}, admitSkip},
+		{"base reservation budget → break", govern.AdmitResult{
+			Outcome: govern.AdmitDeniedReservation, CandidateTipped: false,
+			LiveRSSMB: 5000, CandidateMemoryMB: 0, MemoryBudgetMB: 4000,
+		}, admitBreak},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,6 +65,130 @@ func TestClassifyAdmitSkipVsBreak(t *testing.T) {
 				t.Errorf("classifyAdmit(%+v) = %v, want %v", tc.res, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRuntimeMemoryEstimateUsesOnlySuccessfulNonDuplicateAttempts(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	finished := time.Date(2026, 7, 25, 15, 0, 0, 0, time.UTC)
+
+	type attempt struct {
+		id        string
+		peak      int
+		status    string
+		duplicate bool
+	}
+	attempts := []attempt{
+		{id: "good-1", peak: 100, status: ledger.SlotDone},
+		{id: "good-2", peak: 200, status: ledger.SlotMerged},
+		{id: "good-3", peak: 300, status: ledger.SlotPROpened},
+		{id: "duplicate", peak: 1000, status: ledger.SlotDone, duplicate: true},
+		{id: "failed", peak: 2000, status: ledger.SlotFailed},
+	}
+	for i, attempt := range attempts {
+		sl := &ledger.Slot{
+			PhaseID: attempt.id, BeadID: attempt.id, Status: attempt.status,
+			Runtime: "claude", PeakRSSMB: attempt.peak, ResourceSamples: 3,
+			FinishedAt: finished.Add(time.Duration(i) * time.Minute).Format(time.RFC3339),
+		}
+		if err := r.store.SetSlot(r.run, sl); err != nil {
+			t.Fatal(err)
+		}
+		events := []resmon.CommandEvent{{
+			Schema: "koryph.command-event/v1", Event: "start",
+			Class: resmon.CommandBroad, Signature: "sig-" + attempt.id,
+			At: finished.Add(time.Duration(i) * time.Minute),
+		}}
+		if attempt.duplicate {
+			events = append(events, resmon.CommandEvent{
+				Schema: "koryph.command-event/v1", Event: "reuse",
+				Class: resmon.CommandBroad, Signature: "sig-" + attempt.id,
+				At: finished.Add(time.Duration(i)*time.Minute + time.Second),
+			})
+		}
+		writeCommandEvents(t, r, attempt.id, events)
+	}
+
+	// Three eligible peaks [100,200,300] produce p90=300 plus the default 20%
+	// margin. The duplicate 1000 MB and failed 2000 MB attempts must not move
+	// the estimate.
+	if got := r.runtimeMemoryEstimate("claude"); got != 360 {
+		t.Fatalf("runtimeMemoryEstimate = %d MB, want 360 MB", got)
+	}
+	nextRun := &runner{
+		opts: r.opts, store: r.store,
+		run: &ledger.Run{RunID: r.run.RunID + "-next", Slots: map[string]*ledger.Slot{}},
+	}
+	if got := nextRun.runtimeMemoryEstimate("claude"); got != 360 {
+		t.Fatalf("next-run persisted runtimeMemoryEstimate = %d MB, want 360 MB", got)
+	}
+}
+
+func TestRuntimeMemoryEstimateUsesPersistedPriorForHysteresis(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	r.memoryEstimates = map[string]int{"claude": 1000}
+	r.persistRuntimeMemoryEstimates()
+
+	finished := time.Date(2026, 7, 25, 16, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		phaseID := fmt.Sprintf("stable-%d", i)
+		if err := r.store.SetSlot(r.run, &ledger.Slot{
+			PhaseID: phaseID, BeadID: phaseID, Status: ledger.SlotDone,
+			Runtime: "claude", PeakRSSMB: 880, ResourceSamples: 2,
+			FinishedAt: finished.Add(time.Duration(i) * time.Minute).Format(time.RFC3339),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		writeCommandEvents(t, r, phaseID, []resmon.CommandEvent{{
+			Schema: "koryph.command-event/v1", Event: "start",
+			Class: resmon.CommandBroad, Signature: "sig-" + phaseID,
+			At: finished.Add(time.Duration(i) * time.Minute),
+		}})
+	}
+
+	nextRun := &runner{
+		opts: r.opts, store: r.store,
+		run: &ledger.Run{RunID: r.run.RunID + "-next", Slots: map[string]*ledger.Slot{}},
+	}
+	// The fresh p90+20% proposal is 1056 MB, only 5.6% above the persisted
+	// 1000 MB prior. Default 10% hysteresis must keep the prior.
+	if got := nextRun.runtimeMemoryEstimate("claude"); got != 1000 {
+		t.Fatalf("hysteretic next-run estimate = %d MB, want persisted 1000 MB", got)
+	}
+	persisted := nextRun.readRuntimeMemoryEstimates()
+	if persisted["claude"] != 1000 {
+		t.Fatalf("persisted estimate after hysteresis = %v, want claude=1000", persisted)
+	}
+}
+
+func writeCommandEvents(
+	t *testing.T,
+	r *runner,
+	phaseID string,
+	events []resmon.CommandEvent,
+) {
+	t.Helper()
+	var data []byte
+	for _, event := range events {
+		line, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	path := filepath.Join(
+		r.store.PhaseDir(r.run.RunID, phaseID),
+		".koryph-command",
+		"events.jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

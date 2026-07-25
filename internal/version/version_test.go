@@ -3,7 +3,10 @@
 
 package version
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Under `go test` (like `go run`) the Go toolchain embeds no VCS metadata and
 // the linker `-X` stamps are absent, so the provenance accessors must report
@@ -19,6 +22,17 @@ func TestBuildProvenanceEmptyWhenUnstamped(t *testing.T) {
 	}
 	if got := Date(); got != "" {
 		t.Errorf("Date() = %q, want empty for an unstamped test binary", got)
+	}
+}
+
+func TestBuildIdentityBindsEngineAndExecutableBytes(t *testing.T) {
+	identity, err := BuildIdentity("0.10.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(identity, "engine=0.10.0-test|") ||
+		!strings.Contains(identity, "binary=sha256:") {
+		t.Fatalf("build identity = %q", identity)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/koryph/koryph/internal/promptc"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/sched"
 	"github.com/koryph/koryph/internal/worktree"
 )
@@ -244,7 +245,7 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	// THIS run (set after it started) unconditionally, but lets an explicit
 	// --max outrank a STALE one; a one-time warning names the ignored override
 	// so `koryph resize --clear` is discoverable.
-	if ov, ok := r.store.LoadResize(); ok {
+	if ov, ok := r.store.LoadResize(); ok && !r.opts.AuthoritativeWidth {
 		if r.resizeApplies(ov) {
 			width = ov.Max
 		} else if !r.staleResizeWarned {
@@ -255,7 +256,14 @@ func (r *runner) governorGate(ctx context.Context) govGate {
 	}
 	if !r.opts.Manual && calibrated && !advisory {
 		if scaled := quota.ScaleSlotsForAuthMode(r.authMode, usage, r.projectedRunCostUSD(), r.quotaCfg, width); scaled < width {
-			width = scaled
+			if r.opts.AuthoritativeWidth {
+				g.allowDispatch = false
+				note := fmt.Sprintf("quota policy would scale authoritative width %d to %d", width, scaled)
+				r.dispatchCircuitReason = note
+				r.emitSafetyTripwire(SafetyTripwireEngineInvariant, "", note)
+			} else {
+				width = scaled
+			}
 		}
 	}
 	g.width = width
@@ -352,6 +360,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 		// without a restart (D10) — merged before --only narrows, so an explicit
 		// single-bead run is not overridden.
 		issues = r.applyInjections(ctx, issues)
+		issues = r.filterAllowedIssues(issues)
 		// --only narrows the frontier to a single operator-chosen bead; once it
 		// closes it drops out of `bd ready` and the run drains.
 		if r.opts.Only != "" {
@@ -592,6 +601,11 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 			return r.interrupted()
 		}
 
+		if r.dispatchCircuitReason != "" {
+			r.run.Status = ledger.RunAborted
+			_ = r.store.SaveRun(r.run)
+			return r.outcome(ExitOK, "engine-invariant", false), nil
+		}
 		if r.opts.Once {
 			_ = r.store.FinalizeRun(r.run)
 			return r.outcome(ExitOK, "", false), nil
@@ -1084,13 +1098,21 @@ func featuresFor(q dispatchReq) *beadFeatures {
 
 // dispatchReq describes one dispatch (fresh, requeue, or review bounce).
 type dispatchReq struct {
-	issue           beads.Issue
-	epicID          string
-	attempt         int
-	resumeSHA       string
-	resumeSessionID string
-	reviewPath      string
-	reviewIters     int
+	issue                        beads.Issue
+	epicID                       string
+	attempt                      int
+	resumeSHA                    string
+	resumeSessionID              string
+	reviewPath                   string
+	reviewIters                  int
+	generalReviewArtifactPath    string
+	generalReviewArtifactDigest  string
+	generalReviewCandidateSHA    string
+	generalReviewBaseSHA         string
+	securityReviewArtifactPath   string
+	securityReviewArtifactDigest string
+	securityReviewCandidateSHA   string
+	securityReviewBaseSHA        string
 	// gateRequeues, mergeRequeues, conflictRequeues, and rateLimitRequeues
 	// carry the requeue-budget counters forward across a requeue dispatch
 	// (koryph-2im.6, koryph-2im.4, koryph-qf6.1): dispatchBead below builds a
@@ -1171,7 +1193,7 @@ type dispatchReq struct {
 	// completionRepair narrows this dispatch to evidence/result construction;
 	// it must not reopen implementation or use a stronger tier.
 	completionRepair bool
-	// frozenModel/frozenPersona/frozenModelWhy/frozenEffort carry the model
+	// frozenModel/frozenModelTier/frozenPersona/frozenModelWhy/frozenEffort carry the model
 	// resolution forward from the first attempt so every requeue re-runs the
 	// SAME model, persona, and effort the bead was originally dispatched with
 	// (koryph-ehx). Mirrors the footprint field's freeze rationale exactly: a
@@ -1185,10 +1207,11 @@ type dispatchReq struct {
 	// never mutates this model. Only a typed recovery decision may supply a
 	// different consequence, and ordinary implementation repair is constrained
 	// to the runtime's standard tier.
-	frozenModel    string
-	frozenPersona  string
-	frozenModelWhy string
-	frozenEffort   string
+	frozenModel     string
+	frozenModelTier string
+	frozenPersona   string
+	frozenModelWhy  string
+	frozenEffort    string
 }
 
 // resolveModel decides which model, persona, and effort a dispatch runs under.
@@ -1201,8 +1224,17 @@ type dispatchReq struct {
 // labels through the full modelroute precedence.
 func (r *runner) resolveModel(q dispatchReq, runtimeName string) (modelroute.Resolution, string, error) {
 	if q.frozenModel != "" {
+		switch q.frozenModelTier {
+		case runtime.TierFrontier, runtime.TierStandard, runtime.TierLight:
+		default:
+			return modelroute.Resolution{}, "", fmt.Errorf(
+				"frozen model %q has invalid portable tier %q",
+				q.frozenModel, q.frozenModelTier,
+			)
+		}
 		return modelroute.Resolution{
 			Model:     q.frozenModel,
+			Tier:      q.frozenModelTier,
 			Persona:   q.frozenPersona,
 			Effort:    q.frozenEffort,
 			Rationale: q.frozenModelWhy,
@@ -1242,6 +1274,13 @@ func mergeStringMaps(base, overlay map[string]string) map[string]string {
 // Failures block the slot and never fall through.
 func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	beadID := q.issue.ID
+	if !r.idAllowed(beadID) {
+		note := fmt.Sprintf("fixed cohort refused dispatch of bead %s outside AllowedIDs", beadID)
+		r.dispatchCircuitReason = note
+		r.emitSafetyTripwire(SafetyTripwireCohortAdmission, beadID, note)
+		r.progress("bead %s: %s", beadID, note)
+		return
+	}
 	if r.dispatchCircuitReason != "" {
 		r.blockSlot(beadID, q, "dispatch circuit open: "+r.dispatchCircuitReason)
 		_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
@@ -1307,6 +1346,15 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		r.blockSlot(beadID, q, "model resolution: "+err.Error())
 		return
 	}
+	if r.hardStopEnabled(SafetyTripwireFrontierImplement) &&
+		frontierImplementationModel(res.Model) &&
+		!hasLabel(q.issue.Labels, "frontier-implementation-approved") {
+		note := fmt.Sprintf("implementation resolved to frontier model %q without frontier-implementation-approved", res.Model)
+		r.dispatchCircuitReason = note
+		r.emitSafetyTripwire(SafetyTripwireFrontierImplement, beadID, note)
+		r.blockSlot(beadID, q, note)
+		return
+	}
 
 	// Capture one canonical dispatch base before Ensure can create a branch
 	// and before any backend process can race a default-branch advance. This
@@ -1334,26 +1382,39 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 			return
 		}
 	}
+	repositoryContract, err := repositoryContractForRuntime(wt.Path, rt)
+	if err != nil {
+		note := "repository contract: " + err.Error()
+		r.dispatchCircuitReason = note
+		r.emitSafetyTripwire(SafetyTripwireEngineInvariant, beadID, note)
+		r.blockSlot(beadID, q, note)
+		_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+			s.OutcomeClass = string(OutcomeEngineInvariant)
+		})
+		return
+	}
 
 	phaseDir := r.store.PhaseDir(r.run.RunID, beadID)
 	policy := r.mergePolicy(ctx, q.epicID)
 
 	prompt := promptc.Compile(promptc.Input{
-		EngineVersion:   EngineVersion,
-		ProjectName:     r.rec.Name,
-		Gate:            r.cfg.Gate,
-		CommitStyle:     r.cfg.CommitStyle,
-		CommitTemplate:  r.cfg.CommitTemplate,
-		Bootstrap:       r.cfg.Bootstrap,
-		Bead:            q.issue,
-		ResumeSHA:       q.resumeSHA,
-		WIPSnapshotPath: q.wipSnapshotPath,
-		ReviewPath:      q.reviewPath,
-		PhaseDir:        phaseDir,
-		SummaryPath:     filepath.Join(phaseDir, "SUMMARY.md"),
-		StatusPath:      filepath.Join(phaseDir, "status.json"),
-		LogPath:         filepath.Join(phaseDir, "session.log"),
+		EngineVersion:      EngineVersion,
+		ProjectName:        r.rec.Name,
+		RepositoryContract: repositoryContract,
+		Bootstrap:          r.cfg.Bootstrap,
+		Bead:               q.issue,
+		ResumeSHA:          q.resumeSHA,
+		WIPSnapshotPath:    q.wipSnapshotPath,
+		ReviewPath:         q.reviewPath,
+		PhaseDir:           phaseDir,
+		SummaryPath:        filepath.Join(phaseDir, "SUMMARY.md"),
+		StatusPath:         filepath.Join(phaseDir, "status.json"),
+		LogPath:            filepath.Join(phaseDir, "session.log"),
 	})
+	if err := promptc.ValidateDispatchContract(prompt, repositoryContract != ""); err != nil {
+		r.blockSlot(beadID, q, "dispatch contract: "+err.Error())
+		return
+	}
 	if q.completionRepair {
 		prompt = promptc.WithCompletionRepair(prompt, phaseDir)
 	}
@@ -1374,52 +1435,63 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	feat := featuresFor(q)
 	now := time.Now().UTC().Format(time.RFC3339)
 	prelaunchSlot := &ledger.Slot{
-		PhaseID:               beadID,
-		BeadID:                beadID,
-		EpicID:                q.epicID,
-		Branch:                branch,
-		Worktree:              wt.Path,
-		SessionID:             sessionID,
-		SessionName:           sessionName,
-		Agent:                 res.Persona,
-		Model:                 res.Model,
-		ModelWhy:              res.Rationale,
-		Effort:                effort,
-		Runtime:               runtimeName,
-		AccountProfile:        r.rec.AccountProfile,
-		ClaudeConfigDir:       r.rec.ClaudeConfigDir,
-		BillingMode:           string(r.billing),
-		ProxyID:               proxyID,
-		ProxyConfigured:       proxyConfigured,
-		StatusPath:            filepath.Join(phaseDir, "status.json"),
-		LogPath:               filepath.Join(phaseDir, "session.log"),
-		Status:                ledger.SlotQueued,
-		Attempts:              q.attempt,
-		ResumeSHA:             q.resumeSHA,
-		DispatchBaseSHA:       dispatchBaseSHA,
-		DispatchGeneration:    dispatchGeneration,
-		ReviewIters:           q.reviewIters,
-		GateRequeues:          q.gateRequeues,
-		MergeRequeues:         q.mergeRequeues,
-		ConflictRequeues:      q.conflictRequeues,
-		DispatchedAt:          now,
-		Note:                  q.note,
-		RateLimitRequeues:     q.rateLimitRequeues,
-		BudgetKillRequeues:    q.budgetKillRequeues,
-		TurnExhaustedRequeues: q.turnExhaustedRequeues,
-		Footprint:             q.footprint,
-		Resources:             resKinds,
-		MemReserveMB:          memReserveMB,
-		BeadLabels:            feat.labels,
-		SizeClass:             feat.sizeClass,
-		IssueType:             feat.issueType,
-		EstimateUSD:           estimateUSD,
-		Retry:                 q.retry,
-		CostUSD:               q.accumulatedCostUSD,
-		InputTokens:           q.accumulatedTokens.InputTokens,
-		OutputTokens:          q.accumulatedTokens.OutputTokens,
-		CacheReadTokens:       q.accumulatedTokens.CacheReadTokens,
-		CacheCreationTokens:   q.accumulatedTokens.CacheCreationTokens,
+		PhaseID:                      beadID,
+		BeadID:                       beadID,
+		EpicID:                       q.epicID,
+		Branch:                       branch,
+		Worktree:                     wt.Path,
+		SessionID:                    sessionID,
+		SessionName:                  sessionName,
+		Agent:                        res.Persona,
+		Model:                        res.Model,
+		ModelTier:                    res.Tier,
+		ModelWhy:                     res.Rationale,
+		Effort:                       effort,
+		Runtime:                      runtimeName,
+		AccountProfile:               r.rec.AccountProfile,
+		ClaudeConfigDir:              r.rec.ClaudeConfigDir,
+		BillingMode:                  string(r.billing),
+		ProxyID:                      proxyID,
+		ProxyConfigured:              proxyConfigured,
+		StatusPath:                   filepath.Join(phaseDir, "status.json"),
+		LogPath:                      filepath.Join(phaseDir, "session.log"),
+		Status:                       ledger.SlotQueued,
+		Attempts:                     q.attempt,
+		ResumeSHA:                    q.resumeSHA,
+		DispatchBaseSHA:              dispatchBaseSHA,
+		DispatchGeneration:           dispatchGeneration,
+		ReviewIters:                  q.reviewIters,
+		GeneralReviewArtifactPath:    q.generalReviewArtifactPath,
+		GeneralReviewArtifactDigest:  q.generalReviewArtifactDigest,
+		GeneralReviewCandidateSHA:    q.generalReviewCandidateSHA,
+		GeneralReviewBaseSHA:         q.generalReviewBaseSHA,
+		SecurityReviewArtifactPath:   q.securityReviewArtifactPath,
+		SecurityReviewArtifactDigest: q.securityReviewArtifactDigest,
+		SecurityReviewCandidateSHA:   q.securityReviewCandidateSHA,
+		SecurityReviewBaseSHA:        q.securityReviewBaseSHA,
+		GateRequeues:                 q.gateRequeues,
+		MergeRequeues:                q.mergeRequeues,
+		ConflictRequeues:             q.conflictRequeues,
+		DispatchedAt:                 now,
+		Note:                         q.note,
+		RateLimitRequeues:            q.rateLimitRequeues,
+		BudgetKillRequeues:           q.budgetKillRequeues,
+		TurnExhaustedRequeues:        q.turnExhaustedRequeues,
+		Footprint:                    q.footprint,
+		Resources:                    resKinds,
+		MemReserveMB:                 memReserveMB,
+		BeadLabels:                   feat.labels,
+		SizeClass:                    feat.sizeClass,
+		IssueType:                    feat.issueType,
+		EstimateUSD:                  estimateUSD,
+		Retry:                        q.retry,
+		CostUSD:                      q.accumulatedCostUSD,
+		InputTokens:                  q.accumulatedTokens.InputTokens,
+		OutputTokens:                 q.accumulatedTokens.OutputTokens,
+		CacheReadTokens:              q.accumulatedTokens.CacheReadTokens,
+		CacheCreationTokens:          q.accumulatedTokens.CacheCreationTokens,
+		ProviderTotalInputTokens:     q.accumulatedTokens.ProviderTotalInputTokens,
+		HasProviderTotalInput:        q.accumulatedTokens.HasProviderTotalInput,
 	}
 	previousSlot, hadPreviousSlot := r.run.Slots[beadID]
 	if err := r.store.SetSlot(r.run, prelaunchSlot); err != nil {
@@ -1447,6 +1519,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		SessionID:          sessionID,
 		SessionName:        sessionName,
 		Model:              res.Model,
+		ModelTier:          res.Tier,
 		ModelWhy:           res.Rationale,
 		Runtime:            runtimeName,
 		WorktreePath:       wt.Path,
@@ -1589,6 +1662,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 				_ = r.store.SaveManifest(r.run.RunID, beadID, m)
 			}
 			r.dispatchCircuitReason = note
+			r.emitSafetyTripwire(SafetyTripwireEngineInvariant, beadID, note)
 			_ = r.adapter.Claim(ctx, beadID)
 			r.holdGlobalSlot(beadID, handle.PID, res.Model, resKinds, memReserveMB)
 			r.dispatched++
@@ -1623,6 +1697,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 			_ = r.adapter.Claim(ctx, beadID)
 			r.holdGlobalSlot(beadID, handle.PID, res.Model, resKinds, memReserveMB)
 			r.dispatched++
+			r.emitSafetyTripwire(SafetyTripwireEngineInvariant, beadID, note)
 			r.progress("bead %s: %s", beadID, note)
 			return
 		}
@@ -1664,6 +1739,26 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	r.progress("bead %s: dispatched attempt %d (model %s — %s; pid %d)",
 		beadID, q.attempt, res.Model, res.Rationale, handle.PID)
 	logSlotDispatched(r.run.RunID, r.opts.ProjectID, beadID, q.attempt, res.Model, handle.PID)
+}
+
+func frontierImplementationModel(model string) bool {
+	if model == runtime.CodexSolModel {
+		return true
+	}
+	switch modelroute.TierForModelID(model) {
+	case modelroute.TierOpus, modelroute.TierFable:
+		return true
+	}
+	return model == modelroute.TierOpus || model == modelroute.TierFable
+}
+
+func hasLabel(labels []string, want string) bool {
+	for _, label := range labels {
+		if label == want {
+			return true
+		}
+	}
+	return false
 }
 
 // blockSlot records a slot that could not be dispatched. Blocked is terminal:
@@ -1803,6 +1898,29 @@ func (r *runner) dispatchBase(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("default branch resolved to non-canonical SHA %q", sha)
 	}
 	return sha, nil
+}
+
+func repositoryContractForRuntime(worktree string, rt runtime.Runtime) (string, error) {
+	path := filepath.Join(worktree, "AGENTS.md")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect canonical source %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("canonical source %s is not a regular file", path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read canonical source %s: %w", path, err)
+	}
+	contract := string(raw)
+	if err := promptc.ValidateRepositoryContract(contract); err != nil {
+		return "", fmt.Errorf("validate canonical source %s: %w", path, err)
+	}
+	if rt.Capabilities().RepositoryInstructions {
+		return "", nil
+	}
+	return contract, nil
 }
 
 // interruptActiveSlots sends SIGTERM to every non-terminal slot's agent

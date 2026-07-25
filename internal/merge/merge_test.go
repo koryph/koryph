@@ -759,9 +759,12 @@ func TestRunGate(t *testing.T) {
 }
 
 func TestProtected(t *testing.T) {
-	hits := Protected([]string{"src/main.go", ".claude/foo", "CLAUDE.md", "docs/x.md"}, nil)
-	if len(hits) != 2 {
-		t.Fatalf("hits=%v, want 2 (.claude/foo, CLAUDE.md)", hits)
+	hits := Protected([]string{
+		"src/main.go", ".claude/foo", "CLAUDE.md", "docs/x.md",
+		"commands/koryph-plan.md", "internal/commands/koryph-plan.md",
+	}, nil)
+	if len(hits) != 4 {
+		t.Fatalf("hits=%v, want four governance-path matches", hits)
 	}
 	// Extra prefixes.
 	if got := Protected([]string{"infra/secret.tf"}, []string{"infra/"}); len(got) != 1 {

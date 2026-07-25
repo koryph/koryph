@@ -21,8 +21,7 @@ Steps 2–4 (footprint discovery, dependency wiring, conflict validation) are
 scheduler-correctness work. A mislabeled footprint or a missed dependency
 edge causes a false-parallel dispatch and a merge conflict downstream — errors
 you only discover in a broken build. These steps require the **frontier
-reasoning tier of your agent runtime** — Claude Opus-class, or the equivalent
-top tier of whatever runtime you are (codex, cursor, grok build, …).
+reasoning tier of your agent runtime**.
 
 1. Check what model you are running as (your own system context states it,
    or run `/model`).
@@ -172,8 +171,8 @@ This prints:
 
 - **Parallel width**: the size of the largest antichain of write-disjoint,
   unblocked beads (the wave's achievable concurrency).
-- **Serialization sources**: any write-token collision, `refactor-core`
-  gate, or `domain:unknown` catch-all that reduces width below the ideal.
+- **Serialization sources**: any write-token collision or `domain:unknown`
+  catch-all that reduces width below the ideal.
 - **Orphan beads**: beads whose area labels don't exist in `area_map` — fix
   these to avoid landing in `domain:unknown`.
 
@@ -220,8 +219,8 @@ Print a summary table:
 Then report:
 
 - **Parallel width** from the `koryph plan` output.
-- **Residual serialization**: any remaining `domain:unknown`, `refactor-core`,
-  or `no-dispatch` beads, with the reason.
+- **Residual serialization**: any remaining `domain:unknown` or `no-dispatch`
+  beads, with the reason.
 - **Archival notes**: paste the proposed archival blocks (step 6) for the
   operator to apply.
 - **Remaining sources**: any files not imported (why: too vague, needs design

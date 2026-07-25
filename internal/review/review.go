@@ -4,9 +4,12 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,7 +19,6 @@ import (
 
 	"github.com/koryph/koryph/internal/agentjson"
 	"github.com/koryph/koryph/internal/execx"
-	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/obs"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/claude"
@@ -25,11 +27,13 @@ import (
 
 // Defaults per the package contract.
 const (
-	defaultPersona    = "koryph-security-reviewer"
-	defaultModel      = "opus"
-	defaultClaudeBin  = "claude"
-	defaultAttempts   = 4
-	diffStatTailLines = 40
+	defaultPersona         = "koryph-reviewer"
+	defaultModel           = "sonnet"
+	defaultSecurityPersona = "koryph-security-reviewer"
+	defaultSecurityModel   = "opus"
+	defaultClaudeBin       = "claude"
+	defaultAttempts        = 4
+	diffStatTailLines      = 40
 
 	// DefaultTimeoutSec is the reviewer's single wall-clock timeout (20 min)
 	// when no bead/project/system override applies (koryph-w82i). The former
@@ -70,12 +74,12 @@ func backoffFor(retry int) time.Duration {
 // reviewer's wall-clock timeout and sits ABOVE the whole timeout hierarchy
 // (bead > project > system > built-in): whatever value the caller resolved and
 // threaded into Opts.TimeoutSec, a set env var wins (same convention as
-// KORYPH_POLL_SEC over project.poll_seconds). The reviewer runs opus at xhigh
-// effort and reads the changed files, so a large diff can need well over the
-// default; exceeding the deadline signal-kills the process, which previously
-// surfaced as an opaque "reviewer exit -1" (koryph review-timeout fix). There is
-// no longer any hard ceiling clamping this (koryph-w82i removed the 20-minute
-// cap) — the operator is trusted to pick a sane break-glass value.
+// KORYPH_POLL_SEC over project.poll_seconds). The selected runtime/model reads
+// the changed files, so a large diff can need well over the default; exceeding
+// the deadline signal-kills the process, which previously surfaced as an opaque
+// "reviewer exit -1" (koryph review-timeout fix). There is no longer any hard
+// ceiling clamping this (koryph-w82i removed the 20-minute cap) — the operator
+// is trusted to pick a sane break-glass value.
 func envTimeoutSec() int {
 	if v := strings.TrimSpace(os.Getenv("KORYPH_REVIEW_TIMEOUT_SEC")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -116,9 +120,15 @@ func Review(ctx context.Context, o Opts) Verdict {
 	}
 	if o.Persona == "" {
 		o.Persona = defaultPersona
+		if o.Security {
+			o.Persona = defaultSecurityPersona
+		}
 	}
 	if o.Model == "" {
 		o.Model = defaultModel
+		if o.Security {
+			o.Model = defaultSecurityModel
+		}
 	}
 	if o.ClaudeBin == "" {
 		o.ClaudeBin = defaultClaudeBin
@@ -129,24 +139,58 @@ func Review(ctx context.Context, o Opts) Verdict {
 		attempts = defaultAttempts
 	}
 
+	baseRef := base
+	candidateRef := o.Branch
+	if strings.TrimSpace(o.BaseSHA) != "" || strings.TrimSpace(o.CandidateSHA) != "" {
+		if strings.TrimSpace(o.BaseSHA) == "" || strings.TrimSpace(o.CandidateSHA) == "" {
+			return degradedReason("review requires both base and candidate SHA when either is pinned")
+		}
+		baseRef = strings.TrimSpace(o.BaseSHA)
+		candidateRef = strings.TrimSpace(o.CandidateSHA)
+		if err := verifyPinnedCandidate(ctx, o); err != nil {
+			return degradedReason(err.Error())
+		}
+	}
+	var (
+		criteria []AcceptanceCriterion
+		err      error
+	)
+	if !o.Security && strings.TrimSpace(o.Contract.AcceptanceCriteria) != "" {
+		criteria, err = ParseAcceptanceCriteria(o.Contract.AcceptanceCriteria)
+		if err != nil {
+			return degradedReason("parse canonical acceptance criteria: " + err.Error())
+		}
+		if err := ValidateCompletionEvidence(criteria, o.Contract.CompletionEvidence); err != nil {
+			return degradedReason("audit worker completion evidence: " + err.Error())
+		}
+	}
+	priorFindings, priorArtifactDigests, err := loadPriorBlockingFindings(o)
+	if err != nil {
+		return degradedReason("load prior blocking review: " + err.Error())
+	}
+
 	// The diff is deterministic — a git error here is not transient, so it is
 	// not retried.
 	stat, err := execx.MustSucceed(ctx, execx.Cmd{
 		Dir: o.Worktree, Name: "git",
-		Args: []string{"diff", "--stat", base + "..." + o.Branch},
+		Args: []string{"diff", "--stat", baseRef + "..." + candidateRef},
 	})
 	if err != nil {
 		return degradedReason("git diff --stat failed: " + err.Error())
 	}
 	names, err := execx.MustSucceed(ctx, execx.Cmd{
 		Dir: o.Worktree, Name: "git",
-		Args: []string{"diff", "--name-only", base + "..." + o.Branch},
+		Args: []string{"diff", "--name-only", baseRef + "..." + candidateRef},
 	})
 	if err != nil {
 		return degradedReason("git diff --name-only failed: " + err.Error())
 	}
 
-	prompt := buildPrompt(o.Branch, base, tailLines(stat.Stdout, diffStatTailLines), names.Stdout, o.Contract)
+	prompt := buildPrompt(
+		o.Branch, baseRef, candidateRef,
+		tailLines(stat.Stdout, diffStatTailLines), names.Stdout,
+		o.Contract, criteria, priorFindings, o.Security,
+	)
 
 	// history accumulates every attempt's diagnosis (koryph-5a1 #55): before
 	// this, only the LAST attempt's Reason survived on the returned Verdict —
@@ -171,23 +215,33 @@ func Review(ctx context.Context, o Opts) Verdict {
 			case <-time.After(backoffFor(i)):
 			}
 		}
-		v := attemptReview(ctx, o, prompt)
+		v := attemptReview(ctx, o, prompt, criteria)
 		v.Attempts = i + 1
 		if !v.Degraded {
-			if o.OutPath != "" {
-				// Persist the raw Claude envelope beside the parsed verdict
-				// (same pattern as stage-*.json, koryph-qbc) so usage/cost data
-				// is available for audit. Best-effort: a write failure here is
-				// non-fatal (we still have the parsed verdict).
-				envPath := filepath.Join(filepath.Dir(o.OutPath), "review-envelope.json")
-				_ = fsx.WriteAtomic(envPath, []byte(v.Envelope+"\n"), 0o644)
-				if err := fsx.WriteAtomic(o.OutPath, []byte(v.Raw+"\n"), 0o644); err != nil {
-					v = degradedReason("persist review.json failed: " + err.Error())
-					v.Attempts = i + 1
-					history = append(history, attemptDiagnosis{Attempt: i + 1, Reason: v.Reason})
-					persistDegraded(o, v, history)
-					return v
-				}
+			if err := verifyPinnedCandidate(ctx, o); err != nil {
+				v = degradedReason(err.Error())
+				v.Attempts = i + 1
+				history = append(history, attemptDiagnosis{Attempt: i + 1, Reason: v.Reason})
+				persistDegraded(o, v, history)
+				return v
+			}
+			enforcePriorFindings(&v, priorFindings)
+			normalizeBlocking(&v)
+			if normalized, err := json.Marshal(v); err == nil {
+				v.Raw = string(normalized)
+			}
+			if err := persistArtifact(o, &v, priorFindings, priorArtifactDigests); err != nil {
+				v = degradedReason("persist immutable review artifact: " + err.Error())
+				v.Attempts = i + 1
+				history = append(history, attemptDiagnosis{Attempt: i + 1, Reason: v.Reason})
+				persistDegraded(o, v, history)
+				return v
+			}
+			if v.ArtifactPath != "" && v.Envelope != "" {
+				// The usage envelope is auxiliary to the authenticated verdict.
+				// Give it the same versioned stem and never overwrite it.
+				envPath := relatedArtifactPath(v.ArtifactPath, "envelope")
+				_ = writeImmutable(envPath, []byte(v.Envelope+"\n"), 0o644)
 			}
 			return v
 		}
@@ -202,6 +256,50 @@ func Review(ctx context.Context, o Opts) Verdict {
 	return last
 }
 
+func verifyPinnedCandidate(ctx context.Context, o Opts) error {
+	if strings.TrimSpace(o.CandidateSHA) == "" {
+		return nil
+	}
+	expected := strings.TrimSpace(o.CandidateSHA)
+	branch, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: o.Worktree, Name: "git",
+		Args: []string{"rev-parse", "--verify", o.Branch + "^{commit}"},
+	})
+	if err != nil {
+		return fmt.Errorf("verify gated candidate branch: %w", err)
+	}
+	if got := strings.TrimSpace(branch.Stdout); got != expected {
+		return fmt.Errorf("gated candidate moved during review: branch=%s expected=%s", got, expected)
+	}
+	head, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: o.Worktree, Name: "git",
+		Args: []string{"rev-parse", "--verify", "HEAD^{commit}"},
+	})
+	if err != nil {
+		return fmt.Errorf("verify review worktree HEAD: %w", err)
+	}
+	if got := strings.TrimSpace(head.Stdout); got != expected {
+		return fmt.Errorf("review worktree HEAD is not the gated candidate: head=%s expected=%s", got, expected)
+	}
+	status, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: o.Worktree, Name: "git",
+		Args: []string{"status", "--porcelain", "--untracked-files=normal"},
+	})
+	if err != nil {
+		return fmt.Errorf("verify review worktree cleanliness: %w", err)
+	}
+	if strings.TrimSpace(status.Stdout) != "" {
+		return errors.New("review worktree is not clean at the exact gated candidate")
+	}
+	return nil
+}
+
+type priorBlockingFinding struct {
+	ID      string
+	Finding Finding
+	History HistoricalFinding
+}
+
 // attemptDiagnosis records one reviewer attempt's outcome for the degraded
 // artifact — see persistDegraded.
 type attemptDiagnosis struct {
@@ -210,15 +308,13 @@ type attemptDiagnosis struct {
 	TimedOut bool   `json:"timed_out,omitempty"`
 }
 
-// persistDegraded writes every attempt's diagnosis to review-degraded.json
-// beside o.OutPath (koryph-5a1 #55) — the degraded counterpart of the
-// success path's review.json/review-envelope.json, so a full-degrade run
-// leaves a durable, per-attempt-annotated artifact instead of nothing.
-// Best-effort (an already-degraded verdict must not itself fail harder) and
-// a no-op when OutPath is unset — `koryph review-pr`/review-queue call
-// Review outside any phase dir and have no directory to write beside.
+// persistDegraded writes every attempt's diagnosis to an immutable degraded
+// artifact (koryph-5a1 #55), so a full-degrade run leaves durable,
+// per-attempt-annotated evidence instead of nothing. It is best-effort (an
+// already-degraded verdict must not itself fail harder) and a no-op when no
+// persistence destination is configured.
 func persistDegraded(o Opts, v Verdict, history []attemptDiagnosis) {
-	if o.OutPath == "" {
+	if o.OutPath == "" && o.ArtifactDir == "" {
 		return
 	}
 	data, err := json.MarshalIndent(struct {
@@ -235,14 +331,27 @@ func persistDegraded(o Opts, v Verdict, history []attemptDiagnosis) {
 	if err != nil {
 		return
 	}
-	path := filepath.Join(filepath.Dir(o.OutPath), "review-degraded.json")
-	_ = fsx.WriteAtomic(path, data, 0o644)
+	data = append(data, '\n')
+	path := ""
+	if o.ArtifactDir != "" {
+		digest := strings.TrimPrefix(contentDigest(data), "sha256:")
+		path = filepath.Join(o.ArtifactDir,
+			fmt.Sprintf("%s-review-degraded-%s.json", reviewKind(o.Security), digest[:16]))
+	} else {
+		path = relatedArtifactPath(o.OutPath, "degraded")
+	}
+	_ = writeImmutable(path, data, 0o644)
 }
 
 // attemptReview runs one reviewer spawn + parse. On any failure it returns a
 // degraded verdict whose Reason explains the failure, so a degradation is never
 // a black box in the logs.
-func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
+func attemptReview(
+	ctx context.Context,
+	o Opts,
+	prompt string,
+	criteria []AcceptanceCriterion,
+) Verdict {
 	// Route the one-shot JSON spawn through the resolved Runtime seam
 	// (koryph-fiv finding #1) instead of hand-building claude's argv here — a
 	// read-only reviewer is `--permission-mode plan`, no fallback/max-budget.
@@ -250,8 +359,13 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	if rt == nil {
 		rt = claude.New(o.ClaudeBin)
 	}
+	scratchDir, err := prepareReviewScratch(o)
+	if err != nil {
+		return degradedReason("prepare reviewer scratch: " + err.Error())
+	}
 	spec := runtime.JSONSpec{
 		RepoRoot:       o.RepoRoot,
+		ScratchDir:     scratchDir,
 		Persona:        o.Persona,
 		Model:          o.Model,
 		Effort:         o.Effort,
@@ -279,7 +393,7 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 	if res.ExitCode != 0 {
 		sp.End(0, fmt.Errorf("exit %d (timed_out=%v)", res.ExitCode, res.TimedOut))
 		if res.TimedOut {
-			return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds (opus %s effort on this diff); raise review.timeout_seconds, add a bead `timeout:<seconds>` label, or set the machine-wide default_timeout_seconds — or split the change into smaller beads", o.TimeoutSec, o.Effort))
+			return degradedTimeout(fmt.Sprintf("reviewer timed out after %ds (%s %s effort on this diff); raise review.timeout_seconds, add a bead `timeout:<seconds>` label, or set the machine-wide default_timeout_seconds — or split the change into smaller beads", o.TimeoutSec, o.Model, o.Effort))
 		}
 		return degradedReason(fmt.Sprintf("reviewer exit %d: %s", res.ExitCode, strings.TrimSpace(agentjson.Tail(res.Stderr, 300))))
 	}
@@ -295,26 +409,126 @@ func attemptReview(ctx context.Context, o Opts, prompt string) Verdict {
 		return degradedReason("reviewer " + err.Error())
 	}
 
-	var v Verdict
-	if json.Unmarshal([]byte(raw), &v) != nil {
-		return degradedReason("verdict JSON invalid: " + strings.TrimSpace(agentjson.Tail(raw, 300)))
+	v, err := parseReviewerVerdict([]byte(raw), o.Security)
+	if err != nil {
+		return degradedReason("verdict JSON invalid: " + err.Error() + ": " +
+			strings.TrimSpace(agentjson.Tail(raw, 300)))
+	}
+	for i := range v.Findings {
+		v.Findings[i].TrackHistory = true
 	}
 	v.Degraded = false
 	v.Raw = raw
-	if criteria := splitAcceptance(o.Contract.AcceptanceCriteria); len(criteria) > 0 {
-		enforceContract(&v, criteria)
+	if !o.Security && len(criteria) > 0 {
+		EnforceCriteria(&v, criteria)
 		if normalized, err := json.Marshal(v); err == nil {
 			// Persist the enforced verdict, not the reviewer's pre-enforcement
-			// claim. Otherwise review.json could say clean while the engine
+			// claim. Otherwise the artifact could say clean while the engine
 			// correctly blocked missing/unsatisfied acceptance evidence.
 			v.Raw = string(normalized)
 		}
 	}
-	// Capture the full Claude envelope so Review can persist it for audit/metrics
-	// beside the parsed verdict (koryph-qbc). res.Stdout is the raw --output-format
-	// json output including usage and cost fields.
+	// Capture the full runtime envelope so Review can persist it for
+	// audit/metrics beside the parsed verdict (koryph-qbc). res.Stdout is the raw
+	// JSON output including usage and cost fields when the runtime reports them.
 	v.Envelope = res.Stdout
 	return v
+}
+
+// prepareReviewScratch gives every persisted review an invocation-owned
+// mutable cache/temp root beside its engine-private evidence. Review runtimes
+// must not inherit ambient compiler, XDG, or pre-commit caches: those defeat
+// both phase isolation and terminal cleanup. Standalone PR review callers that
+// intentionally request no persisted artifact retain the compatibility
+// behavior of an empty scratch directory.
+func prepareReviewScratch(o Opts) (string, error) {
+	parent := strings.TrimSpace(o.ArtifactDir)
+	if parent == "" && strings.TrimSpace(o.OutPath) != "" {
+		parent = filepath.Dir(o.OutPath)
+	}
+	if parent == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", err
+	}
+	scratch := filepath.Join(parent, ".runtime-scratch")
+	if info, err := os.Lstat(scratch); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("%s is not a real directory", scratch)
+		}
+		if err := os.Chmod(scratch, 0o700); err != nil {
+			return "", err
+		}
+		return scratch, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		return "", err
+	}
+	return scratch, nil
+}
+
+func parseReviewerVerdict(raw []byte, security bool) (Verdict, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return Verdict{}, err
+	}
+	if _, ok := fields["blocking"]; !ok {
+		return Verdict{}, errors.New(`required field "blocking" is missing`)
+	}
+	allowed := map[string]bool{
+		"blocking":       true,
+		"prior_findings": true,
+		"findings":       true,
+	}
+	if !security {
+		allowed["criteria"] = true
+		allowed["security_review_required"] = true
+		allowed["security_evidence"] = true
+	}
+	for key := range fields {
+		if !allowed[key] {
+			return Verdict{}, fmt.Errorf("field %q is not allowed in the %s review schema",
+				key, reviewKind(security))
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var verdict Verdict
+	if err := dec.Decode(&verdict); err != nil {
+		return Verdict{}, err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return Verdict{}, errors.New("verdict contains trailing JSON")
+		}
+		return Verdict{}, err
+	}
+	if err := validateVerdictValue(verdict); err != nil {
+		return Verdict{}, err
+	}
+	return verdict, nil
+}
+
+func validateVerdictValue(verdict Verdict) error {
+	for i, finding := range verdict.Findings {
+		switch finding.Severity {
+		case "blocking", "major", "minor":
+		default:
+			return fmt.Errorf("finding %d has invalid severity %q (want blocking, major, or minor)",
+				i+1, finding.Severity)
+		}
+		if strings.TrimSpace(finding.Summary) == "" {
+			return fmt.Errorf("finding %d has an empty summary", i+1)
+		}
+		if finding.Line < 0 {
+			return fmt.Errorf("finding %d has a negative line number", i+1)
+		}
+	}
+	return nil
 }
 
 // degradedReason builds a non-blocking, degraded verdict with a human-readable
@@ -338,15 +552,31 @@ func degradedTimeout(reason string) Verdict {
 
 // buildPrompt renders the reviewer prompt: diffstat tail + changed-file list
 // plus the strict-JSON response contract.
-func buildPrompt(branch, base, stat, names string, contract Contract) string {
+func buildPrompt(
+	branch, base, candidate, stat, names string,
+	contract Contract,
+	criteria []AcceptanceCriterion,
+	prior []priorBlockingFinding,
+	security bool,
+) string {
 	var b strings.Builder
-	b.WriteString("Review the branch `")
+	if security {
+		b.WriteString("Perform a fail-closed security review of branch `")
+	} else {
+		b.WriteString("Review the branch `")
+	}
 	b.WriteString(branch)
-	b.WriteString("` against `")
+	b.WriteString("` at exact candidate `")
+	b.WriteString(candidate)
+	b.WriteString("` against gated base `")
 	b.WriteString(base)
-	b.WriteString("` for correctness and security issues.\n\n")
+	if security {
+		b.WriteString("` for exploitable boundary, authentication, authorization, secret, signing, workflow-privilege, merge-enforcement, and cryptographic defects.\n\n")
+	} else {
+		b.WriteString("` for acceptance, correctness, regression, and scope defects. Identify whether a dedicated security review is required, but do not substitute a broad security audit for this acceptance review.\n\n")
+	}
 
-	if contract.ID != "" || contract.AcceptanceCriteria != "" {
+	if contract.ID != "" || contract.Title != "" || contract.Description != "" || len(criteria) > 0 {
 		b.WriteString("## Bead contract\n")
 		fmt.Fprintf(&b, "- ID: %s\n- Title: %s\n- Effective runtime: %s\n- Completion state: %s\n",
 			contract.ID, contract.Title, contract.Runtime, contract.CompletionState)
@@ -360,16 +590,53 @@ func buildPrompt(branch, base, stat, names string, contract Contract) string {
 			b.WriteString(strings.TrimSpace(contract.Description))
 			b.WriteString("\n")
 		}
-		criteria := splitAcceptance(contract.AcceptanceCriteria)
-		if len(criteria) > 0 {
+		if !security && len(criteria) > 0 {
+			evidenceByID := acceptanceEvidenceByID(contract.CompletionEvidence)
 			b.WriteString("\n### Acceptance criteria\n")
-			for i, criterion := range criteria {
-				fmt.Fprintf(&b, "- AC%d: %s\n", i+1, criterion)
+			for _, criterion := range criteria {
+				fmt.Fprintf(&b, "- %s: %s\n", criterion.ID, criterion.Text)
+				b.WriteString("  - Authenticated worker evidence:\n")
+				for _, ref := range evidenceByID[criterion.ID].References {
+					switch strings.ToLower(strings.TrimSpace(ref.Kind)) {
+					case "file":
+						fmt.Fprintf(&b, "    - file `%s` (%s)\n",
+							strings.TrimSpace(ref.Path), strings.TrimSpace(ref.Digest))
+					case "focused-test":
+						test := focusedTestByCommand(contract.CompletionEvidence, ref.Command)
+						fmt.Fprintf(&b, "    - focused test `%s` (exit 0; log `%s`; %s)\n",
+							strings.TrimSpace(ref.Command), strings.TrimSpace(test.LogPath),
+							strings.TrimSpace(test.LogDigest))
+					}
+				}
 			}
+			b.WriteString("\nAudit the worker evidence independently against the exact gated candidate; " +
+				"do not accept a path, digest, or focused-test claim without checking the relevant implementation.\n")
 		}
-		b.WriteString("\nReview the implementation against every criterion and the declared scope. " +
-			"A locally correct diff in the wrong subsystem, a missing deliverable, or unexplained " +
-			"footprint drift is blocking.\n\n")
+		if security {
+			b.WriteString("\nUse this scope only to identify trust boundaries and attack surface. " +
+				"Do not repeat the acceptance audit or require criterion assessments.\n\n")
+		} else {
+			b.WriteString("\nReview the implementation against every criterion and the declared scope. " +
+				"A locally correct diff in the wrong subsystem, a missing deliverable, or unexplained " +
+				"footprint drift is blocking.\n\n")
+		}
+	}
+
+	if len(prior) > 0 {
+		b.WriteString("## Prior blocking findings\n")
+		b.WriteString("This is a repair review. Re-evaluate every item independently and return resolved/unresolved evidence for each ID.\n")
+		for _, item := range prior {
+			fmt.Fprintf(&b, "- %s: %s", item.ID, item.Finding.Summary)
+			if item.Finding.File != "" {
+				fmt.Fprintf(&b, " (%s", item.Finding.File)
+				if item.Finding.Line > 0 {
+					fmt.Fprintf(&b, ":%d", item.Finding.Line)
+				}
+				b.WriteString(")")
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
 	}
 
 	b.WriteString("## Diff stat (tail)\n```\n")
@@ -387,7 +654,11 @@ func buildPrompt(branch, base, stat, names string, contract Contract) string {
 		" verdict as STRICT JSON inside a single ```json fenced block, and nothing" +
 		" after the closing fence, in exactly this shape:\n\n")
 	b.WriteString("```json\n")
-	b.WriteString(`{"blocking": <bool>, "criteria": [{"id": "AC1", "status": "satisfied|unsatisfied|not-applicable", "evidence": "<specific file/test/result>"}], "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}`)
+	if security {
+		b.WriteString(`{"blocking": <bool>, "prior_findings": [{"id": "PF-<stable-id>", "status": "resolved|unresolved", "evidence": "<specific file/test/result>"}], "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}`)
+	} else {
+		b.WriteString(`{"blocking": <bool>, "criteria": [{"id": "AC1", "status": "satisfied|unsatisfied|not-applicable", "evidence": "<specific file/test/result>"}], "prior_findings": [{"id": "PF-<stable-id>", "status": "resolved|unresolved", "evidence": "<specific file/test/result>"}], "security_review_required": <bool>, "security_evidence": "<why or empty>", "findings": [{"severity": "blocking|major|minor", "file": "<path>", "line": <1-based line or omit>, "summary": "<one line>"}]}`)
+	}
 	b.WriteString("\n```\n")
 	b.WriteString(`
 Include "line" (a 1-based line number in "file") when a finding is about a
@@ -400,47 +671,82 @@ finding must be fixed before this branch may merge. An empty findings list with
 	return b.String()
 }
 
-func splitAcceptance(raw string) []string {
-	raw = strings.ReplaceAll(raw, `\n`, "\n")
-	var out []string
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.TrimSpace(strings.TrimLeft(line, "-*•"))
-		if line != "" {
-			out = append(out, line)
-		}
-	}
-	return out
-}
-
-// enforceContract makes omission of the acceptance audit fail closed. The
-// reviewer may find no code defect and still block when it implemented the
-// wrong subsystem or skipped a required deliverable.
-func enforceContract(v *Verdict, criteria []string) {
-	if len(criteria) == 0 {
-		return
-	}
-	seen := make(map[string]CriterionAssessment, len(v.Criteria))
-	for _, assessment := range v.Criteria {
-		seen[strings.ToUpper(strings.TrimSpace(assessment.ID))] = assessment
-	}
-	for i := range criteria {
-		id := fmt.Sprintf("AC%d", i+1)
-		assessment, ok := seen[id]
-		status := strings.ToLower(strings.TrimSpace(assessment.Status))
-		evidence := strings.TrimSpace(assessment.Evidence)
-		if !ok || evidence == "" ||
-			(status != "satisfied" && status != "unsatisfied" && status != "not-applicable") {
+func enforcePriorFindings(v *Verdict, prior []priorBlockingFinding) {
+	if len(prior) == 0 {
+		if len(v.PriorFindings) > 0 {
 			v.Blocking = true
 			v.Findings = append(v.Findings, Finding{
 				Severity: "blocking",
-				Summary:  fmt.Sprintf("%s was not evaluated with a valid status and evidence", id),
+				Summary:  "review returned prior-finding assessments when no prior blockers were supplied",
+			})
+		}
+		return
+	}
+	seen := make(map[string]PriorFindingAssessment, len(v.PriorFindings))
+	duplicates := make(map[string]bool)
+	expected := make(map[string]bool, len(prior))
+	for _, item := range prior {
+		expected[canonicalPriorFindingID(item.ID)] = true
+	}
+	for _, assessment := range v.PriorFindings {
+		id := canonicalPriorFindingID(assessment.ID)
+		if _, exists := seen[id]; exists {
+			duplicates[id] = true
+		}
+		seen[id] = assessment
+		if !expected[id] {
+			v.Blocking = true
+			v.Findings = append(v.Findings, Finding{
+				Severity: "blocking",
+				Summary:  fmt.Sprintf("unexpected prior finding assessment %s", printableCriterionID(id)),
+			})
+		}
+	}
+	for id := range duplicates {
+		v.Blocking = true
+		v.Findings = append(v.Findings, Finding{
+			Severity: "blocking",
+			Summary:  id + " was evaluated more than once",
+		})
+	}
+	for _, item := range prior {
+		assessment, ok := seen[canonicalPriorFindingID(item.ID)]
+		status := strings.ToLower(strings.TrimSpace(assessment.Status))
+		if !ok || strings.TrimSpace(assessment.Evidence) == "" ||
+			(status != "resolved" && status != "unresolved") {
+			v.Blocking = true
+			v.Findings = append(v.Findings, Finding{
+				Severity: "blocking",
+				Summary:  item.ID + " was not re-evaluated with resolution evidence",
 			})
 			continue
 		}
-		if status == "unsatisfied" {
+		if status == "unresolved" {
 			v.Blocking = true
 		}
+	}
+}
+
+func canonicalPriorFindingID(id string) string {
+	return strings.ToLower(strings.TrimSpace(id))
+}
+
+func normalizeBlocking(v *Verdict) {
+	hasActionableBlocker := false
+	for i := range v.Findings {
+		v.Findings[i].Severity = strings.ToLower(strings.TrimSpace(v.Findings[i].Severity))
+		v.Findings[i].File = filepath.ToSlash(strings.TrimSpace(v.Findings[i].File))
+		v.Findings[i].Summary = strings.TrimSpace(v.Findings[i].Summary)
+		if blockingSeverity(v.Findings[i].Severity) {
+			hasActionableBlocker = true
+			v.Blocking = true
+		}
+	}
+	if v.Blocking && !hasActionableBlocker {
+		v.Findings = append(v.Findings, Finding{
+			Severity: "blocking",
+			Summary:  "reviewer marked the verdict blocking without an actionable blocking finding",
+		})
 	}
 }
 

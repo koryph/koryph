@@ -502,6 +502,11 @@ type ReviewConfig struct {
 	// parsing, but it is IGNORED during resolution; `koryph doctor` warns when it
 	// is set, pointing at timeout_seconds. Remove it from your config.
 	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty" jsonschema:"minimum=0"`
+
+	// HighRiskPaths adds repository-relative path prefixes that require the
+	// dedicated frontier security review after the standard acceptance review.
+	// Built-in enforcement surfaces remain active even when this list is empty.
+	HighRiskPaths []string `json:"high_risk_paths,omitempty"`
 }
 
 // Effective resolves the review block for this project (koryph-w82i). Safe on a
@@ -517,6 +522,7 @@ func (c *ReviewConfig) Effective() ReviewConfig {
 		out = *c
 	}
 	out.MaxTimeoutSeconds = 0
+	out.HighRiskPaths = append([]string(nil), out.HighRiskPaths...)
 	return out
 }
 
@@ -1298,6 +1304,14 @@ func validateReview(c *ReviewConfig) error {
 	}
 	if c.MaxTimeoutSeconds < 0 {
 		return fmt.Errorf("review.max_timeout_seconds must be >= 0, got %d", c.MaxTimeoutSeconds)
+	}
+	for i, raw := range c.HighRiskPaths {
+		prefix := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+		clean := path.Clean(prefix)
+		if prefix == "" || prefix == "." || path.IsAbs(prefix) ||
+			clean == ".." || strings.HasPrefix(clean, "../") {
+			return fmt.Errorf("review.high_risk_paths[%d] must be a repository-relative path prefix", i)
+		}
 	}
 	return nil
 }

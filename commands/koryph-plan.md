@@ -18,9 +18,7 @@ dependency wiring, conflict validation, routing) are scheduler-correctness
 work: a mislabeled footprint or a missed dependency edge causes a
 false-parallel dispatch and a merge conflict downstream, discovered by a
 broken build rather than by re-reading the plan. These steps require the
-**frontier reasoning tier of your agent runtime** — Claude Opus-class, or
-the equivalent top tier of whatever runtime you are (codex, cursor, grok
-build, ...).
+**frontier reasoning tier of your agent runtime**.
 
 1. Check what model you are running as (your own system context states it,
    or run `/model`).
@@ -70,13 +68,18 @@ build, ...).
      `/koryph-issue` may instead cite a concrete run/commit),
    - no architectural choice that the design's decision ledger should have
      resolved.
-   Put observable completion criteria in the bead's dedicated
-   `--acceptance` field. After drafting, compare description and acceptance
-   against the design decision ledger; stale or contradictory architecture is
-   a hard stop, not an implementer problem.
+   Put observable completion criteria in the bead's dedicated `--acceptance`
+   field as an ordered array in the scored snapshot and canonical lines when
+   filing: `AC1: ...`, `AC2: ...`. IDs are stable evidence keys. Write one
+   independently evaluable result per line; semicolon-packed criteria are
+   invalid. The parser may synthesize positional IDs only while adopting a
+   legacy plan; the strict post-file gate rejects wholly unnumbered fields, so
+   render those IDs explicitly before filing. After drafting, compare
+   description and acceptance against the design decision ledger; stale or
+   contradictory architecture is a hard stop, not an implementer problem.
    Put this machine-readable contract in the dedicated `--design` field:
    ```
-   koryph.unit/v1 kind=<implementation|integration> provides=<one-capability-slug> owns=<exact,path,prefixes> consumes=<provider-slugs-or-empty> [cohesion_reason=<why inseparable>] [routing_reason=<why default is insufficient>]
+   koryph.unit/v1 kind=<foundation|implementation|integration|docs|test|operator> provides=<one-capability-slug> owns=<exact,path,prefixes> consumes=<provider-slugs-or-empty> [cohesion_reason=<why inseparable>] [routing_reason=<why default is insufficient>]
    ```
    `provides` names exactly one observable outcome. `owns` contains exact
    repository file/package prefixes—never a broad root or glob. Every
@@ -152,10 +155,12 @@ build, ...).
      design, decomposition/scoring, security review, recovery analysis, and
      final eligible hard-block escalation — never routine implementation just
      because it touches important code.
-   - `refactor-core` on any bead touching the engine's own
-     dispatch/merge/governor loop, or a protected path — these are never
-     loop-dispatched (self-hosting safety rule); file them for the
-     orchestrating session to implement on main instead.
+   - Engine implementation is ordinary schedulable work against the installed
+     koryph binary. Give it honest `area:*`/`fp:*` write tokens and dependency
+     edges; do not add a permanent self-hosting exclusion.
+   - Split changes to protected governance paths from schedulable engine work.
+     Protected-path projection is an operator-owned `HUMAN:` step labeled
+     `no-dispatch`; it must not make the engine implementation unschedulable.
    - `no-dispatch` plus a `HUMAN:` title prefix for operator-only steps
      (credentials, external approvals, anything no agent can do).
 
@@ -164,7 +169,9 @@ build, ...).
    `schema_version`, design path, epic title/description/acceptance, every
    child title/type/description/design-unit-contract/acceptance/labels, every
    dependency edge, and predicted parallel width. This is scratch review
-   evidence, not task state.
+   evidence, not task state. Store every epic/child `acceptance` value as an
+   ordered JSON array of `{"id":"AC1","text":"..."}` objects, never as an
+   opaque paragraph.
    Have `koryph-plan-scorer` read the design and this exact snapshot. Apply at
    most one correction iteration and require `SHIP` before any bead becomes
    visible. The scorer is pinned `tier: frontier` at `effort: xhigh`; never
@@ -174,6 +181,8 @@ build, ...).
    `--validate`, then each child with `--parent <epic-id>`, dedicated
    `--design` unit contract, `--acceptance`, labels, and `--validate`; wire
    dependencies per step 5.
+   Render the scored acceptance array byte-for-byte as one `AC<n>: <text>`
+   line per criterion in `--acceptance`; do not join criteria with semicolons.
    Mechanical filing must reproduce the scored snapshot exactly. This part is
    mechanical — running already-decided commands is fine at any model
    tier.
@@ -195,11 +204,32 @@ build, ...).
        the decision ledger, descriptions, and acceptance fields, then return
        `SHIP`. Apply at most one correction iteration; otherwise leave the
        epic blocked for design revision.
+    3. Only after both keys return `SHIP`, authenticate the filed planning
+       evidence so bounded GC may eventually reclaim it. Compute SHA-256
+       digests of the exact pre-file snapshot and strict post-file JSON; resolve
+       the commit containing the design path; append
+       `planning-graph-digest: sha256:<post-file-digest>` to the epic's Beads
+       notes; then atomically write `<pre-file-snapshot>.filed.json`:
+       ```
+       {
+         "schema": "koryph.planning-snapshot/v1",
+         "epic_id": "<epic-id>",
+         "design_path": "docs/designs/<design>.md",
+         "design_commit": "<full git object id containing design_path>",
+         "snapshot_digest": "sha256:<64 lowercase hex>",
+         "graph_digest": "sha256:<64 lowercase hex of strict post-file JSON>",
+         "post_file_path": ".plan-logs/koryph-plan/<slug>.post.json"
+       }
+       ```
+       Never write the marker before the note and both post-file gates succeed.
+       GC validates every digest, the committed design blob, and the epic note;
+       a partial, forged, corrupt, or symlinked marker fails closed and retains
+       all planning evidence.
 
 11. **Report.** The epic id, total bead count, dependency edge count,
    achievable parallel width from step 6, and any residual serialization
-   with the reason (shared write token, `refactor-core`, `domain:unknown`,
-   or `no-dispatch`), plus the strict-gate result and semantic score.
+   with the reason (shared write token, `domain:unknown`, or `no-dispatch`),
+   plus the strict-gate result and semantic score.
 
 ## Worked example
 
@@ -215,8 +245,9 @@ Decomposition (labels drawn from this hypothetical project's own
 bd create --type epic --title "Add rate limiting to API server" \
   --description "Why: unbounded per-client request rate risks noisy-neighbor
 outages. Design: docs/designs/2026-06-rate-limiting.md." \
-  --acceptance "Every API route enforces configured per-client limits; unit,
-integration, and documentation gates pass." --validate --silent
+  --acceptance "AC1: Every API route enforces configured per-client limits.
+AC2: Unit and integration validation passes.
+AC3: Documentation validation passes." --validate --silent
 # -> EPIC=proj-101
 
 # Bead A: middleware — writes area:api only
@@ -226,7 +257,7 @@ bd create --parent proj-101 --type task \
 Done: a per-client token-bucket middleware in internal/api/middleware/
 with unit tests for burst and steady-state behavior." \
   --design "koryph.unit/v1 kind=implementation provides=rate-limit-middleware owns=internal/api/middleware consumes=" \
-  --acceptance "Burst and steady-state middleware tests pass." \
+  --acceptance "AC1: Burst and steady-state middleware tests pass." \
   --label area:api --validate --silent
 # -> A=proj-102
 
@@ -237,7 +268,7 @@ bd create --parent proj-101 --type task \
 Done: per-route limit fields in internal/config/, validated on load,
 with defaults matching the design doc's table." \
   --design "koryph.unit/v1 kind=implementation provides=rate-limit-config owns=internal/config consumes=" \
-  --acceptance "Schema validation and default tests pass." \
+  --acceptance "AC1: Schema validation and default tests pass." \
   --label area:config --validate --silent
 # -> B=proj-103
 
@@ -248,7 +279,7 @@ bd create --parent proj-101 --type task \
 Done: internal/api/server.go constructs the middleware from loaded
 config and registers it on every route." \
   --design "koryph.unit/v1 kind=implementation provides=rate-limit-startup owns=internal/api/server.go consumes=rate-limit-middleware,rate-limit-config" \
-  --acceptance "Every route receives configured rate limiting." \
+  --acceptance "AC1: Every route receives configured rate limiting." \
   --label area:api --validate --silent
 # -> C=proj-104
 bd dep add proj-104 --blocked-by proj-102
@@ -261,7 +292,7 @@ bd create --parent proj-101 --type task \
 Done: docs/user-guide/rate-limiting.md explains per-client limits and
 how to tune them via config." \
   --design "koryph.unit/v1 kind=implementation provides=rate-limit-guide owns=docs/user-guide/rate-limiting.md consumes=rate-limit-startup" \
-  --acceptance "The user guide documents configuration and tuning." \
+  --acceptance "AC1: The user guide documents configuration and tuning." \
   --label area:docs --label fp:read:api --label fp:read:config \
   --validate --silent
 # -> D=proj-105

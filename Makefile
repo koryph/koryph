@@ -18,7 +18,7 @@ BIN   := bin/koryph
 # the `-X` ldflags in .goreleaser.yaml.
 VERSION_PKG  := github.com/koryph/koryph/internal/version
 GIT_DESCRIBE  = $(shell git describe --tags --always --dirty --match 'v[0-9]*' 2>/dev/null)
-GIT_COMMIT    = $(shell git rev-parse --short HEAD 2>/dev/null)$(shell git diff --quiet HEAD 2>/dev/null || echo -dirty)
+GIT_COMMIT    = $(shell git rev-parse HEAD 2>/dev/null)$(shell test -z "$$(git status --porcelain=v1 --untracked-files=all 2>/dev/null)" || echo -dirty)
 BUILD_DATE    = $(shell git show -s --format=%cI HEAD 2>/dev/null)
 LDFLAGS       = -X $(VERSION_PKG).describe=$(GIT_DESCRIBE) -X $(VERSION_PKG).commit=$(GIT_COMMIT) -X $(VERSION_PKG).date=$(BUILD_DATE)
 

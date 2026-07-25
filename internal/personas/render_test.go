@@ -115,14 +115,13 @@ func TestInstallForRuntimeStubRendersTierPins(t *testing.T) {
 		}
 	}
 
-	// README.md carries no frontmatter at all, so it must be reported
-	// untiered and installed unchanged.
-	if !containsName(untiered, "README") {
-		t.Errorf("untiered = %v, want it to include README (no frontmatter)", untiered)
+	// README.md documents the canonical corpus but is never an executable
+	// persona projection.
+	if containsName(untiered, "README") {
+		t.Errorf("untiered = %v, README must not be treated as a persona", untiered)
 	}
-	readmeGot := mustReadFile(t, filepath.Join(root, ".claude", "agents", "README.md"))
-	if readmeGot != mustReadEmbedded(t, "README.md") {
-		t.Errorf("README.md was modified by rendering; want it left verbatim (no frontmatter)")
+	if _, err := os.Lstat(filepath.Join(root, ".claude", "agents", "README.md")); !os.IsNotExist(err) {
+		t.Errorf("README.md was installed as an executable persona")
 	}
 }
 
@@ -194,6 +193,40 @@ func TestInstallForRuntimeUnregisteredRuntimeFailsClosed(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(root, ".claude", "agents")); !os.IsNotExist(statErr) {
 		t.Errorf(".claude/agents was created despite the fail-closed error")
+	}
+}
+
+func TestEveryRuntimeRejectsInvalidCanonicalPersonaBeforeProjection(t *testing.T) {
+	const genericName = "personas-test-role-validation"
+	if err := runtime.Default.Register(runtimetest.Stub{
+		StubName: genericName,
+		Models: runtime.ModelMap{
+			runtime.TierStandard: "generic-standard",
+		},
+	}); err != nil {
+		t.Fatalf("Register(%s): %v", genericName, err)
+	}
+
+	for _, runtimeName := range []string{"claude", "codex", genericName} {
+		t.Run(runtimeName, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "agents", "koryph-implementer.md")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("---\ntier: standard\n---\nmissing role owner\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := personas.InstallForRuntime(root, false, runtimeName); err == nil ||
+				!strings.Contains(err.Error(), "koryph-implementer.md") {
+				t.Fatalf("invalid persona error = %v, want named fail-closed error", err)
+			}
+			for _, dir := range []string{".claude/agents", ".codex/agents"} {
+				if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
+					t.Errorf("%s was written before persona validation", dir)
+				}
+			}
+		})
 	}
 }
 

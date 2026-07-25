@@ -127,6 +127,7 @@ func fullConfig() *Config {
 		Review: &ReviewConfig{
 			TimeoutSeconds:    450,
 			MaxTimeoutSeconds: 900,
+			HighRiskPaths:     []string{"internal/payments/"},
 		},
 	}
 }
@@ -769,6 +770,9 @@ func TestReviewConfig_Validation(t *testing.T) {
 		{"timeout above old cap is valid (no ceiling)", &ReviewConfig{TimeoutSeconds: 1201}, ""},
 		{"large timeout is valid (no ceiling)", &ReviewConfig{TimeoutSeconds: 5000}, ""},
 		{"deprecated max above old cap is accepted", &ReviewConfig{MaxTimeoutSeconds: 1800}, ""},
+		{"relative high-risk prefix is valid", &ReviewConfig{HighRiskPaths: []string{"internal/payments/"}}, ""},
+		{"absolute high-risk prefix is rejected", &ReviewConfig{HighRiskPaths: []string{"/etc"}}, "repository-relative"},
+		{"escaping high-risk prefix is rejected", &ReviewConfig{HighRiskPaths: []string{"../secret"}}, "repository-relative"},
 		{"negative start is rejected", &ReviewConfig{TimeoutSeconds: -1}, "timeout_seconds must be >= 0"},
 		{"negative max is rejected", &ReviewConfig{MaxTimeoutSeconds: -1}, "max_timeout_seconds must be >= 0"},
 	}
@@ -852,7 +856,10 @@ func TestMergePrepare_Validation(t *testing.T) {
 func TestReviewConfig_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	c := Default("proj")
-	c.Review = &ReviewConfig{TimeoutSeconds: 450, MaxTimeoutSeconds: 900}
+	c.Review = &ReviewConfig{
+		TimeoutSeconds: 450, MaxTimeoutSeconds: 900,
+		HighRiskPaths: []string{"internal/payments/"},
+	}
 	if err := c.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -863,8 +870,9 @@ func TestReviewConfig_RoundTrip(t *testing.T) {
 	if got.Review == nil {
 		t.Fatal("Review: nil after round-trip, want non-nil")
 	}
-	if got.Review.TimeoutSeconds != 450 || got.Review.MaxTimeoutSeconds != 900 {
-		t.Errorf("Review after round-trip = %+v, want {450, 900}", got.Review)
+	if got.Review.TimeoutSeconds != 450 || got.Review.MaxTimeoutSeconds != 900 ||
+		len(got.Review.HighRiskPaths) != 1 || got.Review.HighRiskPaths[0] != "internal/payments/" {
+		t.Errorf("Review after round-trip = %+v, want timeout and high-risk path preserved", got.Review)
 	}
 }
 

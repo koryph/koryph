@@ -93,6 +93,39 @@ func TestResolveCodexExactAndPortableEquivalency(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsAmbiguousExplicitNativeModelAndRetainsUnambiguousTier(t *testing.T) {
+	_, err := Resolve(Req{
+		Runtime: "codex", Stage: StageImplement,
+		Labels: []string{"model:gpt-5.6-terra"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot translate exact model") {
+		t.Fatalf("ambiguous explicit model error = %v", err)
+	}
+
+	got, err := Resolve(Req{
+		Runtime: "codex", Stage: StageImplement,
+		Labels: []string{"model:" + runtime.CodexSolModel},
+	})
+	if err != nil {
+		t.Fatalf("unambiguous explicit model: %v", err)
+	}
+	if got.Model != runtime.CodexSolModel || got.Tier != runtime.TierFrontier {
+		t.Fatalf("unambiguous resolution = %+v, want Sol/frontier", got)
+	}
+
+	_, err = Resolve(Req{
+		Runtime: "claude", Stage: StageImplement, ExplicitModel: TierFable,
+		AllowedModels: fableAllowed,
+		ModelMap: map[string]string{
+			runtime.TierFrontier: TierFable,
+			runtime.TierStandard: TierFable,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot translate exact model") {
+		t.Fatalf("ambiguous explicit Fable mapping error = %v", err)
+	}
+}
+
 func TestResolveEquivalentTranslatesNativeAndStageSelections(t *testing.T) {
 	t.Run("unique Claude native model and effort map to Codex", func(t *testing.T) {
 		got, err := ResolveEquivalent(

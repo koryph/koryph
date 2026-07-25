@@ -4,20 +4,58 @@
 package engine
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"os"
+	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/koryph/koryph/internal/dispatch"
+	"github.com/koryph/koryph/internal/fsx"
+	"github.com/koryph/koryph/internal/gc"
 	"github.com/koryph/koryph/internal/govern"
+	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/resmon"
+	"github.com/koryph/koryph/internal/strictjson"
 	"github.com/koryph/koryph/internal/sysmem"
 )
 
 // The global concurrency governor caps concurrently running agents across ALL
 // projects (koryph-1xk) so independent `koryph run` processes cannot
-// collectively breach the Claude API rate limits. Every helper fails OPEN — a
-// governor error never blocks dispatch — because a stuck governor must not wedge
-// the engine; the cap is a safety rail, not a correctness dependency.
+// collectively breach the Claude API rate limits. Legacy cap helpers fail open
+// so a corrupt rate-limit rail cannot wedge the engine. Host-pressure admission
+// is deliberately fail-safe: losing current memory/count evidence reduces
+// concurrency rather than restoring unrestricted dispatch.
+
+const (
+	pressureStateName          = "pressure-state.json"
+	runtimeMemoryEstimatesName = "runtime-memory-estimates.json"
+)
+
+// durablePressureState is intentionally a run-local sidecar rather than a
+// ledger.Run field. Pressure state is engine control-plane state, not a slot
+// result, and a sidecar lets restart recovery preserve it without coupling a
+// safety-only additive checkpoint to the public ledger schema.
+type durablePressureState struct {
+	Schema        string               `json:"schema"`
+	LastGood      *sysmem.Stat         `json:"last_good,omitempty"`
+	PreviousFresh *sysmem.Stat         `json:"previous_fresh,omitempty"`
+	State         govern.PressureState `json:"state"`
+	ReliefHandled bool                 `json:"relief_handled,omitempty"`
+	ReliefPhaseID string               `json:"relief_phase_id,omitempty"`
+}
+
+// durableRuntimeMemoryEstimates carries the last accepted calibrated value
+// across runs. Fresh attempt evidence may propose a new value, but calibration
+// receives this prior so small changes remain suppressed by hysteresis.
+type durableRuntimeMemoryEstimates struct {
+	Schema    string         `json:"schema"`
+	Estimates map[string]int `json:"estimates"`
+}
 
 // poolKey is the governor pool every lease this engine constructs is admitted
 // against (koryph-v8u.11, L5c: independent governor pools — see internal/govern's
@@ -115,6 +153,80 @@ func (r *runner) memStat() (sysmem.Stat, bool) {
 	return stat, true
 }
 
+func (r *runner) pressureCheckpointPath() string {
+	if r.store == nil || r.run == nil || r.run.RunID == "" {
+		return ""
+	}
+	return filepath.Join(r.store.RunDir(r.run.RunID), pressureStateName)
+}
+
+// loadPressureState restores the last safe kernel reading and hysteresis state
+// once per runner. A malformed or unreadable sidecar is treated like no
+// last-good sample: the Darwin path degrades to one active machine agent rather
+// than turning corrupt safety state into unrestricted admission.
+func (r *runner) loadPressureState() {
+	if r.pressureLoaded {
+		return
+	}
+	r.pressureLoaded = true
+	path := r.pressureCheckpointPath()
+	if path == "" {
+		return
+	}
+	var saved durablePressureState
+	if err := fsx.ReadJSON(path, &saved); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			r.progress("warning: pressure-state checkpoint unreadable; using degraded admission: %v", err)
+		}
+		return
+	}
+	if saved.Schema != "koryph.pressure-state/v1" {
+		r.progress("warning: pressure-state checkpoint has unsupported schema %q; using degraded admission", saved.Schema)
+		return
+	}
+	r.pressureLastGood = saved.LastGood
+	r.pressurePreviousFresh = saved.PreviousFresh
+	r.pressureState = saved.State
+	r.pressureReliefHandled = saved.ReliefHandled
+	r.pressureReliefPhaseID = saved.ReliefPhaseID
+}
+
+func (r *runner) savePressureState() {
+	path := r.pressureCheckpointPath()
+	if path == "" {
+		return
+	}
+	saved := durablePressureState{
+		Schema:        "koryph.pressure-state/v1",
+		LastGood:      r.pressureLastGood,
+		PreviousFresh: r.pressurePreviousFresh,
+		State:         r.pressureState,
+		ReliefHandled: r.pressureReliefHandled,
+		ReliefPhaseID: r.pressureReliefPhaseID,
+	}
+	if err := fsx.WriteJSONAtomic(path, saved); err != nil {
+		r.progress("warning: could not checkpoint pressure admission state: %v", err)
+	}
+}
+
+func (r *runner) pressureClock() time.Time {
+	if r.pressureNow != nil {
+		return r.pressureNow().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// pressureAware reports whether this reading belongs to the new host-pressure
+// path. Explicit known-band test probes opt in on every platform. A real Darwin
+// probe always opts in, including on failure, so failure resolves through the
+// bounded last-good policy. Legacy injected/other-platform unknown-band probes
+// retain the historical conservative free-page gate.
+func (r *runner) pressureAware(stat sysmem.Stat) bool {
+	return stat.Pressure.Known() || r.pressureLastGood != nil ||
+		r.pressureState.Effective.Known() ||
+		(r.memProbe == nil && goruntime.GOOS == "darwin")
+}
+
 // memoryFloorMB resolves the effective memory admission floor in MB for a host
 // with totalMB physical memory (koryph-930). Resolution order:
 // KORYPH_MIN_FREE_MEMORY_MB env override, else the machine-wide governor pool
@@ -161,6 +273,10 @@ func (r *runner) memoryAdmits(beadID string) bool {
 	if !ok {
 		return true // no probe / unsupported platform → fail open
 	}
+	return r.memoryAdmitsStat(beadID, stat)
+}
+
+func (r *runner) memoryAdmitsStat(beadID string, stat sysmem.Stat) bool {
 	floorMB := r.memoryFloorMB(stat.TotalMB())
 	if floorMB <= 0 {
 		return true // gate disabled
@@ -286,35 +402,806 @@ func (r *runner) resourceCapacities() map[string]int {
 	return out
 }
 
+// liveAgentLeases returns every live governor lease across provider pools.
+// Observe performs one read-only, flocked inventory scan; the process table
+// itself is sampled separately and exactly once outside that lock.
+func (r *runner) liveAgentLeases() ([]govern.Lease, bool) {
+	if r.gov != nil {
+		obs, err := r.gov.Observe()
+		if err == nil {
+			var leases []govern.Lease
+			for _, pool := range obs.Pools {
+				for _, lease := range pool.Leases {
+					if lease.PID > 0 {
+						leases = append(leases, lease)
+					}
+				}
+			}
+			return leases, true
+		}
+	}
+
+	// This fallback is useful for a governor-less focused test and gives a
+	// best-effort local RSS view after an observation error. It is deliberately
+	// marked unknown: local slots cannot prove the machine-wide inventory.
+	var leases []govern.Lease
+	if r.run != nil {
+		for _, sl := range r.run.Slots {
+			if sl != nil && !ledger.Terminal(sl.Status) && sl.PID > 0 {
+				leases = append(leases, govern.Lease{
+					Project: r.opts.ProjectID, Bead: sl.BeadID, PID: sl.PID,
+					AcquiredAt: sl.DispatchedAt,
+				})
+			}
+		}
+	}
+	return leases, r.gov == nil
+}
+
+// admissionProcTable performs the one process-table sweep used both for live
+// cohort RSS and for identity-checking critical-pressure relief.
+func (r *runner) admissionProcTable() *resmon.ProcTable {
+	probe := r.resProbe
+	if probe == nil {
+		probe = resmon.Snapshot
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), resSampleTimeout)
+	defer cancel()
+	table, err := probe(ctx)
+	if err != nil {
+		return nil
+	}
+	return table
+}
+
+func (r *runner) currentRuntimeName() string {
+	if r.rt != nil && strings.TrimSpace(r.rt.Name()) != "" {
+		return r.rt.Name()
+	}
+	return "claude"
+}
+
+// pressureMemInput resolves exactly one kernel sample and one process snapshot
+// for a direct admission, then caches the result for the rest of this control
+// cadence. Poll-driven sampling calls pressureMemInputFromSnapshot with the
+// poll pass's existing process snapshot instead.
+func (r *runner) pressureMemInput(fresh sysmem.Stat, freshOK bool) govern.MemInput {
+	leases, inventoryKnown := r.liveAgentLeases()
+	table := r.admissionProcTable()
+	return r.pressureMemInputFromSnapshot(
+		r.pressureClock(), fresh, freshOK, table, leases, inventoryKnown,
+	)
+}
+
+func (r *runner) pressureMemInputFromSnapshot(
+	now time.Time,
+	fresh sysmem.Stat,
+	freshOK bool,
+	table *resmon.ProcTable,
+	leases []govern.Lease,
+	inventoryKnown bool,
+) govern.MemInput {
+	var probeErr error
+	if !freshOK {
+		probeErr = errors.New("sysmem: pressure probe failed")
+	}
+	sample, lastGood := sysmem.ResolvePressureSample(
+		now, fresh, probeErr, r.pressureLastGood, sysmem.DefaultLastGoodTTL,
+	)
+	r.pressureLastGood = lastGood
+
+	// A trend is meaningful only across consecutive fresh observations. Any
+	// last-good or degraded decision breaks the chain, so a later recovery does
+	// not compare counters across the blind interval.
+	var trend sysmem.Trend
+	if sample.Origin == sysmem.SampleFresh {
+		if r.pressurePreviousFresh != nil {
+			trend = sample.TrendFrom(*r.pressurePreviousFresh)
+		}
+		current := sample.Stat
+		r.pressurePreviousFresh = &current
+	} else {
+		r.pressurePreviousFresh = nil
+	}
+	freshKernelCritical := sample.Origin == sysmem.SampleFresh &&
+		sample.Pressure == sysmem.PressureCritical
+
+	policy := govern.PressurePolicy{}
+	sharedStateUnreadable := false
+	sharedEpisodeExists := false
+	sharedClaimExists := false
+	if r.gov != nil {
+		_, sharedEpisodeExists, probeErr = r.gov.PressureEpisodeStatus()
+		episodeErr := probeErr
+		_, sharedClaimExists, probeErr = r.gov.PressureReliefStatus()
+		claimErr := probeErr
+		if episodeErr != nil || claimErr != nil {
+			sharedStateUnreadable = true
+		}
+		if sharedEpisodeExists || sharedClaimExists || sharedStateUnreadable {
+			// Inherit the machine circuit before advancing this runner's
+			// hysteresis. Fresh-normal samples may recover it, but a fresh
+			// runner can never treat an existing or unreadable shared episode
+			// as an unrestricted host.
+			r.pressureState.CircuitOpen = true
+		}
+	}
+	transition := govern.AdvancePressure(r.pressureState, sample, trend, now, policy)
+	r.pressureState = transition.State
+	if transition.OpenCircuit {
+		r.pressureReliefHandled = false
+		r.pressureReliefPhaseID = ""
+		r.emitSafetyTripwire(
+			SafetyTripwireHostMemoryPressure,
+			"",
+			"persistent critical host-memory pressure opened admission circuit",
+		)
+	}
+	// Publishing is independent of the circuit edge so a restarted runner can
+	// migrate its run-local open sidecar and retry a transient write failure,
+	// but only while the current kernel sample still proves critical pressure.
+	// Stale hysteresis alone must not recreate an episode another runner already
+	// recovered during fresh-normal observations.
+	if r.pressureState.CircuitOpen && freshKernelCritical && !sharedEpisodeExists &&
+		!sharedStateUnreadable && r.gov != nil && r.run != nil {
+		if _, _, err := r.gov.OpenPressureEpisode(govern.PressureEpisodeRequest{
+			Project: r.opts.ProjectID, RunID: r.run.RunID,
+			EnginePID: os.Getpid(),
+		}); err != nil {
+			r.progress("pressure circuit: could not publish machine pressure episode: %v", err)
+		}
+	}
+
+	// Persist a newly opened circuit before signalling anything. Ordinary
+	// samples need only the final checkpoint below, avoiding two fsync-backed
+	// writes per candidate. If the engine dies after SIGTERM but before that
+	// final checkpoint, restart re-verifies the same PID identity before a
+	// harmless repeated graceful signal.
+	if transition.OpenCircuit {
+		r.savePressureState()
+	}
+
+	roots := make([]int, 0, len(leases))
+	for _, lease := range leases {
+		roots = append(roots, lease.PID)
+	}
+	live := resmon.LiveCohortUsage(table, roots)
+	if !inventoryKnown {
+		live.RSSKnown = false
+	}
+
+	// Target election and SIGTERM require the same current kernel proof as
+	// publication. transition.Effective may intentionally remain critical for
+	// several fresh-normal recovery samples and is not destructive authority.
+	if r.pressureState.CircuitOpen && freshKernelCritical &&
+		!r.pressureReliefHandled {
+		if len(roots) == 0 && inventoryKnown {
+			// coordinatePressureRelief still checks for an earlier global claim
+			// whose fixed target exited before its owner acknowledged it.
+			r.pressureReliefHandled, r.pressureReliefPhaseID =
+				r.coordinatePressureRelief(table, leases, freshKernelCritical)
+			if !r.pressureReliefHandled {
+				// No active cohort and no outstanding claim is already the safe
+				// post-action state.
+				r.pressureReliefHandled = true
+			}
+		} else if handled, phaseID := r.coordinatePressureRelief(
+			table, leases, freshKernelCritical,
+		); handled {
+			r.pressureReliefHandled = true
+			r.pressureReliefPhaseID = phaseID
+		}
+	}
+	if transition.ReliefReady && (r.gov != nil || r.pressureReliefHandled) {
+		recovered := r.recoverSharedPressureEpisode()
+		if recovered {
+			r.pressureState = govern.AcknowledgePressureRelief(r.pressureState, policy)
+			if !r.pressureState.CircuitOpen {
+				r.pressureReliefHandled = false
+				r.pressureReliefPhaseID = ""
+			}
+		}
+	} else if r.gov != nil && !r.pressureState.CircuitOpen &&
+		transition.Effective == sysmem.PressureNormal &&
+		r.pressureState.NormalSamples >= govern.DefaultRecoverySamples {
+		// A fresh run may not have observed the prior circuit edge, but three
+		// fresh normal samples still prove the machine episode recovered. Clear
+		// a tombstone left by an exited claim owner so a future, distinct
+		// pressure episode can elect one cohort.
+		r.recoverSharedPressureEpisode()
+	}
+	r.savePressureState()
+
+	sharedCircuitOpen := sharedStateUnreadable
+	if r.gov != nil {
+		_, episodeExists, episodeErr := r.gov.PressureEpisodeStatus()
+		_, claimExists, claimErr := r.gov.PressureReliefStatus()
+		sharedCircuitOpen = sharedCircuitOpen || episodeExists || claimExists
+		if episodeErr != nil || claimErr != nil {
+			// Shared pressure state is admission-authoritative. A read failure
+			// therefore keeps the host circuit open rather than letting a fresh
+			// runner's empty local sidecar restore unrestricted dispatch.
+			sharedCircuitOpen = true
+		}
+	}
+	floor := r.memoryFloorMB(sample.TotalMB())
+	mem := govern.MemInput{
+		FloorMB: floor,
+		Host: &govern.HostInput{
+			Sample:            sample,
+			Trend:             trend,
+			EffectivePressure: transition.Effective,
+			CircuitOpen:       r.pressureState.CircuitOpen || sharedCircuitOpen,
+			LiveRSSMB:         live.RSSMB,
+			LiveRSSKnown:      live.RSSKnown,
+			ObservedEstimateMB: r.runtimeMemoryEstimate(
+				r.currentRuntimeName(),
+			),
+			Policy: policy,
+		},
+	}
+	r.pressureSampleAt = now
+	r.pressureSampleInput = mem
+	r.pressureSampleValid = true
+	return mem
+}
+
+func (r *runner) pressureControlInterval() time.Duration {
+	if r.pressureSampleInterval > 0 {
+		return r.pressureSampleInterval
+	}
+	return max(r.pollInterval(), resMinSampleInterval)
+}
+
+func (r *runner) cachedPressureMemInput(now time.Time) (govern.MemInput, bool) {
+	if !r.pressureSampleValid || r.pressureSampleAt.IsZero() {
+		return govern.MemInput{}, false
+	}
+	age := now.Sub(r.pressureSampleAt)
+	if age < 0 || age >= r.pressureControlInterval() {
+		return govern.MemInput{}, false
+	}
+	return r.pressureSampleInput, true
+}
+
+// pollPressureControl advances machine-pressure hysteresis on the poll cadence
+// even while slot saturation means no admission is attempted. It consumes the
+// process table already sampled by pollPass; it never starts a second process
+// probe for the same cadence.
+func (r *runner) pollPressureControl(table *resmon.ProcTable) {
+	r.loadPressureState()
+	now := r.pressureClock()
+	if _, ok := r.cachedPressureMemInput(now); ok {
+		return
+	}
+	fresh, freshOK := r.memStat()
+	if !r.pressureAware(fresh) {
+		return
+	}
+	leases, inventoryKnown := r.liveAgentLeases()
+	r.pressureMemInputFromSnapshot(
+		now, fresh, freshOK, table, leases, inventoryKnown,
+	)
+}
+
+// recoverSharedPressureEpisode compare-and-deletes the exact shared episode
+// after fresh-normal hysteresis. A targetless episode can recover directly; an
+// episode with a relief claim requires that exact claim to be acknowledged.
+// A paused owner therefore retains its immutable target until it finishes.
+func (r *runner) recoverSharedPressureEpisode() bool {
+	if r.gov == nil {
+		return true
+	}
+	episode, episodeExists, err := r.gov.PressureEpisodeStatus()
+	if err != nil {
+		r.progress("pressure circuit: could not read recovered machine pressure episode: %v", err)
+		return false
+	}
+	claim, claimExists, err := r.gov.PressureReliefStatus()
+	if err != nil {
+		r.progress("pressure circuit: could not read recovered machine relief claim: %v", err)
+		return false
+	}
+	if episodeExists {
+		expectedClaimID := ""
+		if claimExists {
+			if claim.AcknowledgedAt == "" {
+				return false
+			}
+			expectedClaimID = claim.ID
+		}
+		recovered, err := r.gov.RecoverPressureEpisode(episode.ID, expectedClaimID)
+		if err != nil {
+			r.progress("pressure circuit: could not clear recovered machine pressure episode: %v", err)
+			return false
+		}
+		return recovered
+	}
+	if !claimExists {
+		return true
+	}
+	if claim.AcknowledgedAt == "" {
+		return false
+	}
+	// Compatibility for a target-bearing claim written before independent
+	// pressure-episode publication existed.
+	recovered, err := r.gov.RecoverPressureRelief(claim.ID)
+	if err != nil {
+		r.progress("pressure circuit: could not clear recovered legacy machine relief claim: %v", err)
+		return false
+	}
+	return recovered
+}
+
+// coordinatePressureRelief elects the newest actually recoverable cohort from
+// all registered active run ledgers, then serializes the action through the
+// governor's machine-global claim. An acknowledged claim remains a tombstone
+// until normal recovery, so concurrent runs cannot sequentially SIGTERM local
+// cohorts from the same persistent-pressure episode. freshKernelCritical is an
+// explicit destructive-action proof at the function boundary; hysteretic or
+// persisted critical state alone cannot elect or signal a target.
+func (r *runner) coordinatePressureRelief(
+	table *resmon.ProcTable,
+	leases []govern.Lease,
+	freshKernelCritical bool,
+) (bool, string) {
+	if !freshKernelCritical || table == nil || r.run == nil {
+		return false, ""
+	}
+
+	var target govern.PressureReliefTarget
+	if r.gov != nil {
+		claim, exists, err := r.gov.PressureReliefStatus()
+		if err != nil {
+			r.progress("pressure circuit: could not read machine relief claim: %v", err)
+			return false, ""
+		}
+		if exists {
+			if claim.AcknowledgedAt != "" {
+				return true, claim.Target.PhaseID
+			}
+			target = claim.Target
+		}
+	}
+	if target.PID == 0 {
+		var ok bool
+		target, ok = r.newestRecoverablePressureTarget(table, leases)
+		if !ok {
+			return false, ""
+		}
+	}
+
+	ownerProject := r.opts.ProjectID
+	ownerRunID := r.run.RunID
+	ownerPID := os.Getpid()
+	ownerIdentity, ownerIdentityKnown := table.ProcessIdentity(ownerPID)
+	if !ownerIdentityKnown || ownerIdentity == "" {
+		return false, ""
+	}
+	if r.gov != nil {
+		observedOwnerIdentity := ""
+		if claim, exists, err := r.gov.PressureReliefStatus(); err != nil {
+			r.progress("pressure circuit: could not re-read machine relief claim: %v", err)
+			return false, ""
+		} else if exists {
+			observedOwnerIdentity, _ = table.ProcessIdentity(claim.OwnerEnginePID)
+		}
+		claim, acquired, err := r.gov.ClaimPressureRelief(govern.PressureReliefRequest{
+			OwnerProject:                 ownerProject,
+			OwnerRunID:                   ownerRunID,
+			OwnerEnginePID:               ownerPID,
+			OwnerProcessIdentity:         ownerIdentity,
+			ObservedOwnerProcessIdentity: observedOwnerIdentity,
+			Target:                       target,
+		})
+		if err != nil {
+			r.progress("pressure circuit: could not claim machine relief action: %v", err)
+			return false, ""
+		}
+		if claim.AcknowledgedAt != "" {
+			return true, claim.Target.PhaseID
+		}
+		if !acquired {
+			return false, ""
+		}
+		target = claim.Target // takeover always preserves the original target
+	}
+
+	// A complete snapshot can prove the fixed target exited or its PID was
+	// recycled. That is a handled relief action: never signal the replacement.
+	_, processPresent := table.Aggregate(target.PID)
+	actualIdentity, identityKnown := table.ProcessIdentity(target.PID)
+	if !processPresent || (identityKnown && actualIdentity != target.ProcessIdentity) {
+		if r.acknowledgePressureRelief(
+			target, ownerProject, ownerRunID, ownerPID, ownerIdentity,
+		) {
+			return true, target.PhaseID
+		}
+		return false, ""
+	}
+	if !identityKnown || actualIdentity != target.ProcessIdentity ||
+		!r.pressureTargetRecoverable(target, table) {
+		return false, ""
+	}
+
+	stop := r.pressureStop
+	if stop == nil {
+		stop = dispatch.StopGraceful
+	}
+	if err := stop(target.PID); err != nil {
+		r.progress("pressure circuit: could not gracefully stop recoverable bead %s: %v",
+			target.BeadID, err)
+		return false, ""
+	}
+	if !r.acknowledgePressureRelief(
+		target, ownerProject, ownerRunID, ownerPID, ownerIdentity,
+	) {
+		return false, ""
+	}
+	r.progress("pressure circuit: gracefully stopping newest recoverable bead %s (pid %d); worktree preserved",
+		target.BeadID, target.PID)
+	return true, target.PhaseID
+}
+
+func (r *runner) acknowledgePressureRelief(
+	target govern.PressureReliefTarget,
+	ownerProject, ownerRunID string,
+	ownerPID int,
+	ownerIdentity string,
+) bool {
+	if r.gov == nil {
+		return true
+	}
+	claim, exists, err := r.gov.PressureReliefStatus()
+	if err != nil || !exists {
+		return false
+	}
+	if err := r.gov.AcknowledgePressureReliefClaim(
+		claim.ID, ownerProject, ownerRunID, ownerPID, ownerIdentity,
+	); err != nil {
+		r.progress("pressure circuit: graceful relief completed but acknowledgement failed for bead %s: %v",
+			target.BeadID, err)
+		return false
+	}
+	return true
+}
+
+func (r *runner) newestRecoverablePressureTarget(
+	table *resmon.ProcTable,
+	leases []govern.Lease,
+) (govern.PressureReliefTarget, bool) {
+	var newest govern.PressureReliefTarget
+	var newestAt time.Time
+	for _, lease := range leases {
+		target, ok := r.pressureTargetForLease(lease, table)
+		if !ok {
+			continue
+		}
+		at := parsePressureTime(target.DispatchedAt)
+		if newest.PID == 0 || at.After(newestAt) ||
+			(at.Equal(newestAt) &&
+				(target.Project > newest.Project ||
+					(target.Project == newest.Project && target.PhaseID > newest.PhaseID))) {
+			newest, newestAt = target, at
+		}
+	}
+	return newest, newest.PID > 0
+}
+
+func parsePressureTime(value string) time.Time {
+	at, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
+}
+
+func (r *runner) pressureTargetForLease(
+	lease govern.Lease,
+	table *resmon.ProcTable,
+) (govern.PressureReliefTarget, bool) {
+	if lease.PID <= 0 {
+		return govern.PressureReliefTarget{}, false
+	}
+	if lease.Project == r.opts.ProjectID && r.run != nil {
+		if target, ok := r.pressureTargetFromRun(lease, r.run, table); ok {
+			return target, true
+		}
+	}
+	store := r.pressureLedgerStore(lease.Project)
+	if store == nil {
+		return govern.PressureReliefTarget{}, false
+	}
+	runIDs, err := store.ListRuns()
+	if err != nil {
+		return govern.PressureReliefTarget{}, false
+	}
+	for _, runID := range runIDs {
+		if r.run != nil && lease.Project == r.opts.ProjectID && runID == r.run.RunID {
+			continue
+		}
+		run, err := store.LoadRun(runID)
+		if err != nil {
+			continue
+		}
+		if target, ok := r.pressureTargetFromRun(lease, run, table); ok {
+			return target, true
+		}
+	}
+	return govern.PressureReliefTarget{}, false
+}
+
+func (r *runner) pressureTargetFromRun(
+	lease govern.Lease,
+	run *ledger.Run,
+	table *resmon.ProcTable,
+) (govern.PressureReliefTarget, bool) {
+	for _, sl := range run.Slots {
+		if sl == nil || sl.BeadID != lease.Bead || sl.PID != lease.PID {
+			continue
+		}
+		target := govern.PressureReliefTarget{
+			Project: lease.Project, RunID: run.RunID, PhaseID: sl.PhaseID,
+			BeadID: sl.BeadID, PID: sl.PID, ProcessIdentity: sl.ProcessIdentity,
+			DispatchedAt: sl.DispatchedAt,
+		}
+		if r.pressureSlotRecoverable(sl, table) {
+			return target, true
+		}
+	}
+	return govern.PressureReliefTarget{}, false
+}
+
+func (r *runner) pressureTargetRecoverable(
+	target govern.PressureReliefTarget,
+	table *resmon.ProcTable,
+) bool {
+	var run *ledger.Run
+	if target.Project == r.opts.ProjectID && r.run != nil &&
+		target.RunID == r.run.RunID {
+		run = r.run
+	} else {
+		store := r.pressureLedgerStore(target.Project)
+		if store == nil {
+			return false
+		}
+		var err error
+		run, err = store.LoadRun(target.RunID)
+		if err != nil {
+			return false
+		}
+	}
+	sl := run.Slots[target.PhaseID]
+	if sl == nil {
+		for _, candidate := range run.Slots {
+			if candidate != nil && candidate.BeadID == target.BeadID &&
+				candidate.PID == target.PID {
+				sl = candidate
+				break
+			}
+		}
+	}
+	return sl != nil && sl.ProcessIdentity == target.ProcessIdentity &&
+		r.pressureSlotRecoverable(sl, table)
+}
+
+func (r *runner) pressureSlotRecoverable(
+	sl *ledger.Slot,
+	table *resmon.ProcTable,
+) bool {
+	if sl == nil || ledger.Terminal(sl.Status) || sl.PID <= 0 ||
+		sl.ProcessIdentity == "" || sl.VerifiedIdentity == "" ||
+		sl.Worktree == "" || parsePressureTime(sl.DispatchedAt).IsZero() ||
+		!table.MatchesProcess(sl.PID, sl.ProcessIdentity) {
+		return false
+	}
+	info, err := os.Stat(sl.Worktree)
+	return err == nil && info.IsDir()
+}
+
+func (r *runner) pressureLedgerStore(projectID string) *ledger.Store {
+	if r.reg == nil {
+		return nil
+	}
+	rec, err := r.reg.Get(projectID)
+	if err != nil {
+		return nil
+	}
+	return ledger.NewStore(rec.Root)
+}
+
+// runtimeMemoryEstimate calibrates once per run from recent accepted attempts.
+// An attempt is eligible only when command evidence proves it did not repeat a
+// broad validation command; missing/malformed evidence is conservatively
+// excluded rather than teaching admission from a possibly inflated RSS peak.
+func (r *runner) runtimeMemoryEstimate(runtimeName string) int {
+	if !r.memoryCalibrationLoaded {
+		r.loadRuntimeMemoryEstimates()
+	}
+	return r.memoryEstimates[runtimeName]
+}
+
+func (r *runner) loadRuntimeMemoryEstimates() {
+	r.memoryCalibrationLoaded = true
+	r.memoryEstimates = r.readRuntimeMemoryEstimates()
+	if r.store == nil {
+		return
+	}
+	runIDs, err := r.store.ListRuns()
+	if err != nil {
+		return
+	}
+	samples := map[string][]resmon.AttemptMemory{}
+	for _, runID := range runIDs {
+		run, err := r.store.LoadRun(runID)
+		if err != nil {
+			continue
+		}
+		for _, sl := range run.Slots {
+			if sl == nil || sl.PeakRSSMB <= 0 || sl.ResourceSamples <= 0 ||
+				!acceptedMemoryOutcome(sl.Status) {
+				continue
+			}
+			finished, err := time.Parse(time.RFC3339, sl.FinishedAt)
+			if err != nil {
+				finished, err = time.Parse(time.RFC3339Nano, sl.FinishedAt)
+			}
+			if err != nil {
+				continue
+			}
+			duplicate, proven := r.duplicateBroadCommand(runID, sl.PhaseID)
+			runtimeName := sl.Runtime
+			if runtimeName == "" {
+				runtimeName = "claude"
+			}
+			samples[runtimeName] = append(samples[runtimeName], resmon.AttemptMemory{
+				Runtime:               runtimeName,
+				PeakMB:                sl.PeakRSSMB,
+				Successful:            true,
+				DuplicateBroadCommand: duplicate || !proven,
+				FinishedAt:            finished,
+			})
+		}
+	}
+	for runtimeName, attempts := range samples {
+		current := r.memoryEstimates[runtimeName]
+		estimate := resmon.CalibrateRuntimeEstimate(
+			runtimeName, current, attempts, resmon.EstimatePolicy{},
+		)
+		if estimate.EstimateMB > 0 {
+			r.memoryEstimates[runtimeName] = estimate.EstimateMB
+		}
+	}
+	r.persistRuntimeMemoryEstimates()
+}
+
+func (r *runner) runtimeMemoryEstimatesPath() string {
+	if r.store == nil {
+		return ""
+	}
+	return filepath.Join(r.store.KoryphRoot, runtimeMemoryEstimatesName)
+}
+
+func (r *runner) readRuntimeMemoryEstimates() map[string]int {
+	estimates := map[string]int{}
+	path := r.runtimeMemoryEstimatesPath()
+	if path == "" {
+		return estimates
+	}
+	var saved durableRuntimeMemoryEstimates
+	if err := fsx.ReadJSON(path, &saved); err != nil ||
+		saved.Schema != "koryph.runtime-memory-estimates/v1" {
+		return estimates
+	}
+	for runtimeName, estimate := range saved.Estimates {
+		if strings.TrimSpace(runtimeName) != "" && estimate > 0 {
+			estimates[runtimeName] = estimate
+		}
+	}
+	return estimates
+}
+
+func (r *runner) persistRuntimeMemoryEstimates() {
+	path := r.runtimeMemoryEstimatesPath()
+	if path == "" || len(r.memoryEstimates) == 0 {
+		return
+	}
+	saved := durableRuntimeMemoryEstimates{
+		Schema:    "koryph.runtime-memory-estimates/v1",
+		Estimates: r.memoryEstimates,
+	}
+	if err := fsx.WriteJSONAtomic(path, saved); err != nil {
+		r.progress("warning: could not persist runtime memory estimates: %v", err)
+	}
+}
+
+func acceptedMemoryOutcome(status string) bool {
+	switch status {
+	case ledger.SlotMerged, ledger.SlotPROpened, ledger.SlotDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *runner) duplicateBroadCommand(runID, phaseID string) (duplicate, proven bool) {
+	path := filepath.Join(r.store.KoryphRoot, runID, phaseID, ".koryph-command", "events.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return false, false
+	}
+	defer f.Close()
+
+	seenStart := map[string]bool{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var event resmon.CommandEvent
+		if err := strictjson.Decode(scanner.Bytes(), &event); err != nil {
+			return false, false
+		}
+		if event.Class != resmon.CommandBroad && event.Class != resmon.CommandGate {
+			continue
+		}
+		proven = true
+		if event.Event == "reuse" {
+			duplicate = true
+		}
+		if event.Event == "start" {
+			if seenStart[event.Signature] {
+				duplicate = true
+			}
+			seenStart[event.Signature] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, false
+	}
+	// An existing, valid event stream with no broad command is still evidence
+	// that this attempt did not duplicate one.
+	return duplicate, true
+}
+
 // acquireGlobalSlot reserves a global concurrency slot for beadID (keyed to the
 // project+bead under this engine's pid; the agent pid is attached later by
 // holdGlobalSlot), passing the bead's resolved resource kinds and memory
 // reservation (koryph-4ql.3, L2/L5) so the flocked governor can apply the
 // cross-pool capacity and reservation-aware memory clauses. Returns a typed
-// verdict (admitGranted / admitSkip / admitBreak); every error path fails OPEN
-// (admitGranted) because the governor is a safety rail, not a correctness
-// dependency (I6).
+// verdict (admitGranted / admitSkip / admitBreak). Legacy governor errors fail
+// open for compatibility; pressure-aware errors fail safe with a typed
+// pressure deferral because losing the machine inventory must not restore
+// unrestricted dispatch.
 func (r *runner) acquireGlobalSlot(beadID string, kinds []string, memReserveMB int) admitVerdict {
-	// Memory admission gate (koryph-930): refuse to stack another agent's
-	// subprocess+worktree when the host is already under memory pressure.
-	// Checked BEFORE the flocked governor Acquire so the (possibly
-	// subprocess-backed) memory probe never runs while holding the machine-wide
-	// lock (I7). A candidate-agnostic floor breach is machine-wide → break.
-	if !r.memoryAdmits(beadID) {
-		return admitBreak
-	}
-	if r.gov == nil {
-		return admitGranted
-	}
-	// Reservation-aware memory reading (L5), resolved OUTSIDE the flock (I7) and
-	// handed to AcquireEx, which subtracts every engine's ramping reservations
-	// under the lock. No usable reading (or a disabled floor) → MemInput{}, which
-	// skips the memory clause and keeps only the capacity clause (fail open, I6).
+	r.loadPressureState()
+
+	// Exactly one kernel sample is resolved for this candidate. The legacy path
+	// feeds that same reading to both the pre-governor floor and reservation
+	// clauses; the Darwin path derives hysteresis/trend from it and never falls
+	// back to a second, potentially contradictory probe.
 	var mem govern.MemInput
-	if stat, ok := r.memStat(); ok {
-		if floor := r.memoryFloorMB(stat.TotalMB()); floor > 0 {
-			mem = govern.MemInput{AvailMB: stat.AvailableMB(), FloorMB: floor}
+	pressureAware := false
+	if cached, ok := r.cachedPressureMemInput(r.pressureClock()); ok {
+		mem = cached
+		pressureAware = true
+	} else {
+		stat, statOK := r.memStat()
+		pressureAware = r.pressureAware(stat)
+		if pressureAware {
+			mem = r.pressureMemInput(stat, statOK)
+		} else if statOK {
+			if !r.memoryAdmitsStat(beadID, stat) {
+				return admitBreak
+			}
+			if floor := r.memoryFloorMB(stat.TotalMB()); floor > 0 {
+				mem = govern.MemInput{AvailMB: stat.AvailableMB(), FloorMB: floor}
+			}
 		}
+	}
+
+	if r.gov == nil {
+		if pressureAware {
+			return r.standalonePressureVerdict(beadID, memReserveMB, mem)
+		}
+		return admitGranted
 	}
 	res, err := r.gov.AcquireEx(govern.Lease{
 		Project:      r.opts.ProjectID,
@@ -325,10 +1212,72 @@ func (r *runner) acquireGlobalSlot(beadID string, kinds []string, memReserveMB i
 		MemReserveMB: memReserveMB,
 	}, mem)
 	if err != nil {
+		if pressureAware {
+			r.progress("bead %s: deferring dispatch — pressure governor unavailable: %v", beadID, err)
+			logDeferral(beadID, "pressure governor unavailable", "memory-pressure")
+			return admitBreak
+		}
 		r.progress("bead %s: global governor error (allowing dispatch): %v", beadID, err)
 		return admitGranted
 	}
 	return r.classifyAdmit(beadID, memReserveMB, res)
+}
+
+// standalonePressureVerdict preserves fail-safe host behavior in focused tests
+// and degenerate runners without a governor store. Production runners use
+// AcquireEx so cross-engine counts and ramp reservations remain authoritative.
+func (r *runner) standalonePressureVerdict(
+	beadID string,
+	memReserveMB int,
+	mem govern.MemInput,
+) admitVerdict {
+	host := mem.Host
+	if host == nil {
+		return admitGranted
+	}
+	active := 0
+	if r.run != nil {
+		for _, sl := range r.run.Slots {
+			if sl != nil && !ledger.Terminal(sl.Status) && sl.PID > 0 {
+				active++
+			}
+		}
+	}
+	pressure := host.EffectivePressure
+	if !pressure.Known() {
+		pressure = host.Sample.Pressure
+	}
+	if host.CircuitOpen || pressure == sysmem.PressureWarning ||
+		pressure == sysmem.PressureCritical ||
+		(host.Sample.Origin == sysmem.SampleDegraded && active >= 1) ||
+		(!host.LiveRSSKnown && active >= 1) {
+		return r.classifyAdmit(beadID, memReserveMB, govern.AdmitResult{
+			Outcome:     govern.AdmitDeniedPressure,
+			Pressure:    pressure,
+			ProbeOrigin: host.Sample.Origin,
+			CircuitOpen: host.CircuitOpen,
+			Detail:      "standalone-pressure",
+			LiveRSSMB:   host.LiveRSSMB,
+		})
+	}
+	candidateMB := memReserveMB
+	if host.ObservedEstimateMB > candidateMB {
+		candidateMB = host.ObservedEstimateMB
+	}
+	budget := int(host.Sample.TotalMB()) - mem.FloorMB
+	if budget > 0 && host.LiveRSSMB+candidateMB > budget {
+		return r.classifyAdmit(beadID, memReserveMB, govern.AdmitResult{
+			Outcome:           govern.AdmitDeniedReservation,
+			CandidateTipped:   host.LiveRSSMB <= budget,
+			Pressure:          pressure,
+			ProbeOrigin:       host.Sample.Origin,
+			Detail:            "standalone-reservation-budget",
+			LiveRSSMB:         host.LiveRSSMB,
+			CandidateMemoryMB: candidateMB,
+			MemoryBudgetMB:    budget,
+		})
+	}
+	return admitGranted
 }
 
 // classifyAdmit maps a govern.AdmitResult to an engine admitVerdict (koryph-4ql.3,
@@ -361,7 +1310,24 @@ func (r *runner) classifyAdmit(beadID string, memReserveMB int, res govern.Admit
 		}
 		// Pure floor breach: even a zero-reserve bead fails → machine-wide break.
 		return admitBreak
-	default: // AdmitDeniedCap and any unknown outcome: machine-wide → break.
+	case govern.AdmitDeniedPressure:
+		r.progress("bead %s: deferring dispatch — host memory pressure (%s, origin=%s, detail=%s, live_rss=%d MB, circuit_open=%t)",
+			beadID, res.Pressure, res.ProbeOrigin, res.Detail, res.LiveRSSMB, res.CircuitOpen)
+		logDeferral(beadID, "host memory pressure: "+res.Detail, "memory-pressure")
+		return admitBreak
+	case govern.AdmitDeniedReservation:
+		r.progress("bead %s: deferred — memory reservation budget (%d MB live + %d MB ramp + %d MB candidate > %d MB budget)",
+			beadID, res.LiveRSSMB, res.ReservedMB, res.CandidateMemoryMB, res.MemoryBudgetMB)
+		logDeferral(beadID, "memory reservation budget", "memory-reservation")
+		if res.CandidateTipped {
+			return admitSkip
+		}
+		return admitBreak
+	case govern.AdmitDeniedCap:
+		logDeferral(beadID, "global governor cap", "global-cap")
+		return admitBreak
+	default:
+		logDeferral(beadID, "unknown governor denial", "governor-unknown")
 		return admitBreak
 	}
 }
@@ -393,6 +1359,11 @@ func (r *runner) holdGlobalSlot(beadID string, agentPID int, model string, kinds
 // releaseGlobalSlot frees the bead's global slot at a terminal transition.
 // Idempotent — safe to call on any path that ends a slot's active life.
 func (r *runner) releaseGlobalSlot(beadID string) {
+	if r.run != nil && r.rec != nil {
+		if err := gc.PruneTerminalSlotScratch(r.rec.Root, r.run.RunID, beadID); err != nil {
+			r.progress("bead %s: terminal scratch cleanup deferred: %v", beadID, err)
+		}
+	}
 	if r.gov == nil {
 		return
 	}

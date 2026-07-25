@@ -56,8 +56,15 @@ func (s *eventStream) Next() (runtime.Event, bool, error) {
 		case "turn.completed":
 			ev := runtime.Event{Kind: runtime.EventResult, Raw: raw}
 			if in.Usage != nil {
-				ev.InputTokens, ev.CacheReadTokens, ev.OutputTokens = in.Usage.InputTokens, in.Usage.CachedInputTokens, in.Usage.OutputTokens
+				providerTotal := max(in.Usage.InputTokens, 0)
+				cached := max(in.Usage.CachedInputTokens, 0)
+				ev.InputTokens = max(providerTotal-cached, 0)
+				ev.CacheReadTokens = cached
+				ev.OutputTokens = max(in.Usage.OutputTokens, 0)
 				ev.HasUsage = true
+				ev.TokenSemantics = runtime.TokenSemanticsDisjointV1
+				ev.ProviderTotalInputTokens = providerTotal
+				ev.HasProviderTotalInput = true
 			}
 			return ev, true, nil
 		case "error", "turn.failed":

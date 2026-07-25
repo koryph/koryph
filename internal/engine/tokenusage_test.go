@@ -6,10 +6,14 @@ package engine
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/ledger"
+	"github.com/koryph/koryph/internal/runtime"
+	"github.com/koryph/koryph/internal/runtime/codex"
 )
 
 // tokenUsageClaudeScript acts like fakeClaudeScript but its result line also
@@ -55,6 +59,34 @@ func TestCompleteSlotPersistsTokenUsageFromResultLine(t *testing.T) {
 	}
 	if sl.InputTokens != 1000 || sl.OutputTokens != 50 || sl.CacheReadTokens != 8000 || sl.CacheCreationTokens != 200 {
 		t.Errorf("slot token composition = %+v, want 1000/50/8000/200", sl)
+	}
+}
+
+func TestParseRuntimeSignalsPreservesCodexNormalizationAndAudit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex.jsonl")
+	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":3}}` + "\n")
+	if err := os.WriteFile(path, line, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	signals := parseRuntimeSignals(codex.New(""), path)
+	usage, ok := signals.usage()
+	if !ok {
+		t.Fatal("parseRuntimeSignals returned no usage")
+	}
+	if usage.InputTokens != 6 || usage.CacheReadTokens != 4 || usage.OutputTokens != 3 {
+		t.Fatalf("normalized usage = %+v, want fresh/cache/output 6/4/3", usage)
+	}
+	if usage.TokenSemantics != runtime.TokenSemanticsDisjointV1 {
+		t.Fatalf("TokenSemantics = %q, want %q",
+			usage.TokenSemantics, runtime.TokenSemanticsDisjointV1)
+	}
+	if usage.ProviderTotalInputTokens != 10 || !usage.HasProviderTotalInput {
+		t.Fatalf("provider-total audit = %d present:%v, want 10/true",
+			usage.ProviderTotalInputTokens, usage.HasProviderTotalInput)
+	}
+	if total := totalAttemptTokens(usage); total != 13 {
+		t.Fatalf("normalized attempt total = %d, want 6+4+3=13", total)
 	}
 }
 
@@ -168,12 +200,20 @@ func TestApplyTokenUsageAccumulates(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r := runnerFromFixture(t, f)
 
-	sl := &ledger.Slot{PhaseID: "tb1", Status: ledger.SlotRunning, InputTokens: 100, OutputTokens: 10, CacheReadTokens: 50, CacheCreationTokens: 5}
+	sl := &ledger.Slot{
+		PhaseID: "tb1", Status: ledger.SlotRunning,
+		InputTokens: 100, OutputTokens: 10, CacheReadTokens: 50, CacheCreationTokens: 5,
+		ProviderTotalInputTokens: 150, HasProviderTotalInput: true,
+	}
 	if err := r.store.SetSlot(r.run, sl); err != nil {
 		t.Fatalf("SetSlot: %v", err)
 	}
 
-	r.applyTokenUsage("tb1", dispatch.TokenUsage{InputTokens: 20, OutputTokens: 2, CacheReadTokens: 10, CacheCreationTokens: 1})
+	r.applyTokenUsage("tb1", dispatch.TokenUsage{
+		InputTokens: 20, OutputTokens: 2, CacheReadTokens: 10, CacheCreationTokens: 1,
+		TokenSemantics:           runtime.TokenSemanticsDisjointV1,
+		ProviderTotalInputTokens: 30, HasProviderTotalInput: true,
+	})
 
 	got, err := r.store.LoadRun(r.run.RunID)
 	if err != nil {
@@ -185,5 +225,103 @@ func TestApplyTokenUsageAccumulates(t *testing.T) {
 	}
 	if gotSlot.InputTokens != 120 || gotSlot.OutputTokens != 12 || gotSlot.CacheReadTokens != 60 || gotSlot.CacheCreationTokens != 6 {
 		t.Errorf("slot tokens = %+v, want accumulated 120/12/60/6", gotSlot)
+	}
+	if gotSlot.ProviderTotalInputTokens != 180 || !gotSlot.HasProviderTotalInput {
+		t.Errorf("provider-total audit = %d present:%v, want accumulated 180/true",
+			gotSlot.ProviderTotalInputTokens, gotSlot.HasProviderTotalInput)
+	}
+	if normalized := gotSlot.InputTokens + gotSlot.OutputTokens +
+		gotSlot.CacheReadTokens + gotSlot.CacheCreationTokens; normalized != 198 {
+		t.Errorf("normalized total = %d, want 198 without provider-total audit", normalized)
+	}
+}
+
+func TestProviderTotalAuditExcludedFromRuntimeDecisions(t *testing.T) {
+	u := dispatch.TokenUsage{
+		InputTokens: 6, OutputTokens: 2, CacheReadTokens: 4,
+		TokenSemantics:           runtime.TokenSemanticsDisjointV1,
+		ProviderTotalInputTokens: 1_000_000, HasProviderTotalInput: true,
+	}
+	if got := totalAttemptTokens(u); got != 12 {
+		t.Errorf("totalAttemptTokens = %d, want 12 normalized tokens", got)
+	}
+	ratio, total, warn := cacheRatioWarn(u)
+	if ratio != 0 || total != 10 || warn {
+		t.Errorf("cacheRatioWarn = ratio:%v total:%d warn:%v, want 0/10/false", ratio, total, warn)
+	}
+}
+
+func TestAllRequeuePathsPreserveNormalizedAndProviderTokenCounters(t *testing.T) {
+	cases := []struct {
+		name    string
+		requeue func(context.Context, *runner, *ledger.Slot)
+	}{
+		{
+			name: "generic crash gate review merge and conflict path",
+			requeue: func(ctx context.Context, r *runner, sl *ledger.Slot) {
+				r.requeueSlot(ctx, sl, "", "agent died with commits")
+			},
+		},
+		{
+			name: "rate limit path",
+			requeue: func(ctx context.Context, r *runner, sl *ledger.Slot) {
+				r.requeueRateLimited(ctx, sl)
+			},
+		},
+		{
+			name: "budget kill path",
+			requeue: func(ctx context.Context, r *runner, sl *ledger.Slot) {
+				r.requeueBudgetKilled(ctx, sl, 1, dispatch.TokenUsage{})
+			},
+		},
+		{
+			name: "turn ceiling path",
+			requeue: func(ctx context.Context, r *runner, sl *ledger.Slot) {
+				r.requeueTurnExhausted(ctx, sl)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, fixOpts{})
+			r, backend := escalationRunner(t, f)
+			sl := escalationSlot(t, r, "tb1", 1)
+			sl.InputTokens = 6
+			sl.OutputTokens = 2
+			sl.CacheReadTokens = 4
+			sl.ProviderTotalInputTokens = 10
+			sl.HasProviderTotalInput = true
+			if err := r.store.SaveRun(r.run); err != nil {
+				t.Fatalf("SaveRun seeded counters: %v", err)
+			}
+
+			tc.requeue(t.Context(), r, sl)
+
+			if len(backend.specs) != 1 {
+				t.Fatalf("dispatches = %d, want exactly one replacement", len(backend.specs))
+			}
+			got := r.run.Slots["tb1"]
+			if got == nil {
+				t.Fatal("replacement slot tb1 missing")
+			}
+			if got.InputTokens != 6 || got.OutputTokens != 2 ||
+				got.CacheReadTokens != 4 || got.CacheCreationTokens != 0 {
+				t.Errorf("normalized counters = %+v, want fresh/output/cache-read/cache-create 6/2/4/0", got)
+			}
+			if got.ProviderTotalInputTokens != 10 || !got.HasProviderTotalInput {
+				t.Errorf("provider-total audit = %d present:%v, want 10/true",
+					got.ProviderTotalInputTokens, got.HasProviderTotalInput)
+			}
+			if r.run.TokenSemantics != ledger.CurrentTokenSemantics {
+				t.Errorf("run token semantics = %q, want %q",
+					r.run.TokenSemantics, ledger.CurrentTokenSemantics)
+			}
+			normalized := got.InputTokens + got.OutputTokens +
+				got.CacheReadTokens + got.CacheCreationTokens
+			if normalized != 12 {
+				t.Errorf("normalized total = %d, want 12; provider-total audit must not be added", normalized)
+			}
+		})
 	}
 }

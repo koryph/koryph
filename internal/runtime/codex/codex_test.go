@@ -12,12 +12,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/commandguard"
+	"github.com/koryph/koryph/internal/promptc"
 	"github.com/koryph/koryph/internal/resmon"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/runtime/runtimetest"
@@ -144,13 +147,15 @@ func TestCommandSigningCachesAreNarrowlyScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(env, "\n")
+	projectCache := filepath.Join("/repo", ".git", "koryph-cache", "go")
 	for _, want := range []string{
 		"PRE_COMMIT_HOME=" + filepath.Join(os.Getenv("HOME"), ".cache", "pre-commit"),
-		"GOCACHE=/phase/go-cache",
-		"GOMODCACHE=/repo/.git/koryph-cache/go-mod-cache",
+		"GOCACHE=" + filepath.Join(projectCache, "build-"+goBuildCacheKey(goruntime.Version(), goruntime.GOOS, goruntime.GOARCH)),
+		"GOMODCACHE=" + filepath.Join(projectCache, "modules"),
 		"TEST_TELEMETRY_DIR=/phase/go-telemetry",
 		"XDG_CACHE_HOME=/phase/cache",
-		"TMPDIR=/phase",
+		"GOTMPDIR=/phase/go-tmp",
+		"TMPDIR=/phase/go-tmp",
 		testAgentSocketsEnv + "=" + strings.Join(testAgentSockets("/phase"), string(filepath.ListSeparator)),
 	} {
 		if !strings.Contains(joined, want) {
@@ -212,12 +217,14 @@ func TestCommandWithoutSigningKeepsNonModuleCachesPhaseLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(env, "\n")
+	projectCache := filepath.Join("/repo", ".git", "koryph-cache", "go")
 	for _, want := range []string{
-		"GOCACHE=/phase/go-cache",
-		"GOMODCACHE=/repo/.git/koryph-cache/go-mod-cache",
+		"GOCACHE=" + filepath.Join(projectCache, "build-"+goBuildCacheKey(goruntime.Version(), goruntime.GOOS, goruntime.GOARCH)),
+		"GOMODCACHE=" + filepath.Join(projectCache, "modules"),
 		"TEST_TELEMETRY_DIR=/phase/go-telemetry",
 		"XDG_CACHE_HOME=/phase/cache",
-		"TMPDIR=/phase",
+		"GOTMPDIR=/phase/go-tmp",
+		"TMPDIR=/phase/go-tmp",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env missing %q:\n%s", want, joined)
@@ -228,8 +235,9 @@ func TestCommandWithoutSigningKeepsNonModuleCachesPhaseLocal(t *testing.T) {
 	}
 }
 
-func TestCommandSharesOnlyProjectModuleCacheAcrossPhases(t *testing.T) {
+func TestCommandSharesProjectGoCachesAcrossPhases(t *testing.T) {
 	t.Setenv("GOMODCACHE", "/ambient/go-mod-cache")
+	t.Setenv("GOCACHE", "/ambient/go-cache")
 
 	envFor := func(repo, phase string) map[string]string {
 		t.Helper()
@@ -254,21 +262,182 @@ func TestCommandSharesOnlyProjectModuleCacheAcrossPhases(t *testing.T) {
 	second := envFor("/repo-a", "/phase-b")
 	otherRepo := envFor("/repo-b", "/phase-c")
 
-	wantModuleCache := filepath.Join("/repo-a", ".git", "koryph-cache", "go-mod-cache")
+	wantRoot := filepath.Join("/repo-a", ".git", "koryph-cache", "go")
+	wantModuleCache := filepath.Join(wantRoot, "modules")
+	wantBuildCache := filepath.Join(wantRoot, "build-"+goBuildCacheKey(goruntime.Version(), goruntime.GOOS, goruntime.GOARCH))
 	if first["GOMODCACHE"] != wantModuleCache || second["GOMODCACHE"] != wantModuleCache {
 		t.Fatalf("same-repo module caches = %q, %q; want shared %q",
 			first["GOMODCACHE"], second["GOMODCACHE"], wantModuleCache)
 	}
+	if first["GOCACHE"] != wantBuildCache || second["GOCACHE"] != wantBuildCache {
+		t.Fatalf("same-repo build caches = %q, %q; want shared %q",
+			first["GOCACHE"], second["GOCACHE"], wantBuildCache)
+	}
 	if otherRepo["GOMODCACHE"] == wantModuleCache {
 		t.Fatalf("separate repo reused module cache %q", otherRepo["GOMODCACHE"])
+	}
+	if otherRepo["GOCACHE"] == wantBuildCache {
+		t.Fatalf("separate repo reused build cache %q", otherRepo["GOCACHE"])
 	}
 	if first["GOMODCACHE"] == os.Getenv("GOMODCACHE") {
 		t.Fatalf("dispatch inherited ambient module cache %q", first["GOMODCACHE"])
 	}
-	for _, name := range []string{"GOCACHE", "TEST_TELEMETRY_DIR", "XDG_CACHE_HOME", "TMPDIR"} {
+	if first["GOCACHE"] == os.Getenv("GOCACHE") {
+		t.Fatalf("dispatch inherited ambient build cache %q", first["GOCACHE"])
+	}
+	for _, name := range []string{"TEST_TELEMETRY_DIR", "XDG_CACHE_HOME", "TMPDIR", "GOTMPDIR"} {
 		if first[name] == second[name] {
 			t.Errorf("%s unexpectedly shared across phases: %q", name, first[name])
 		}
+	}
+}
+
+func TestGoBuildCacheKeySeparatesToolchainAndTarget(t *testing.T) {
+	base := goBuildCacheKey("go1.26.0", "darwin", "arm64")
+	for _, changed := range []string{
+		goBuildCacheKey("go1.26.1", "darwin", "arm64"),
+		goBuildCacheKey("go1.26.0", "linux", "arm64"),
+		goBuildCacheKey("go1.26.0", "darwin", "amd64"),
+	} {
+		if changed == base {
+			t.Fatalf("cache key collision: %q", base)
+		}
+	}
+	if strings.Contains(base, "/") || strings.Contains(base, `\`) {
+		t.Fatalf("cache key is not path-safe: %q", base)
+	}
+}
+
+func TestProjectGoCacheRejectsRedirectedMetadata(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, ".git", "koryph-cache")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProjectGoCache(repo, goruntime.GOOS, goruntime.GOARCH); err == nil ||
+		!strings.Contains(err.Error(), "not a real directory") {
+		t.Fatalf("redirected cache error = %v", err)
+	}
+}
+
+func TestProjectGoCacheCreatesPrivateProjectRoots(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProjectGoCache(repo, goruntime.GOOS, goruntime.GOARCH); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(repo, ".git", "koryph-cache"),
+		filepath.Join(repo, ".git", "koryph-cache", "go"),
+		filepath.Join(repo, ".git", "koryph-cache", "go", "modules"),
+		filepath.Join(repo, ".git", "koryph-cache", "go", "build-"+
+			goBuildCacheKey(goruntime.Version(), goruntime.GOOS, goruntime.GOARCH)),
+	} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+			t.Fatalf("cache root %s mode = %v", path, info.Mode())
+		}
+	}
+}
+
+func TestProjectGoCacheRejectsRedirectedBuildLeaf(t *testing.T) {
+	repo := t.TempDir()
+	goRoot := filepath.Join(repo, ".git", "koryph-cache", "go")
+	if err := os.MkdirAll(goRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	build := filepath.Join(goRoot, "build-"+
+		goBuildCacheKey(goruntime.Version(), goruntime.GOOS, goruntime.GOARCH))
+	if err := os.Symlink(t.TempDir(), build); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProjectGoCache(repo, goruntime.GOOS, goruntime.GOARCH); err == nil ||
+		!strings.Contains(err.Error(), "not a real directory") {
+		t.Fatalf("redirected build cache error = %v", err)
+	}
+}
+
+func TestCommandBuildCacheUsesEffectiveDispatchedTarget(t *testing.T) {
+	t.Setenv("GOOS", "linux")
+	t.Setenv("GOARCH", "amd64")
+	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+		RepoRoot:       "/repo",
+		PhaseDir:       "/phase",
+		EnvPassthrough: []string{"GOOS", "GOARCH"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(
+		"/repo", ".git", "koryph-cache", "go",
+		"build-"+goBuildCacheKey(goruntime.Version(), "linux", "amd64"),
+	)
+	if got := envMap(env)["GOCACHE"]; got != want {
+		t.Fatalf("target cache %q missing from %v", want, env)
+	}
+}
+
+func TestCommandBuildCacheUsesDispatchedToolchainNotKoryphBuild(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	phase := canonicalCodexTempDir(t)
+	previous := resolveDispatchedGoVersion
+	resolveDispatchedGoVersion = func(string, string, []string) (string, error) {
+		return "go9.9.1", nil
+	}
+	t.Cleanup(func() { resolveDispatchedGoVersion = previous })
+
+	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+		RepoRoot: repo,
+		PhaseDir: phase,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(
+		repo, ".git", "koryph-cache", "go",
+		"build-"+goBuildCacheKey("go9.9.1", goruntime.GOOS, goruntime.GOARCH),
+	)
+	if got := envMap(env)["GOCACHE"]; got != want {
+		t.Fatalf("GOCACHE = %q, want dispatched-toolchain cache %q", got, want)
+	}
+	if strings.Contains(want, goBuildCacheKey(goruntime.Version(), goruntime.GOOS, goruntime.GOARCH)) {
+		t.Fatal("test toolchain key unexpectedly matched Koryph build toolchain")
+	}
+}
+
+func TestUnresolvedDispatchedToolchainFallsBackToPhaseUniqueCache(t *testing.T) {
+	repo := t.TempDir()
+	previous := resolveDispatchedGoVersion
+	resolveDispatchedGoVersion = func(string, string, []string) (string, error) {
+		return "", errors.New("probe unavailable")
+	}
+	t.Cleanup(func() { resolveDispatchedGoVersion = previous })
+	first := effectiveGoToolchainVersion(repo, "/phase/one", []string{"PATH=/tools"})
+	second := effectiveGoToolchainVersion(repo, "/phase/two", []string{"PATH=/tools"})
+	if first == second {
+		t.Fatalf("unresolved toolchain fallback shared across phases: %q", first)
+	}
+}
+
+func TestPhaseScratchRejectsRedirectedTempLeaf(t *testing.T) {
+	phase := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(phase, "go-tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePhaseTempDir(phase); err == nil ||
+		!strings.Contains(err.Error(), "not a real directory") {
+		t.Fatalf("redirected temp error = %v", err)
 	}
 }
 
@@ -638,7 +807,13 @@ func TestCommandJSONUsesScratchLocalMutableCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"GOCACHE=/scratch/go-cache", "GOMODCACHE=/scratch/go-mod-cache", "TMPDIR=/scratch", "TEST_TELEMETRY_DIR=/scratch/go-telemetry"} {
+	for _, want := range []string{
+		"GOCACHE=/scratch/go-cache",
+		"GOMODCACHE=/scratch/go-mod-cache",
+		"GOTMPDIR=/scratch/go-tmp",
+		"TMPDIR=/scratch/go-tmp",
+		"TEST_TELEMETRY_DIR=/scratch/go-telemetry",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env missing %q:\n%s", want, joined)
 		}
@@ -681,7 +856,10 @@ func TestParseEventsNormalizesThreadUsageAndRateLimit(t *testing.T) {
 		t.Fatalf("first event = %+v", first)
 	}
 	second, ok, _ := es.Next()
-	if !ok || second.Kind != runtime.EventResult || !second.HasUsage || second.InputTokens != 10 || second.CacheReadTokens != 4 || second.OutputTokens != 3 {
+	if !ok || second.Kind != runtime.EventResult || !second.HasUsage ||
+		second.InputTokens != 6 || second.CacheReadTokens != 4 || second.OutputTokens != 3 ||
+		second.TokenSemantics != runtime.TokenSemanticsDisjointV1 ||
+		!second.HasProviderTotalInput || second.ProviderTotalInputTokens != 10 {
 		t.Fatalf("second event = %+v", second)
 	}
 	third, ok, _ := es.Next()
@@ -691,22 +869,69 @@ func TestParseEventsNormalizesThreadUsageAndRateLimit(t *testing.T) {
 }
 
 func TestRenderPersonaAndPromptUseCanonicalSource(t *testing.T) {
-	rendered, err := (Codex{}).RenderPersona("p", []byte("---\nmodel: sonnet\n---\nFollow the protocol."))
+	role := "<!-- koryph-clause:role/v1 -->\nFollow the protocol."
+	rendered, err := (Codex{}).RenderPersona("p", []byte("---\nmodel: standard\n---\n"+role))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(rendered); !strings.Contains(got, "developer_instructions") || strings.Contains(got, "model: sonnet") {
+	if got := string(rendered); !strings.Contains(got, "developer_instructions") || strings.Contains(got, "model: standard") {
 		t.Errorf("unexpected rendered persona:\n%s", got)
 	}
+	root := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(root, "AGENTS.md"),
+		[]byte("<!-- koryph-clause:repository/v1 -->\nRepository rules."),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "p.md"), []byte(role), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	taskPrompt := promptc.Compile(promptc.Input{
+		EngineVersion: "test",
+		ProjectName:   "test",
+		Bead:          beads.Issue{ID: "koryph-test", Title: "Do the task"},
+	})
+	prompt, err := (Codex{}).PreparePrompt(root, "p", taskPrompt)
+	if err != nil || !strings.Contains(prompt, "Follow the protocol.") || !strings.Contains(prompt, "Do the task") {
+		t.Fatalf("prompt=%q err=%v", prompt, err)
+	}
+	if strings.Contains(prompt, promptc.RepositoryClauseMarker) {
+		t.Fatal("native repository clause was duplicated into Codex prompt")
+	}
+}
+
+func TestPreparePromptRejectsMissingOrDuplicateSemanticOwners(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "agents"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "agents", "p.md"), []byte("Persona instructions"), 0o644); err != nil {
+	rolePath := filepath.Join(root, "agents", "p.md")
+	if err := os.WriteFile(rolePath, []byte("<!-- koryph-clause:role/v1 -->"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	prompt, err := (Codex{}).PreparePrompt(root, "p", "Do the task")
-	if err != nil || !strings.Contains(prompt, "Persona instructions") || !strings.Contains(prompt, "Do the task") {
-		t.Fatalf("prompt=%q err=%v", prompt, err)
+	if _, err := (Codex{}).PreparePrompt(root, "p", "plain review"); err == nil {
+		t.Fatal("missing repository contract was accepted")
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "AGENTS.md"),
+		[]byte("<!-- koryph-clause:repository/v1 -->"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		rolePath,
+		[]byte("<!-- koryph-clause:role/v1 -->\n<!-- koryph-clause:engine/v1 -->"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Codex{}).PreparePrompt(root, "p", "plain review"); err == nil {
+		t.Fatal("persona with a foreign semantic owner was accepted")
 	}
 }

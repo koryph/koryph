@@ -290,20 +290,23 @@ Small filesystem helpers shared across the engine. All writes are atomic
 
 ## gc
 
-Data lifecycle management for koryph outputs: compress/delete old run
-phase-dirs, size-rotate `audit.jsonl`/`runs.jsonl` (default retention:
-forever), leave telemetry to `internal/obs` and posture snapshots exempt by
-design. Config surface is `~/.koryph/retention.json` with per-project
-overrides in `<repo>/.koryph/retention.json`; `"never"` is accepted for every
-retention value. gc refuses to touch any run whose ledger shows non-terminal
-slots, the active run, or the `latest` symlink target. See the
+Data lifecycle management for koryph outputs: remove terminal phase-local
+compiler state, preserve compact durable evidence, age/prune eligible
+transcripts and filed planning snapshots, bound project-scoped Go caches, and
+size-rotate `audit.jsonl`/`runs.jsonl` (default retention: forever). Telemetry
+remains with `internal/obs`; posture snapshots, canary reports, live runs, and
+retained failures are exempt. Config lives in `~/.koryph/retention.json` with
+per-project overrides in `<repo>/.koryph/retention.json`. See the
 [gc user guide](../user-guide/gc.md).
 
 - **`Run(Options)`** — apply the policy (honours `DryRun`); returns per-class `Result`
 - **`Footprint(repoRoot)`** — reclaimable bytes without deleting (health patrol input)
 - **`LoadConfig(repoRoot)`** — global + project overlay with defaults applied
-- **`Config`** / **`RunDirPolicy`** / **`RotatePolicy`** — the retention.json schema
-  (incl. `GCAuto`, the opt-in health-patrol auto-gc flag)
+- **`Config`** / **`RunDirPolicy`** / **`RotatePolicy`** /
+  **`ProjectBudgetPolicy`** — the retention.json schema (including the 2 GiB
+  soft/5 GiB hard project defaults and `GCAuto`, the in-run health-patrol flag)
+- The binary-native loop calls `Run` at terminal and idle boundaries; failures
+  become structured supervisor alerts and never launch a model.
 - State: `~/.koryph/retention.json`, `<repo>/.koryph/retention.json`
 
 ## govern
@@ -367,6 +370,26 @@ live runs to recommend the next orchestrator action.
 - **`Decision`** — recommended action (merge, retry, abandon, …); **`Probe`** — current observations
 - **`Terminal(status)`** — true if status is a final state
 - **`Classify(run, probe)`** — returns `[]Decision` for the orchestrator
+
+## loop
+
+Binary-native, model-free supervisor around the transactional engine. It
+observes ready/recovery state before starting an engine run, persists exact
+run/cohort/circuit state, applies fixed-cohort canary admission, and sleeps on
+bounded event-backed idle waits without creating empty ledgers.
+
+- **`Supervisor.Run`** — single-owner lifecycle with synchronous run-start
+  durability, exact-run recovery, bounded crash/non-progress circuits, and
+  drain handling
+- **`CanarySpec`** / **`RequiredCanaryHardStops`** — immutable cohort,
+  authoritative width progression, required review/merge evidence, and typed
+  tripwires
+- **`Observer`** / **`Engine`** / **`TripwireSource`** — narrow product seams;
+  no log scraping or model-driven wrapper recovery
+- **`Maintainer`** — bounded model-free GC at terminal and idle boundaries
+- State: `<repo>/.koryph/loop/supervisor.json`, `control.json`, and
+  `alerts.jsonl`; immutable canary evidence remains under
+  `<repo>/.plan-logs/koryph/canary/`
 
 ## merge
 
@@ -815,6 +838,19 @@ account/billing/identity guarantees as a dispatch.
 - **`Opts`** — worktree, branch, resolved persona + model, per-stage prompt, profile/billing, and `TimeoutSec` (the caller-resolved bead > project > system > built-in winner; `<= 0` → `DefaultTimeoutSec`, 1200)
 - **`Result`** — `Ran` / `OK` / `TimedOut` / `CostUSD` / `Note`
 - **`Run(ctx, o)`** — verify identity, run the `dontAsk` claude one-shot, persist the envelope, report cost
+
+## strictjson
+
+Strict JSON evidence decoding shared by the autonomous supervisor, metrics
+reports, and command lifecycle readers. It rejects duplicate or case-fold
+colliding object keys, noncanonical field spellings, unknown fields, and
+trailing values so Go's permissive last-wins and case-insensitive matching
+cannot rewrite persisted safety evidence.
+
+- **`Decode(raw, target)`** — recursively validate object keys, then decode
+  with unknown-field and trailing-value rejection
+- **`RejectDuplicateKeys(raw)`** — reject exact duplicates and case-fold
+  collisions in every nested object
 
 ## sysdeps
 

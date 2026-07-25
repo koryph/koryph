@@ -5,10 +5,13 @@ package gc
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/koryph/koryph/internal/fsx"
 )
 
 // TestConfigDefaults verifies that zero-value Config gets default values.
@@ -28,6 +31,9 @@ func TestConfigDefaults(t *testing.T) {
 	}
 	if cfg.FootprintWarnGB != 1.0 {
 		t.Errorf("FootprintWarnGB: got %f, want 1.0", cfg.FootprintWarnGB)
+	}
+	if cfg.ProjectBudget.SoftMB != 2048 || cfg.ProjectBudget.HardMB != 5120 {
+		t.Errorf("ProjectBudget: got %+v, want 2048/5120 MiB", cfg.ProjectBudget)
 	}
 }
 
@@ -69,7 +75,14 @@ func TestConfigNumericUnmarshal(t *testing.T) {
 			"retain_days": 365
 		},
 		"footprint_warn_gb": 2.5,
-		"gc_auto": true
+		"gc_auto": true,
+		"project_budget": {
+			"soft_mb": 1024,
+			"hard_mb": 4096,
+			"transcript_retain_days": 7,
+			"failure_retain_days": 60,
+			"log_tail_kb": 32
+		}
 	}`
 	var cfg Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
@@ -92,6 +105,12 @@ func TestConfigNumericUnmarshal(t *testing.T) {
 	}
 	if !cfg.GCAuto {
 		t.Error("GCAuto should be true")
+	}
+	if cfg.ProjectBudget != (ProjectBudgetPolicy{
+		SoftMB: 1024, HardMB: 4096, TranscriptRetainDays: 7,
+		FailureRetainDays: 60, LogTailKB: 32,
+	}) {
+		t.Errorf("ProjectBudget = %+v", cfg.ProjectBudget)
 	}
 }
 
@@ -251,6 +270,134 @@ func TestGCRunDirsLiveSlotExempt(t *testing.T) {
 	}
 }
 
+func TestGCPrunesTerminalSlotCachesWhileSiblingRemainsLive(t *testing.T) {
+	repoRoot := t.TempDir()
+	runID := "20260601-120000"
+	runDir := filepath.Join(repoRoot, ".plan-logs", "koryph", runID)
+	writeGCFile(t, filepath.Join(runDir, "ledger.json"), []byte(
+		`{"run_id":"20260601-120000","slots":{`+
+			`"done":{"phase_id":"done","status":"merged"},`+
+			`"live":{"phase_id":"live","status":"running"}},"status":"running"}`,
+	))
+	for _, path := range []string{
+		filepath.Join(runDir, "done", "cache", "item"),
+		filepath.Join(runDir, "done", "go-telemetry", "item"),
+		filepath.Join(runDir, "done", "runtime-cache", "item"),
+		filepath.Join(runDir, "done", "gomodcache", "item"),
+		filepath.Join(runDir, ".engine-evidence", "done", ".runtime-scratch", "item"),
+		filepath.Join(runDir, "live", "cache", "item"),
+	} {
+		writeGCFile(t, path, []byte("scratch"))
+	}
+
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	cfg := Config{RunDirs: RunDirPolicy{
+		CompressAfterDaysNever: true,
+		DeleteAfterDaysNever:   true,
+	}}.effective()
+	if _, err := Run(Options{
+		RepoRoot: repoRoot, ActiveRunID: runID, Config: &cfg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(runDir, "done", "cache"),
+		filepath.Join(runDir, "done", "go-telemetry"),
+		filepath.Join(runDir, "done", "runtime-cache"),
+		filepath.Join(runDir, "done", "gomodcache"),
+		filepath.Join(runDir, ".engine-evidence", "done", ".runtime-scratch"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("terminal scratch survived at %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "live", "cache", "item")); err != nil {
+		t.Fatalf("live slot cache was touched: %v", err)
+	}
+}
+
+func TestGCUnlinksKnownCacheSymlinksWithoutFollowing(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "merged")
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "sentinel")
+	writeGCFile(t, sentinel, []byte("preserve"))
+	phaseLink := filepath.Join(runDir, "bead1", "go-cache")
+	if err := os.Symlink(outside, phaseLink); err != nil {
+		t.Fatal(err)
+	}
+	reviewRoot := filepath.Join(runDir, ".engine-evidence", "bead1")
+	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reviewLink := filepath.Join(reviewRoot, ".runtime-scratch")
+	if err := os.Symlink(outside, reviewLink); err != nil {
+		t.Fatal(err)
+	}
+	runCacheGC(t, repoRoot, false)
+	for _, link := range []string{phaseLink, reviewLink} {
+		if _, err := os.Lstat(link); !os.IsNotExist(err) {
+			t.Errorf("known disposable symlink survived at %s: %v", link, err)
+		}
+	}
+	if raw, err := os.ReadFile(sentinel); err != nil || string(raw) != "preserve" {
+		t.Fatalf("outside sentinel changed: %q, %v", raw, err)
+	}
+}
+
+func TestGCRetainMarkerProtectsRunFromCleanupAndArchival(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "merged")
+	writeGCFile(t, filepath.Join(runDir, ".retain"), nil)
+	cache := filepath.Join(runDir, "bead1", "go-cache", "entry")
+	writeGCFile(t, cache, []byte("preserve"))
+	old := time.Now().Add(-100 * 24 * time.Hour)
+	if err := os.Chtimes(runDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	cfg := Config{RunDirs: RunDirPolicy{
+		CompressAfterDays: 1,
+		DeleteAfterDays:   2,
+	}}.effective()
+	if _, err := Run(Options{RepoRoot: repoRoot, Config: &cfg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cache); err != nil {
+		t.Fatalf("explicitly retained run cache was touched: %v", err)
+	}
+	if _, err := os.Stat(runDir + ".tar.gz"); !os.IsNotExist(err) {
+		t.Fatalf("explicitly retained run was archived: %v", err)
+	}
+}
+
+func TestGCRetainedPhaseVetoesWholeRunArchival(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "merged")
+	phaseDir := filepath.Join(runDir, "bead1")
+	writeGCFile(t, filepath.Join(phaseDir, ".retain"), nil)
+	cache := filepath.Join(phaseDir, "go-cache", "entry")
+	writeGCFile(t, cache, []byte("preserve"))
+	old := time.Now().Add(-100 * 24 * time.Hour)
+	if err := os.Chtimes(runDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	cfg := Config{RunDirs: RunDirPolicy{
+		CompressAfterDays: 1,
+		DeleteAfterDays:   2,
+	}}.effective()
+	if _, err := Run(Options{RepoRoot: repoRoot, Config: &cfg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cache); err != nil {
+		t.Fatalf("retained phase cache was touched: %v", err)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("run containing retained phase was removed: %v", err)
+	}
+	if _, err := os.Stat(runDir + ".tar.gz"); !os.IsNotExist(err) {
+		t.Fatalf("run containing retained phase was archived: %v", err)
+	}
+}
+
 func TestGCPrunesOnlyRecognizedCachesFromTerminalRuns(t *testing.T) {
 	repoRoot, runDir := gcCacheFixture(t, "merged")
 	phaseDir := filepath.Join(runDir, "bead1")
@@ -298,6 +445,33 @@ func TestGCPrunesOnlyRecognizedCachesFromTerminalRuns(t *testing.T) {
 	}
 }
 
+func TestGCLatestTerminalRunPrunesTempButPreservesEvidence(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "merged")
+	koryphRoot := filepath.Dir(runDir)
+	if err := os.Symlink(filepath.Base(runDir), filepath.Join(koryphRoot, "latest")); err != nil {
+		t.Fatal(err)
+	}
+	tempDir := filepath.Join(runDir, "bead1", "go-tmp")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	evidence := filepath.Join(runDir, "bead1", "manifest.json")
+	if err := os.WriteFile(evidence, []byte(`{"status":"complete"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := runCacheGC(t, repoRoot, false)
+	if got := classResult(t, result, "run-dirs").Deleted; got != 1 {
+		t.Fatalf("terminal temp deletions = %d, want 1", got)
+	}
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("latest terminal temp survived: %v", err)
+	}
+	if _, err := os.Stat(evidence); err != nil {
+		t.Fatalf("latest durable evidence was removed: %v", err)
+	}
+}
+
 func TestGCPhaseCachesPreserveNonterminalRuns(t *testing.T) {
 	repoRoot, runDir := gcCacheFixture(t, "running")
 	cacheDir := filepath.Join(runDir, "bead1", "go-cache")
@@ -314,7 +488,7 @@ func TestGCPhaseCachesPreserveNonterminalRuns(t *testing.T) {
 	}
 }
 
-func TestGCPhaseCachesPreserveRunsWithTerminalSlotsButNonterminalStatus(t *testing.T) {
+func TestGCPhaseCachesPruneTerminalSlotsBeforeRunStatusSettles(t *testing.T) {
 	for _, runStatus := range []string{"running", "paused-quota", "hard-stop-quota"} {
 		t.Run(runStatus, func(t *testing.T) {
 			repoRoot, runDir := gcCacheFixture(t, "merged")
@@ -328,11 +502,11 @@ func TestGCPhaseCachesPreserveRunsWithTerminalSlotsButNonterminalStatus(t *testi
 			}
 
 			res := runCacheGC(t, repoRoot, false)
-			if got := classResult(t, res, "run-dirs").Deleted; got != 0 {
-				t.Errorf("deleted %d phase caches from %s run", got, runStatus)
+			if got := classResult(t, res, "run-dirs").Deleted; got != 1 {
+				t.Errorf("deleted %d phase caches from %s run, want 1", got, runStatus)
 			}
-			if _, err := os.Stat(cacheDir); err != nil {
-				t.Errorf("cache in %s run was removed: %v", runStatus, err)
+			if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+				t.Errorf("terminal slot cache in %s run survived: %v", runStatus, err)
 			}
 		})
 	}
@@ -401,8 +575,8 @@ func TestGCPhaseCacheDryRunDoesNotDoubleCountCompression(t *testing.T) {
 	if cr.Compressed != 1 {
 		t.Fatalf("compressed = %d, want 1", cr.Compressed)
 	}
-	if got, want := cr.ReclaimedMB, dirSizeMB(runDir); got != want {
-		t.Errorf("reclaimed = %f MB, want %f MB without double-counting cache", got, want)
+	if got, want := cr.ReclaimedMB, dirSizeMB(filepath.Dir(cacheFile)); got != want {
+		t.Errorf("reclaimed = %f MB, want conservative known cache reclaim %f MB", got, want)
 	}
 }
 
@@ -541,5 +715,51 @@ func TestGCRotateLogRetention(t *testing.T) {
 	}
 	if _, err := os.Stat(oldRotated); !os.IsNotExist(err) {
 		t.Error("old rotated file should have been deleted")
+	}
+}
+
+func TestGCRotateLogSerializesConcurrentAppend(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.jsonl")
+	if err := os.WriteFile(logPath, make([]byte, 1024*1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	previous := logArchiveCopy
+	logArchiveCopy = func(dst io.Writer, src io.Reader) (int64, error) {
+		close(entered)
+		<-release
+		return io.Copy(dst, src)
+	}
+	t.Cleanup(func() { logArchiveCopy = previous })
+
+	rotateDone := make(chan ClassResult, 1)
+	go func() {
+		rotateDone <- gcRotateLog(logPath, RotatePolicy{RotateSizeMB: 1}, "audit-log", Options{})
+	}()
+	<-entered
+	appendDone := make(chan error, 1)
+	go func() {
+		appendDone <- fsx.AppendLinePerm(logPath, []byte(`{"after":"rotation"}`), 0o600)
+	}()
+	select {
+	case err := <-appendDone:
+		t.Fatalf("append bypassed rotation lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if result := <-rotateDone; len(result.Errors) != 0 {
+		t.Fatalf("rotation errors: %v", result.Errors)
+	}
+	if err := <-appendDone; err != nil {
+		t.Fatalf("append after rotation: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "{\"after\":\"rotation\"}\n" {
+		t.Fatalf("active log after rotation = %q", raw)
 	}
 }

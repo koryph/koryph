@@ -220,7 +220,7 @@ func cmdEpic(args []string, stdout, stderr io.Writer) int {
 		explicitModel = cfg.EpicValidation.Model
 	}
 	resolvedModel, err := modelroute.Resolve(modelroute.Req{
-		Stage:         modelroute.StageReview,
+		Stage:         modelroute.StageEpicValidation,
 		Labels:        epic.Labels,
 		ExplicitModel: explicitModel,
 		AllowedModels: rec.AllowedModels,

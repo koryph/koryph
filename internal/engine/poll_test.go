@@ -16,6 +16,8 @@ import (
 	"github.com/koryph/koryph/internal/govern"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/project"
+	"github.com/koryph/koryph/internal/resmon"
+	"github.com/koryph/koryph/internal/sysmem"
 )
 
 // TestPollIntervalPrecedence exercises pollInterval's four-way resolution
@@ -78,6 +80,43 @@ func TestPollIntervalPrecedence(t *testing.T) {
 				t.Errorf("pollInterval() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPollPassSamplesPressureWithoutAdmissionAndReusesSnapshot(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	t.Setenv(envResmon, "on")
+	now := time.Date(2026, 7, 25, 17, 0, 0, 0, time.UTC)
+	r.pressureNow = func() time.Time { return now }
+
+	memCalls := 0
+	r.memProbe = func() (sysmem.Stat, bool) {
+		memCalls++
+		return pressureStatMB(16000, sysmem.PressureCritical, 0), true
+	}
+	resCalls := 0
+	r.resProbe = func(context.Context) (*resmon.ProcTable, error) {
+		resCalls++
+		return &resmon.ProcTable{}, nil
+	}
+
+	r.pollPass(context.Background(), false)
+	if memCalls != 1 || resCalls != 1 {
+		t.Fatalf("first poll probes = memory %d/process %d, want exactly 1/1",
+			memCalls, resCalls)
+	}
+	if r.pressureState.CriticalSamples != 1 ||
+		r.pressureState.Effective != sysmem.PressureCritical {
+		t.Fatalf("poll did not advance pressure control: %+v", r.pressureState)
+	}
+
+	// A wake-driven second pass in the same cadence neither probes memory nor
+	// process state again. Its admission checks would reuse the same host input.
+	r.pollPass(context.Background(), false)
+	if memCalls != 1 || resCalls != 1 {
+		t.Fatalf("same-cadence poll probes = memory %d/process %d, want 1/1",
+			memCalls, resCalls)
 	}
 }
 

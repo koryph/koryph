@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -154,8 +155,10 @@ type runner struct {
 	// memProbe reads current system memory (total + available) for the memory
 	// admission gate (koryph-930). nil means "use the real platform probe"
 	// (sysmem.Available); tests inject a stub. ok=false signals no usable
-	// reading, on which the gate fails open. Total is needed to auto-size the
-	// default floor to physical memory.
+	// reading. Darwin pressure admission resolves that failure through a
+	// bounded last-good sample and then degrades to one active machine agent;
+	// legacy platforms retain the historical fail-open floor behavior. Total
+	// is needed to auto-size the default floor to physical memory.
 	memProbe func() (sysmem.Stat, bool)
 
 	// resProbe takes the per-poll-pass process-table snapshot for per-slot
@@ -164,6 +167,35 @@ type runner struct {
 	// (nil, nil) to disable sampling, or a fixed table to assert the derived
 	// ledger fields. Mirrors memProbe's seam.
 	resProbe func(context.Context) (*resmon.ProcTable, error)
+
+	// Pressure-aware admission state (koryph-x553.3). The last-good kernel
+	// sample, consecutive-fresh trend baseline, hysteresis state, and completed
+	// relief action are checkpointed in the run directory by govern.go. The
+	// in-memory copies avoid re-reading that sidecar on every candidate.
+	pressureLoaded        bool
+	pressureLastGood      *sysmem.Stat
+	pressurePreviousFresh *sysmem.Stat
+	pressureState         govern.PressureState
+	pressureReliefHandled bool
+	pressureReliefPhaseID string
+	pressureNow           func() time.Time
+	// pressureSampleAt/input cache the host-control result for one poll
+	// cadence. Polling and admission share it so a tick followed by several
+	// candidate checks does not repeat kernel/process probes.
+	pressureSampleAt       time.Time
+	pressureSampleInput    govern.MemInput
+	pressureSampleValid    bool
+	pressureSampleInterval time.Duration // focused-test override; zero uses poll cadence
+	// pressureStop is the narrow test seam for critical-pressure relief. Nil
+	// sends SIGTERM through dispatch.StopGraceful; no pressure path sends
+	// SIGKILL.
+	pressureStop func(int) error
+
+	// Runtime-memory estimates are calibrated lazily from recent successful,
+	// duplicate-free ledger attempts and cached for this run. The attempt
+	// samples remain the durable source of truth.
+	memoryCalibrationLoaded bool
+	memoryEstimates         map[string]int
 
 	// staleRecoveryEligible and staleRecoveryStop are test seams for the
 	// child-aware stale-heartbeat recovery. Nil uses the production process
@@ -183,6 +215,9 @@ type runner struct {
 	// automated launches unsafe. Direct and wave/rolling dispatch gates both
 	// honor it for the remainder of the run.
 	dispatchCircuitReason string
+	// allowedIDs is the immutable set copied from Options before registry or
+	// ledger state is read. nil means unrestricted.
+	allowedIDs map[string]struct{}
 
 	// Health patrol state (koryph-gus).
 	lastPatrolAt   time.Time
@@ -276,6 +311,9 @@ type runner struct {
 	// iteration checkpoints via setCounts/noteAction, the background heartbeat
 	// goroutine only ever reads it via snapshot().
 	hb heartbeatState
+
+	hardStopKinds  map[SafetyTripwireKind]struct{}
+	pinnedTerminal bool
 }
 
 // slotResUsage is one slot's in-memory resource accumulation plus the PID it is
@@ -299,6 +337,24 @@ type slotResUsage struct {
 // types.go: setup → (resume) → wave loop (scan → batch → preflight →
 // dispatch → poll → review → merge → record).
 func Run(ctx context.Context, opts Options) (Outcome, error) {
+	if opts.RecoveryRunID != "" && !opts.Resume {
+		return Outcome{Code: ExitUsage}, errors.New("engine: RecoveryRunID requires Resume")
+	}
+	if opts.AuthoritativeWidth && opts.Max <= 0 {
+		return Outcome{Code: ExitUsage}, errors.New("engine: AuthoritativeWidth requires a positive Max")
+	}
+	allowedIDs, err := normalizeAllowedIDs(opts.AllowedIDs)
+	if err != nil {
+		return Outcome{Code: ExitUsage}, err
+	}
+	// Detach the run contract from the caller's slice before any stateful work.
+	opts.AllowedIDs = append([]string(nil), allowedIDs...)
+	if opts.Only != "" && len(allowedIDs) > 0 {
+		if _, ok := allowedIDSet(allowedIDs)[opts.Only]; !ok {
+			return Outcome{Code: ExitUsage}, fmt.Errorf(
+				"engine: --only bead %q is outside AllowedIDs", opts.Only)
+		}
+	}
 	// PollSec is intentionally NOT pre-defaulted here (unlike StuckSec below):
 	// pollInterval() resolves it lazily against KORYPH_POLL_SEC env, then the
 	// project config's poll_seconds (loaded further down), then the engine
@@ -344,6 +400,11 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		return Outcome{Code: ExitFatal}, fmt.Errorf(
 			"engine: work_source %q is not supported: legacy markdown projects run their project-local fork until migrated",
 			cfg.WorkSource)
+	}
+	if opts.AuthoritativeWidth && cfg.MaxConcurrentSlots > 0 && cfg.MaxConcurrentSlots < opts.Max {
+		return Outcome{Code: ExitFatal}, fmt.Errorf(
+			"engine: authoritative width %d exceeds project max_concurrent_slots %d",
+			opts.Max, cfg.MaxConcurrentSlots)
 	}
 
 	// The project default is the run's primary runtime. A runtime execution
@@ -489,6 +550,8 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		systemTimeoutSec: systemTimeoutSec,
 		issues:           map[string]beads.Issue{},
 		billing:          account.BillingSubscription,
+		allowedIDs:       allowedIDSet(allowedIDs),
+		hardStopKinds:    safetyTripwireSet(opts.HardStopKinds),
 	}
 	if r.quotaCfg, err = quota.LoadConfig(r.quotaName()); err != nil {
 		return Outcome{Code: ExitFatal}, err
@@ -497,6 +560,16 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	// the global governor: govern must not import quota (layering), so the
 	// engine hands it a closure over its own already-loaded r.quotaCfg instead.
 	r.gov.SeedCap = r.seedCapForPool
+	if opts.AuthoritativeWidth {
+		if cap := r.gov.EffectiveCap(r.poolKey()); cap < opts.Max {
+			return Outcome{Code: ExitFatal}, fmt.Errorf(
+				"engine: authoritative width %d exceeds governor pool cap %d", opts.Max, cap)
+		}
+		if cap := r.gov.MachineCeiling(); cap < opts.Max {
+			return Outcome{Code: ExitFatal}, fmt.Errorf(
+				"engine: authoritative width %d exceeds machine agent ceiling %d", opts.Max, cap)
+		}
+	}
 	// Uniform memory floor (koryph-4rk6.1): repair a governor.json an older
 	// koryph version already wrote with some pools carrying a
 	// max_global_agents cap but no min_free_memory_mb at all — the exact gap
@@ -540,7 +613,7 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 
 	resumed := false
 	if opts.Resume {
-		resumed, err = r.resume(ctx)
+		resumed, err = r.resume(ctx, opts.RecoveryRunID)
 		if err != nil {
 			return Outcome{Code: ExitFatal}, err
 		}
@@ -558,6 +631,23 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		r.run = run
 	}
 
+	if opts.OnRunStart != nil {
+		if err := opts.OnRunStart(r.run.RunID); err != nil {
+			if !resumed {
+				r.run.Status = ledger.RunAborted
+				_ = r.store.SaveRun(r.run)
+			}
+			return Outcome{
+				Code: ExitFatal, RunID: r.run.RunID, Reason: "run-start durability barrier failed",
+			}, fmt.Errorf("engine: publish run start: %w", err)
+		}
+	}
+	if r.pinnedTerminal {
+		return Outcome{
+			Code: ExitOK, RunID: r.run.RunID,
+			Reason: "pinned recovery run already terminal",
+		}, nil
+	}
 	logRunStart(r.run.RunID, r.opts.ProjectID, r.dispatchMode())
 	r.finalizer = newFinalizationLane(ctx)
 	defer r.finalizer.close()

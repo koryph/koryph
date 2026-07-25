@@ -16,7 +16,10 @@
 package version
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -46,7 +49,7 @@ const Engine = "0.10.0" // x-release-please-version
 // release-please — it is deliberately NOT overridden here.
 var (
 	describe string // `git describe --tags --always --dirty`; "" if unstamped
-	commit   string // short hash, with a "-dirty" suffix for a modified tree
+	commit   string // full hash, with a "-dirty" suffix for a modified tree
 	date     string // RFC3339 build/commit timestamp
 )
 
@@ -81,9 +84,6 @@ func resolve() {
 			}
 		}
 		if rev != "" && rCommit == "" {
-			if len(rev) > 12 {
-				rev = rev[:12]
-			}
 			if mod == "true" {
 				rev += "-dirty"
 			}
@@ -101,9 +101,55 @@ func resolve() {
 // bare commit). Callers that want a never-empty string can fall back to Engine.
 func Build() string { resolve(); return rDescribe }
 
-// Commit returns the abbreviated build commit — with a "-dirty" suffix for a
+// Commit returns the full build commit — with a "-dirty" suffix for a
 // modified tree — from the linker stamp or the Go VCS build info; "" if absent.
 func Commit() string { resolve(); return rCommit }
+
+var (
+	binaryIdentityOnce sync.Once
+	binaryIdentity     string
+	binaryIdentityErr  error
+)
+
+// BuildIdentity returns the exact engine/version/VCS/binary identity stamped
+// into authenticated gate evidence. Callers persist this at canary admission
+// and require byte-for-byte equality during evidence publication.
+func BuildIdentity(engineVersion string) (string, error) {
+	engineVersion = strings.TrimSpace(engineVersion)
+	if engineVersion == "" {
+		return "", fmt.Errorf("build identity requires an engine version")
+	}
+	binaryIdentityOnce.Do(func() {
+		path, err := os.Executable()
+		if err != nil {
+			binaryIdentityErr = fmt.Errorf("resolve running executable: %w", err)
+			return
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			binaryIdentityErr = fmt.Errorf("open running executable: %w", err)
+			return
+		}
+		defer file.Close()
+		digest := sha256.New()
+		if _, err := io.Copy(digest, file); err != nil {
+			binaryIdentityErr = fmt.Errorf("hash running executable: %w", err)
+			return
+		}
+		binaryIdentity = fmt.Sprintf("sha256:%x", digest.Sum(nil))
+	})
+	if binaryIdentityErr != nil {
+		return "", binaryIdentityErr
+	}
+	parts := []string{"engine=" + engineVersion}
+	if vcsCommit := strings.TrimSpace(Commit()); vcsCommit != "" {
+		parts = append(parts, "commit="+vcsCommit)
+	}
+	if build := strings.TrimSpace(Build()); build != "" {
+		parts = append(parts, "build="+build)
+	}
+	return strings.Join(append(parts, "binary="+binaryIdentity), "|"), nil
+}
 
 // Date returns the RFC3339 build/commit timestamp, or "" if unknown.
 func Date() string { resolve(); return rDate }

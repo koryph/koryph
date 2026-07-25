@@ -38,6 +38,8 @@ package govern
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/koryph/koryph/internal/sysmem"
 )
 
 // DefaultMaxGlobalAgents is the cap used when a pool has no configured
@@ -557,6 +559,176 @@ func leaseRamping(l Lease, rc *ResourcesConfig, now time.Time) bool {
 type MemInput struct {
 	AvailMB uint64 // current host available memory, MB (0 = no reading)
 	FloorMB int    // effective admission floor, MB (<=0 = clause off)
+
+	// Host enables the pressure-aware admission contract. nil preserves the
+	// legacy conservative-page floor above byte-for-byte. The engine builds
+	// Host outside the governor flock from one resolved sysmem sample, one
+	// process-table sweep, and its durable PressureState.
+	Host *HostInput
+}
+
+// HostInput is the complete host-memory side of one admission decision.
+// Machine count, outstanding reservations, and declared resource capacity are
+// read from the lease files under the governor lock; these externally sampled
+// values are passed in so no subprocess or process-table sweep runs under it.
+type HostInput struct {
+	Sample sysmem.PressureSample
+	Trend  sysmem.Trend
+
+	// EffectivePressure is AdvancePressure's hysteretic band. When unknown,
+	// admission falls back to Sample.Pressure.
+	EffectivePressure sysmem.PressureBand
+	// CircuitOpen is the durable state after persistent critical pressure.
+	// Admission never closes it implicitly; AcknowledgePressureRelief does so
+	// only after the engine has safely handled the selected relief cohort.
+	CircuitOpen bool
+
+	// LiveRSSMB is the deduplicated RSS of every live agent cohort. The
+	// reservation clause projects from this observed base instead of treating
+	// all inactive Darwin pages as free.
+	LiveRSSMB int
+	// LiveRSSKnown distinguishes a real zero-active-cohort reading from a
+	// process-table backend that could not report RSS. With active agents and
+	// no RSS reading, admission degrades to the same one-agent bound as an
+	// unavailable pressure probe.
+	LiveRSSKnown bool
+	// ObservedEstimateMB is the calibrated conservative estimate for the
+	// candidate's runtime. Admission charges the larger of this and the
+	// candidate's declared MemReserveMB.
+	ObservedEstimateMB int
+
+	Policy PressurePolicy
+}
+
+// PressurePolicy controls trend thresholds and pressure hysteresis. Zero
+// values resolve to the conservative package defaults.
+type PressurePolicy struct {
+	SwapRiseMB       int64
+	CompressorRiseMB int64
+	CriticalFor      time.Duration
+	CriticalSamples  int
+	RecoverySamples  int
+}
+
+const (
+	DefaultSwapRiseMB       = int64(64)
+	DefaultCompressorRiseMB = int64(128)
+	DefaultCriticalFor      = 15 * time.Second
+	DefaultCriticalSamples  = 2
+	DefaultRecoverySamples  = 3
+	// DefaultPressureReliefClaimTTL delays takeover of an unacknowledged
+	// machine-global relief claim after its engine dies. The target remains
+	// fixed across takeover, preventing sequential termination of multiple
+	// cohorts during one persistent-pressure episode.
+	DefaultPressureReliefClaimTTL = 30 * time.Second
+)
+
+func (p PressurePolicy) normalized() PressurePolicy {
+	if p.SwapRiseMB <= 0 {
+		p.SwapRiseMB = DefaultSwapRiseMB
+	}
+	if p.CompressorRiseMB <= 0 {
+		p.CompressorRiseMB = DefaultCompressorRiseMB
+	}
+	if p.CriticalFor <= 0 {
+		p.CriticalFor = DefaultCriticalFor
+	}
+	if p.CriticalSamples <= 0 {
+		p.CriticalSamples = DefaultCriticalSamples
+	}
+	if p.RecoverySamples <= 0 {
+		p.RecoverySamples = DefaultRecoverySamples
+	}
+	return p
+}
+
+// PressureState is the small durable state needed for hysteresis and a
+// fail-closed critical-pressure circuit. Timestamps use RFC3339Nano so the
+// state can live in an engine ledger without custom JSON handling.
+type PressureState struct {
+	Effective       sysmem.PressureBand `json:"effective"`
+	CriticalSince   string              `json:"critical_since,omitempty"`
+	CriticalSamples int                 `json:"critical_samples,omitempty"`
+	NormalSamples   int                 `json:"normal_samples,omitempty"`
+	CircuitOpen     bool                `json:"circuit_open,omitempty"`
+}
+
+// PressureTransition is one pure hysteresis result. OpenCircuit is an edge
+// event for the engine; ReliefReady requests an identity-checked graceful
+// relief acknowledgement, never an automatic circuit close.
+type PressureTransition struct {
+	State        PressureState
+	Effective    sysmem.PressureBand
+	OpenCircuit  bool
+	ReliefReady  bool
+	TrendWarning bool
+}
+
+// PressureReliefTarget is the immutable, identity-bound cohort selected for
+// one machine-memory pressure episode. The global claim persists this target
+// before SIGTERM; a takeover may finish only this action, never elect another
+// cohort until fresh normal hysteresis clears the episode.
+type PressureReliefTarget struct {
+	Project         string `json:"project"`
+	RunID           string `json:"run_id"`
+	PhaseID         string `json:"phase_id"`
+	BeadID          string `json:"bead_id"`
+	PID             int    `json:"pid"`
+	ProcessIdentity string `json:"process_identity"`
+	DispatchedAt    string `json:"dispatched_at"`
+}
+
+// PressureReliefRequest identifies the engine attempting to claim the
+// machine-global relief action and the newest recoverable target it observed.
+type PressureReliefRequest struct {
+	OwnerProject         string
+	OwnerRunID           string
+	OwnerEnginePID       int
+	OwnerProcessIdentity string
+	// ObservedOwnerProcessIdentity is the caller's same-snapshot observation
+	// of an existing claim owner's PID. A non-empty mismatch proves PID reuse
+	// and permits takeover without waiting for a liveness-only PID to die.
+	ObservedOwnerProcessIdentity string
+	Target                       PressureReliefTarget
+}
+
+// PressureReliefClaim is the durable machine-global single-cohort claim. An
+// acknowledged claim remains present until normal-pressure recovery clears the
+// episode, so another run cannot sequentially claim a second cohort.
+type PressureReliefClaim struct {
+	Schema         string `json:"schema"`
+	ID             string `json:"id"`
+	OwnerProject   string `json:"owner_project"`
+	OwnerRunID     string `json:"owner_run_id"`
+	OwnerEnginePID int    `json:"owner_engine_pid"`
+	// OwnerProcessIdentity binds ownership to one kernel process birth, not a
+	// reusable numeric PID.
+	OwnerProcessIdentity string               `json:"owner_process_identity"`
+	Target               PressureReliefTarget `json:"target"`
+	ClaimedAt            string               `json:"claimed_at"`
+	AcknowledgedAt       string               `json:"acknowledged_at,omitempty"`
+}
+
+// PressureEpisode is the durable machine-global admission circuit. It is
+// deliberately independent of PressureReliefClaim: persistent critical
+// pressure must be visible to every runner even when there is no Koryph cohort
+// to stop or process/registry inspection is temporarily unavailable.
+type PressureEpisode struct {
+	Schema          string `json:"schema"`
+	ID              string `json:"id"`
+	OpenedByProject string `json:"opened_by_project"`
+	OpenedByRunID   string `json:"opened_by_run_id"`
+	OpenedByPID     int    `json:"opened_by_pid"`
+	OpenedAt        string `json:"opened_at"`
+}
+
+// PressureEpisodeRequest records observability for the runner that first
+// publishes an open circuit. It intentionally requires no process-table
+// identity or relief target: those are optional follow-up control actions.
+type PressureEpisodeRequest struct {
+	Project   string
+	RunID     string
+	EnginePID int
 }
 
 // AdmitOutcome classifies an AcquireEx verdict (koryph-4ql.1, L3) so the engine
@@ -581,7 +753,34 @@ const (
 	// MemReserveMB tipped the inequality — it would have passed at 0) from a
 	// pure floor breach (batch-break: even a 0-reserve bead fails).
 	AdmitDeniedMemory
+	// AdmitDeniedPressure: warning/critical pressure, a rising swap/compressor
+	// trend, an open pressure circuit, or degraded probe state with one agent
+	// already active stopped machine-wide admission.
+	AdmitDeniedPressure
+	// AdmitDeniedReservation: under normal pressure, observed live RSS plus
+	// outstanding ramp reservations and the candidate estimate exceed the
+	// host's total-minus-floor budget. This is candidate-specific.
+	AdmitDeniedReservation
 )
+
+func (o AdmitOutcome) String() string {
+	switch o {
+	case AdmitGranted:
+		return "granted"
+	case AdmitDeniedCap:
+		return "cap"
+	case AdmitDeniedResource:
+		return "resource"
+	case AdmitDeniedMemory:
+		return "memory"
+	case AdmitDeniedPressure:
+		return "pressure"
+	case AdmitDeniedReservation:
+		return "reservation"
+	default:
+		return "unknown"
+	}
+}
 
 // AdmitResult is AcquireEx's typed verdict (koryph-4ql.1, L3). Granted is the
 // boolean the legacy Acquire returns; Outcome plus the descriptive fields drive
@@ -599,6 +798,16 @@ type AdmitResult struct {
 
 	// Populated only for AdmitDeniedMemory:
 	CandidateTipped bool // the candidate's own MemReserveMB tipped the floor
+
+	// Populated for pressure/reservation denials.
+	Pressure          sysmem.PressureBand
+	ProbeOrigin       sysmem.SampleOrigin
+	CircuitOpen       bool
+	Detail            string
+	LiveRSSMB         int
+	ReservedMB        int
+	CandidateMemoryMB int
+	MemoryBudgetMB    int
 }
 
 // ResourceStatus is one kind's live observable state for `koryph governor show`

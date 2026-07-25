@@ -49,7 +49,7 @@ func TestResumeAdoptsStillRunningOrphan(t *testing.T) {
 		t.Fatalf("SetSlot: %v", err)
 	}
 
-	resumed, err := r.resume(context.Background())
+	resumed, err := r.resume(context.Background(), "")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestResumeRejectsRecycledPID(t *testing.T) {
 		t.Fatalf("SetSlot: %v", err)
 	}
 
-	resumed, err := r.resume(context.Background())
+	resumed, err := r.resume(context.Background(), "")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestResumeFinalizesCompletedCandidateWithoutCodingRedispatch(t *testing.T) 
 		t.Fatalf("SetSlot: %v", err)
 	}
 
-	resumed, err := r.resume(context.Background())
+	resumed, err := r.resume(context.Background(), "")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestResumeFinalizesCompletedCandidateWithoutCodingRedispatch(t *testing.T) 
 
 	// A second engine restart remains in finalization and still cannot turn
 	// the candidate back into coding work.
-	resumed, err = r.resume(context.Background())
+	resumed, err = r.resume(context.Background(), "")
 	if err != nil || !resumed {
 		t.Fatalf("second resume = %v, %v; want adopted finalization", resumed, err)
 	}
@@ -159,7 +159,7 @@ func TestResumeLegacyReviewWithoutLiveResultIsPreservedForRequeue(t *testing.T) 
 	if err := r.store.SetSlot(r.run, sl); err != nil {
 		t.Fatalf("SetSlot: %v", err)
 	}
-	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
+	if resumed, err := r.resume(context.Background(), ""); err != nil || !resumed {
 		t.Fatalf("resume = %v, %v; want preserved review recovery", resumed, err)
 	}
 	got := r.run.Slots["reviewing"]
@@ -182,7 +182,7 @@ func TestResumeLegacyMergingWithoutLiveResultCannotBypassValidation(t *testing.T
 	if err := r.store.SetSlot(r.run, sl); err != nil {
 		t.Fatalf("SetSlot: %v", err)
 	}
-	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
+	if resumed, err := r.resume(context.Background(), ""); err != nil || !resumed {
 		t.Fatalf("resume = %v, %v; want preserved merge recovery", resumed, err)
 	}
 	got := r.run.Slots["merging"]
@@ -204,7 +204,7 @@ func TestResumePartialCommitsWithoutCompletionRemainQueued(t *testing.T) {
 	if err := r.store.SetSlot(r.run, sl); err != nil {
 		t.Fatalf("SetSlot: %v", err)
 	}
-	if resumed, err := r.resume(context.Background()); err != nil || !resumed {
+	if resumed, err := r.resume(context.Background(), ""); err != nil || !resumed {
 		t.Fatalf("resume = %v, %v; want queued partial candidate", resumed, err)
 	}
 	if got := r.run.Slots["partial"]; got.Status != ledger.SlotQueued {

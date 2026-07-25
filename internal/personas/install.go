@@ -26,6 +26,7 @@ import (
 	"testing/fstest"
 
 	"github.com/koryph/koryph/agents"
+	"github.com/koryph/koryph/internal/promptc"
 	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/scaffold"
 )
@@ -62,6 +63,9 @@ func InstallForRuntime(root string, force bool, runtimeName string) (results []s
 	}
 	source, err := canonicalFS(root, force)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateCanonicalPersonas(source); err != nil {
 		return nil, nil, err
 	}
 	if runtimeName == "claude" {
@@ -104,7 +108,7 @@ func linkClaudePersonas(root string, force bool) ([]scaffold.Result, []string, e
 	}
 	results := make([]scaffold.Result, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" || entry.Name() == "README.md" {
 			continue
 		}
 		name := strings.TrimSuffix(entry.Name(), ".md")
@@ -162,6 +166,30 @@ func canonicalFS(root string, force bool) (fs.FS, error) {
 		return nil, err
 	}
 	return os.DirFS(filepath.Join(root, "agents")), nil
+}
+
+// validateCanonicalPersonas authenticates every executable persona before any
+// runtime projection is written. README.md documents the corpus and is not a
+// persona. Keeping this check above all adapter branches makes the role-only
+// contract runtime-neutral rather than a Codex-only launch guard.
+func validateCanonicalPersonas(source fs.FS) error {
+	entries, err := fs.ReadDir(source, ".")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" || entry.Name() == "README.md" {
+			continue
+		}
+		data, err := fs.ReadFile(source, entry.Name())
+		if err != nil {
+			return fmt.Errorf("personas: read canonical persona %s: %w", entry.Name(), err)
+		}
+		if err := promptc.ValidateRoleContract(string(data)); err != nil {
+			return fmt.Errorf("personas: validate canonical persona %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 // renderNativePersonasFS asks a runtime adapter to project the canonical

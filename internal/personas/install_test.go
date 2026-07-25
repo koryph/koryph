@@ -25,7 +25,7 @@ func embeddedNames(t *testing.T) []string {
 	}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") && e.Name() != "README.md" {
 			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
 		}
 	}
@@ -38,7 +38,8 @@ func TestInstallForCodexProjectsCanonicalAgentSource(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const source = "---\nmodel: sonnet\ntier: standard\n---\nCanonical Codex instructions.\n"
+	const source = "---\nmodel: sonnet\ntier: standard\n---\n" +
+		"<!-- koryph-clause:role/v1 -->\nCanonical Codex instructions.\n"
 	if err := os.WriteFile(canonical, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +93,9 @@ func TestInstallWritesMissingPersonas(t *testing.T) {
 		} else if info.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("persona %q: %s is not a canonical-source symlink", r.Name, dest)
 		}
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".claude", "agents", "README.md")); !os.IsNotExist(err) {
+		t.Errorf("README.md was installed as an executable persona")
 	}
 }
 

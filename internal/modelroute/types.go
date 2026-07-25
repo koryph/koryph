@@ -22,8 +22,8 @@
 //	persona tier (via the active runtime's model map, project-overridable)  >
 //	persona model (legacy pin, also the fallback when the persona carries no
 //	tier or the tier is unmapped)  >
-//	stage default (plan/design/score → opus; implement/docs/test → sonnet;
-//	explore/debug → haiku; review → opus).
+//	stage default (plan/design/score/security-review → opus;
+//	implement/docs/test/review → sonnet; explore/debug → haiku).
 //
 // The persona-tier step only runs when Req.RepoRoot is set (see Req's doc);
 // it is a strict insertion below run-default and above the hardcoded stage
@@ -44,7 +44,8 @@
 //     when the resolved tier is not in AllowedModels (fail closed).
 //   - PersonaFor(stage, cfg) string — project Stages map with namespaced
 //     engine fallbacks (implement→koryph-implementer, plan→koryph-architect,
-//     review→koryph-security-reviewer, explore→koryph-explorer, debug→
+//     review→koryph-reviewer, security-review→koryph-security-reviewer,
+//     explore→koryph-explorer, debug→
 //     koryph-debugger, docs→koryph-feature-docs-author, test→
 //     koryph-test-engineer, score→koryph-plan-scorer). The koryph- prefix
 //     avoids clashing with a project's own .claude/agents entries.
@@ -65,15 +66,17 @@ const (
 
 // Stages.
 const (
-	StagePlan      = "plan"
-	StageDesign    = "design"
-	StageScore     = "score"
-	StageImplement = "implement"
-	StageReview    = "review"
-	StageDocs      = "docs"
-	StageExplore   = "explore"
-	StageDebug     = "debug"
-	StageTest      = "test"
+	StagePlan           = "plan"
+	StageDesign         = "design"
+	StageScore          = "score"
+	StageImplement      = "implement"
+	StageReview         = "review"
+	StageSecurityReview = "security-review"
+	StageEpicValidation = "epic-validation"
+	StageDocs           = "docs"
+	StageExplore        = "explore"
+	StageDebug          = "debug"
+	StageTest           = "test"
 )
 
 // Req is one resolution request.
@@ -113,11 +116,20 @@ type Req struct {
 	// project-default precedence that normally produces this value before a
 	// caller builds a Req.
 	Runtime string
+
+	// trustedEquivalentTier is set only by ResolveEquivalent after it has
+	// proven the source capability. It lets the target runtime use a concrete
+	// model that is intentionally shared by several portable tiers without
+	// treating an operator's ambiguous exact model as equivalent evidence.
+	trustedEquivalentTier string
 }
 
 // Resolution is the outcome.
 type Resolution struct {
-	Model   string `json:"model"`
+	Model string `json:"model"`
+	// Tier is the runtime-neutral capability class proven by the resolution
+	// source. Successful resolutions never leave it empty.
+	Tier    string `json:"tier,omitempty"`
 	Persona string `json:"persona"`
 	Effort  string `json:"effort,omitempty"`
 	// Equivalent records the runtime-neutral capability request when the

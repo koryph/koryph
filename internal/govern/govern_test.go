@@ -5,10 +5,14 @@ package govern
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/koryph/koryph/internal/sysmem"
 )
 
 // newTestStore returns a Store over a temp KORYPH_HOME with a fixed clock and
@@ -416,5 +420,553 @@ func TestConcurrentAcquireNeverExceedsCap(t *testing.T) {
 	}
 	if len(leases) != capN {
 		t.Errorf("leases on disk = %d, want %d", len(leases), capN)
+	}
+}
+
+func pressureMem(
+	band sysmem.PressureBand,
+	origin sysmem.SampleOrigin,
+	totalMB, availMB uint64,
+) MemInput {
+	const mib = uint64(1024 * 1024)
+	return MemInput{
+		FloorMB: 2048,
+		Host: &HostInput{
+			Sample: sysmem.PressureSample{
+				Stat: sysmem.Stat{
+					TotalBytes: totalMB * mib, AvailableBytes: availMB * mib,
+					Pressure: band, SampledAt: time.Unix(0, 0).UTC(),
+				},
+				Origin: origin,
+			},
+			EffectivePressure: band,
+			LiveRSSKnown:      true,
+		},
+	}
+}
+
+func TestPressureAwareNormalAdmitsDespiteLowConservativePages(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.SetCap("", 4)
+	mem := pressureMem(sysmem.PressureNormal, sysmem.SampleFresh, 16*1024, 128)
+	mem.Host.LiveRSSMB = 3 * 1024
+	mem.Host.ObservedEstimateMB = 1024
+
+	res, err := s.AcquireEx(lease("p", "normal", 101), mem)
+	if err != nil || !res.Granted || res.Outcome != AdmitGranted {
+		t.Fatalf("normal-pressure admission = %+v, err=%v; low conservative pages must not deny", res, err)
+	}
+}
+
+func TestPressureAwareWarningAndCriticalDenyIndependently(t *testing.T) {
+	for _, band := range []sysmem.PressureBand{sysmem.PressureWarning, sysmem.PressureCritical} {
+		t.Run(band.String(), func(t *testing.T) {
+			s := newTestStore(t)
+			mem := pressureMem(band, sysmem.SampleFresh, 16*1024, 8*1024)
+			res, err := s.AcquireEx(lease("p", band.String(), 102), mem)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Granted || res.Outcome != AdmitDeniedPressure || res.Pressure != band {
+				t.Fatalf("%s admission = %+v, want typed pressure denial", band, res)
+			}
+		})
+	}
+}
+
+func TestPressureAwareRisingSwapDeniesNormalBand(t *testing.T) {
+	s := newTestStore(t)
+	mem := pressureMem(sysmem.PressureNormal, sysmem.SampleFresh, 16*1024, 8*1024)
+	mem.Host.Trend = sysmem.Trend{SwapBytes: 64 << 20}
+
+	res, err := s.AcquireEx(lease("p", "swap-rise", 103), mem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Granted || res.Outcome != AdmitDeniedPressure || res.Pressure != sysmem.PressureWarning {
+		t.Fatalf("rising-swap admission = %+v, want pressure warning denial", res)
+	}
+}
+
+func TestDegradedProbeAdmitsAtMostOneMachineAgent(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.SetCap("", 4)
+	mem := pressureMem(sysmem.PressureUnknown, sysmem.SampleDegraded, 0, 0)
+
+	first, err := s.AcquireEx(lease("p", "first", 104), mem)
+	if err != nil || !first.Granted {
+		t.Fatalf("first degraded admission = %+v, err=%v; want one active agent", first, err)
+	}
+	second, err := s.AcquireEx(lease("p", "second", 105), mem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Granted || second.Outcome != AdmitDeniedPressure ||
+		second.ProbeOrigin != sysmem.SampleDegraded {
+		t.Fatalf("second degraded admission = %+v, want degraded pressure denial", second)
+	}
+}
+
+func TestUnavailableLiveRSSDegradesToOneMachineAgent(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.SetCap("", 4)
+	mem := pressureMem(sysmem.PressureNormal, sysmem.SampleFresh, 16*1024, 8*1024)
+	if first, err := s.AcquireEx(lease("p", "first-rss", 107), mem); err != nil || !first.Granted {
+		t.Fatalf("first admission = %+v, err=%v", first, err)
+	}
+	mem.Host.LiveRSSKnown = false
+	second, err := s.AcquireEx(lease("p", "unknown-rss", 108), mem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Granted || second.Outcome != AdmitDeniedPressure {
+		t.Fatalf("unknown RSS with active cohort = %+v, want pressure denial", second)
+	}
+}
+
+func TestPressureAwareReservationUsesLiveRSSAndObservedEstimate(t *testing.T) {
+	s := newTestStore(t)
+	mem := pressureMem(sysmem.PressureNormal, sysmem.SampleFresh, 8*1024, 4*1024)
+	mem.Host.LiveRSSMB = 5 * 1024
+	mem.Host.ObservedEstimateMB = 2 * 1024
+
+	res, err := s.AcquireEx(Lease{
+		Project: "p", Bead: "large", PID: 106, EnginePID: 1,
+		MemReserveMB: 512,
+	}, mem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Granted || res.Outcome != AdmitDeniedReservation || !res.CandidateTipped {
+		t.Fatalf("reservation admission = %+v, want candidate-tipped denial", res)
+	}
+	if res.LiveRSSMB != 5*1024 || res.CandidateMemoryMB != 2*1024 ||
+		res.MemoryBudgetMB != 6*1024 {
+		t.Errorf("reservation evidence = %+v", res)
+	}
+}
+
+func TestPressureHysteresisOpensAndRequiresAcknowledgedRelief(t *testing.T) {
+	policy := PressurePolicy{
+		CriticalFor: 10 * time.Second, CriticalSamples: 2, RecoverySamples: 2,
+	}
+	t0 := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	critical := sysmem.PressureSample{
+		Stat:   sysmem.Stat{Pressure: sysmem.PressureCritical, SampledAt: t0},
+		Origin: sysmem.SampleFresh,
+	}
+	first := AdvancePressure(PressureState{}, critical, sysmem.Trend{}, t0, policy)
+	if first.OpenCircuit || first.State.CircuitOpen || first.Effective != sysmem.PressureCritical {
+		t.Fatalf("first critical transition = %+v", first)
+	}
+	second := AdvancePressure(first.State, critical, sysmem.Trend{}, t0.Add(10*time.Second), policy)
+	if !second.OpenCircuit || !second.State.CircuitOpen {
+		t.Fatalf("persistent critical transition = %+v, want circuit edge", second)
+	}
+
+	normal := sysmem.PressureSample{
+		Stat:   sysmem.Stat{Pressure: sysmem.PressureNormal, SampledAt: t0.Add(20 * time.Second)},
+		Origin: sysmem.SampleFresh,
+	}
+	recovering := AdvancePressure(second.State, normal, sysmem.Trend{}, t0.Add(20*time.Second), policy)
+	if recovering.ReliefReady || !recovering.State.CircuitOpen ||
+		recovering.Effective != sysmem.PressureCritical {
+		t.Fatalf("first normal transition = %+v, want hysteresis hold", recovering)
+	}
+	ready := AdvancePressure(recovering.State, normal, sysmem.Trend{}, t0.Add(21*time.Second), policy)
+	if !ready.ReliefReady || !ready.State.CircuitOpen || ready.Effective != sysmem.PressureNormal {
+		t.Fatalf("second normal transition = %+v, want relief ready but circuit held", ready)
+	}
+	closed := AcknowledgePressureRelief(ready.State, policy)
+	if closed.CircuitOpen {
+		t.Fatalf("acknowledged relief kept circuit open: %+v", closed)
+	}
+}
+
+func TestPressureHysteresisLastGoodDoesNotManufactureRecovery(t *testing.T) {
+	state := PressureState{
+		Effective: sysmem.PressureCritical, CircuitOpen: true, NormalSamples: 0,
+	}
+	lastGoodNormal := sysmem.PressureSample{
+		Stat:   sysmem.Stat{Pressure: sysmem.PressureNormal, SampledAt: time.Now()},
+		Origin: sysmem.SampleLastGood,
+	}
+	for i := 0; i < DefaultRecoverySamples+2; i++ {
+		got := AdvancePressure(state, lastGoodNormal, sysmem.Trend{}, time.Now(), PressurePolicy{})
+		if got.State != state || got.ReliefReady || got.Effective != sysmem.PressureCritical {
+			t.Fatalf("last-good sample advanced recovery: %+v", got)
+		}
+		state = got.State
+	}
+}
+
+func TestPressureReliefClaimAllowsOneTargetPerEpisode(t *testing.T) {
+	s := newTestStore(t)
+	requests := []PressureReliefRequest{
+		{
+			OwnerProject: "p1", OwnerRunID: "r1", OwnerEnginePID: 101,
+			OwnerProcessIdentity: "engine-birth-1",
+			Target: PressureReliefTarget{
+				Project: "p1", RunID: "r1", PhaseID: "a", BeadID: "a",
+				PID: 201, ProcessIdentity: "birth-a", DispatchedAt: "2026-07-25T12:00:00Z",
+			},
+		},
+		{
+			OwnerProject: "p2", OwnerRunID: "r2", OwnerEnginePID: 102,
+			OwnerProcessIdentity: "engine-birth-2",
+			Target: PressureReliefTarget{
+				Project: "p2", RunID: "r2", PhaseID: "b", BeadID: "b",
+				PID: 202, ProcessIdentity: "birth-b", DispatchedAt: "2026-07-25T12:01:00Z",
+			},
+		},
+	}
+	type result struct {
+		claim    PressureReliefClaim
+		acquired bool
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan result, len(requests))
+	var wg sync.WaitGroup
+	for _, request := range requests {
+		request := request
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			claim, acquired, err := s.ClaimPressureRelief(request)
+			results <- result{claim: claim, acquired: acquired, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var winner result
+	acquired := 0
+	for got := range results {
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.acquired {
+			acquired++
+			winner = got
+		}
+	}
+	if acquired != 1 {
+		t.Fatalf("concurrent acquired claims = %d, want 1", acquired)
+	}
+	if err := s.AcknowledgePressureReliefClaim(
+		winner.claim.ID,
+		winner.claim.OwnerProject,
+		winner.claim.OwnerRunID,
+		winner.claim.OwnerEnginePID,
+		winner.claim.OwnerProcessIdentity,
+	); err != nil {
+		t.Fatal(err)
+	}
+	loser := requests[0]
+	if loser.OwnerRunID == winner.claim.OwnerRunID {
+		loser = requests[1]
+	}
+	claim, got, err := s.ClaimPressureRelief(loser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got || claim.ID != winner.claim.ID || claim.AcknowledgedAt == "" {
+		t.Fatalf("acknowledged episode allowed second target: claim=%+v acquired=%t", claim, got)
+	}
+	if recovered, err := s.RecoverPressureRelief(winner.claim.ID); err != nil || !recovered {
+		t.Fatalf("recover acknowledged claim = %t, %v", recovered, err)
+	}
+	if _, got, err := s.ClaimPressureRelief(loser); err != nil || !got {
+		t.Fatalf("fresh episode claim = acquired %t err %v, want true/nil", got, err)
+	}
+}
+
+func TestPressureReliefClaimTakeoverPreservesOriginalTarget(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	s.Alive = func(pid int) bool { return pid != 101 }
+	first := PressureReliefRequest{
+		OwnerProject: "p1", OwnerRunID: "r1", OwnerEnginePID: 101,
+		OwnerProcessIdentity: "engine-birth-1",
+		Target: PressureReliefTarget{
+			Project: "p1", RunID: "r1", PhaseID: "old", BeadID: "old",
+			PID: 201, ProcessIdentity: "birth-old", DispatchedAt: "2026-07-25T11:59:00Z",
+		},
+	}
+	original, acquired, err := s.ClaimPressureRelief(first)
+	if err != nil || !acquired {
+		t.Fatalf("first claim = acquired %t err %v", acquired, err)
+	}
+	second := PressureReliefRequest{
+		OwnerProject: "p2", OwnerRunID: "r2", OwnerEnginePID: 102,
+		OwnerProcessIdentity: "engine-birth-2",
+		Target: PressureReliefTarget{
+			Project: "p2", RunID: "r2", PhaseID: "new", BeadID: "new",
+			PID: 202, ProcessIdentity: "birth-new", DispatchedAt: "2026-07-25T12:01:00Z",
+		},
+	}
+	now = now.Add(DefaultPressureReliefClaimTTL - time.Second)
+	if _, got, err := s.ClaimPressureRelief(second); err != nil || got {
+		t.Fatalf("premature takeover = acquired %t err %v", got, err)
+	}
+	now = now.Add(2 * time.Second)
+	taken, got, err := s.ClaimPressureRelief(second)
+	if err != nil || !got {
+		t.Fatalf("expired takeover = acquired %t err %v", got, err)
+	}
+	if taken.ID != original.ID || taken.Target != original.Target {
+		t.Fatalf("takeover changed episode target: original=%+v taken=%+v", original, taken)
+	}
+}
+
+func TestPressureReliefRecoveryIsAcknowledgedClaimCAS(t *testing.T) {
+	s := newTestStore(t)
+	req := PressureReliefRequest{
+		OwnerProject: "p1", OwnerRunID: "r1", OwnerEnginePID: 101,
+		OwnerProcessIdentity: "engine-birth-1",
+		Target: PressureReliefTarget{
+			Project: "p1", RunID: "r1", PhaseID: "phase", BeadID: "bead",
+			PID: 201, ProcessIdentity: "agent-birth",
+			DispatchedAt: "2026-07-25T12:00:00Z",
+		},
+	}
+	claim, acquired, err := s.ClaimPressureRelief(req)
+	if err != nil || !acquired {
+		t.Fatalf("claim = acquired %t err %v", acquired, err)
+	}
+
+	if recovered, err := s.RecoverPressureRelief(claim.ID); err != nil || recovered {
+		t.Fatalf("unacknowledged recovery = %t, %v; want false, nil", recovered, err)
+	}
+	if current, exists, err := s.PressureReliefStatus(); err != nil || !exists ||
+		current.ID != claim.ID || current.AcknowledgedAt != "" {
+		t.Fatalf("unacknowledged claim changed: claim=%+v exists=%t err=%v",
+			current, exists, err)
+	}
+	if err := s.AcknowledgePressureReliefClaim(
+		claim.ID, req.OwnerProject, req.OwnerRunID, req.OwnerEnginePID,
+		req.OwnerProcessIdentity,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := s.RecoverPressureRelief("newer-claim"); err != nil || recovered {
+		t.Fatalf("mismatched recovery = %t, %v; want false, nil", recovered, err)
+	}
+	if recovered, err := s.RecoverPressureRelief(claim.ID); err != nil || !recovered {
+		t.Fatalf("acknowledged matching recovery = %t, %v; want true, nil", recovered, err)
+	}
+}
+
+func TestPressureReliefPIDReuseAllowsImmediateImmutableTakeover(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	s.Alive = func(int) bool { return true }
+	first := PressureReliefRequest{
+		OwnerProject: "p1", OwnerRunID: "r1", OwnerEnginePID: 101,
+		OwnerProcessIdentity: "old-engine-birth",
+		Target: PressureReliefTarget{
+			Project: "p1", RunID: "r1", PhaseID: "fixed", BeadID: "fixed",
+			PID: 201, ProcessIdentity: "agent-birth",
+			DispatchedAt: "2026-07-25T11:59:00Z",
+		},
+	}
+	original, acquired, err := s.ClaimPressureRelief(first)
+	if err != nil || !acquired {
+		t.Fatalf("first claim = acquired %t err %v", acquired, err)
+	}
+	second := PressureReliefRequest{
+		OwnerProject: "p2", OwnerRunID: "r2", OwnerEnginePID: 102,
+		OwnerProcessIdentity:         "new-engine-birth",
+		ObservedOwnerProcessIdentity: "reused-owner-pid-birth",
+		Target: PressureReliefTarget{
+			Project: "p2", RunID: "r2", PhaseID: "must-not-win", BeadID: "must-not-win",
+			PID: 202, ProcessIdentity: "other-agent-birth",
+			DispatchedAt: "2026-07-25T12:01:00Z",
+		},
+	}
+	taken, acquired, err := s.ClaimPressureRelief(second)
+	if err != nil || !acquired {
+		t.Fatalf("PID-reuse takeover = acquired %t err %v", acquired, err)
+	}
+	if taken.ID != original.ID || taken.Target != original.Target {
+		t.Fatalf("PID-reuse takeover changed immutable target: original=%+v taken=%+v",
+			original, taken)
+	}
+	if taken.OwnerProcessIdentity != second.OwnerProcessIdentity {
+		t.Fatalf("takeover owner identity = %q, want %q",
+			taken.OwnerProcessIdentity, second.OwnerProcessIdentity)
+	}
+}
+
+func TestLegacyPressureClaimWithoutOwnerIdentityDoesNotImplyPIDReuse(t *testing.T) {
+	s := newTestStore(t)
+	legacy := PressureReliefClaim{
+		Schema: pressureReliefClaimSchema, ID: "legacy-claim",
+		OwnerProject: "p1", OwnerRunID: "r1", OwnerEnginePID: 101,
+		Target: PressureReliefTarget{
+			Project: "p1", RunID: "r1", PhaseID: "fixed", BeadID: "fixed",
+			PID: 201, ProcessIdentity: "agent-birth",
+			DispatchedAt: "2026-07-25T11:59:00Z",
+		},
+		ClaimedAt: "2026-07-25T11:59:00Z",
+	}
+	if err := s.writePressureReliefClaim(legacy); err != nil {
+		t.Fatal(err)
+	}
+	claim, acquired, err := s.ClaimPressureRelief(PressureReliefRequest{
+		OwnerProject: "p2", OwnerRunID: "r2", OwnerEnginePID: 102,
+		OwnerProcessIdentity:         "new-engine-birth",
+		ObservedOwnerProcessIdentity: "observed-live-legacy-owner",
+		Target: PressureReliefTarget{
+			Project: "p2", RunID: "r2", PhaseID: "other", BeadID: "other",
+			PID: 202, ProcessIdentity: "other-agent-birth",
+			DispatchedAt: "2026-07-25T12:01:00Z",
+		},
+	})
+	if err != nil || acquired {
+		t.Fatalf("live legacy-owner takeover = acquired %t err %v, want false/nil",
+			acquired, err)
+	}
+	if claim.ID != legacy.ID || claim.Target != legacy.Target ||
+		claim.OwnerProcessIdentity != "" {
+		t.Fatalf("legacy claim changed without dead-owner proof: %+v", claim)
+	}
+}
+
+func TestSharedPressureClaimIsAdmissionAuthoritativeAndUnreadableFailsClosed(t *testing.T) {
+	t.Run("fresh runner observes claim", func(t *testing.T) {
+		s := newTestStore(t)
+		req := PressureReliefRequest{
+			OwnerProject: "p1", OwnerRunID: "r1", OwnerEnginePID: 101,
+			OwnerProcessIdentity: "engine-birth",
+			Target: PressureReliefTarget{
+				Project: "p1", RunID: "r1", PhaseID: "phase", BeadID: "bead",
+				PID: 201, ProcessIdentity: "agent-birth",
+				DispatchedAt: "2026-07-25T12:00:00Z",
+			},
+		}
+		if _, acquired, err := s.ClaimPressureRelief(req); err != nil || !acquired {
+			t.Fatalf("claim = acquired %t err %v", acquired, err)
+		}
+		got, err := s.AcquireEx(lease("fresh", "candidate", 301), MemInput{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Outcome != AdmitDeniedPressure || !got.CircuitOpen ||
+			got.Detail != "shared-pressure-episode" {
+			t.Fatalf("shared claim admission = %+v, want pressure denial", got)
+		}
+	})
+
+	t.Run("corrupt claim fails closed", func(t *testing.T) {
+		s := newTestStore(t)
+		path := s.pressureReliefClaimPath()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.AcquireEx(lease("fresh", "candidate", 301), MemInput{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Outcome != AdmitDeniedPressure || !got.CircuitOpen ||
+			got.Detail != "shared-pressure-state-unreadable" {
+			t.Fatalf("unreadable shared claim admission = %+v, want pressure denial", got)
+		}
+	})
+}
+
+func TestPressureEpisodeIsIndependentAdmissionAuthority(t *testing.T) {
+	s := newTestStore(t)
+	req := PressureEpisodeRequest{Project: "p1", RunID: "r1", EnginePID: 101}
+	episode, opened, err := s.OpenPressureEpisode(req)
+	if err != nil || !opened {
+		t.Fatalf("open episode = opened %t err %v", opened, err)
+	}
+	if repeated, opened, err := s.OpenPressureEpisode(PressureEpisodeRequest{
+		Project: "p2", RunID: "r2", EnginePID: 102,
+	}); err != nil || opened || repeated.ID != episode.ID {
+		t.Fatalf("repeat open = %+v opened=%t err=%v", repeated, opened, err)
+	}
+	got, err := s.AcquireEx(lease("fresh", "candidate", 301), MemInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != AdmitDeniedPressure || !got.CircuitOpen ||
+		got.Detail != "shared-pressure-episode" {
+		t.Fatalf("targetless episode admission = %+v, want pressure denial", got)
+	}
+	if recovered, err := s.RecoverPressureEpisode("different", ""); err != nil || recovered {
+		t.Fatalf("mismatched episode recovery = %t, %v; want false, nil", recovered, err)
+	}
+	if recovered, err := s.RecoverPressureEpisode(episode.ID, ""); err != nil || !recovered {
+		t.Fatalf("matching targetless episode recovery = %t, %v; want true, nil", recovered, err)
+	}
+}
+
+func TestPressureEpisodeRecoveryRequiresExactAcknowledgedClaim(t *testing.T) {
+	s := newTestStore(t)
+	episode, opened, err := s.OpenPressureEpisode(PressureEpisodeRequest{
+		Project: "p1", RunID: "r1", EnginePID: 101,
+	})
+	if err != nil || !opened {
+		t.Fatalf("open episode = opened %t err %v", opened, err)
+	}
+	req := PressureReliefRequest{
+		OwnerProject: "p1", OwnerRunID: "r1", OwnerEnginePID: 101,
+		OwnerProcessIdentity: "engine-birth",
+		Target: PressureReliefTarget{
+			Project: "p1", RunID: "r1", PhaseID: "phase", BeadID: "bead",
+			PID: 201, ProcessIdentity: "agent-birth",
+			DispatchedAt: "2026-07-25T12:00:00Z",
+		},
+	}
+	claim, acquired, err := s.ClaimPressureRelief(req)
+	if err != nil || !acquired {
+		t.Fatalf("claim = acquired %t err %v", acquired, err)
+	}
+	if recovered, err := s.RecoverPressureEpisode(episode.ID, claim.ID); err != nil || recovered {
+		t.Fatalf("unacknowledged episode recovery = %t, %v; want false, nil", recovered, err)
+	}
+	if err := s.AcknowledgePressureReliefClaim(
+		claim.ID, req.OwnerProject, req.OwnerRunID, req.OwnerEnginePID,
+		req.OwnerProcessIdentity,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := s.RecoverPressureEpisode(episode.ID, "different"); err != nil || recovered {
+		t.Fatalf("wrong-claim episode recovery = %t, %v; want false, nil", recovered, err)
+	}
+	if recovered, err := s.RecoverPressureEpisode(episode.ID, claim.ID); err != nil || !recovered {
+		t.Fatalf("acknowledged episode recovery = %t, %v; want true, nil", recovered, err)
+	}
+	if _, exists, err := s.PressureReliefStatus(); err != nil || exists {
+		t.Fatalf("claim remains after atomic recovery: exists=%t err=%v", exists, err)
+	}
+}
+
+func TestUnreadablePressureEpisodeFailsAdmissionClosed(t *testing.T) {
+	s := newTestStore(t)
+	path := s.pressureEpisodePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AcquireEx(lease("fresh", "candidate", 301), MemInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != AdmitDeniedPressure || !got.CircuitOpen ||
+		got.Detail != "shared-pressure-state-unreadable" {
+		t.Fatalf("unreadable episode admission = %+v, want fail-closed pressure denial", got)
 	}
 }

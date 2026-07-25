@@ -275,6 +275,10 @@ func AppendLinePerm(path string, line []byte, perm os.FileMode) error {
 		return err
 	}
 	defer f.Close()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unix.Flock(int(f.Fd()), unix.LOCK_UN) //nolint:errcheck
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return err
 	}

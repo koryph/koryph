@@ -79,7 +79,7 @@ func (r *runner) applyInjections(ctx context.Context, scoped []beads.Issue) []be
 	}
 	var wanted []string
 	for _, id := range of.Inject {
-		if id == "" || inScope[id] {
+		if id == "" || inScope[id] || !r.idAllowed(id) {
 			continue
 		}
 		if _, dispatched := r.run.Slots[id]; dispatched {

@@ -279,4 +279,10 @@ type Capabilities struct {
 	// "source" that silently always reads $0 and would otherwise let the
 	// governor falsely enforce against an unmeasured account.
 	UsageSource bool `json:"usage_source"`
+	// RepositoryInstructions means the runtime natively discovers and loads
+	// the repository's canonical AGENTS.md contract from the worktree.
+	// Koryph omits that clause from the compiled prompt only when this is true.
+	// The zero value is deliberately fail-safe: adapters that have not declared
+	// native loading receive the authenticated repository clause explicitly.
+	RepositoryInstructions bool `json:"repository_instructions"`
 }

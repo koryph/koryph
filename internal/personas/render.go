@@ -5,6 +5,7 @@ package personas
 
 import (
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing/fstest"
 
@@ -28,7 +29,7 @@ func renderPersonasFS(source fs.FS, modelMap runtime.ModelMap) (fstest.MapFS, []
 	out := fstest.MapFS{}
 	var untiered []string
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".md" || e.Name() == "README.md" {
 			continue
 		}
 		data, rerr := fs.ReadFile(source, e.Name())

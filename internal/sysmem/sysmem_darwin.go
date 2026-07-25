@@ -7,7 +7,9 @@ package sysmem
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -27,6 +29,14 @@ func available() (Stat, error) {
 	if err != nil {
 		return Stat{}, fmt.Errorf("sysmem: sysctl hw.memsize: %w", err)
 	}
+	rawPressure, err := unix.SysctlUint32("kern.memorystatus_vm_pressure_level")
+	if err != nil {
+		return Stat{}, fmt.Errorf("sysmem: sysctl memory pressure: %w", err)
+	}
+	pressure, err := parseDarwinPressure(rawPressure)
+	if err != nil {
+		return Stat{}, err
+	}
 	pageSize, err := unix.SysctlUint64("hw.pagesize")
 	if err != nil || pageSize == 0 {
 		pageSize = 4096
@@ -34,12 +44,86 @@ func available() (Stat, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	swapOut, err := exec.CommandContext(ctx, "/usr/sbin/sysctl", "-n", "vm.swapusage").Output()
+	if err != nil {
+		return Stat{}, fmt.Errorf("sysmem: sysctl vm.swapusage: %w", err)
+	}
+	swapUsed, err := parseSwapUsed(string(swapOut))
+	if err != nil {
+		return Stat{}, fmt.Errorf("sysmem: parse vm.swapusage: %w", err)
+	}
 	out, err := exec.CommandContext(ctx, "/usr/bin/vm_stat").Output()
 	if err != nil {
 		return Stat{}, fmt.Errorf("sysmem: vm_stat: %w", err)
 	}
 	pages := parseVMStat(string(out))
-	return Stat{TotalBytes: total, AvailableBytes: availablePages(pages) * pageSize}, nil
+	return Stat{
+		TotalBytes:      total,
+		AvailableBytes:  availablePages(pages) * pageSize,
+		Pressure:        pressure,
+		SwapUsedBytes:   swapUsed,
+		CompressedBytes: pages["Pages occupied by compressor"] * pageSize,
+		SampledAt:       time.Now().UTC(),
+	}, nil
+}
+
+// parseDarwinPressure maps the memorystatus kernel bit values shared with
+// DISPATCH_MEMORYPRESSURE_* into the portable admission bands. Unknown values
+// are a probe failure, not "normal": an OS change must degrade admission
+// safely until koryph understands it.
+func parseDarwinPressure(raw uint32) (PressureBand, error) {
+	switch raw {
+	case 1:
+		return PressureNormal, nil
+	case 2:
+		return PressureWarning, nil
+	case 4:
+		return PressureCritical, nil
+	default:
+		return PressureUnknown, fmt.Errorf("sysmem: unknown Darwin pressure level %d", raw)
+	}
+}
+
+// parseSwapUsed extracts the "used = 12.34M" value from vm.swapusage.
+func parseSwapUsed(raw string) (uint64, error) {
+	fields := strings.Fields(raw)
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] != "used" || fields[i+1] != "=" {
+			continue
+		}
+		return parseByteQuantity(fields[i+2])
+	}
+	return 0, errors.New("missing used field")
+}
+
+func parseByteQuantity(raw string) (uint64, error) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 2 {
+		return 0, fmt.Errorf("invalid byte quantity %q", raw)
+	}
+	unit := raw[len(raw)-1]
+	var multiplier float64
+	switch unit {
+	case 'K', 'k':
+		multiplier = 1024
+	case 'M', 'm':
+		multiplier = 1024 * 1024
+	case 'G', 'g':
+		multiplier = 1024 * 1024 * 1024
+	case 'T', 't':
+		multiplier = 1024 * 1024 * 1024 * 1024
+	default:
+		return 0, fmt.Errorf("unknown byte unit %q", string(unit))
+	}
+	n, err := strconv.ParseFloat(raw[:len(raw)-1], 64)
+	if err != nil || n < 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, fmt.Errorf("invalid byte quantity %q", raw)
+	}
+	bytes := n * multiplier
+	if bytes > math.MaxUint64 {
+		return 0, fmt.Errorf("byte quantity overflows uint64: %q", raw)
+	}
+	return uint64(bytes), nil
 }
 
 // availablePages sums the vm_stat page classes the kernel can promptly hand to a

@@ -72,7 +72,8 @@ func TestCollectTokensNoTokenFields(t *testing.T) {
 
 	// Slot with all-zero token fields (pre-L1 ledger).
 	writeRun(t, root, "20260101-000001", &ledger.Run{
-		SchemaVersion: 2, RunID: "20260101-000001", ProjectID: "notoken", Status: ledger.RunDone,
+		SchemaVersion: 2, TokenSemantics: ledger.CurrentTokenSemantics,
+		RunID: "20260101-000001", ProjectID: "notoken", Status: ledger.RunDone,
 		Slots: map[string]*ledger.Slot{
 			"a": {PhaseID: "a", Model: "sonnet", Status: ledger.SlotMerged, CostUSD: 1.0},
 		},
@@ -124,7 +125,8 @@ func TestCollectTokensBasic(t *testing.T) {
 
 	// Run 1: two slots with token data.
 	writeRun(t, root, "20260101-000001", &ledger.Run{
-		SchemaVersion: 2, RunID: "20260101-000001", ProjectID: "demo", Status: ledger.RunDone,
+		SchemaVersion: 2, TokenSemantics: ledger.CurrentTokenSemantics,
+		RunID: "20260101-000001", ProjectID: "demo", Status: ledger.RunDone,
 		StartedAt: "2026-01-01T00:00:01Z",
 		Slots: map[string]*ledger.Slot{
 			"a": {
@@ -132,6 +134,7 @@ func TestCollectTokensBasic(t *testing.T) {
 				Status:      ledger.SlotMerged,
 				InputTokens: 1000, OutputTokens: 200,
 				CacheReadTokens: 8000, CacheCreationTokens: 500,
+				ProviderTotalInputTokens: 9000, HasProviderTotalInput: true,
 				CostUSD: 1.0,
 			},
 			"b": {
@@ -145,7 +148,8 @@ func TestCollectTokensBasic(t *testing.T) {
 	})
 	// Run 2: one new slot.
 	writeRun(t, root, "20260101-000002", &ledger.Run{
-		SchemaVersion: 2, RunID: "20260101-000002", ProjectID: "demo", Status: ledger.RunDone,
+		SchemaVersion: 2, TokenSemantics: ledger.CurrentTokenSemantics,
+		RunID: "20260101-000002", ProjectID: "demo", Status: ledger.RunDone,
 		StartedAt: "2026-01-01T00:00:02Z",
 		Slots: map[string]*ledger.Slot{
 			"c": {
@@ -154,6 +158,18 @@ func TestCollectTokensBasic(t *testing.T) {
 				InputTokens: 500, OutputTokens: 100,
 				CacheReadTokens: 3000, CacheCreationTokens: 200,
 				CostUSD: 0.5,
+			},
+		},
+	})
+	// A pre-normalization run is labeled and excluded, not silently mixed.
+	writeRun(t, root, "20260101-000003", &ledger.Run{
+		SchemaVersion: 2, TokenSemantics: ledger.TokenSemanticsLegacyV0,
+		RunID: "20260101-000003", ProjectID: "demo", Status: ledger.RunDone,
+		StartedAt: "2026-01-01T00:00:03Z",
+		Slots: map[string]*ledger.Slot{
+			"legacy": {
+				PhaseID: "legacy", Model: "sonnet", Status: ledger.SlotMerged,
+				InputTokens: 999999, CacheReadTokens: 999999,
 			},
 		},
 	})
@@ -194,6 +210,15 @@ func TestCollectTokensBasic(t *testing.T) {
 	}
 	if p.Composition.CacheCreation != 700 {
 		t.Errorf("CacheCreation = %d, want 700", p.Composition.CacheCreation)
+	}
+	if !p.Composition.HasProviderTotalInput || p.Composition.ProviderTotalInput != 9000 {
+		t.Errorf("provider-total audit = %d present:%v, want 9000/true",
+			p.Composition.ProviderTotalInput, p.Composition.HasProviderTotalInput)
+	}
+	if p.TokenSemantics != ledger.CurrentTokenSemantics ||
+		p.ExcludedRunsByTokenSemantics[ledger.TokenSemanticsLegacyV0] != 1 {
+		t.Errorf("semantics = %q exclusions=%v, want current and one legacy exclusion",
+			p.TokenSemantics, p.ExcludedRunsByTokenSemantics)
 	}
 
 	// MeanPerBead = 20800 / 3 = 6933
@@ -290,7 +315,8 @@ func TestCollectTokensProjectFilter(t *testing.T) {
 	}
 
 	writeRun(t, rootAlpha, "20260101-000001", &ledger.Run{
-		SchemaVersion: 2, RunID: "20260101-000001", ProjectID: "alpha", Status: ledger.RunDone,
+		SchemaVersion: 2, TokenSemantics: ledger.CurrentTokenSemantics,
+		RunID: "20260101-000001", ProjectID: "alpha", Status: ledger.RunDone,
 		StartedAt: "2026-01-01T00:00:01Z",
 		Slots: map[string]*ledger.Slot{
 			"x": {PhaseID: "x", Model: "sonnet", Status: ledger.SlotMerged,
@@ -340,7 +366,8 @@ func TestRenderTokensOutput(t *testing.T) {
 	}
 
 	writeRun(t, root, "20260101-000001", &ledger.Run{
-		SchemaVersion: 2, RunID: "20260101-000001", ProjectID: "render-test",
+		SchemaVersion: 2, TokenSemantics: ledger.CurrentTokenSemantics,
+		RunID: "20260101-000001", ProjectID: "render-test",
 		Status: ledger.RunDone, StartedAt: "2026-01-01T00:00:01Z",
 		Slots: map[string]*ledger.Slot{
 			"slot1": {
@@ -406,6 +433,19 @@ func TestMakeComposition(t *testing.T) {
 	c2 := makeComposition(0, 100, 0, 0)
 	if c2.CacheHitRatio != 0 {
 		t.Errorf("CacheHitRatio with zero input = %v, want 0", c2.CacheHitRatio)
+	}
+}
+
+func TestMakeAuditedCompositionDoesNotDoubleCountProviderTotal(t *testing.T) {
+	c := makeAuditedComposition(6, 2, 4, 0, 10, true)
+	if c.Input != 6 || c.CacheRead != 4 || c.ProviderTotalInput != 10 {
+		t.Fatalf("composition = %+v, want fresh=6 cached=4 provider-total=10", c)
+	}
+	if c.Total != 12 {
+		t.Fatalf("Total = %d, want 6 fresh + 4 cached + 2 output = 12", c.Total)
+	}
+	if !c.HasProviderTotalInput {
+		t.Fatal("HasProviderTotalInput = false, want true")
 	}
 }
 

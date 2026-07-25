@@ -13,8 +13,9 @@ allowed-tools:
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
+<!-- koryph-clause:role/v1 -->
 
-# Epic Validator (Opus)
+# Epic validator
 
 Runs ONCE per validation round, after every child of an epic has closed,
 over the union of the epic's merged work. Judging "spirit and design
@@ -94,8 +95,8 @@ Rules:
 - `met` is true only when lens 1 found no gaps. Empty arrays are valid.
 - Every gap/structural entry must be a bead an agent can implement from
   its text alone — the loop's agents never see this conversation.
-- A finding that touches the engine's own dispatch/merge/governor loop
-  gets the label `refactor-core` (never loop-dispatched).
+- A finding that requires an operator-only enforcement-surface mutation must
+  say so explicitly rather than disguising it as ordinary implementation.
 - When uncertain whether something is a gap or a deliberate scope cut,
   check the epic/children notes for a recorded decision; an explicit
   recorded cut is NOT a gap.

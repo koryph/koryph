@@ -55,6 +55,27 @@ const (
 	RunAborted       = "aborted"
 )
 
+// Token accounting semantics are versioned independently of the ledger file
+// schema because the same structural fields historically carried
+// provider-dependent meanings. Empty semantics on a decoded run means it
+// predates normalization and is therefore labeled legacy rather than folded
+// into current normalized aggregates.
+const (
+	TokenSemanticsLegacyV0   = "legacy-v0"
+	TokenSemanticsDisjointV1 = "disjoint-v1"
+	CurrentTokenSemantics    = TokenSemanticsDisjointV1
+)
+
+// EffectiveTokenSemantics returns the explicit semantics label used by
+// readers. It does not mutate the run; Store.LoadRun labels an older ledger
+// in memory and Store.SaveRun makes that label durable.
+func EffectiveTokenSemantics(run *Run) string {
+	if run == nil || run.TokenSemantics == "" {
+		return TokenSemanticsLegacyV0
+	}
+	return run.TokenSemantics
+}
+
 // Terminal reports whether a slot status is terminal. pr-opened is terminal
 // for the run: the agent is done and the slot freed; the branch parks (worktree
 // kept) until a separate landing step fast-forwards the PR.
@@ -68,16 +89,26 @@ func Terminal(status string) bool {
 
 // Run is one koryph run over one project.
 type Run struct {
-	SchemaVersion int              `json:"schema_version"`
-	RunID         string           `json:"run_id"`
-	ProjectID     string           `json:"project_id"`
-	EngineVersion string           `json:"engine_version"`
-	StartedAt     string           `json:"started_at"`
-	UpdatedAt     string           `json:"updated_at"`
-	Status        string           `json:"status"`
-	Wave          int              `json:"wave"`
-	Source        string           `json:"source"` // bd|markdown
-	Slots         map[string]*Slot `json:"slots"`
+	SchemaVersion int `json:"schema_version"`
+	// TokenSemantics versions the meaning of every Slot token counter in this
+	// run. New runs use disjoint-v1; ledgers missing this field are legacy-v0
+	// and must not be mixed into normalized metrics.
+	TokenSemantics string           `json:"token_semantics"`
+	RunID          string           `json:"run_id"`
+	ProjectID      string           `json:"project_id"`
+	EngineVersion  string           `json:"engine_version"`
+	StartedAt      string           `json:"started_at"`
+	UpdatedAt      string           `json:"updated_at"`
+	Status         string           `json:"status"`
+	Wave           int              `json:"wave"`
+	Source         string           `json:"source"` // bd|markdown
+	Slots          map[string]*Slot `json:"slots"`
+
+	// AttemptHistory preserves the last durable view of every superseded
+	// implementation attempt. The live attempt remains in Slots. SetSlot moves
+	// the prior view here before installing attempt N+1, so retries and process
+	// restarts cannot erase the evidence needed by the fixed-cohort canary.
+	AttemptHistory []AttemptSnapshot `json:"attempt_history,omitempty"`
 
 	// PatrolEvents is the chronological history of periodic in-loop health
 	// patrol runs for this run. Appended by the engine's health patrol
@@ -119,6 +150,7 @@ type Slot struct {
 	SessionName string `json:"session_name,omitempty"`
 	Agent       string `json:"agent"`
 	Model       string `json:"model"`
+	ModelTier   string `json:"model_tier,omitempty"`
 	ModelWhy    string `json:"model_rationale,omitempty"`
 	Effort      string `json:"effort,omitempty"`
 
@@ -216,6 +248,12 @@ type Slot struct {
 	CandidateResultPath string        `json:"candidate_result_path,omitempty"`
 	OutcomeClass        string        `json:"outcome_class,omitempty"`
 	Retry               RetryCounters `json:"retry,omitempty"`
+	// LastRevalidationKey is the durable identity of the most recent
+	// engine-owned revalidation target. Distinct default-branch advances may
+	// revalidate without a model or a fixed retry ceiling; seeing the exact
+	// same target twice instead identifies a finalization invariant loop and
+	// parks the slot.
+	LastRevalidationKey string `json:"last_revalidation_key,omitempty"`
 
 	// FinalizationStage records which durable, process-free finalization step
 	// was in flight when the engine last checkpointed this slot. It lets
@@ -223,6 +261,19 @@ type Slot struct {
 	// "resume an already review-clean merge" without dispatching another
 	// coding agent. Values are owned by the engine ("review", "merge", "pr").
 	FinalizationStage string `json:"finalization_stage,omitempty"`
+	// FinalizationQueuedAt is set once when the candidate first enters the
+	// quality pipeline. Revalidations keep it so lane ordering remains based
+	// on candidate age rather than the most recent base movement.
+	FinalizationQueuedAt string `json:"finalization_queued_at,omitempty"`
+	// FinalizationTimings are stamped by Store.SaveRun from the engine's typed
+	// FinalizationStage transitions. Keeping the clocking at the persistence
+	// boundary makes queue/service evidence durable without parsing logs.
+	FinalizationTimings FinalizationTimings `json:"finalization_timings,omitempty"`
+	// GateEvidencePath names the generation-specific authoritative validation
+	// artifact. Legacy ledgers omit it and are forced back through validation;
+	// stale workers write different paths and cannot overwrite current proof.
+	GateEvidencePath   string `json:"gate_evidence_path,omitempty"`
+	GateEvidenceDigest string `json:"gate_evidence_digest,omitempty"`
 
 	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are the
 	// per-slot token composition (koryph-77r.1, design
@@ -237,6 +288,12 @@ type Slot struct {
 	OutputTokens        int64 `json:"output_tokens,omitempty"`
 	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	// ProviderTotalInputTokens is an optional raw inclusive input counter kept
+	// solely for audit. It is not an additional token class and must never be
+	// added to normalized totals. HasProviderTotalInput distinguishes a real
+	// provider-reported zero from a runtime without such a counter.
+	ProviderTotalInputTokens int64 `json:"provider_total_input_tokens,omitempty"`
+	HasProviderTotalInput    bool  `json:"has_provider_total_input,omitempty"`
 
 	// EstimateUSD is the dispatch-time cost estimate stamped at the moment the
 	// slot was first created (koryph-6bl). Additive: a Slot decoded from a
@@ -258,11 +315,22 @@ type Slot struct {
 	// worktree instead of stranding the bead in a terminal conflict slot.
 	ConflictRequeues int `json:"conflict_requeues,omitempty"`
 
-	ReviewIters  int    `json:"review_iters,omitempty"`
-	DispatchedAt string `json:"dispatched_at,omitempty"`
-	MergedAt     string `json:"merged_at,omitempty"`
-	UpdatedAt    string `json:"updated_at,omitempty"`
-	Note         string `json:"note,omitempty"`
+	ReviewIters int `json:"review_iters,omitempty"`
+	// GeneralReviewArtifactPath and SecurityReviewArtifactPath point only to
+	// generation-accepted immutable review artifacts. Stale workers may leave
+	// unreferenced files, but cannot enter cumulative repair history.
+	GeneralReviewArtifactPath    string `json:"general_review_artifact_path,omitempty"`
+	GeneralReviewArtifactDigest  string `json:"general_review_artifact_digest,omitempty"`
+	GeneralReviewCandidateSHA    string `json:"general_review_candidate_sha,omitempty"`
+	GeneralReviewBaseSHA         string `json:"general_review_base_sha,omitempty"`
+	SecurityReviewArtifactPath   string `json:"security_review_artifact_path,omitempty"`
+	SecurityReviewArtifactDigest string `json:"security_review_artifact_digest,omitempty"`
+	SecurityReviewCandidateSHA   string `json:"security_review_candidate_sha,omitempty"`
+	SecurityReviewBaseSHA        string `json:"security_review_base_sha,omitempty"`
+	DispatchedAt                 string `json:"dispatched_at,omitempty"`
+	MergedAt                     string `json:"merged_at,omitempty"`
+	UpdatedAt                    string `json:"updated_at,omitempty"`
+	Note                         string `json:"note,omitempty"`
 
 	// LastActivityAt is the wall-clock instant the slot last showed real work —
 	// the freshest of stream growth, the agent heartbeat, cohort CPU, and
@@ -387,6 +455,33 @@ type Slot struct {
 	MemReserveMB int `json:"mem_reserve_mb,omitempty"`
 }
 
+// AttemptSnapshot is the complete engine-owned ledger view immediately before
+// a later implementation attempt replaces it. Slot is a value copy so a
+// subsequent in-memory mutation cannot rewrite historical evidence.
+type AttemptSnapshot struct {
+	Slot Slot `json:"slot"`
+}
+
+// FinalizationTimings records the durable queue/service interval for each
+// typed post-implementation lane. Security review is separate on disk and is
+// folded into semantic-review timing by the autonomy report collector.
+type FinalizationTimings struct {
+	ActiveStage    string              `json:"active_stage,omitempty"`
+	Gate           StageTimingEvidence `json:"gate,omitempty"`
+	Review         StageTimingEvidence `json:"review,omitempty"`
+	SecurityReview StageTimingEvidence `json:"security_review,omitempty"`
+	Merge          StageTimingEvidence `json:"merge,omitempty"`
+	PR             StageTimingEvidence `json:"pr,omitempty"`
+}
+
+// StageTimingEvidence is an authenticated ledger interval. Queue time is
+// QueuedAt..StartedAt and service time is StartedAt..CompletedAt.
+type StageTimingEvidence struct {
+	QueuedAt    string `json:"queued_at,omitempty"`
+	StartedAt   string `json:"started_at,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
+}
+
 // PatrolFinding is one in-loop health check result from a periodic patrol run.
 type PatrolFinding struct {
 	Check   string `json:"check"`
@@ -438,6 +533,7 @@ type Manifest struct {
 	SessionID       string `json:"session_id"`
 	SessionName     string `json:"session_name,omitempty"`
 	Model           string `json:"model"`
+	ModelTier       string `json:"model_tier,omitempty"`
 	ModelWhy        string `json:"model_rationale,omitempty"`
 	// ModelActual mirrors Slot.ModelActual (koryph-qf6.2) — see its doc.
 	// Refreshed by checkpointSlot at terminal transitions; empty on a

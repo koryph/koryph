@@ -39,7 +39,7 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/koryph/koryph/internal/version.describe={{ .Summary }}
-      - -X github.com/koryph/koryph/internal/version.commit={{ .ShortCommit }}
+      - -X github.com/koryph/koryph/internal/version.commit={{ .FullCommit }}{{ if .IsGitDirty }}-dirty{{ end }}
       - -X github.com/koryph/koryph/internal/version.date={{ .CommitDate }}
     goos: [darwin, linux]
     goarch: [amd64, arm64]

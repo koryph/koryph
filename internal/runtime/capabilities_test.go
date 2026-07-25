@@ -14,15 +14,16 @@ import (
 // unmarshal cycle independently (no field aliasing/typo in the json tags).
 func TestCapabilitiesJSONRoundTrip(t *testing.T) {
 	want := runtime.Capabilities{
-		JSONStream:          true,
-		Personas:            true,
-		Hooks:               false,
-		Resume:              true,
-		EffortFlag:          false,
-		BudgetFlag:          true,
-		Sandbox:             false,
-		ScopedSigningSocket: true,
-		ModelSelect:         true,
+		JSONStream:             true,
+		Personas:               true,
+		Hooks:                  false,
+		Resume:                 true,
+		EffortFlag:             false,
+		BudgetFlag:             true,
+		Sandbox:                false,
+		ScopedSigningSocket:    true,
+		ModelSelect:            true,
+		RepositoryInstructions: true,
 	}
 
 	data, err := json.Marshal(want)

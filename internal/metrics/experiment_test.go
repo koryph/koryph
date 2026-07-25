@@ -72,7 +72,8 @@ func TestCollectExperimentSkipsProjectsWithoutProxy(t *testing.T) {
 	// koryph-3l1.3, or for a project that has never configured agent_proxy,
 	// unmarshals to.
 	writeRun(t, root, "20260101-000001", &ledger.Run{
-		SchemaVersion: 2, RunID: "20260101-000001", ProjectID: "noproxy", Status: ledger.RunDone,
+		SchemaVersion: 2, TokenSemantics: ledger.CurrentTokenSemantics,
+		RunID: "20260101-000001", ProjectID: "noproxy", Status: ledger.RunDone,
 		Slots: map[string]*ledger.Slot{
 			"a": {PhaseID: "a", Model: "sonnet", Status: ledger.SlotMerged, CostUSD: 1.0,
 				InputTokens: 100, OutputTokens: 50},
@@ -118,7 +119,8 @@ func TestCollectExperimentTwoArmSplit(t *testing.T) {
 	proxyID := rec.AgentProxy.ID()
 
 	writeRun(t, root, "20260101-000001", &ledger.Run{
-		SchemaVersion: 2, RunID: "20260101-000001", ProjectID: "exp", Status: ledger.RunDone,
+		SchemaVersion: 2, TokenSemantics: ledger.CurrentTokenSemantics,
+		RunID: "20260101-000001", ProjectID: "exp", Status: ledger.RunDone,
 		Slots: map[string]*ledger.Slot{
 			// Proxied arm: two beads, one with a gate requeue and a blocking
 			// review bounce.
@@ -126,6 +128,7 @@ func TestCollectExperimentTwoArmSplit(t *testing.T) {
 				PhaseID: "p1", Model: "sonnet", Status: ledger.SlotMerged,
 				ProxyConfigured: true, ProxyID: proxyID,
 				CostUSD: 1.0, InputTokens: 1000, OutputTokens: 200, CacheReadTokens: 8000,
+				ProviderTotalInputTokens: 9000, HasProviderTotalInput: true,
 			},
 			"p2": {
 				PhaseID: "p2", Model: "sonnet", Status: ledger.SlotMerged,
@@ -162,6 +165,17 @@ func TestCollectExperimentTwoArmSplit(t *testing.T) {
 			},
 		},
 	})
+	writeRun(t, root, "20260101-000002", &ledger.Run{
+		SchemaVersion: 2, TokenSemantics: ledger.TokenSemanticsLegacyV0,
+		RunID: "20260101-000002", ProjectID: "exp", Status: ledger.RunDone,
+		Slots: map[string]*ledger.Slot{
+			"legacy-semantics": {
+				PhaseID: "legacy-semantics", Model: "sonnet", Status: ledger.SlotMerged,
+				ProxyConfigured: true, ProxyID: proxyID,
+				InputTokens: 999999, CacheReadTokens: 999999,
+			},
+		},
+	})
 
 	// Seed calibration for both arms so EstimatorBias/N surface too.
 	cfg := quota.DefaultConfig(rec.AccountProfile)
@@ -191,6 +205,11 @@ func TestCollectExperimentTwoArmSplit(t *testing.T) {
 	if pe.CalibrationSlopeSeam == "" {
 		t.Error("CalibrationSlopeSeam must document the unimplemented /usage seam, got empty")
 	}
+	if pe.TokenSemantics != ledger.CurrentTokenSemantics ||
+		pe.ExcludedRunsByTokenSemantics[ledger.TokenSemanticsLegacyV0] != 1 {
+		t.Errorf("semantics = %q exclusions=%v, want current and one legacy exclusion",
+			pe.TokenSemantics, pe.ExcludedRunsByTokenSemantics)
+	}
 
 	// Proxied arm.
 	if pe.Proxied.Beads != 2 {
@@ -211,6 +230,12 @@ func TestCollectExperimentTwoArmSplit(t *testing.T) {
 	wantProxiedTotal := int64(1000+200+8000) + int64(500+100+4000)
 	if pe.Proxied.Composition.Total != wantProxiedTotal {
 		t.Errorf("Proxied.Composition.Total = %d, want %d", pe.Proxied.Composition.Total, wantProxiedTotal)
+	}
+	if !pe.Proxied.Composition.HasProviderTotalInput ||
+		pe.Proxied.Composition.ProviderTotalInput != 9000 {
+		t.Errorf("Proxied provider-total audit = %d present:%v, want 9000/true",
+			pe.Proxied.Composition.ProviderTotalInput,
+			pe.Proxied.Composition.HasProviderTotalInput)
 	}
 	if pe.Proxied.EstimatorN != 2 || pe.Proxied.EstimatorBias != 0.8 {
 		t.Errorf("Proxied estimator = N=%d Bias=%v, want N=2 Bias=0.8", pe.Proxied.EstimatorN, pe.Proxied.EstimatorBias)

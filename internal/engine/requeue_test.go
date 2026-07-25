@@ -17,6 +17,7 @@ import (
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
+	"github.com/koryph/koryph/internal/runtime"
 	"github.com/koryph/koryph/internal/worktree"
 )
 
@@ -89,22 +90,29 @@ func TestRequeueFreezesModel(t *testing.T) {
 	if fresh.Model != "sonnet" {
 		t.Fatalf("fresh model = %q, want sonnet (live label wins on a fresh dispatch)", fresh.Model)
 	}
+	if fresh.Tier != "standard" {
+		t.Fatalf("fresh tier = %q, want standard", fresh.Tier)
+	}
 
 	// A REQUEUE carrying attempt 1's frozen resolution ignores the relabel and
 	// re-runs opus, with the persona/effort/rationale carried forward verbatim.
 	frozen, effort, err := r.resolveModel(dispatchReq{
-		issue:          relabeled,
-		attempt:        2,
-		frozenModel:    "opus",
-		frozenPersona:  "koryph-implementer",
-		frozenModelWhy: "frozen from attempt 1",
-		frozenEffort:   "high",
+		issue:           relabeled,
+		attempt:         2,
+		frozenModel:     "opus",
+		frozenModelTier: "frontier",
+		frozenPersona:   "koryph-implementer",
+		frozenModelWhy:  "frozen from attempt 1",
+		frozenEffort:    "high",
 	}, "claude")
 	if err != nil {
 		t.Fatalf("frozen resolveModel: %v", err)
 	}
 	if frozen.Model != "opus" {
 		t.Errorf("requeue model = %q, want opus (frozen from attempt 1, not the mid-run relabel)", frozen.Model)
+	}
+	if frozen.Tier != "frontier" {
+		t.Errorf("requeue tier = %q, want frontier (frozen)", frozen.Tier)
 	}
 	if frozen.Persona != "koryph-implementer" {
 		t.Errorf("requeue persona = %q, want koryph-implementer (frozen)", frozen.Persona)
@@ -114,6 +122,35 @@ func TestRequeueFreezesModel(t *testing.T) {
 	}
 	if effort != "high" {
 		t.Errorf("requeue effort = %q, want high (frozen)", effort)
+	}
+}
+
+func TestFrozenModelRequiresClosedPortableTier(t *testing.T) {
+	r := &runner{}
+	for _, tier := range []string{"", "future", "sonnet", "STANDARD"} {
+		t.Run("invalid-"+tier, func(t *testing.T) {
+			_, _, err := r.resolveModel(dispatchReq{
+				frozenModel: "persisted-model", frozenModelTier: tier,
+			}, "claude")
+			if err == nil || !strings.Contains(err.Error(), "invalid portable tier") {
+				t.Fatalf("resolveModel tier %q error = %v", tier, err)
+			}
+		})
+	}
+	for _, tier := range []string{
+		runtime.TierLight, runtime.TierStandard, runtime.TierFrontier,
+	} {
+		t.Run("valid-"+tier, func(t *testing.T) {
+			res, _, err := r.resolveModel(dispatchReq{
+				frozenModel: "persisted-model", frozenModelTier: tier,
+			}, "claude")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Tier != tier {
+				t.Fatalf("resolved tier = %q, want %q", res.Tier, tier)
+			}
+		})
 	}
 }
 
@@ -183,12 +220,13 @@ func escalationRunner(t *testing.T, f *fix) (*runner, *capturingBackend) {
 func escalationSlot(t *testing.T, r *runner, id string, attempts int) *ledger.Slot {
 	t.Helper()
 	sl := &ledger.Slot{
-		PhaseID:  id,
-		Status:   ledger.SlotRunning,
-		Attempts: attempts,
-		Model:    "sonnet",
-		Agent:    "koryph-implementer",
-		ModelWhy: "stage default (implement)",
+		PhaseID:   id,
+		Status:    ledger.SlotRunning,
+		Attempts:  attempts,
+		Model:     "sonnet",
+		ModelTier: "standard",
+		Agent:     "koryph-implementer",
+		ModelWhy:  "stage default (implement)",
 	}
 	r.run.Slots[id] = sl
 	if err := r.store.SaveRun(r.run); err != nil {

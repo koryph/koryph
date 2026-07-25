@@ -28,13 +28,18 @@ import (
 // allowed), accumulating combined output. It stops at the first non-zero
 // exit; ok is true only when every command exits 0.
 func RunGate(ctx context.Context, dir string, cmds []string) (ok bool, output string) {
-	return runGate(ctx, dir, "", cmds)
+	ok, output, _ = runGate(ctx, dir, "", cmds)
+	return ok, output
 }
 
 // runGate is RunGate with an optional trusted product-owned phase context.
 // When validationPhaseDir is set, known broad commands run as an authenticated
 // validation cohort under the same phase-local guard used by worker shims.
-func runGate(ctx context.Context, dir, validationPhaseDir string, cmds []string) (ok bool, output string) {
+func runGate(
+	ctx context.Context,
+	dir, validationPhaseDir string,
+	cmds []string,
+) (ok bool, output string, infraErr error) {
 	// The gate compiles and runs agent-authored code (test files, Makefile
 	// targets are not protected paths). Give it an allowlisted environment so a
 	// planted test cannot read the orchestrator's ambient secrets (GH_TOKEN,
@@ -63,13 +68,13 @@ func runGate(ctx context.Context, dir, validationPhaseDir string, cmds []string)
 		b.WriteString(res.Stderr)
 		if err != nil {
 			b.WriteString("\nerror: " + err.Error() + "\n")
-			return false, b.String()
+			return false, b.String(), err
 		}
 		if res.ExitCode != 0 {
-			return false, b.String()
+			return false, b.String(), nil
 		}
 	}
-	return true, b.String()
+	return true, b.String(), nil
 }
 
 const guardedValidationInternalExit = 125

@@ -11,8 +11,9 @@ allowed-tools:
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
+<!-- koryph-clause:role/v1 -->
 
-# Recovery Analyst (Opus, read-only)
+# Recovery analyst
 
 Invoked by the Koryph's recovery engine when a dispatched run stopped
 mid-flight (crash, hard-stop on quota, killed slot) and the default
@@ -49,9 +50,9 @@ recovery classifier (alive → reattach; dead+commits → re-dispatch; dead+clea
 4. Propose a resume plan: which completed steps are trustworthy, which
    invalidated steps must re-run, and the exact next action (re-dispatch
    with a RESUMING preamble / fresh dispatch / escalate to human).
-5. Rate confidence **low / med / high**. Low confidence recommends
-   upgrading the next attempt's model to Opus — never to Fable; that
-   upgrade path is structurally excluded.
+5. Rate confidence **low / med / high**. Low confidence recommends a
+   frontier analysis before any standard-tier repair; it does not authorize
+   frontier implementation by itself.
 
 ## Output format
 

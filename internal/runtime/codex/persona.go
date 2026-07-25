@@ -8,21 +8,60 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/koryph/koryph/internal/promptc"
 )
 
 // PreparePrompt projects the canonical Markdown persona into the dispatch
 // prompt. Codex has no `exec --agent` selector, so this is the portable
 // equivalent of Claude's native named-agent invocation.
 func (c Codex) PreparePrompt(worktree, persona, prompt string) (string, error) {
+	if err := validateNativeRepositoryContract(worktree); err != nil {
+		return "", err
+	}
+	if strings.Contains(prompt, "<!-- koryph-clause:") {
+		if err := promptc.ValidateDispatchContract(prompt, false); err != nil {
+			return "", fmt.Errorf("codex dispatch contract: %w", err)
+		}
+	}
 	if persona == "" {
 		return prompt, nil
 	}
 	path := filepath.Join(worktree, "agents", persona+".md")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("codex persona %q: inspect canonical source %s: %w", persona, path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("codex persona %q: canonical source %s is not a regular file", persona, path)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("codex persona %q: read canonical source %s: %w", persona, path, err)
 	}
+	if err := promptc.ValidateRoleContract(string(b)); err != nil {
+		return "", fmt.Errorf("codex persona %q: validate canonical source %s: %w", persona, path, err)
+	}
 	return "# Koryph persona\n\nFollow this repository-owned persona before processing the task.\n\n" + string(b) + "\n\n# Assigned task\n\n" + prompt, nil
+}
+
+func validateNativeRepositoryContract(worktree string) error {
+	path := filepath.Join(worktree, "AGENTS.md")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("codex repository contract: inspect canonical source %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("codex repository contract: canonical source %s is not a regular file", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("codex repository contract: read canonical source %s: %w", path, err)
+	}
+	if err := promptc.ValidateRepositoryContract(string(b)); err != nil {
+		return fmt.Errorf("codex repository contract: validate canonical source %s: %w", path, err)
+	}
+	return nil
 }
 
 func (c Codex) PersonaDir() string { return filepath.Join(".codex", "agents") }
@@ -41,6 +80,9 @@ func (c Codex) RenderPersona(name string, source []byte) ([]byte, error) {
 	body := stripFrontmatter(string(source))
 	if strings.TrimSpace(body) == "" {
 		return nil, fmt.Errorf("codex persona %q has no instructions", name)
+	}
+	if err := promptc.ValidateRoleContract(body); err != nil {
+		return nil, fmt.Errorf("codex persona %q: %w", name, err)
 	}
 	description := "Koryph persona " + name
 	return []byte("name = " + tomlString(name) + "\n" +

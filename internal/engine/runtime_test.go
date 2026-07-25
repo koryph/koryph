@@ -140,6 +140,30 @@ func TestOrdinaryCodexImplementationUsesStandardMediumPolicy(t *testing.T) {
 	}
 }
 
+func TestEngineRefusesAmbiguousExplicitCodexModelBeforeDispatch(t *testing.T) {
+	r := &runner{
+		cfg: &project.Config{
+			DefaultRuntime: "codex",
+			Runtimes:       map[string]project.RuntimeConfig{"codex": {Enabled: true}},
+		},
+		rec: &registry.Record{
+			Root: t.TempDir(), AllowedModels: []string{"haiku", "sonnet", "opus"},
+		},
+	}
+	_, _, err := r.resolveModel(dispatchReq{
+		issue: beads.Issue{
+			ID: "ambiguous",
+			Labels: []string{
+				"runtime:codex",
+				"model:gpt-5.6-terra",
+			},
+		},
+	}, "codex")
+	if err == nil || !strings.Contains(err.Error(), "cannot translate exact model") {
+		t.Fatalf("resolveModel error = %v, want fail-closed ambiguity", err)
+	}
+}
+
 func TestRuntimeExecutionFlagsAreMutuallyExclusive(t *testing.T) {
 	got, err := Run(context.Background(), Options{RuntimeOnly: "claude", RuntimeEquivalent: "codex"})
 	if err == nil || got.Code != ExitUsage || !strings.Contains(err.Error(), "mutually exclusive") {

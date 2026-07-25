@@ -11,8 +11,9 @@ allowed-tools:
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
+<!-- koryph-clause:role/v1 -->
 
-# Quota Analyst (Haiku, read-only)
+# Quota analyst
 
 Reads the quota governor's per-account state and the run ledgers, and
 reports whether burn is on the expected shape — not a substitute for the

@@ -364,6 +364,13 @@
           "type": "integer",
           "minimum": 0,
           "description": "MaxTimeoutSeconds is DEPRECATED (koryph-w82i collapsed the former\nstart/escalate two-tier reviewer timeout into the single TimeoutSeconds\nabove). It is still accepted so existing koryph.project.json files keep\nparsing, but it is IGNORED during resolution; `koryph doctor` warns when it\nis set, pointing at timeout_seconds. Remove it from your config."
+        },
+        "high_risk_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "HighRiskPaths adds repository-relative path prefixes that require the\ndedicated frontier security review after the standard acceptance review.\nBuilt-in enforcement surfaces remain active even when this list is empty."
         }
       },
       "additionalProperties": false,

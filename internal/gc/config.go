@@ -51,6 +51,21 @@ type Config struct {
 	// GCAuto, when true, allows the health patrol to run gc opportunistically
 	// on each patrol tick. Default FALSE -- automatic deletion is opt-in.
 	GCAuto bool `json:"gc_auto,omitempty"`
+
+	// ProjectBudget bounds project-local build caches and eligible runtime
+	// artifacts. Safety exemptions (live runs, compact evidence, retained
+	// failures, posture snapshots, and canary reports) always outrank a byte
+	// target; GC reports an unreclaimable overage instead of deleting them.
+	ProjectBudget ProjectBudgetPolicy `json:"project_budget,omitempty"`
+}
+
+// ProjectBudgetPolicy controls the bounded project artifact lifecycle.
+type ProjectBudgetPolicy struct {
+	SoftMB               int `json:"soft_mb,omitempty"`
+	HardMB               int `json:"hard_mb,omitempty"`
+	TranscriptRetainDays int `json:"transcript_retain_days,omitempty"`
+	FailureRetainDays    int `json:"failure_retain_days,omitempty"`
+	LogTailKB            int `json:"log_tail_kb,omitempty"`
 }
 
 // RunDirPolicy controls archival + deletion of run phase-directories.
@@ -109,6 +124,7 @@ type configJSON struct {
 	RunsIndex       json.RawMessage `json:"runs_index,omitempty"`
 	FootprintWarnGB float64         `json:"footprint_warn_gb,omitempty"`
 	GCAuto          bool            `json:"gc_auto,omitempty"`
+	ProjectBudget   json.RawMessage `json:"project_budget,omitempty"`
 }
 
 // parseIntOrNever parses a JSON value that may be an integer or the string
@@ -141,6 +157,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	c.FootprintWarnGB = raw.FootprintWarnGB
 	c.GCAuto = raw.GCAuto
+	if len(raw.ProjectBudget) > 0 {
+		if err := json.Unmarshal(raw.ProjectBudget, &c.ProjectBudget); err != nil {
+			return err
+		}
+	}
 
 	if len(raw.RunDirs) > 0 {
 		var rj runDirPolicyJSON
@@ -200,6 +221,7 @@ func (c Config) effective() Config {
 	if c.FootprintWarnGB <= 0 {
 		c.FootprintWarnGB = 1.0
 	}
+	c.ProjectBudget = c.ProjectBudget.effective()
 	return c
 }
 
@@ -284,6 +306,21 @@ func mergeConfigs(dst, src Config) Config {
 	}
 	if src.GCAuto {
 		dst.GCAuto = true
+	}
+	if src.ProjectBudget.SoftMB > 0 {
+		dst.ProjectBudget.SoftMB = src.ProjectBudget.SoftMB
+	}
+	if src.ProjectBudget.HardMB > 0 {
+		dst.ProjectBudget.HardMB = src.ProjectBudget.HardMB
+	}
+	if src.ProjectBudget.TranscriptRetainDays > 0 {
+		dst.ProjectBudget.TranscriptRetainDays = src.ProjectBudget.TranscriptRetainDays
+	}
+	if src.ProjectBudget.FailureRetainDays > 0 {
+		dst.ProjectBudget.FailureRetainDays = src.ProjectBudget.FailureRetainDays
+	}
+	if src.ProjectBudget.LogTailKB > 0 {
+		dst.ProjectBudget.LogTailKB = src.ProjectBudget.LogTailKB
 	}
 	return dst
 }

@@ -23,8 +23,7 @@ Steps 3–5 (footprint re-verification, dependency wiring, conflict resolution)
 are scheduler-correctness work: a mislabeled footprint or a missed dependency
 edge causes a false-parallel dispatch and a merge conflict discovered by a
 broken build, not a re-read of the plan.  These steps require the **frontier
-reasoning tier of your agent runtime** — Claude Opus-class, or the equivalent
-top tier of whatever runtime you are (codex, cursor, grok build, …).
+reasoning tier of your agent runtime**.
 
 1. Check what model you are running as (your own system context states it,
    or run `/model`).
@@ -128,14 +127,17 @@ before the current `area_map` or footprint rules:
      only `area:docs`), say so explicitly.
 
 3. **Apply routing guards:**
-   - `model:<tier>` with a one-line rationale for every non-default routing
-     choice (frontier for novel scheduler-correctness work; default for
-     routine implementation).
-   - `refactor-core` if the bead touches the koryph engine's own
-     dispatch/merge/governor loop or any protected path (`.claude/`,
-     `.beads/`, `hooks/`, `agents/`, `.github/`, `koryph.project.json`,
-     `Makefile`, `.pre-commit-config.yaml`, `.envrc`, `LICENSE`).  These are
-     never loop-dispatched — the orchestrating session implements them on main.
+   - Portable `equiv:<tier>:<effort>` with a one-line `routing_reason` for
+     every non-default runtime-agnostic choice. Use `model:<id>` only when an
+     exact runtime-native model is genuinely required; routine implementation
+     inherits the stage default.
+   - Remove stale `refactor-core` from engine implementation: the installed
+     binary decouples the active loop from source changes, so these beads are
+     schedulable with honest footprints and dependency edges.
+   - Split protected governance paths (`commands/`, `internal/commands/`,
+     `.claude/`, `.beads/`, `hooks/`, `agents/`, `koryph.project.json`, and
+     other merge-protected paths) into an operator-owned `HUMAN:` bead labeled
+     `no-dispatch`; do not contaminate schedulable engine work with that step.
    - `no-dispatch` plus a `HUMAN:` title prefix for operator-only steps
      (credential rotation, external approvals, anything no agent can do).
 
@@ -148,8 +150,8 @@ before the current `area_map` or footprint rules:
      --remove-label area:<stale> \
      --label area:<correct> \
      [--label fp:read:<token>] \
-     [--label model:<tier>] \
-     [--label refactor-core]
+     [--label equiv:<tier>:<effort>] \
+     [--remove-label refactor-core]
    ```
    Add a brief note explaining the re-label rationale:
    ```
@@ -334,7 +336,7 @@ RELABELING SUMMARY
   derived-artifact shared-write fixes (step 3c): <count>
 
 RESIDUAL SERIALIZATION (if any)
-  <id>  <title>  → <reason: shared write token / refactor-core / domain:unknown / no-dispatch>
+  <id>  <title>  → <reason: shared write token / domain:unknown / no-dispatch>
 
 PENDING OPERATOR CONFIRMATION
   <proposed merges/splits — one line each with the bd command to run>

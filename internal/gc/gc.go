@@ -6,19 +6,23 @@ package gc
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/paths"
+	"golang.org/x/sys/unix"
 )
 
 // ClassResult is the per-artifact-class summary from a GC run.
@@ -30,10 +34,17 @@ type ClassResult struct {
 	Deleted     int     // files/dirs removed
 	Skipped     int     // exempted items (active run, live slots, posture snapshots)
 	Errors      []string
+	Warnings    []string
 	DryRun      bool
 }
 
-var disposablePhaseCache = regexp.MustCompile(`^(?:go-cache|go-mod-cache|go-build[0-9]+)$`)
+var disposablePhaseCache = regexp.MustCompile(
+	`^(?:cache|go-cache|go-mod-cache|go-build[0-9]+|go-tmp|go-telemetry|` +
+		`gocache|gomodcache|go-build-cache|runtime-cache)$`,
+)
+
+var archiveCopy = io.Copy
+var logArchiveCopy = io.Copy
 
 // Result is the aggregate output of a GC run.
 type Result struct {
@@ -93,6 +104,8 @@ func Run(opts Options) (*Result, error) {
 	if opts.RepoRoot != "" {
 		rdc := gcRunDirs(opts.RepoRoot, cfg, opts)
 		res.Classes = append(res.Classes, rdc)
+		budget := gcProjectBudget(opts.RepoRoot, cfg, opts)
+		res.Classes = append(res.Classes, budget)
 	}
 
 	auditC := gcRotateLog(paths.AuditLog(), cfg.AuditLog, "audit-log", opts)
@@ -131,29 +144,37 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 		if !e.IsDir() || name == "latest" || name == "koryph.lock" {
 			continue
 		}
-		// Skip the active run.
+		runDir := filepath.Join(koryphRoot, name)
+		if retained(runDir) {
+			cr.Skipped++
+			continue
+		}
+
+		// Terminal phase scratch becomes reclaimable immediately, even while
+		// another slot in the same run remains live. The ledger—not directory
+		// naming—is authoritative, so live slot trees remain untouched.
+		phaseNames, terminal := terminalPhaseNames(runDir)
+		prunedMB := prunePhaseCaches(runDir, phaseNames, &cr, opts.DryRun)
 		if opts.ActiveRunID != "" && name == opts.ActiveRunID {
 			cr.Skipped++
 			continue
 		}
-		if name == latestTarget {
-			cr.Skipped++
-			continue
-		}
-
-		runDir := filepath.Join(koryphRoot, name)
-
-		// Check if all slots are terminal before touching.
-		phaseNames, terminal := terminalPhaseNames(runDir)
 		if !terminal {
 			cr.Skipped++
 			continue
 		}
+		if anyRetainedPhase(runDir, phaseNames) {
+			cr.Skipped++
+			continue
+		}
 
-		// Phase-local Go caches are disposable once every slot is terminal. Prune
-		// them immediately rather than retaining them until the whole run reaches
-		// its archival age; the rest of the phase evidence remains in place.
-		prunedMB := prunePhaseCaches(runDir, phaseNames, &cr, opts.DryRun)
+		// "latest" protects the terminal run's durable evidence from ordinary
+		// archival/deletion, not its compiler scratch. Keeping temporary trees
+		// merely because the symlink has not advanced defeats terminal cleanup.
+		if name == latestTarget {
+			cr.Skipped++
+			continue
+		}
 
 		// Determine run age from the directory mtime.
 		fi, serr := os.Lstat(runDir)
@@ -164,13 +185,6 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 		age := now.Sub(fi.ModTime())
 		ageDays := int(age.Hours() / 24)
 		sz := dirSizeMB(runDir)
-		// In a dry run, the run still includes phase caches. Account for them
-		// separately, as the live path first prunes them and then compresses the
-		// remaining run evidence.
-		compressSize := sz
-		if opts.DryRun {
-			compressSize -= prunedMB
-		}
 		cr.ScannedMB += sz
 
 		archiveName := runDir + ".tar.gz"
@@ -180,6 +194,25 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 		if !alreadyArchived && !pol.CompressAfterDaysNever &&
 			pol.CompressAfterDays > 0 && ageDays >= pol.CompressAfterDays {
 			if !opts.DryRun {
+				beforeSource := pathBytes(runDir)
+				beforeSiblings := runArchiveSiblingBytes(runDir)
+				if terr := preserveTerminalTranscriptTails(
+					runDir, phaseNames, int64(cfg.ProjectBudget.effective().LogTailKB)*1024,
+				); terr != nil {
+					cr.Errors = append(cr.Errors, fmt.Sprintf("preserve transcript tails %s: %v", name, terr))
+					continue
+				}
+				evidencePath := runDir + durableEvidenceArchiveExt
+				if err := validCompactEvidenceArchive(evidencePath, name); err != nil {
+					if cerr := compressEvidenceDir(runDir, evidencePath); cerr != nil {
+						cr.Errors = append(cr.Errors, fmt.Sprintf("compact durable evidence %s: %v", name, cerr))
+						continue
+					}
+				}
+				if err := validCompactEvidenceArchive(evidencePath, name); err != nil {
+					cr.Errors = append(cr.Errors, fmt.Sprintf("validate compact durable evidence %s: %v", name, err))
+					continue
+				}
 				if cerr := compressDir(runDir, archiveName, koryphRoot); cerr != nil {
 					cr.Errors = append(cr.Errors, fmt.Sprintf("compress %s: %v", name, cerr))
 					continue
@@ -189,37 +222,83 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 					cr.Errors = append(cr.Errors, fmt.Sprintf("remove %s after compress: %v", name, rerr))
 					continue
 				}
+				reclaimed := beforeSource - (runArchiveSiblingBytes(runDir) - beforeSiblings)
+				if reclaimed > 0 {
+					cr.ReclaimedMB += bytesMB(reclaimed)
+				}
 			}
 			cr.Compressed++
-			cr.ReclaimedMB += compressSize
 			alreadyArchived = true
 		}
 
 		// Step 2: delete if past deleteAfterDays.
 		if !pol.DeleteAfterDaysNever && pol.DeleteAfterDays > 0 && ageDays >= pol.DeleteAfterDays {
+			// Deletion never outranks compact durable evidence. This matters
+			// when full-run compression was explicitly disabled: the prior
+			// policy could remove the only ledger/review/gate copy at the
+			// delete horizon.
+			evidencePath := runDir + durableEvidenceArchiveExt
+			evidenceBefore := regularFileBytes(evidencePath)
+			evidenceValidBefore := validCompactEvidenceArchive(evidencePath, name) == nil
+			if !opts.DryRun {
+				if terr := preserveTerminalTranscriptTails(
+					runDir, phaseNames, int64(cfg.ProjectBudget.effective().LogTailKB)*1024,
+				); terr != nil {
+					cr.Errors = append(cr.Errors, fmt.Sprintf("preserve transcript tails %s: %v", name, terr))
+					continue
+				}
+				if err := validCompactEvidenceArchive(evidencePath, name); err != nil {
+					if cerr := compressEvidenceDir(runDir, evidencePath); cerr != nil {
+						cr.Errors = append(cr.Errors, fmt.Sprintf(
+							"preserve compact evidence before deleting %s: %v", name, cerr,
+						))
+						continue
+					}
+				}
+				if err := validCompactEvidenceArchive(evidencePath, name); err != nil {
+					cr.Errors = append(cr.Errors, fmt.Sprintf(
+						"validate compact evidence before deleting %s: %v", name, err,
+					))
+					continue
+				}
+			}
 			if !opts.DryRun {
 				if alreadyArchived {
-					archiveSz := fileSizeMB(archiveName)
 					// Also remove the companion manifest.json if present.
 					manifestPath := filepath.Join(koryphRoot, name+".manifest.json")
-					_ = os.Remove(manifestPath)
+					removedBytes := regularFileBytes(archiveName)
+					if manifestBytes := regularFileBytes(manifestPath); manifestBytes > 0 {
+						if err := os.Remove(manifestPath); err == nil {
+							removedBytes += manifestBytes
+						}
+					}
 					if rerr := os.Remove(archiveName); rerr != nil {
 						cr.Errors = append(cr.Errors, fmt.Sprintf("delete archive %s.tar.gz: %v", name, rerr))
 						continue
 					}
-					cr.ReclaimedMB += archiveSz
+					evidenceGrowth := regularFileBytes(evidencePath) - evidenceBefore
+					if reclaimed := removedBytes - evidenceGrowth; reclaimed > 0 {
+						cr.ReclaimedMB += bytesMB(reclaimed)
+					}
 				} else if e.IsDir() {
-					sz2 := dirSizeMB(runDir)
+					sourceBytes := pathBytes(runDir)
 					if rerr := os.RemoveAll(runDir); rerr != nil {
 						cr.Errors = append(cr.Errors, fmt.Sprintf("delete rundir %s: %v", name, rerr))
 						continue
 					}
-					cr.ReclaimedMB += sz2
+					evidenceGrowth := regularFileBytes(evidencePath) - evidenceBefore
+					if reclaimed := sourceBytes - evidenceGrowth; reclaimed > 0 {
+						cr.ReclaimedMB += bytesMB(reclaimed)
+					}
 				}
 			} else {
-				// dry-run: count the archive or dir size as would-be-reclaimed
+				// Compression ratios and a not-yet-created compact archive are
+				// unknowable without mutating state. Dry-run therefore reports
+				// only bytes whose retained-evidence cost is already materialized.
 				if alreadyArchived {
 					cr.ReclaimedMB += fileSizeMB(archiveName)
+				} else if evidenceValidBefore {
+					cr.ReclaimedMB += dirSizeMB(runDir) - prunedMB
 				}
 			}
 			cr.Deleted++
@@ -227,6 +306,12 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 	}
 
 	return cr
+}
+
+func runArchiveSiblingBytes(runDir string) int64 {
+	return regularFileBytes(runDir+".tar.gz") +
+		regularFileBytes(runDir+durableEvidenceArchiveExt) +
+		regularFileBytes(filepath.Join(filepath.Dir(runDir), filepath.Base(runDir)+".manifest.json"))
 }
 
 // resolveLatest reads the "latest" symlink target (bare run ID).
@@ -238,9 +323,9 @@ func resolveLatest(koryphRoot string) string {
 	return filepath.Base(target)
 }
 
-// terminalPhaseNames returns the direct child directory names that belong to
-// a terminal run. The ledger is the authority for identifying phase dirs, so
-// unrelated run-level directories are never considered for cache pruning.
+// terminalPhaseNames returns every terminal slot phase plus whether the whole
+// run is terminal. This permits immediate per-slot scratch cleanup without
+// making a partially-running run eligible for archive or deletion.
 func terminalPhaseNames(runDir string) ([]string, bool) {
 	ledgerPath := filepath.Join(runDir, "ledger.json")
 	data, err := os.ReadFile(ledgerPath)
@@ -251,25 +336,32 @@ func terminalPhaseNames(runDir string) ([]string, bool) {
 	if err := json.Unmarshal(data, &run); err != nil {
 		return nil, false
 	}
-	if !terminalRunStatus(run.Status) {
-		return nil, false
-	}
 	phaseNames := make([]string, 0, len(run.Slots))
+	allSlotsTerminal := true
 	for _, sl := range run.Slots {
 		if sl != nil && !ledger.Terminal(sl.Status) {
-			return nil, false
+			allSlotsTerminal = false
 		}
-		if sl != nil && safePhaseName(sl.PhaseID) {
+		if sl != nil && ledger.Terminal(sl.Status) && safePhaseName(sl.PhaseID) {
 			phaseNames = append(phaseNames, sl.PhaseID)
 		}
 	}
-	return phaseNames, true
+	return phaseNames, terminalRunStatus(run.Status) && allSlotsTerminal
 }
 
 func terminalRunStatus(status string) bool {
 	switch status {
 	case ledger.RunDone, ledger.RunDrained, ledger.RunAborted:
 		return true
+	}
+	return false
+}
+
+func anyRetainedPhase(runDir string, phaseNames []string) bool {
+	for _, phaseName := range phaseNames {
+		if retained(filepath.Join(runDir, phaseName)) {
+			return true
+		}
 	}
 	return false
 }
@@ -285,6 +377,10 @@ func prunePhaseCaches(runDir string, phaseNames []string, cr *ClassResult, dryRu
 	var prunedMB float64
 	for _, phaseName := range phaseNames {
 		phaseDir := filepath.Join(runDir, phaseName)
+		if retained(phaseDir) {
+			cr.Skipped++
+			continue
+		}
 		entries, rerr := os.ReadDir(phaseDir)
 		if rerr != nil {
 			if !errors.Is(rerr, os.ErrNotExist) {
@@ -293,10 +389,23 @@ func prunePhaseCaches(runDir string, phaseNames []string, cr *ClassResult, dryRu
 			continue
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || !disposablePhaseCache.MatchString(entry.Name()) {
+			if !disposablePhaseCache.MatchString(entry.Name()) {
 				continue
 			}
 			cacheDir := filepath.Join(phaseDir, entry.Name())
+			if entry.Type()&os.ModeSymlink != 0 {
+				if !dryRun {
+					if rerr := os.Remove(cacheDir); rerr != nil {
+						cr.Errors = append(cr.Errors, fmt.Sprintf("unlink phase cache symlink %s: %v", cacheDir, rerr))
+						continue
+					}
+				}
+				cr.Deleted++
+				continue
+			}
+			if !entry.IsDir() {
+				continue
+			}
 			sz := dirSizeMB(cacheDir)
 			cr.ScannedMB += sz
 			if !dryRun {
@@ -309,8 +418,90 @@ func prunePhaseCaches(runDir string, phaseNames []string, cr *ClassResult, dryRu
 			prunedMB += sz
 			cr.Deleted++
 		}
+		reviewScratch := filepath.Join(runDir, ".engine-evidence", phaseName, ".runtime-scratch")
+		if info, err := os.Lstat(reviewScratch); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			if !dryRun {
+				if rerr := os.Remove(reviewScratch); rerr != nil {
+					cr.Errors = append(cr.Errors, fmt.Sprintf("unlink review scratch symlink %s: %v", reviewScratch, rerr))
+					continue
+				}
+			}
+			cr.Deleted++
+		} else if err == nil && info.IsDir() {
+			sz := dirSizeMB(reviewScratch)
+			cr.ScannedMB += sz
+			if !dryRun {
+				if rerr := removeAllWritable(reviewScratch); rerr != nil {
+					cr.Errors = append(cr.Errors, fmt.Sprintf("remove review scratch %s: %v", reviewScratch, rerr))
+					continue
+				}
+			}
+			cr.ReclaimedMB += sz
+			prunedMB += sz
+			cr.Deleted++
+		}
 	}
 	return prunedMB
+}
+
+// PruneTerminalSlotScratch performs the terminal-immediate lifecycle step
+// without running project-budget scans or global log rotation. The engine
+// calls it after a durable terminal slot transition; the ledger is re-read as
+// authority, so an early/nonterminal call is a no-op.
+func PruneTerminalSlotScratch(repoRoot, runID, phaseID string) error {
+	if !runDirectoryName(runID) || !safePhaseName(phaseID) {
+		return nil
+	}
+	runDir := filepath.Join(paths.KoryphRoot(repoRoot), runID)
+	if retained(runDir) {
+		return nil
+	}
+	terminal, _ := terminalPhaseNames(runDir)
+	found := false
+	for _, candidate := range terminal {
+		if candidate == phaseID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	result := ClassResult{Class: "terminal-slot"}
+	prunePhaseCaches(runDir, []string{phaseID}, &result, false)
+	if len(result.Errors) > 0 {
+		return errors.New(strings.Join(result.Errors, "; "))
+	}
+	return nil
+}
+
+func preserveTerminalTranscriptTails(runDir string, phaseNames []string, limit int64) error {
+	for _, phaseName := range phaseNames {
+		entries, err := os.ReadDir(filepath.Join(runDir, phaseName))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !transcriptArtifact(entry.Name()) {
+				continue
+			}
+			path := filepath.Join(runDir, phaseName, entry.Name())
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			if err := preserveLogTail(path, limit); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // removeAllWritable handles Go module-cache directories whose downloaded
@@ -341,56 +532,243 @@ func removeAllWritable(path string) error {
 // containing the run's manifest.json content (if present), so that history
 // queries can introspect archived runs without decompressing.
 func compressDir(runDir, archivePath, koryphRoot string) error {
-	f, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("create archive: %w", err)
-	}
-	defer f.Close()
-
-	gw := gzip.NewWriter(f)
-	defer gw.Close()
-	tw := tar.NewWriter(gw)
-	defer tw.Close()
-
-	runBase := filepath.Base(runDir)
-	err = filepath.WalkDir(runDir, func(path string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return err
-		}
-		// Skip symlinks.
-		if fi.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-
-		rel, err := filepath.Rel(filepath.Dir(runDir), path)
-		if err != nil {
-			return err
-		}
-
-		hdr, err := tar.FileInfoHeader(fi, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = filepath.ToSlash(rel)
-
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-
-		src, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer src.Close()
-		_, err = io.Copy(tw, src)
+	if err := writeTarGzipAtomic(runDir, archivePath, func(string, fs.DirEntry) bool {
+		return true
+	}); err != nil {
 		return err
+	}
+
+	// Write companion manifest.json beside the archive (uncompressed).
+	// We scan each phase dir for manifest.json and write them all.
+	manifestOut := filepath.Join(koryphRoot, filepath.Base(runDir)+".manifest.json")
+	return writeCompanionManifest(runDir, manifestOut)
+}
+
+func compressEvidenceDir(runDir, archivePath string) error {
+	return writeTarGzipAtomic(runDir, archivePath, func(rel string, entry fs.DirEntry) bool {
+		if strings.Contains("/"+filepath.ToSlash(filepath.Clean(rel))+"/", "/.runtime-scratch/") {
+			return false
+		}
+		return entry.IsDir() || durableEvidencePath(rel)
+	})
+}
+
+// validCompactEvidenceArchive authenticates the minimum recovery authority
+// before a full run directory/archive may be discarded. Existence is not
+// evidence: the path must be a regular gzip/tar, confined to the expected run
+// prefix, with exactly one bounded terminal ledger naming that run.
+func validCompactEvidenceArchive(archivePath, expectedRunID string) error {
+	info, err := os.Lstat(archivePath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("not a regular archive")
+	}
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	ledgerName := expectedRunID + "/ledger.json"
+	ledgerCount := 0
+	var run ledger.Run
+	files := make(map[string][]byte)
+	var totalBytes int64
+	for entries := 0; ; entries++ {
+		if entries > 100000 {
+			return fmt.Errorf("archive entry limit exceeded")
+		}
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		clean := path.Clean(strings.TrimPrefix(header.Name, "./"))
+		if clean != header.Name ||
+			(clean != expectedRunID && !strings.HasPrefix(clean, expectedRunID+"/")) {
+			return fmt.Errorf("entry %q escapes expected run", header.Name)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		if header.Size < 0 || header.Size > 16<<20 ||
+			totalBytes+header.Size > 256<<20 {
+			return fmt.Errorf("compact evidence entry exceeds bound")
+		}
+		raw, err := io.ReadAll(io.LimitReader(tr, header.Size+1))
+		if err != nil {
+			return err
+		}
+		if int64(len(raw)) != header.Size {
+			return fmt.Errorf("truncated compact evidence entry")
+		}
+		totalBytes += header.Size
+		if _, duplicate := files[clean]; duplicate {
+			return fmt.Errorf("duplicate archive entry %q", clean)
+		}
+		files[clean] = raw
+		if clean != ledgerName {
+			continue
+		}
+		ledgerCount++
+		if ledgerCount > 1 {
+			return fmt.Errorf("duplicate ledger")
+		}
+		if err := json.Unmarshal(raw, &run); err != nil {
+			return fmt.Errorf("decode ledger: %w", err)
+		}
+	}
+	if ledgerCount != 1 {
+		return fmt.Errorf("required ledger missing")
+	}
+	if run.RunID != expectedRunID || !terminalRunStatus(run.Status) {
+		return fmt.Errorf("ledger does not authenticate terminal run %s", expectedRunID)
+	}
+	for _, slot := range run.Slots {
+		if slot == nil {
+			continue
+		}
+		if !ledger.Terminal(slot.Status) {
+			return fmt.Errorf("ledger contains nonterminal slot")
+		}
+		if !safePhaseName(slot.PhaseID) {
+			return fmt.Errorf("ledger contains unsafe phase id")
+		}
+		manifestName := expectedRunID + "/" + slot.PhaseID + "/manifest.json"
+		if len(files[manifestName]) == 0 {
+			return fmt.Errorf("required manifest missing for phase %s", slot.PhaseID)
+		}
+		if stored := strings.TrimSpace(slot.CandidateResultPath); stored != "" {
+			name, ok := storedArtifactArchiveName(stored, expectedRunID)
+			if !ok || len(files[name]) == 0 {
+				return fmt.Errorf("candidate result missing for phase %s", slot.PhaseID)
+			}
+		}
+		for _, artifact := range []struct {
+			label  string
+			stored string
+			digest string
+		}{
+			{"gate evidence", slot.GateEvidencePath, slot.GateEvidenceDigest},
+			{"general review", slot.GeneralReviewArtifactPath, slot.GeneralReviewArtifactDigest},
+			{"security review", slot.SecurityReviewArtifactPath, slot.SecurityReviewArtifactDigest},
+		} {
+			stored := strings.TrimSpace(artifact.stored)
+			digest := strings.TrimSpace(artifact.digest)
+			if (stored == "") != (digest == "") {
+				return fmt.Errorf("%s path/digest pair incomplete for phase %s", artifact.label, slot.PhaseID)
+			}
+			if stored == "" {
+				continue
+			}
+			if !sha256Pattern.MatchString(digest) {
+				return fmt.Errorf("%s digest malformed for phase %s", artifact.label, slot.PhaseID)
+			}
+			name, ok := storedArtifactArchiveName(stored, expectedRunID)
+			if !ok || len(files[name]) == 0 {
+				return fmt.Errorf("%s missing for phase %s", artifact.label, slot.PhaseID)
+			}
+			sum := sha256.Sum256(files[name])
+			if got := fmt.Sprintf("sha256:%x", sum); got != digest {
+				return fmt.Errorf("%s digest mismatch for phase %s", artifact.label, slot.PhaseID)
+			}
+		}
+	}
+	return nil
+}
+
+func storedArtifactArchiveName(stored, runID string) (string, bool) {
+	clean := filepath.ToSlash(filepath.Clean(stored))
+	prefix := runID + "/"
+	if strings.HasPrefix(clean, prefix) {
+		return clean, true
+	}
+	needle := "/" + prefix
+	if index := strings.LastIndex(clean, needle); index >= 0 {
+		return clean[index+1:], true
+	}
+	return "", false
+}
+
+// writeTarGzipAtomic never exposes a partial archive. An interrupted writer
+// leaves only a uniquely named temp file, which a later GC may ignore and
+// replace; the final path appears only after file and gzip/tar closure.
+func writeTarGzipAtomic(
+	runDir, archivePath string,
+	include func(string, fs.DirEntry) bool,
+) (retErr error) {
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(archivePath), "."+filepath.Base(archivePath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create archive temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		if retErr != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	gw := gzip.NewWriter(tmp)
+	tw := tar.NewWriter(gw)
+
+	err = filepath.WalkDir(runDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		relWithin, err := filepath.Rel(runDir, path)
+		if err != nil {
+			return err
+		}
+		if !include(relWithin, entry) {
+			return nil
+		}
+		relArchive, err := filepath.Rel(filepath.Dir(runDir), path)
+		if err != nil {
+			return err
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(relArchive)
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		source, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := archiveCopy(tw, source)
+		closeErr := source.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
 	if err != nil {
 		return err
@@ -401,21 +779,29 @@ func compressDir(runDir, archivePath, koryphRoot string) error {
 	if err := gw.Close(); err != nil {
 		return err
 	}
-
-	// Write companion manifest.json beside the archive (uncompressed).
-	// We scan each phase dir for manifest.json and write them all.
-	manifestOut := filepath.Join(koryphRoot, runBase+".manifest.json")
-	writeCompanionManifest(runDir, manifestOut)
-
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, archivePath); err != nil {
+		return err
+	}
+	if dir, err := os.Open(filepath.Dir(archivePath)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
 	return nil
 }
 
 // writeCompanionManifest writes a JSON object containing each phase's
-// manifest.json content to manifestOut. Best-effort; errors are ignored.
-func writeCompanionManifest(runDir, manifestOut string) {
+// manifest.json content to manifestOut without following an attacker-planted
+// destination symlink.
+func writeCompanionManifest(runDir, manifestOut string) error {
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
-		return
+		return err
 	}
 	combined := map[string]json.RawMessage{}
 	for _, e := range entries {
@@ -434,13 +820,13 @@ func writeCompanionManifest(runDir, manifestOut string) {
 		combined["ledger"] = json.RawMessage(data)
 	}
 	if len(combined) == 0 {
-		return
+		return nil
 	}
 	out, merr := json.MarshalIndent(combined, "", "  ")
 	if merr != nil {
-		return
+		return merr
 	}
-	_ = os.WriteFile(manifestOut, out, 0o600)
+	return fsx.WriteAtomic(manifestOut, out, 0o600)
 }
 
 // --- jsonl log rotation gc -------------------------------------------------
@@ -450,7 +836,21 @@ func gcRotateLog(logPath string, pol RotatePolicy, class string, opts Options) C
 	cr := ClassResult{Class: class, DryRun: opts.DryRun}
 	now := opts.now()
 
-	fi, err := os.Stat(logPath)
+	var active *os.File
+	var fi os.FileInfo
+	var err error
+	if opts.DryRun {
+		fi, err = os.Stat(logPath)
+	} else {
+		active, err = os.OpenFile(logPath, os.O_RDWR, 0o600)
+		if err == nil {
+			defer active.Close()
+			if err = unix.Flock(int(active.Fd()), unix.LOCK_EX); err == nil {
+				defer unix.Flock(int(active.Fd()), unix.LOCK_UN) //nolint:errcheck
+				fi, err = active.Stat()
+			}
+		}
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return cr
@@ -473,7 +873,7 @@ func gcRotateLog(logPath string, pol RotatePolicy, class string, opts Options) C
 		rotatedGz = uniquePath(rotatedGz)
 
 		if !opts.DryRun {
-			if rerr := rotateGzip(logPath, rotatedGz); rerr != nil {
+			if rerr := rotateGzip(active, rotatedGz); rerr != nil {
 				cr.Errors = append(cr.Errors, fmt.Sprintf("rotate %s: %v", logPath, rerr))
 			} else {
 				cr.Compressed++
@@ -518,22 +918,34 @@ func gcRotateLog(logPath string, pol RotatePolicy, class string, opts Options) C
 	return cr
 }
 
-// rotateGzip compresses src into dst.gz and truncates src (log rotation).
-func rotateGzip(src, dst string) error {
-	in, err := os.Open(src)
+// rotateGzip atomically publishes a gzip copy of the already exclusively
+// locked active log and only then truncates the same inode. AppendLinePerm
+// takes the same inode flock, so an append can land wholly before the copy or
+// wholly after truncation, never in the lossy copy/truncate window.
+func rotateGzip(in *os.File, dst string) (retErr error) {
+	if in == nil {
+		return fmt.Errorf("active log is not open")
+	}
+	if _, err := in.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	out, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
+	tmpName := out.Name()
+	defer func() {
+		_ = out.Close()
+		if retErr != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := out.Chmod(0o600); err != nil {
 		return err
 	}
-	defer out.Close()
 
 	gw := gzip.NewWriter(out)
-	if _, err := io.Copy(gw, in); err != nil {
+	if _, err := logArchiveCopy(gw, in); err != nil {
 		return err
 	}
 	if err := gw.Close(); err != nil {
@@ -542,17 +954,18 @@ func rotateGzip(src, dst string) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
-
-	// Truncate the original log file (keep the inode alive so open writers
-	// continue appending; the OS will re-use the space).
-	if err := in.Close(); err != nil {
+	if err := os.Rename(tmpName, dst); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(src, os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
+	if dir, err := os.Open(filepath.Dir(dst)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	if err := in.Truncate(0); err != nil {
 		return err
 	}
-	return f.Close()
+	_, err = in.Seek(0, io.SeekStart)
+	return err
 }
 
 // uniquePath appends a counter to path until the path does not exist.

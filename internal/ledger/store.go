@@ -33,12 +33,15 @@ var lockWaitWarnThreshold = 30 * time.Second
 // File / layout constants.
 const (
 	// runIDLayout is the UTC timestamp format used as a run's directory name.
-	// Fixed-width and zero-padded so lexical order == chronological order.
+	// A same-second collision receives a fixed-width numeric suffix, preserving
+	// reverse-lexical chronological ordering while legacy bare IDs remain valid.
 	runIDLayout = "20060102-150405"
 
-	latestLink   = "latest"
-	ledgerFile   = "ledger.json"
-	manifestFile = "manifest.json"
+	latestLink        = "latest"
+	runAllocationLock = "run-allocation.lock"
+	ledgerFile        = "ledger.json"
+	manifestFile      = "manifest.json"
+	evidenceDir       = ".engine-evidence"
 	// A manifest is small structured state. Bounding it before allocation and
 	// reading it through the phase directory descriptor prevents a worker-owned
 	// symlink/FIFO/device from turning recovery into an unbounded or blocking
@@ -59,6 +62,8 @@ const (
 // separate concern handled by RunLock.
 type Store struct {
 	KoryphRoot string
+	now        func() time.Time
+	saveRun    func(*Run) error
 }
 
 // NewStore returns a Store rooted at the project's koryph run directory.
@@ -69,29 +74,59 @@ func NewStore(repoRoot string) *Store {
 // nowRFC3339 is the canonical mutation timestamp (RFC3339, UTC).
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// NewRun creates a fresh run: it allocates a UTC-timestamp RunID, makes the
-// run directory, writes ledger.json atomically, and repoints the `latest`
-// symlink at it (relative target).
+func (s *Store) clock() time.Time {
+	if s.now != nil {
+		return s.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// NewRun creates a fresh run under a cross-process allocation lock. The first
+// run in a second keeps the legacy timestamp-only ID; collisions receive an
+// exclusive numeric suffix. latest is repointed only after the complete ledger
+// is durable, so a failed allocation cannot expose an incomplete run.
 func (s *Store) NewRun(projectID, source, engineVersion string) (*Run, error) {
-	now := time.Now().UTC()
-	runID := now.Format(runIDLayout)
-	dir := filepath.Join(s.KoryphRoot, runID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(s.KoryphRoot, 0o755); err != nil {
+		return nil, err
+	}
+	allocationLock, err := os.OpenFile(
+		filepath.Join(s.KoryphRoot, runAllocationLock),
+		os.O_CREATE|os.O_RDWR,
+		0o600,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer allocationLock.Close()
+	if err := syscall.Flock(int(allocationLock.Fd()), syscall.LOCK_EX); err != nil {
+		return nil, err
+	}
+	defer syscall.Flock(int(allocationLock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	now := s.clock()
+	runID, dir, err := s.allocateRunDir(now)
+	if err != nil {
 		return nil, err
 	}
 	started := now.Format(time.RFC3339)
 	run := &Run{
-		SchemaVersion: schemaver.Current(schemaver.LedgerRun),
-		RunID:         runID,
-		ProjectID:     projectID,
-		EngineVersion: engineVersion,
-		StartedAt:     started,
-		UpdatedAt:     started,
-		Status:        RunRunning,
-		Source:        source,
-		Slots:         map[string]*Slot{},
+		SchemaVersion:  schemaver.Current(schemaver.LedgerRun),
+		TokenSemantics: CurrentTokenSemantics,
+		RunID:          runID,
+		ProjectID:      projectID,
+		EngineVersion:  engineVersion,
+		StartedAt:      started,
+		UpdatedAt:      started,
+		Status:         RunRunning,
+		Source:         source,
+		Slots:          map[string]*Slot{},
 	}
-	if err := s.SaveRun(run); err != nil {
+	save := s.saveRun
+	if save == nil {
+		save = s.SaveRun
+	}
+	if err := save(run); err != nil {
+		_ = os.RemoveAll(dir)
 		return nil, err
 	}
 	if err := s.repointLatest(runID); err != nil {
@@ -100,17 +135,49 @@ func (s *Store) NewRun(projectID, source, engineVersion string) (*Run, error) {
 	return run, nil
 }
 
-// repointLatest atomically-ish swaps the `latest` symlink to point at runID.
-// The target is relative (bare runID) so the tree stays relocatable.
+func (s *Store) allocateRunDir(now time.Time) (string, string, error) {
+	base := now.UTC().Format(runIDLayout)
+	for collision := 0; collision < 1_000_000; collision++ {
+		runID := base
+		if collision > 0 {
+			runID = fmt.Sprintf("%s-%06d", base, collision)
+		}
+		dir := filepath.Join(s.KoryphRoot, runID)
+		err := os.Mkdir(dir, 0o755)
+		if err == nil {
+			return runID, dir, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", "", err
+		}
+	}
+	return "", "", fmt.Errorf("allocate run ID at %s: collision limit exhausted", base)
+}
+
+// repointLatest atomically swaps the `latest` symlink to point at runID. The
+// target is relative (bare runID) so the tree stays relocatable.
 func (s *Store) repointLatest(runID string) error {
 	if err := os.MkdirAll(s.KoryphRoot, 0o755); err != nil {
 		return err
 	}
 	link := filepath.Join(s.KoryphRoot, latestLink)
-	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
+	tempLink := filepath.Join(
+		s.KoryphRoot,
+		fmt.Sprintf(".latest-%s-%d", runID, os.Getpid()),
+	)
+	_ = os.Remove(tempLink)
+	if err := os.Symlink(runID, tempLink); err != nil {
 		return err
 	}
-	return os.Symlink(runID, link)
+	if err := os.Rename(tempLink, link); err != nil {
+		_ = os.Remove(tempLink)
+		return err
+	}
+	if root, err := os.Open(s.KoryphRoot); err == nil {
+		_ = root.Sync()
+		_ = root.Close()
+	}
+	return nil
 }
 
 // RunDir returns the directory for runID, creating it on demand.
@@ -128,6 +195,16 @@ func (s *Store) PhaseDir(runID, phaseID string) string {
 	return dir
 }
 
+// EvidenceDir returns the engine-owned evidence directory for one slot.
+// It is deliberately outside PhaseDir: the latter is passed to workers for
+// status, summaries, focused-test logs, and terminal results, while gate and
+// semantic-review proofs are admitted only through this private namespace.
+func (s *Store) EvidenceDir(runID, phaseID string) string {
+	dir := filepath.Join(s.KoryphRoot, runID, evidenceDir, phaseID)
+	_ = os.MkdirAll(dir, 0o700)
+	return dir
+}
+
 // LoadRun reads ledger.json for runID.
 func (s *Store) LoadRun(runID string) (*Run, error) {
 	var run Run
@@ -141,6 +218,7 @@ func (s *Store) LoadRun(runID string) (*Run, error) {
 	if run.Slots == nil {
 		run.Slots = map[string]*Slot{}
 	}
+	run.TokenSemantics = EffectiveTokenSemantics(&run)
 	return &run, nil
 }
 
@@ -155,7 +233,8 @@ func (s *Store) LoadLatest() (*Run, error) {
 }
 
 // ListRuns returns every run ID under KoryphRoot, newest first. Because run
-// IDs are fixed-width UTC timestamps, reverse-lexical order is newest-first.
+// IDs are UTC timestamps with optional fixed-width collision suffixes, so
+// reverse-lexical order is newest-first.
 func (s *Store) ListRuns() ([]string, error) {
 	entries, err := os.ReadDir(s.KoryphRoot)
 	if err != nil {
@@ -181,7 +260,10 @@ func (s *Store) ListRuns() ([]string, error) {
 
 // SaveRun refreshes UpdatedAt and writes ledger.json atomically.
 func (s *Store) SaveRun(run *Run) error {
-	run.UpdatedAt = nowRFC3339()
+	run.TokenSemantics = EffectiveTokenSemantics(run)
+	now := s.clock().Format(time.RFC3339Nano)
+	stampFinalizationTimings(run, now)
+	run.UpdatedAt = now
 	path := filepath.Join(s.KoryphRoot, run.RunID, ledgerFile)
 	return fsx.WriteJSONAtomic(path, run)
 }
@@ -192,9 +274,146 @@ func (s *Store) SetSlot(run *Run, sl *Slot) error {
 	if run.Slots == nil {
 		run.Slots = map[string]*Slot{}
 	}
-	sl.UpdatedAt = nowRFC3339()
+	if previous := run.Slots[sl.PhaseID]; previous != nil {
+		switch {
+		case sl.Attempts < previous.Attempts:
+			return fmt.Errorf("ledger: attempt regression for %s: %d after %d",
+				sl.PhaseID, sl.Attempts, previous.Attempts)
+		case sl.Attempts > previous.Attempts+1:
+			return fmt.Errorf("ledger: attempt gap for %s: %d after %d",
+				sl.PhaseID, sl.Attempts, previous.Attempts)
+		case sl.Attempts == previous.Attempts &&
+			sl.DispatchGeneration == previous.DispatchGeneration &&
+			sl.SessionID == previous.SessionID:
+			// Re-persisting the same launch is idempotent. Preserve its first
+			// dispatch boundary and timing record.
+			if previous.DispatchedAt != "" {
+				sl.DispatchedAt = previous.DispatchedAt
+			}
+			sl.FinalizationTimings = previous.FinalizationTimings
+		case sl.Attempts == previous.Attempts:
+			// Fault accounting may intentionally keep the same logical attempt
+			// number across a model relaunch. A new generation/session is still a
+			// real implementation dispatch and must remain observable so the
+			// autonomy canary can fail resume-without-redispatch.
+			now := s.clock().Format(time.RFC3339Nano)
+			closeActiveFinalization(previous, now)
+			upsertAttemptSnapshot(run, previous)
+		default:
+			now := s.clock().Format(time.RFC3339Nano)
+			closeActiveFinalization(previous, now)
+			upsertAttemptSnapshot(run, previous)
+		}
+	}
+	sl.UpdatedAt = s.clock().Format(time.RFC3339Nano)
 	run.Slots[sl.PhaseID] = sl
 	return s.SaveRun(run)
+}
+
+func upsertAttemptSnapshot(run *Run, sl *Slot) {
+	if run == nil || sl == nil || sl.Attempts <= 0 {
+		return
+	}
+	copy := cloneSlot(*sl)
+	for i := range run.AttemptHistory {
+		current := &run.AttemptHistory[i].Slot
+		if current.PhaseID == copy.PhaseID && current.Attempts == copy.Attempts &&
+			current.DispatchGeneration == copy.DispatchGeneration &&
+			current.SessionID == copy.SessionID {
+			run.AttemptHistory[i].Slot = copy
+			return
+		}
+	}
+	run.AttemptHistory = append(run.AttemptHistory, AttemptSnapshot{Slot: copy})
+	sort.SliceStable(run.AttemptHistory, func(i, j int) bool {
+		left, right := run.AttemptHistory[i].Slot, run.AttemptHistory[j].Slot
+		if left.PhaseID != right.PhaseID {
+			return left.PhaseID < right.PhaseID
+		}
+		if left.Attempts != right.Attempts {
+			return left.Attempts < right.Attempts
+		}
+		if left.DispatchGeneration != right.DispatchGeneration {
+			return left.DispatchGeneration < right.DispatchGeneration
+		}
+		return left.SessionID < right.SessionID
+	})
+}
+
+func cloneSlot(sl Slot) Slot {
+	sl.BeadLabels = append([]string(nil), sl.BeadLabels...)
+	sl.Resources = append([]string(nil), sl.Resources...)
+	if sl.Footprint != nil {
+		footprint := *sl.Footprint
+		footprint.Reads = append([]string(nil), sl.Footprint.Reads...)
+		footprint.Writes = append([]string(nil), sl.Footprint.Writes...)
+		sl.Footprint = &footprint
+	}
+	return sl
+}
+
+func stampFinalizationTimings(run *Run, now string) {
+	if run == nil {
+		return
+	}
+	for _, sl := range run.Slots {
+		if sl == nil {
+			continue
+		}
+		stage := sl.FinalizationStage
+		timings := &sl.FinalizationTimings
+		if timings.ActiveStage != stage {
+			closeActiveFinalization(sl, now)
+			if timing := timingForStage(timings, stage); timing != nil {
+				queued := now
+				if stage == "gate" && sl.FinalizationQueuedAt != "" {
+					queued = sl.FinalizationQueuedAt
+				}
+				if timing.QueuedAt == "" {
+					timing.QueuedAt = queued
+				}
+				if timing.StartedAt == "" {
+					timing.StartedAt = now
+				}
+				timings.ActiveStage = stage
+			}
+		}
+		if Terminal(sl.Status) {
+			closeActiveFinalization(sl, now)
+		}
+	}
+}
+
+func closeActiveFinalization(sl *Slot, now string) {
+	if sl == nil {
+		return
+	}
+	timings := &sl.FinalizationTimings
+	if timing := timingForStage(timings, timings.ActiveStage); timing != nil &&
+		timing.StartedAt != "" && timing.CompletedAt == "" {
+		timing.CompletedAt = now
+	}
+	timings.ActiveStage = ""
+}
+
+func timingForStage(timings *FinalizationTimings, stage string) *StageTimingEvidence {
+	if timings == nil {
+		return nil
+	}
+	switch stage {
+	case "gate":
+		return &timings.Gate
+	case "review":
+		return &timings.Review
+	case "security-review":
+		return &timings.SecurityReview
+	case "merge":
+		return &timings.Merge
+	case "pr":
+		return &timings.PR
+	default:
+		return nil
+	}
 }
 
 // MutateSlot mutates the slot for phaseID in place via mut and stamps its
@@ -280,30 +499,16 @@ func (s *Store) RunLock(runID string) (*Lock, error) {
 	}
 	path := filepath.Join(s.KoryphRoot, lockFile)
 
-	// Fast path: uncontended exclusive create.
-	l, err := acquireLock(path, runID)
-	if err == nil {
-		return l, nil
-	}
-	if !errors.Is(err, os.ErrExist) {
-		return nil, err
-	}
-
-	// Contended. The stale-reclaim below (read PID → decide stale → remove →
-	// re-acquire) is a check-then-act that races: two starts could both read the
-	// SAME dead PID, and the second os.Remove would delete the FIRST's freshly
-	// re-acquired lock, leaving both believing they hold the singleton. Serialize
-	// the whole critical section with an exclusive flock on a sidecar guard file
-	// so the check→remove→acquire is atomic across processes.
+	// Every admission—not only stale-lock recovery—takes the guard. GC uses the
+	// same guard while deciding that no engine can be consuming shared caches,
+	// closing the former empty-lock fast-path race with cache deletion.
 	guard, err := acquireReclaimGuard(s.KoryphRoot)
 	if err != nil {
 		return nil, err
 	}
 	defer guard.release()
 
-	// Re-attempt the exclusive create under the guard: a racing process may have
-	// acquired-and-released between our fast-path failure and taking the guard.
-	l, err = acquireLock(path, runID)
+	l, err := acquireLock(path, runID)
 	if err == nil {
 		return l, nil
 	}
@@ -322,6 +527,36 @@ func (s *Store) RunLock(runID string) (*Lock, error) {
 		return nil, err
 	}
 	return acquireLock(path, runID)
+}
+
+// WithRunAdmissionGuard runs fn while new engine admissions are excluded. It
+// returns admitted=false when a live engine owns koryph.lock. A malformed lock
+// fails closed; a stale, well-formed dead-PID lock does not prevent safe
+// maintenance, and is left for the next RunLock acquisition to reclaim.
+func (s *Store) WithRunAdmissionGuard(fn func() error) (admitted bool, err error) {
+	if err := os.MkdirAll(s.KoryphRoot, 0o755); err != nil {
+		return false, err
+	}
+	guard, err := acquireReclaimGuard(s.KoryphRoot)
+	if err != nil {
+		return false, err
+	}
+	defer guard.release()
+
+	path := filepath.Join(s.KoryphRoot, lockFile)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return true, fn()
+	} else if err != nil {
+		return false, err
+	}
+	pid, ok := readLockPID(path)
+	if !ok {
+		return false, fmt.Errorf("ledger: refuse maintenance with unreadable lock %s", path)
+	}
+	if processAlive(pid) {
+		return false, nil
+	}
+	return true, fn()
 }
 
 // reclaimGuard is an exclusive flock over the sidecar guard file that serializes

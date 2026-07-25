@@ -46,7 +46,7 @@ shown here. **Do not invent flags** — use only what appears in this file or in
 | Flag | Effect | When to use |
 |------|--------|-------------|
 | `--project <id>` | target project (required) | always |
-| `--review` | insert a reviewer (Opus) between implement and merge | **default — always include** |
+| `--review` | insert the configured frontier-tier reviewer between implement and merge | **default — always include** |
 | `--auto-merge` | allow auto-merge for `merge:auto` items | include unless you want manual landing |
 | `--once` | run exactly one dispatch pass, then exit | smoke tests, canary, CI one-shots |
 | `--dispatch-mode wave\|rolling` | override `dispatch_mode` in `koryph.project.json` | prefer `rolling` for continuous throughput (see Efficiency) |
@@ -404,16 +404,15 @@ frontier tier for scheduling-correctness work:
 | Bead type | Recommended label |
 |-----------|-------------------|
 | Routine implementation | _(none — inherits stage default)_ |
-| Novel algorithm, scheduler logic | `model:opus` |
-| Implement phase only (override) | `model:implement:sonnet` |
-| All stages override | `model:sonnet` |
+| Novel algorithm, scheduler logic | `equiv:frontier:xhigh` plus a routing reason |
+| Implement phase only (override) | stage-specific frontier-equivalent route plus a routing reason |
+| All stages override | portable `equiv:<tier>:<effort>` plus a routing reason |
 
 ### When NOT to start the loop
 
 | Situation | Better approach |
 |-----------|-----------------|
 | Only one bead to build | `koryph run --project <id> --only <bead> --review` or `/koryph-build` |
-| The bead is `refactor-core` | Implement it directly on main in this session — the loop never dispatches `refactor-core` beads |
 | The bead is labeled `no-dispatch` | Remove the label first, or handle it manually |
 | A loop is already running | Check `koryph board` — do not start a second loop for the same project |
 | A `drain` request is pending | Wait for the current run to exit, then start fresh |
@@ -427,18 +426,14 @@ frontier tier for scheduling-correctness work:
 
 2. **Never SIGKILL first.** Always try `koryph stop` (SIGTERM) before `--force`.
 
-3. **Never dispatch `refactor-core` via the loop.** Beads labeled `refactor-core`
-   touch the koryph engine's own dispatch/merge/governor loop or a protected
-   path. The loop silently defers them. Implement them directly on main.
-
-4. **`--max` per project bypasses the global governor.** Warn the user before
+3. **`--max` per project bypasses the global governor.** Warn the user before
    raising per-project parallelism above the default (3). The default exists to
-   prevent rate-limit storms across all projects sharing the same Claude plan.
+   prevent rate-limit storms across all projects sharing the same account.
 
-5. **`drain` does not stop running agents.** It prevents the loop from
+4. **`drain` does not stop running agents.** It prevents the loop from
    dispatching new beads. Use `koryph stop` to interrupt a running agent.
 
-6. **`koryph merge` and `koryph land` are operator actions.** The loop handles
+5. **`koryph merge` and `koryph land` are operator actions.** The loop handles
    merging automatically when `--auto-merge` is set; only invoke these manually
    for slots left in `merge-pending` or `pr-opened`.
 

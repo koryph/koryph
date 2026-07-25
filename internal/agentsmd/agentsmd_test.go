@@ -28,14 +28,13 @@ func TestInstallFreshRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	// Spot-check: AGENTS.md must mention the containment model (hooks + worktree
-	// isolation paths), so non-Claude runtimes see the documented trust delta.
+	// Spot-check the canonical repository-only projection.
 	for _, marker := range []string{
 		"AGENTS.md",
-		"hook",
-		"worktree isolation",
-		"merge-time",
+		"<!-- koryph-clause:repository/v1 -->",
 		"beads",
+		"focused checks",
+		"koryph.project.json",
 	} {
 		if !strings.Contains(string(data), marker) {
 			t.Errorf("AGENTS.md missing %q marker", marker)
@@ -99,36 +98,31 @@ func TestInstallForceOverwritesDifferingContent(t *testing.T) {
 	}
 }
 
-// TestTemplateContainsContainmentModel confirms the embedded template documents
-// the hooks vs. worktree-isolation containment split explicitly.
-func TestTemplateContainsContainmentModel(t *testing.T) {
+func TestTemplateOwnsOnlyRepositoryClause(t *testing.T) {
 	tmpl := string(agentsmd.Template())
-	for _, fragment := range []string{
-		"Runtimes with hook support",
-		"Runtimes without hook support",
-		"worktree isolation",
-		"merge-time protected-path refusal",
+	if got := strings.Count(tmpl, "<!-- koryph-clause:repository/v1 -->"); got != 1 {
+		t.Fatalf("repository clause count = %d, want 1", got)
+	}
+	for _, forbidden := range []string{
+		"<!-- koryph-clause:role/",
+		"<!-- koryph-clause:engine/",
+		"<!-- koryph-clause:task/",
+		"make gate",
+		"make gate-agent",
+		"git checkout main",
 	} {
-		if !strings.Contains(tmpl, fragment) {
-			t.Errorf("template missing containment-model fragment %q", fragment)
+		if strings.Contains(tmpl, forbidden) {
+			t.Errorf("repository template contains foreign/stale instruction %q", forbidden)
 		}
 	}
 }
 
-// TestTemplateOutputEconomy verifies the output-economy section (design:
-// docs/designs/2026-07-token-economy.md §3 L3+L4) is present in the embedded
-// AGENTS.md template and teaches the three key patterns: quiet gate
-// (make gate-agent), file-spill wrappers (koryph-spill.sh), and Read-based
-// recovery.
 func TestTemplateOutputEconomy(t *testing.T) {
 	tmpl := string(agentsmd.Template())
 	for _, fragment := range []string{
-		"make gate-agent",
 		"koryph-spill.sh",
 		"full output",
-		"Read tool",
-		"gate-agent",
-		"file-spill",
+		"Read that file",
 	} {
 		if !strings.Contains(tmpl, fragment) {
 			t.Errorf("AGENTS.md template missing output-economy fragment %q", fragment)

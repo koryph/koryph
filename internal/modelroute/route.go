@@ -214,6 +214,19 @@ func Resolve(r Req) (Resolution, error) {
 	if effort, ok := effortLabel(r.Labels); ok && !hasEquiv {
 		res.Effort = effort
 	}
+	if r.trustedEquivalentTier != "" {
+		if !isPortableTier(r.trustedEquivalentTier) {
+			return Resolution{}, fmt.Errorf(
+				"modelroute: invalid trusted equivalent tier %q", r.trustedEquivalentTier)
+		}
+		res.Tier = r.trustedEquivalentTier
+	} else {
+		eq, err := EquivalencyFor(r, res)
+		if err != nil {
+			return Resolution{}, err
+		}
+		res.Tier = eq.Tier
+	}
 	return res, nil
 }
 
@@ -255,6 +268,7 @@ func ResolveEquivalent(source, target Req) (Resolution, error) {
 	target.ExplicitModel = mapped
 	target.RunDefault = ""
 	target.RunEquivalent = ""
+	target.trustedEquivalentTier = eq.Tier
 	res, err := Resolve(target)
 	if err != nil {
 		return Resolution{}, err
@@ -267,6 +281,7 @@ func ResolveEquivalent(source, target Req) (Resolution, error) {
 		res.Effort = nativeEffort
 		res.Equivalent = eq.Tier + ":" + eq.Effort
 	}
+	res.Tier = eq.Tier
 	sourceRuntime := source.Runtime
 	if sourceRuntime == "" {
 		sourceRuntime = "claude"
@@ -293,6 +308,13 @@ func EquivalencyFor(source Req, res Resolution) (Equivalency, error) {
 		runtimeName = "claude"
 	}
 	tier := uniqueTierForModel(res.Model, runtimeName, source.ModelMap)
+	if tier == "" && runtimeName == "claude" && res.Model == TierFable &&
+		len(tiersForModel(res.Model, runtimeName, source.ModelMap)) == 0 {
+		// Fable is an explicit-only frontier-class escape hatch rather than an
+		// implicit model-map entry. Successful resolution still needs a closed
+		// portable tier for dispatch evidence.
+		tier = runtime.TierFrontier
+	}
 	personaPinnedModel := false
 	if tier == "" && !hasExplicitModelSource(source) {
 		if source.RepoRoot != "" {
@@ -355,21 +377,26 @@ func uniqueTierForModel(model, runtimeName string, override map[string]string) s
 	if runtimeName == "codex" && model == runtime.CodexSolModel {
 		return runtime.TierFrontier
 	}
-	var matches []string
-	for tier, candidate := range effectiveModelMapFor(runtimeName, override) {
-		if candidate == model {
-			matches = append(matches, tier)
-		}
-	}
+	matches := tiersForModel(model, runtimeName, override)
 	if len(matches) == 1 {
 		return matches[0]
 	}
 	return ""
 }
 
+func tiersForModel(model, runtimeName string, override map[string]string) []string {
+	var matches []string
+	for tier, candidate := range effectiveModelMapFor(runtimeName, override) {
+		if candidate == model {
+			matches = append(matches, tier)
+		}
+	}
+	return matches
+}
+
 func portableTierForStage(stage string) string {
 	switch stage {
-	case StagePlan, StageDesign, StageScore, StageReview:
+	case StagePlan, StageDesign, StageScore, StageSecurityReview, StageEpicValidation:
 		return runtime.TierFrontier
 	case StageExplore, StageDebug:
 		return runtime.TierLight
@@ -628,19 +655,21 @@ func effortLabel(labels []string) (string, bool) {
 }
 
 // claudeStageDefaults is claude's stage -> tier default table, preserved
-// byte-for-byte from the pre-koryph-v8u.3 hardcoded switch below (see git
-// history): plan/design/score/review -> opus; implement/docs/test -> sonnet;
-// explore/debug -> haiku.
+// based on the pre-koryph-v8u.3 hardcoded switch below (see git history):
+// plan/design/score/security-review/epic-validation -> opus;
+// implement/docs/test/review -> sonnet; explore/debug -> haiku.
 var claudeStageDefaults = map[string]string{
-	StagePlan:      TierOpus,
-	StageDesign:    TierOpus,
-	StageScore:     TierOpus,
-	StageReview:    TierOpus,
-	StageImplement: TierSonnet,
-	StageDocs:      TierSonnet,
-	StageTest:      TierSonnet,
-	StageExplore:   TierHaiku,
-	StageDebug:     TierHaiku,
+	StagePlan:           TierOpus,
+	StageDesign:         TierOpus,
+	StageScore:          TierOpus,
+	StageReview:         TierSonnet,
+	StageSecurityReview: TierOpus,
+	StageEpicValidation: TierOpus,
+	StageImplement:      TierSonnet,
+	StageDocs:           TierSonnet,
+	StageTest:           TierSonnet,
+	StageExplore:        TierHaiku,
+	StageDebug:          TierHaiku,
 }
 
 // runtimeStageDefaults namespaces stage-default tables by runtime name
@@ -659,15 +688,17 @@ var claudeStageDefaults = map[string]string{
 var runtimeStageDefaults = map[string]map[string]string{
 	"claude": claudeStageDefaults,
 	"codex": {
-		StagePlan:      runtime.CodexModelMap[runtime.TierFrontier],
-		StageDesign:    runtime.CodexModelMap[runtime.TierFrontier],
-		StageScore:     runtime.CodexModelMap[runtime.TierFrontier],
-		StageReview:    runtime.CodexModelMap[runtime.TierFrontier],
-		StageImplement: runtime.CodexModelMap[runtime.TierStandard],
-		StageDocs:      runtime.CodexModelMap[runtime.TierStandard],
-		StageTest:      runtime.CodexModelMap[runtime.TierStandard],
-		StageExplore:   runtime.CodexModelMap[runtime.TierLight],
-		StageDebug:     runtime.CodexModelMap[runtime.TierLight],
+		StagePlan:           runtime.CodexModelMap[runtime.TierFrontier],
+		StageDesign:         runtime.CodexModelMap[runtime.TierFrontier],
+		StageScore:          runtime.CodexModelMap[runtime.TierFrontier],
+		StageReview:         runtime.CodexModelMap[runtime.TierStandard],
+		StageSecurityReview: runtime.CodexModelMap[runtime.TierFrontier],
+		StageEpicValidation: runtime.CodexModelMap[runtime.TierFrontier],
+		StageImplement:      runtime.CodexModelMap[runtime.TierStandard],
+		StageDocs:           runtime.CodexModelMap[runtime.TierStandard],
+		StageTest:           runtime.CodexModelMap[runtime.TierStandard],
+		StageExplore:        runtime.CodexModelMap[runtime.TierLight],
+		StageDebug:          runtime.CodexModelMap[runtime.TierLight],
 	},
 }
 
@@ -705,7 +736,11 @@ func PersonaFor(stage string, stages map[string]string) string {
 	case StageScore:
 		return "koryph-plan-scorer"
 	case StageReview:
+		return "koryph-reviewer"
+	case StageSecurityReview:
 		return "koryph-security-reviewer"
+	case StageEpicValidation:
+		return "koryph-epic-validator"
 	case StageExplore:
 		return "koryph-explorer"
 	case StageDebug:
@@ -738,7 +773,7 @@ func TierForModelID(id string) string {
 
 func advancedPlanningStage(stage string) bool {
 	switch stage {
-	case StagePlan, StageDesign, StageScore:
+	case StagePlan, StageDesign, StageScore, StageEpicValidation:
 		return true
 	default:
 		return false

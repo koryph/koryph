@@ -26,8 +26,7 @@ Argument (the ask, verbatim — or empty to elicit it): $ARGUMENTS
 Steps 1–4 (clarify, ground, design, outline) shape every downstream bead:
 a wrong seam or a missed constraint here multiplies into mislabeled
 footprints and false-parallel merge conflicts across the whole epic. These
-steps require the **frontier reasoning tier of your agent runtime** —
-Claude Opus-class, or the equivalent top tier of whatever runtime you are.
+steps require the **frontier reasoning tier of your agent runtime**.
 Below that tier, do not attempt them yourself: either tell the operator to
 re-run `/koryph-design` on a frontier-tier model, or delegate steps 1–4
 wholesale to the `koryph-architect` agent (pinned `tier: frontier`) and do

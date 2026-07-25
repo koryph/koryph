@@ -33,21 +33,32 @@ type TokenComposition struct {
 	Total int64 `json:"total"`
 	// CacheHitRatio = CacheRead / (CacheRead + Input); 0 when both are zero.
 	CacheHitRatio float64 `json:"cache_hit_ratio"`
+	// ProviderTotalInput is an optional provider-reported inclusive input
+	// counter retained for audit. It is not part of Total because it overlaps
+	// Input and CacheRead for providers such as Codex.
+	ProviderTotalInput    int64 `json:"provider_total_input,omitempty"`
+	HasProviderTotalInput bool  `json:"has_provider_total_input,omitempty"`
 }
 
 func makeComposition(input, output, cacheRead, cacheCreation int64) TokenComposition {
+	return makeAuditedComposition(input, output, cacheRead, cacheCreation, 0, false)
+}
+
+func makeAuditedComposition(input, output, cacheRead, cacheCreation, providerTotalInput int64, hasProviderTotalInput bool) TokenComposition {
 	total := input + output + cacheRead + cacheCreation
 	ratio := float64(0)
 	if cacheRead+input > 0 {
 		ratio = float64(cacheRead) / float64(cacheRead+input)
 	}
 	return TokenComposition{
-		Input:         input,
-		Output:        output,
-		CacheRead:     cacheRead,
-		CacheCreation: cacheCreation,
-		Total:         total,
-		CacheHitRatio: ratio,
+		Input:                 input,
+		Output:                output,
+		CacheRead:             cacheRead,
+		CacheCreation:         cacheCreation,
+		Total:                 total,
+		CacheHitRatio:         ratio,
+		ProviderTotalInput:    providerTotalInput,
+		HasProviderTotalInput: hasProviderTotalInput,
 	}
 }
 
@@ -84,9 +95,14 @@ type RunTokenSummary struct {
 
 // ProjectTokenStat is the per-project token rollup.
 type ProjectTokenStat struct {
-	ProjectID   string           `json:"project_id"`
-	Account     string           `json:"account"`
-	Composition TokenComposition `json:"composition"`
+	ProjectID string `json:"project_id"`
+	Account   string `json:"account"`
+	// TokenSemantics identifies the only token-counter semantics included in
+	// this aggregate. Runs with legacy or unknown semantics are counted below
+	// and excluded rather than silently mixed.
+	TokenSemantics               string           `json:"token_semantics"`
+	ExcludedRunsByTokenSemantics map[string]int   `json:"excluded_runs_by_token_semantics,omitempty"`
+	Composition                  TokenComposition `json:"composition"`
 	// TotalBeads is the number of distinct bead slots (by phase_id) seen across
 	// all runs.
 	TotalBeads int `json:"total_beads"`
@@ -128,19 +144,23 @@ func CollectTokens(store *registry.Store, projectID string) (*TokenReport, error
 // collectProjectTokens aggregates token fields for one project's runs.
 func collectProjectTokens(rec *registry.Record) ProjectTokenStat {
 	stat := ProjectTokenStat{
-		ProjectID: rec.ProjectID,
-		Account:   rec.AccountProfile,
-		ByTier:    map[string]TierTokenStat{},
+		ProjectID:                    rec.ProjectID,
+		Account:                      rec.AccountProfile,
+		TokenSemantics:               ledger.CurrentTokenSemantics,
+		ExcludedRunsByTokenSemantics: map[string]int{},
+		ByTier:                       map[string]TierTokenStat{},
 	}
 
 	// beadAgg accumulates token totals per phase_id across requeues/runs.
 	type beadAgg struct {
-		beadID string
-		tier   string
-		in     int64
-		out    int64
-		cr     int64
-		cc     int64
+		beadID           string
+		tier             string
+		in               int64
+		out              int64
+		cr               int64
+		cc               int64
+		providerTotal    int64
+		hasProviderTotal bool
 	}
 	beads := map[string]*beadAgg{}
 
@@ -178,6 +198,11 @@ func collectProjectTokens(rec *registry.Record) ProjectTokenStat {
 		if err := fsx.ReadJSON(ledgerPath, &run); err != nil {
 			continue
 		}
+		semantics := ledger.EffectiveTokenSemantics(&run)
+		if semantics != ledger.CurrentTokenSemantics {
+			stat.ExcludedRunsByTokenSemantics[semantics]++
+			continue
+		}
 
 		var runTotalTokens int64
 		runBeadCount := 0
@@ -188,7 +213,8 @@ func collectProjectTokens(rec *registry.Record) ProjectTokenStat {
 			}
 			// Only aggregate slots that have any token data.
 			hasTokens := sl.InputTokens != 0 || sl.OutputTokens != 0 ||
-				sl.CacheReadTokens != 0 || sl.CacheCreationTokens != 0
+				sl.CacheReadTokens != 0 || sl.CacheCreationTokens != 0 ||
+				sl.HasProviderTotalInput
 			if !hasTokens {
 				continue
 			}
@@ -209,6 +235,8 @@ func collectProjectTokens(rec *registry.Record) ProjectTokenStat {
 			agg.out = sl.OutputTokens
 			agg.cr = sl.CacheReadTokens
 			agg.cc = sl.CacheCreationTokens
+			agg.providerTotal = sl.ProviderTotalInputTokens
+			agg.hasProviderTotal = sl.HasProviderTotalInput
 			if sl.Model != "" {
 				agg.tier = sl.Model
 			}
@@ -239,13 +267,17 @@ func collectProjectTokens(rec *registry.Record) ProjectTokenStat {
 	}
 
 	// Build Beads list and tier aggregates from the final per-bead state.
-	var totalIn, totalOut, totalCR, totalCC int64
+	var totalIn, totalOut, totalCR, totalCC, totalProvider int64
+	var hasTotalProvider bool
 	for phaseID, agg := range beads {
 		row := BeadTokenRow{
-			BeadID:      agg.beadID,
-			PhaseID:     phaseID,
-			Tier:        agg.tier,
-			Composition: makeComposition(agg.in, agg.out, agg.cr, agg.cc),
+			BeadID:  agg.beadID,
+			PhaseID: phaseID,
+			Tier:    agg.tier,
+			Composition: makeAuditedComposition(
+				agg.in, agg.out, agg.cr, agg.cc,
+				agg.providerTotal, agg.hasProviderTotal,
+			),
 		}
 		stat.Beads = append(stat.Beads, row)
 
@@ -253,16 +285,20 @@ func collectProjectTokens(rec *registry.Record) ProjectTokenStat {
 		totalOut += agg.out
 		totalCR += agg.cr
 		totalCC += agg.cc
+		totalProvider += agg.providerTotal
+		hasTotalProvider = hasTotalProvider || agg.hasProviderTotal
 
 		// Per-tier accumulation.
 		ts := stat.ByTier[agg.tier]
 		ts.Tier = agg.tier
 		ts.Slots++
-		ts.Composition = makeComposition(
+		ts.Composition = makeAuditedComposition(
 			ts.Composition.Input+agg.in,
 			ts.Composition.Output+agg.out,
 			ts.Composition.CacheRead+agg.cr,
 			ts.Composition.CacheCreation+agg.cc,
+			ts.Composition.ProviderTotalInput+agg.providerTotal,
+			ts.Composition.HasProviderTotalInput || agg.hasProviderTotal,
 		)
 		stat.ByTier[agg.tier] = ts
 	}
@@ -275,7 +311,9 @@ func collectProjectTokens(rec *registry.Record) ProjectTokenStat {
 		stat.ByTier[k] = ts
 	}
 
-	stat.Composition = makeComposition(totalIn, totalOut, totalCR, totalCC)
+	stat.Composition = makeAuditedComposition(
+		totalIn, totalOut, totalCR, totalCC, totalProvider, hasTotalProvider,
+	)
 	stat.TotalBeads = len(beads)
 	if stat.TotalBeads > 0 {
 		stat.MeanPerBead = stat.Composition.Total / int64(stat.TotalBeads)
@@ -299,15 +337,24 @@ func RenderTokens(r *TokenReport, w io.Writer) {
 
 	for _, p := range r.Projects {
 		fmt.Fprintf(w, "project: %s  account: %s\n", p.ProjectID, p.Account)
+		fmt.Fprintf(w, "  token semantics: %s\n", p.TokenSemantics)
+		for _, semantics := range sortedCountKeys(p.ExcludedRunsByTokenSemantics) {
+			fmt.Fprintf(w, "  excluded %s runs: %d\n", semantics, p.ExcludedRunsByTokenSemantics[semantics])
+		}
 		fmt.Fprintf(w, "  total beads: %d  mean tokens/bead: %s  cache-hit: %.1f%%\n",
 			p.TotalBeads, fmtTokens(p.MeanPerBead), p.Composition.CacheHitRatio*100)
-		fmt.Fprintf(w, "  composition: input=%s  output=%s  cache_read=%s  cache_creation=%s  total=%s\n\n",
+		fmt.Fprintf(w, "  composition: input=%s  output=%s  cache_read=%s  cache_creation=%s  total=%s\n",
 			fmtTokens(p.Composition.Input),
 			fmtTokens(p.Composition.Output),
 			fmtTokens(p.Composition.CacheRead),
 			fmtTokens(p.Composition.CacheCreation),
 			fmtTokens(p.Composition.Total),
 		)
+		if p.Composition.HasProviderTotalInput {
+			fmt.Fprintf(w, "  provider-total input (audit only): %s\n",
+				fmtTokens(p.Composition.ProviderTotalInput))
+		}
+		fmt.Fprintln(w)
 
 		if len(p.ByTier) > 0 {
 			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -400,6 +447,15 @@ func fmtTokens(n int64) string {
 
 // sortedTierKeys returns tier keys of m in stable order.
 func sortedTierKeys(m map[string]TierTokenStat) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedCountKeys(m map[string]int) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

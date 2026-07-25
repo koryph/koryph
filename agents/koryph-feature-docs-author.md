@@ -16,8 +16,9 @@ isolation: worktree
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
+<!-- koryph-clause:role/v1 -->
 
-# Feature Docs Author (Sonnet, worktree-isolated)
+# Feature docs author
 
 **Global fallback** — used only when a project has no
 `.claude/agents/feature-docs-author.md` of its own; a project-local persona wins.

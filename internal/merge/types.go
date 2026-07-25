@@ -23,7 +23,10 @@
 //     Merge only reports success.
 package merge
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // DefaultProtected are path prefixes that may never be merged from a
 // worktree in any managed project (they control what agents may do). These are
@@ -40,6 +43,8 @@ var DefaultProtected = []string{
 	".beads/",
 	"hooks/",
 	"agents/",
+	"commands/",
+	"internal/commands/",
 	".github/",
 	"Makefile",
 	"scripts/lib/",
@@ -79,9 +84,34 @@ type Opts struct {
 	Squash        bool
 	KeepWorktree  bool
 	SkipGate      bool // validate-only paths; never set by the loop
-	Push          bool // git push origin <default> after merge
-	SlotOwner     string
-	SlotRetries   int // bd merge-slot acquire retries (default 3)
+	// ValidateOnly prepares the candidate against the current default branch,
+	// runs the authoritative gate, and returns immutable GateEvidence without
+	// mutating the default branch. The engine uses this before semantic review.
+	ValidateOnly bool
+	// Validated authorizes the short landing path after review. Merge verifies
+	// every evidence key and both live SHAs while holding Slot; a moved base or
+	// candidate returns StatusEvidenceStale without rebasing or landing.
+	Validated *GateEvidence
+	// ValidationCheckpoint is an in-memory proof that this exact
+	// candidate/base/config tuple already completed the authoritative gate.
+	// The engine feeds it back only while retrying post-gate infrastructure
+	// (signature verification, evidence construction/persistence), so those
+	// retries never rerun an expensive successful gate.
+	ValidationCheckpoint *ValidationCheckpoint
+	// EngineVersion binds gate evidence to the binary semantics that produced
+	// it. It is required for ValidateOnly and must match on Validated landing.
+	EngineVersion string
+	// BuildIdentity is the exact commit/build provenance. Semantic versions do
+	// not change for every local rebuild, so evidence requires both.
+	BuildIdentity string
+	// EvidencePath is the engine-private immutable output written atomically
+	// by ValidateOnly before it returns success. Loop callers keep it outside
+	// the worker-visible phase directory and admit its exact digest separately
+	// into the trusted ledger.
+	EvidencePath string
+	Push         bool // git push origin <default> after merge
+	SlotOwner    string
+	SlotRetries  int // bd merge-slot acquire retries (default 3)
 
 	// ValidationPhaseDir is set only by Koryph's engine-owned finalization
 	// path. It binds the post-rebase green gate to the candidate phase's
@@ -180,18 +210,21 @@ type PROpener interface {
 type Status string
 
 const (
-	StatusMerged      Status = "merged"       // landed on the default branch
-	StatusPROpened    Status = "pr-opened"    // PR opened (merge_policy pr)
-	StatusConflict    Status = "conflict"     // rebase conflict; CONFLICT.md written
-	StatusGateFailed  Status = "gate-failed"  // green gate failed after rebase
-	StatusProtected   Status = "protected"    // diff touched a protected path
-	StatusUnsigned    Status = "unsigned"     // required signature missing
-	StatusCommitStyle Status = "commit-style" // non-conventional commit subject
-	StatusDirty       Status = "dirty"        // staged/unstaged/untracked work would be lost
-	StatusNoChanges   Status = "no-changes"   // branch has no commits beyond default
-	StatusPRNoRemote  Status = "pr-no-remote" // merge_policy pr but no git remote
-	StatusPRNoGH      Status = "pr-no-gh"     // merge_policy pr but gh unavailable
-	StatusError       Status = "error"        // infrastructure failure (see error)
+	StatusMerged         Status = "merged"          // landed on the default branch
+	StatusValidated      Status = "validated"       // rebased and gated; default branch untouched
+	StatusEvidenceStale  Status = "evidence-stale"  // gated candidate/base/config key changed
+	StatusRecoveryUnsafe Status = "recovery-unsafe" // partial landing cannot be safely rewound for revalidation
+	StatusPROpened       Status = "pr-opened"       // PR opened (merge_policy pr)
+	StatusConflict       Status = "conflict"        // rebase conflict; CONFLICT.md written
+	StatusGateFailed     Status = "gate-failed"     // green gate failed after rebase
+	StatusProtected      Status = "protected"       // diff touched a protected path
+	StatusUnsigned       Status = "unsigned"        // required signature missing
+	StatusCommitStyle    Status = "commit-style"    // non-conventional commit subject
+	StatusDirty          Status = "dirty"           // staged/unstaged/untracked work would be lost
+	StatusNoChanges      Status = "no-changes"      // branch has no commits beyond default
+	StatusPRNoRemote     Status = "pr-no-remote"    // merge_policy pr but no git remote
+	StatusPRNoGH         Status = "pr-no-gh"        // merge_policy pr but gh unavailable
+	StatusError          Status = "error"           // infrastructure failure (see error)
 )
 
 type Result struct {
@@ -216,4 +249,45 @@ type Result struct {
 	// koryph committed the result before the gate (e.g. a migration renumbered
 	// to tip). Surfaced for the same observability reason as Reconciled.
 	Prepared bool `json:"prepared,omitempty"`
+	// Evidence is populated only by StatusValidated. A later landing must pass
+	// this exact value back through Opts.Validated.
+	Evidence *GateEvidence `json:"evidence,omitempty"`
+	// ValidationCheckpoint is returned after a successful authoritative gate,
+	// including when a later infrastructure step fails. It is process-local
+	// retry state, never durable authorization for landing.
+	ValidationCheckpoint *ValidationCheckpoint `json:"-"`
+}
+
+const GateEvidenceSchema = "koryph.gate-evidence/v1"
+
+// ValidationCheckpoint is a process-local, immutable successful-gate tuple.
+// It deliberately lacks DiffDigest: immutable candidate/base commits already
+// bind the diff, while buildGateEvidence recomputes that digest on every
+// post-gate retry before anything becomes durable.
+type ValidationCheckpoint struct {
+	CandidateSHA     string
+	BaseSHA          string
+	GateConfigDigest string
+	CommandDigest    string
+	EngineVersion    string
+	BuildIdentity    string
+	CompletedAt      time.Time
+	Reconciled       []string
+	ReconcileRounds  int
+	Prepared         bool
+}
+
+// GateEvidence is the immutable key for one authoritative validation. It binds
+// the exact post-rebase candidate and base to the gate/config commands and
+// engine semantics that produced the result.
+type GateEvidence struct {
+	Schema           string    `json:"schema"`
+	CandidateSHA     string    `json:"candidate_sha"`
+	BaseSHA          string    `json:"base_sha"`
+	DiffDigest       string    `json:"diff_digest"`
+	GateConfigDigest string    `json:"gate_config_digest"`
+	CommandDigest    string    `json:"command_digest"`
+	EngineVersion    string    `json:"engine_version"`
+	BuildIdentity    string    `json:"build_identity"`
+	CompletedAt      time.Time `json:"completed_at"`
 }

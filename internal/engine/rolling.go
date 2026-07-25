@@ -101,6 +101,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 			// Operator-injected beads widen the frontier past --parent without a
 			// restart (D10), merged before --only narrows.
 			issues = r.applyInjections(ctx, issues)
+			issues = r.filterAllowedIssues(issues)
 			// --only narrows the frontier to a single operator-chosen bead;
 			// once it closes it drops out of `bd ready` and the run drains.
 			if r.opts.Only != "" {

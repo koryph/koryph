@@ -5,6 +5,7 @@ package merge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
-	"github.com/koryph/koryph/internal/signing"
 	"github.com/koryph/koryph/internal/textx"
 	"github.com/koryph/koryph/internal/worktree"
 )
@@ -131,7 +131,7 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 	}
 
 	// (1) merge slot — released on every exit path.
-	if o.Slot != nil {
+	if o.Slot != nil && !o.ValidateOnly {
 		if err := o.Slot.Acquire(ctx, o.SlotOwner); err != nil {
 			return Result{Status: StatusError}, fmt.Errorf("acquire merge slot: %w", err)
 		}
@@ -152,6 +152,15 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 	}
 	if wt == nil {
 		return Result{Status: StatusError}, fmt.Errorf("no worktree found for branch %q under %s", o.Branch, o.RepoRoot)
+	}
+	if o.ValidateOnly && o.Validated != nil {
+		return Result{Status: StatusError}, errors.New("merge cannot validate and land evidence in one operation")
+	}
+	if o.ValidateOnly {
+		return validateOnly(ctx, o, wt, def)
+	}
+	if o.Validated != nil {
+		return landValidated(ctx, o, wt, def)
 	}
 
 	// (3) read-only preflight — protected paths, signatures, commit style. All
@@ -283,12 +292,18 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 	// nondeterministic regression is the only edge the retry can hide — an
 	// accepted trade against penalizing every infra flake).
 	if !o.SkipGate && len(o.Gate) > 0 {
-		ok, out := runGate(ctx, wt.Path, o.ValidationPhaseDir, o.Gate)
+		ok, out, infraErr := runGate(ctx, wt.Path, o.ValidationPhaseDir, o.Gate)
+		if infraErr != nil {
+			return Result{Status: StatusError, GateOutput: textx.Tail(out, gateOutputCap)}, infraErr
+		}
 		if !ok {
 			// pre-commit auto-fixers or a partial step may leave the tree dirty;
 			// discard so the retry runs against the same clean state as the first.
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
-			ok, out = runGate(ctx, wt.Path, o.ValidationPhaseDir, o.Gate)
+			ok, out, infraErr = runGate(ctx, wt.Path, o.ValidationPhaseDir, o.Gate)
+			if infraErr != nil {
+				return Result{Status: StatusError, GateOutput: textx.Tail(out, gateOutputCap)}, infraErr
+			}
 		}
 		if !ok {
 			_, _ = gitRun(ctx, wt.Path, "checkout", "--", ".")
@@ -312,7 +327,7 @@ func mergeInner(ctx context.Context, o Opts) (Result, error) {
 	// before ff-merge or PR — so an unsigned or unverifiable commit can
 	// never slip in via either path.
 	if o.RequireSigned {
-		bad, verr := signing.Verify(ctx, wt.Path, def, o.Branch)
+		bad, verr := verifySignatures(ctx, wt.Path, def, o.Branch)
 		if verr != nil {
 			return Result{Status: StatusError}, verr
 		}
@@ -450,7 +465,7 @@ func preflight(ctx context.Context, o Opts, wt *worktree.Info, def string) (res 
 
 	// Commit-signature verification.
 	if o.RequireSigned {
-		bad, verr := signing.Verify(ctx, wt.Path, def, o.Branch)
+		bad, verr := verifySignatures(ctx, wt.Path, def, o.Branch)
 		if verr != nil {
 			return Result{Status: StatusError}, false, verr
 		}

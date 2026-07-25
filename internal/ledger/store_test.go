@@ -4,10 +4,12 @@
 package ledger
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,49 +57,343 @@ func TestNewRunCreatesDirLedgerAndSymlink(t *testing.T) {
 	if got.Status != RunRunning {
 		t.Fatalf("status = %q, want %q", got.Status, RunRunning)
 	}
+	if got.TokenSemantics != CurrentTokenSemantics {
+		t.Fatalf("token_semantics = %q, want %q", got.TokenSemantics, CurrentTokenSemantics)
+	}
 	if want := schemaver.Current(schemaver.LedgerRun); got.SchemaVersion != want {
 		t.Fatalf("schema_version = %d, want %d", got.SchemaVersion, want)
 	}
 }
 
+func TestNewRunSameSecondAllocationsAreUniqueAndOrdered(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+	fixed := time.Date(2026, 7, 25, 15, 30, 45, 0, time.UTC)
+	st.now = func() time.Time { return fixed }
+
+	const count = 128
+	runs := make(chan *Run, count)
+	errs := make(chan error, count)
+	var wait sync.WaitGroup
+	for index := 0; index < count; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			run, err := st.NewRun("proj-x", "bd", "v1")
+			runs <- run
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(runs)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seen := make(map[string]bool, count)
+	var newest string
+	for run := range runs {
+		if run == nil {
+			t.Fatal("NewRun returned nil without an error")
+		}
+		if seen[run.RunID] {
+			t.Fatalf("duplicate RunID %q", run.RunID)
+		}
+		seen[run.RunID] = true
+		if run.RunID > newest {
+			newest = run.RunID
+		}
+		loaded, err := st.LoadRun(run.RunID)
+		if err != nil {
+			t.Fatalf("LoadRun(%s): %v", run.RunID, err)
+		}
+		if loaded.RunID != run.RunID || loaded.ProjectID != "proj-x" {
+			t.Fatalf("hybrid ledger for %s: %+v", run.RunID, loaded)
+		}
+	}
+	if len(seen) != count {
+		t.Fatalf("unique runs = %d, want %d", len(seen), count)
+	}
+	ids, err := st.ListRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != count || ids[0] != newest {
+		t.Fatalf("ListRuns = %d entries, newest %q; want %d/%q", len(ids), ids[0], count, newest)
+	}
+	target, err := os.Readlink(filepath.Join(st.KoryphRoot, latestLink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != newest {
+		t.Fatalf("latest = %q, want fully persisted newest %q", target, newest)
+	}
+}
+
+func TestNewRunFailedLedgerWriteDoesNotAdvanceLatest(t *testing.T) {
+	st := NewStore(t.TempDir())
+	fixed := time.Date(2026, 7, 25, 15, 30, 45, 0, time.UTC)
+	st.now = func() time.Time { return fixed }
+	first, err := st.NewRun("proj-x", "bd", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.saveRun = func(*Run) error { return errors.New("injected ledger failure") }
+	if _, err := st.NewRun("proj-x", "bd", "v1"); err == nil {
+		t.Fatal("failed ledger write unexpectedly allocated a run")
+	}
+	target, err := os.Readlink(filepath.Join(st.KoryphRoot, latestLink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != first.RunID {
+		t.Fatalf("latest advanced to %q after failed allocation; want %q", target, first.RunID)
+	}
+	if _, err := os.Stat(filepath.Join(st.KoryphRoot, fixed.Format(runIDLayout)+"-000001")); !os.IsNotExist(err) {
+		t.Fatalf("failed allocation directory survived: %v", err)
+	}
+}
+
 func fullSlot() *Slot {
 	return &Slot{
-		PhaseID:             "cn-42",
-		BeadID:              "cn-42",
-		EpicID:              "epic-1",
-		Branch:              "koryph/cn-42",
-		Worktree:            "/wt/cn-42",
-		SessionID:           "sess-abc",
-		SessionName:         "amber-otter",
-		Agent:               "implementer",
-		Model:               "sonnet",
-		ModelWhy:            "cost/latency",
-		Effort:              "high",
-		AccountProfile:      "personal",
-		ClaudeConfigDir:     "/cfg/personal",
-		VerifiedIdentity:    "owner@example.com",
-		VerifiedAt:          "2026-07-02T00:00:00Z",
-		BillingMode:         "subscription",
-		ProxyID:             "http://127.0.0.1:8091#v3",
-		PID:                 12345,
-		Stream:              "stream-1",
-		StatusPath:          "/s/status.json",
-		LogPath:             "/s/log.txt",
-		Status:              SlotRunning,
-		Attempts:            1,
-		Commits:             2,
-		LastCommit:          "abc1234",
-		ResumeSHA:           "def5678",
-		CostUSD:             1.25,
-		InputTokens:         10000,
-		OutputTokens:        500,
-		CacheReadTokens:     8000,
-		CacheCreationTokens: 1200,
-		ReviewIters:         1,
-		DispatchedAt:        "2026-07-02T00:00:01Z",
-		MergedAt:            "2026-07-02T00:00:02Z",
-		UpdatedAt:           "seed-value-overwritten",
-		Note:                "a note",
+		PhaseID:                      "cn-42",
+		BeadID:                       "cn-42",
+		EpicID:                       "epic-1",
+		Branch:                       "koryph/cn-42",
+		Worktree:                     "/wt/cn-42",
+		SessionID:                    "sess-abc",
+		SessionName:                  "amber-otter",
+		Agent:                        "implementer",
+		Model:                        "sonnet",
+		ModelWhy:                     "cost/latency",
+		Effort:                       "high",
+		AccountProfile:               "personal",
+		ClaudeConfigDir:              "/cfg/personal",
+		VerifiedIdentity:             "owner@example.com",
+		VerifiedAt:                   "2026-07-02T00:00:00Z",
+		BillingMode:                  "subscription",
+		ProxyID:                      "http://127.0.0.1:8091#v3",
+		PID:                          12345,
+		Stream:                       "stream-1",
+		StatusPath:                   "/s/status.json",
+		LogPath:                      "/s/log.txt",
+		Status:                       SlotRunning,
+		Attempts:                     1,
+		Commits:                      2,
+		LastCommit:                   "abc1234",
+		ResumeSHA:                    "def5678",
+		CostUSD:                      1.25,
+		InputTokens:                  10000,
+		OutputTokens:                 500,
+		CacheReadTokens:              8000,
+		CacheCreationTokens:          1200,
+		ProviderTotalInputTokens:     18000,
+		HasProviderTotalInput:        true,
+		ReviewIters:                  1,
+		LastRevalidationKey:          "candidate@base",
+		FinalizationStage:            "security-review",
+		FinalizationQueuedAt:         "2026-07-02T00:00:01.500Z",
+		GateEvidencePath:             "/s/gate-evidence-generation.json",
+		GateEvidenceDigest:           "sha256:gate",
+		GeneralReviewArtifactPath:    "/s/review-general.json",
+		GeneralReviewArtifactDigest:  "sha256:general",
+		GeneralReviewCandidateSHA:    "candidate-general",
+		GeneralReviewBaseSHA:         "base-general",
+		SecurityReviewArtifactPath:   "/s/review-security.json",
+		SecurityReviewArtifactDigest: "sha256:security",
+		SecurityReviewCandidateSHA:   "candidate-security",
+		SecurityReviewBaseSHA:        "base-security",
+		DispatchedAt:                 "2026-07-02T00:00:01Z",
+		MergedAt:                     "2026-07-02T00:00:02Z",
+		UpdatedAt:                    "seed-value-overwritten",
+		Note:                         "a note",
+	}
+}
+
+func TestEvidenceDirIsPrivateAndOutsideWorkerPhase(t *testing.T) {
+	store := NewStore(t.TempDir())
+	phase := store.PhaseDir("run", "bead")
+	evidence := store.EvidenceDir("run", "bead")
+	if strings.HasPrefix(evidence, phase+string(filepath.Separator)) || evidence == phase {
+		t.Fatalf("evidence directory %q is inside worker phase %q", evidence, phase)
+	}
+	info, err := os.Stat(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("evidence directory permissions = %o, want private", info.Mode().Perm())
+	}
+}
+
+func TestLoadRunLabelsLegacyTokenSemantics(t *testing.T) {
+	repo := t.TempDir()
+	st := NewStore(repo)
+	runID := "20260725-120000"
+	dir := filepath.Join(st.KoryphRoot, runID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := &Run{
+		SchemaVersion: schemaver.Current(schemaver.LedgerRun),
+		RunID:         runID,
+		ProjectID:     "p",
+		Slots:         map[string]*Slot{},
+	}
+	if err := fsx.WriteJSONAtomic(filepath.Join(dir, ledgerFile), legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.LoadRun(runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.TokenSemantics != TokenSemanticsLegacyV0 {
+		t.Fatalf("TokenSemantics = %q, want explicit legacy label %q",
+			got.TokenSemantics, TokenSemanticsLegacyV0)
+	}
+	if err := st.SaveRun(got); err != nil {
+		t.Fatalf("SaveRun labeled legacy: %v", err)
+	}
+	var persisted Run
+	if err := fsx.ReadJSON(filepath.Join(dir, ledgerFile), &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.TokenSemantics != TokenSemanticsLegacyV0 {
+		t.Fatalf("persisted TokenSemantics = %q, want %q",
+			persisted.TokenSemantics, TokenSemanticsLegacyV0)
+	}
+}
+
+func TestSetSlotArchivesAttemptsAndDistinguishesModelRelaunch(t *testing.T) {
+	store := NewStore(t.TempDir())
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	run, err := store.NewRun("demo", "bd", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &Slot{
+		PhaseID: "b1", BeadID: "b1", Attempts: 1,
+		SessionID:          "session-1",
+		DispatchGeneration: "generation-1",
+		DispatchedAt:       now.Format(time.RFC3339Nano),
+		Status:             SlotRunning,
+		InputTokens:        10,
+	}
+	if err := store.SetSlot(run, first); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if err := store.UpdateSlot(run, "b1", func(sl *Slot) {
+		sl.FinalizationQueuedAt = now.Add(-100 * time.Millisecond).Format(time.RFC3339Nano)
+		sl.FinalizationStage = "gate"
+		sl.Status = SlotMerging
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Second)
+	if err := store.UpdateSlot(run, "b1", func(sl *Slot) {
+		sl.FinalizationStage = "review"
+		sl.Status = SlotReview
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	secondDispatch := now.Format(time.RFC3339Nano)
+	if err := store.SetSlot(run, &Slot{
+		PhaseID: "b1", BeadID: "b1", Attempts: 2,
+		SessionID:          "session-2",
+		DispatchGeneration: "generation-2", DispatchedAt: secondDispatch,
+		Status: SlotRunning, InputTokens: 25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.AttemptHistory) != 1 {
+		t.Fatalf("attempt history = %+v", run.AttemptHistory)
+	}
+	archived := run.AttemptHistory[0].Slot
+	if archived.Attempts != 1 || archived.FinalizationTimings.Gate.CompletedAt == "" ||
+		archived.FinalizationTimings.Review.CompletedAt == "" {
+		t.Fatalf("archived attempt = %+v", archived)
+	}
+
+	loaded, err := store.LoadRun(run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if err := store.SetSlot(loaded, &Slot{
+		PhaseID: "b1", BeadID: "b1", Attempts: 2,
+		SessionID:          "session-2",
+		DispatchGeneration: "generation-2",
+		DispatchedAt:       now.Format(time.RFC3339Nano),
+		Status:             SlotRunning,
+		InputTokens:        25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.AttemptHistory) != 1 {
+		t.Fatalf("same-attempt resume duplicated history: %+v", loaded.AttemptHistory)
+	}
+	if got := loaded.Slots["b1"].DispatchedAt; got != secondDispatch {
+		t.Fatalf("idempotent persistence dispatch = %s, want original %s", got, secondDispatch)
+	}
+
+	now = now.Add(time.Second)
+	relaunchDispatch := now.Format(time.RFC3339Nano)
+	if err := store.SetSlot(loaded, &Slot{
+		PhaseID: "b1", BeadID: "b1", Attempts: 2,
+		SessionID:          "session-3",
+		DispatchGeneration: "generation-2-relaunch",
+		DispatchedAt:       relaunchDispatch,
+		Status:             SlotRunning,
+		InputTokens:        25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.AttemptHistory) != 2 ||
+		loaded.AttemptHistory[1].Slot.DispatchGeneration != "generation-2" {
+		t.Fatalf("same-number relaunch was not archived: %+v", loaded.AttemptHistory)
+	}
+	if got := loaded.Slots["b1"].DispatchedAt; got != relaunchDispatch {
+		t.Fatalf("relaunch dispatch = %s, want %s", got, relaunchDispatch)
+	}
+
+	now = now.Add(time.Second)
+	if err := store.SetSlot(loaded, &Slot{
+		PhaseID: "b1", BeadID: "b1", Attempts: 2,
+		SessionID:          "session-4",
+		DispatchGeneration: "generation-2-relaunch",
+		DispatchedAt:       now.Format(time.RFC3339Nano),
+		Status:             SlotRunning,
+		InputTokens:        25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.AttemptHistory) != 3 ||
+		loaded.AttemptHistory[2].Slot.SessionID != "session-3" {
+		t.Fatalf("same-generation/new-session relaunch was lost: %+v", loaded.AttemptHistory)
+	}
+}
+
+func TestSetSlotRejectsAttemptRegressionAndGap(t *testing.T) {
+	store := NewStore(t.TempDir())
+	run, err := store.NewRun("demo", "bd", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlot(run, &Slot{PhaseID: "b1", Attempts: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlot(run, &Slot{PhaseID: "b1", Attempts: 1}); err == nil {
+		t.Fatal("attempt regression was accepted")
+	}
+	if err := store.SetSlot(run, &Slot{PhaseID: "b1", Attempts: 4}); err == nil {
+		t.Fatal("attempt gap was accepted")
 	}
 }
 
@@ -403,6 +699,43 @@ func TestRunLockSecondAcquireFails(t *testing.T) {
 	}
 	if err := l3.Unlock(); err != nil {
 		t.Fatalf("final unlock: %v", err)
+	}
+}
+
+func TestRunAdmissionWaitsForGuardedMaintenance(t *testing.T) {
+	st := NewStore(t.TempDir())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	maintenanceDone := make(chan error, 1)
+	go func() {
+		_, err := st.WithRunAdmissionGuard(func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+		maintenanceDone <- err
+	}()
+	<-entered
+
+	lockResult := make(chan error, 1)
+	go func() {
+		lock, err := st.RunLock("run-after-maintenance")
+		if err == nil {
+			err = lock.Unlock()
+		}
+		lockResult <- err
+	}()
+	select {
+	case err := <-lockResult:
+		t.Fatalf("RunLock bypassed maintenance guard: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-maintenanceDone; err != nil {
+		t.Fatalf("maintenance: %v", err)
+	}
+	if err := <-lockResult; err != nil {
+		t.Fatalf("RunLock after maintenance: %v", err)
 	}
 }
 

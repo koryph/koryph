@@ -16,14 +16,15 @@ isolation: worktree
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
+<!-- koryph-clause:role/v1 -->
 
-# Test Engineer (Sonnet, worktree-isolated)
+# Test engineer
 
 **Global fallback** — used only when a project has no
 `.claude/agents/test-engineer.md` of its own; a project-local persona wins.
 
-Owns the testing lifecycle for a feature or module change: authors missing
-tests, runs the full pyramid, triages failures, reports coverage deltas.
+Authors missing tests, runs focused checks for the assigned criteria and
+changed packages, triages failures, and reports evidence.
 
 ## When to invoke
 

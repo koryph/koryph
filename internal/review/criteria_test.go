@@ -5,8 +5,10 @@ package review
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/koryph/koryph/internal/phasecontrol"
 	"github.com/koryph/koryph/internal/plan"
 )
 
@@ -78,5 +80,71 @@ func TestEnforceCriteriaAcceptsCompleteUniqueEvidence(t *testing.T) {
 	})
 	if v.Blocking || len(v.Findings) != 0 {
 		t.Fatalf("complete evidence rejected: %+v", v)
+	}
+}
+
+func TestValidateCompletionEvidenceCanonicalMatrix(t *testing.T) {
+	criteria := []AcceptanceCriterion{
+		{ID: "AC1", Text: "feature exists"},
+		{ID: "AC2", Text: "regression passes"},
+	}
+	valid := phasecontrol.Evidence{
+		FocusedTests: []phasecontrol.FocusedTestEvidence{{
+			Command: "go test ./internal/review -run TestFeature", ExitStatus: 0,
+			LogPath: "focused.log", LogDigest: "sha256:focused",
+		}},
+		Acceptance: []phasecontrol.AcceptanceEvidence{
+			{CriterionID: "AC1", References: []phasecontrol.EvidenceReference{{
+				Kind: "file", Path: "internal/review/review.go", Digest: "sha256:file",
+			}}},
+			{CriterionID: "AC2", References: []phasecontrol.EvidenceReference{{
+				Kind: "focused-test", Command: "go test ./internal/review -run TestFeature",
+			}}},
+		},
+	}
+	if err := ValidateCompletionEvidence(criteria, valid); err != nil {
+		t.Fatalf("valid matrix rejected: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		edit func(*phasecontrol.Evidence)
+		want string
+	}{
+		{"missing criterion", func(e *phasecontrol.Evidence) {
+			e.Acceptance = e.Acceptance[:1]
+		}, "omits criterion AC2"},
+		{"duplicate criterion", func(e *phasecontrol.Evidence) {
+			e.Acceptance = append(e.Acceptance, e.Acceptance[0])
+		}, "duplicates criterion AC1"},
+		{"unknown criterion", func(e *phasecontrol.Evidence) {
+			e.Acceptance[0].CriterionID = "AC9"
+		}, "unknown criterion AC9"},
+		{"unknown focused test", func(e *phasecontrol.Evidence) {
+			e.Acceptance[1].References[0].Command = "go test ./unknown"
+		}, "references unknown focused test"},
+		{"failed focused test", func(e *phasecontrol.Evidence) {
+			e.FocusedTests[0].ExitStatus = 1
+		}, "failed with exit status 1"},
+		{"unauthenticated file", func(e *phasecontrol.Evidence) {
+			e.Acceptance[0].References[0].Digest = ""
+		}, "invalid file reference"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence := valid
+			evidence.FocusedTests = append([]phasecontrol.FocusedTestEvidence(nil), valid.FocusedTests...)
+			evidence.Acceptance = append([]phasecontrol.AcceptanceEvidence(nil), valid.Acceptance...)
+			for i := range evidence.Acceptance {
+				evidence.Acceptance[i].References = append(
+					[]phasecontrol.EvidenceReference(nil), valid.Acceptance[i].References...,
+				)
+			}
+			tc.edit(&evidence)
+			err := ValidateCompletionEvidence(criteria, evidence)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }

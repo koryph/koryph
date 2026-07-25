@@ -98,11 +98,11 @@ func printGCTable(w io.Writer, res *gc.Result) {
 	fmt.Fprintf(w, "koryph gc%s  at: %s\n\n", dryTag, res.At)
 
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "CLASS\tSCANNED MB\tCOMPRESSED\tDELETED\tSKIPPED\tRECLAIMED MB\tERRORS")
+	fmt.Fprintln(tw, "CLASS\tSCANNED MB\tCOMPRESSED\tDELETED\tSKIPPED\tRECLAIMED MB\tWARNINGS\tERRORS")
 	for _, c := range res.Classes {
-		fmt.Fprintf(tw, "%s\t%.1f\t%d\t%d\t%d\t%.1f\t%d\n",
+		fmt.Fprintf(tw, "%s\t%.1f\t%d\t%d\t%d\t%.1f\t%d\t%d\n",
 			c.Class, c.ScannedMB, c.Compressed, c.Deleted, c.Skipped,
-			c.ReclaimedMB, len(c.Errors))
+			c.ReclaimedMB, len(c.Warnings), len(c.Errors))
 	}
 	_ = tw.Flush()
 
@@ -113,10 +113,13 @@ func printGCTable(w io.Writer, res *gc.Result) {
 		fmt.Fprintf(w, "\nreclaimed %.1f MB\n", total)
 	}
 
-	// Print any errors.
+	// Print safety overages and non-fatal errors with their artifact class.
 	for _, c := range res.Classes {
+		for _, warning := range c.Warnings {
+			fmt.Fprintf(w, "gc warning [%s]: %s\n", c.Class, warning)
+		}
 		for _, e := range c.Errors {
-			fmt.Fprintf(w, "gc warning [%s]: %s\n", c.Class, e)
+			fmt.Fprintf(w, "gc error [%s]: %s\n", c.Class, e)
 		}
 	}
 }

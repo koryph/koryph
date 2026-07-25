@@ -70,6 +70,7 @@ koryph — central multi-project orchestrator for autonomous AI coding agents.
 | [`koryph metrics`](#koryph-metrics) | burn + reliability rollup across projects |
 | ↳ [`koryph metrics estimator`](#koryph-metrics-estimator) | per-(model,size) estimator accuracy stats |
 | ↳ [`koryph metrics tokens`](#koryph-metrics-tokens) | per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead trend |
+| ↳ [`koryph metrics autonomy`](#koryph-metrics-autonomy) | inspect or explicitly publish fixed-cohort autonomy SLO evidence |
 | [`koryph repo`](#koryph-repo) | check or apply .github IaC (rulesets, repo settings) |
 | ↳ [`koryph repo describe`](#koryph-repo-describe) | explain every setting in .github IaC and why |
 | ↳ [`koryph repo check`](#koryph-repo-check) | diff live GitHub settings/rulesets against .github IaC (exit 1 on drift) |
@@ -100,6 +101,7 @@ koryph — central multi-project orchestrator for autonomous AI coding agents.
 | [`koryph epic`](#koryph-epic) | on-demand epic validation: completeness + structural health review |
 | [`koryph gc`](#koryph-gc) | apply data lifecycle policy: compress old run dirs, rotate audit logs |
 | [`koryph inject`](#koryph-inject) | add a bead to a running loop even if it is outside the run's scope |
+| [`koryph loop`](#koryph-loop) | run the binary-native autonomous supervisor |
 | [`koryph models`](#koryph-models) | recommend (and --apply) learned model tiers from escalation history |
 | [`koryph obs`](#koryph-obs) | manage observability: status, level, enable, disable, tail, export, prune |
 | ↳ [`koryph obs status`](#koryph-obs-status) | print current observability configuration |
@@ -691,6 +693,7 @@ health check: layout, binaries, registry, governor
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--autonomy-canary` | bool |  | require valid passing fixed-cohort autonomy release evidence |
 | `--fix` | bool |  | auto-remediate: remove zombie slots/stale demand (global); install missing assets (project) |
 | `--force` | bool |  | with --fix and --project: also overwrite stale asset files (default: only install missing) |
 | `--json` | bool |  | emit the report as JSON instead of a table |
@@ -862,6 +865,19 @@ per-bead and per-tier token composition, cache-hit ratio, and tokens-per-bead tr
 | `--experiment` | bool |  | render the L6 two-arm (proxied vs holdout) standing-canary comparison instead |
 | `--json` | bool |  | emit JSON |
 | `--project` | string |  | limit to one project ID |
+
+## `koryph metrics autonomy` { #koryph-metrics-autonomy }
+
+inspect or explicitly publish fixed-cohort autonomy SLO evidence
+
+**See also:** [Autonomy slos](../user-guide/autonomy-slos)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--input` | string |  | schema-versioned canary evidence input |
+| `--json` | bool |  | also emit the complete report as JSON |
+| `--out` | string | `offline-autonomy-diagnostic.json` | offline immutable report path (native fixed path is reserved) |
+| `--project` | string |  | inspect the native report for this project |
 
 
 ---
@@ -1233,6 +1249,35 @@ add a bead to a running loop even if it is outside the run's scope
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--project` | string |  | project id (default: the project containing the current directory) |
+
+
+---
+
+## `koryph loop` { #koryph-loop }
+
+run the binary-native autonomous supervisor
+
+**See also:** [Running waves](../user-guide/running-waves) · [Rolling dispatch](../concepts/rolling-dispatch)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--allow-api-spend` | bool |  | permit api-key billing at governor stop |
+| `--auto-merge` | bool | `true` | allow auto-merge for merge:auto items |
+| `--budget` | float64 |  | per-engine-run cost ceiling in USD (0 = unlimited) |
+| `--canary-cohort` | string |  | fixed comma-separated canary bead IDs (starts at width 2) |
+| `--default-model` | string |  | model for label-less beads |
+| `--direct` | bool |  | owner override: merge directly instead of opening PRs |
+| `--dispatch-mode` | string |  | engine dispatch mode: wave\|rolling |
+| `--idle-max` | duration | `1m0s` | maximum model-free idle observation backoff |
+| `--idle-min` | duration | `1s` | minimum model-free idle observation backoff |
+| `--max` | int |  | target project width (canary starts at exactly 2 and widens after five good outcomes) |
+| `--no-billing-guard` | bool |  | make quota throttling advisory (usage is still measured) |
+| `--parent` | string |  | epic scope for the bd frontier |
+| `--project` | string |  | project id (default: project containing the current directory) |
+| `--require-calibration` | bool |  | refuse dispatch while quota governor is uncalibrated |
+| `--review` | bool | `true` | require the post-validation semantic review |
+| `--runtime-equivalent` | string |  | force this runtime through equivalent capability tiers |
+| `--runtime-only` | string |  | dispatch only beads normally routed to this runtime |
 
 
 ---

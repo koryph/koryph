@@ -4,6 +4,7 @@
 package promptc
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +15,15 @@ import (
 // sectionSep joins the three prompt sections. A reader sees a "---" rule
 // between the engine preamble, the project block, and the volatile tail.
 const sectionSep = "\n---\n"
+
+const (
+	RepositoryClauseMarker   = "<!-- koryph-clause:repository/v1 -->"
+	RoleClauseMarker         = "<!-- koryph-clause:role/v1 -->"
+	EngineClauseMarker       = "<!-- koryph-clause:engine/v1 -->"
+	ProjectContextMarker     = "<!-- koryph-clause:project-context/v1 -->"
+	TaskClauseMarker         = "<!-- koryph-clause:task/v1 -->"
+	semanticClauseMarkerOpen = "<!-- koryph-clause:"
+)
 
 // Compile renders the dispatch prompt as exactly three sections — engine
 // preamble, project block, volatile tail — joined by sectionSep. The output
@@ -54,136 +64,58 @@ func Preamble(engineVersion string) string {
 	return b.String()
 }
 
-// preambleBody is the fixed contract text. It carries no timestamp or
-// per-dispatch value so it stays byte-identical (and cacheable) across every
-// dispatch of one engine version.
-const preambleBody = `You are a Koryph subagent. You work autonomously inside one git worktree,
-on one branch, and you report progress through a small set of files. This
-contract is identical for every dispatch of this engine version.
+// preambleBody is the one engine-owned semantic clause. Repository rules live
+// in AGENTS.md, role behavior lives in the persona, and task/focused-test
+// scope lives in the volatile tail. Keeping those owners disjoint prevents a
+// stronger but stale copy from silently overriding the current contract.
+const preambleBody = EngineClauseMarker + `
+You are a Koryph subagent operating in one assigned worktree and phase.
 
-## Boundary (also hook-enforced)
-- Work ONLY inside your assigned worktree, on your assigned branch. Never
-  touch another worktree or the primary checkout.
-- FORBIDDEN operations — the koryph performs these, never you:
-    - git checkout main
-    - git merge
-    - git push
-    - bd close
-    - gh pr merge
-  The koryph merges and closes your work; do not integrate it yourself.
-- Sign off every commit (git commit -s): the DCO sign-off trailer is
-  required; unsigned-off commits are rejected by the merge gate and CI.
-- If your change adds or alters user-visible behavior, update the relevant
-  docs/ chapter in the same branch, and name the docs you touched in your
-  SUMMARY (or state "no user-visible surface").
-- Commit early and often: your commits are your only checkpoints. Uncommitted
-  work is invisible to recovery and may be lost.
+## Engine boundary
+- Work only inside the assigned worktree and branch. Never touch another
+  worktree or the primary checkout.
+- The orchestrator alone may run git checkout main, git merge, git push,
+  bd close, or gh pr merge. Do not integrate the branch yourself.
+- Commit coherent checkpoints; uncommitted work is not recoverable.
+- Do not mutate shared Beads state. Request a missing scheduling declaration
+  only for this bead with:
+    koryph phase request label-add --label area:<value>
+    koryph phase request label-add --label fp:<value>
+    koryph phase request label-add --label res:<value>
 
-## When you are blocked
-- You do not have direct authority over the shared Beads database. Do not run
-  bd mutation commands from this sandbox.
-- If implementation reveals a missing scheduling footprint or resource, ask
-  the orchestrator to add it to THIS bead:
-      koryph phase request label-add --label area:<value>
-      koryph phase request label-add --label fp:<value>
-      koryph phase request label-add --label res:<value>
-  Only these declarative label families are allowed. The command cannot select
-  another bead, remove labels, or change routing, dependencies, or status.
-- If a sandbox, host, or environment prevents required work — for example a
-  denied ssh-agent or credential, filesystem or network access, unavailable
-  tool/runtime, or unavailable host resource — report a structured capability
-  block before exiting. First wait for the required command or gate to reach
-  its terminal exit and inspect that verdict: warning text or intermediate
-  stderr is not a capability failure, and a zero exit is success even when
-  Darwin xcrun printed a cache warning. Use a capability block only after a
-  terminal non-zero exit shows that a required host capability prevented
-  completion. This applies even when no privileged Beads action is involved;
-  do not leave only a generic state=blocked heartbeat:
-      koryph phase block --capability <lowercase-token> --detail "sanitized host condition"
-  Use a stable, specific capability token such as ssh-agent or
-  beads-metadata. The orchestrator preserves your commits and handles the
-  terminal host-capability recovery without another coding-agent retry or
-  model escalation.
+## Phase protocol
+- Write {"state","step","pct"} heartbeats to $KORYPH_STATUS_PATH and concise
+  progress lines to $KORYPH_LOG_PATH.
+- Write $KORYPH_SUMMARY_PATH with: What shipped, Stubs shipped, Follow-ups,
+  Test evidence, and Changes requiring orchestrator review.
+- A sandbox, credential, tool, network, or host-resource failure becomes
+  terminal only after the required command exits nonzero. Report it with:
+    koryph phase block --capability <lowercase-token> --detail "sanitized condition"
+  Warnings and intermediate stderr are not terminal capability evidence.
+- status.json and SUMMARY.md are advisory. Only the following command may
+  create terminal success:
+    koryph phase complete --evidence "$KORYPH_PHASE_DIR/completion-evidence.json"
+  The evidence must contain successful focused_tests and exactly one
+  acceptance entry per AC<n>, each with a regular file or focused-test
+  reference. Never hand-write result.json.`
 
-## Heartbeat and reporting
-- After each step, write a JSON heartbeat to $KORYPH_STATUS_PATH:
-  {"state","step","pct"}. Use koryph phase block for a terminal capability
-  block; it safely adds the portable block fields.
-- Append human-readable progress lines to $KORYPH_LOG_PATH as you work.
-- Before you finish, write your summary to $KORYPH_SUMMARY_PATH (SUMMARY.md)
-  with these sections, in this order:
-    - What shipped
-    - Stubs shipped
-    - Follow-ups
-    - Test evidence
-    - Changes requiring orchestrator review
-- Terminal success is imperative. status.json and SUMMARY.md are advisory and
-  cannot finish the phase. Write a structured JSON evidence file under
-  $KORYPH_PHASE_DIR containing:
-    - focused_tests entries with command, exit_status=0, and a regular log_path;
-    - exactly one acceptance entry for every AC<n> above; and
-    - typed references for each entry: {"kind":"file","path":"..."} for a
-      regular in-worktree/phase file, or
-      {"kind":"focused-test","command":"..."} naming a successful focused test.
-  Then run:
-      koryph phase complete --evidence "$KORYPH_PHASE_DIR/completion-evidence.json"
-  This command derives the trusted run, attempt, base, generation, candidate
-  SHA, cleanliness, and digests itself. Do not hand-write result.json.
-- Read INBOX.md in your phase directory when you start, between every step,
-  and again right before you finish: a nudge appended right after dispatch
-  (before your first heartbeat is even polled) is otherwise invisible until
-  your next check-in, and one appended near the end can still change what
-  "done" means.
-
-## Focused validation and output economy
-The Koryph validation service owns the full project gate. Do not run make
-gate, make gate-agent, full-repository go test, or another broad gate as a
-worker. Run only focused checks needed for your changed packages and acceptance
-criteria. Keep their output small:
-
-- File-spill wrappers: for any long-running command, invoke
-  hooks/koryph-spill.sh with a label and the command. The wrapper prints a
-  head+tail summary, writes the full untruncated output to a file under your
-  phase dir, and ends its summary with "full output: <path>". Recover the
-  complete output at any time with the Read tool against that path.
-- Keep your own replies concise: summaries, status lines, and code snippets;
-  skip prose narration. Long output belongs in a file, not in your response.`
-
-// projectBlock returns section [2]: stable per project. Conventions, the
-// green gate, and optional cross-cutting gates and bootstrap notes. No
-// timestamps; iteration order follows the input slices.
+// projectBlock returns section [2]: the canonical repository clause when the
+// runtime does not load AGENTS.md natively, followed by stable non-policy
+// project context. Gate commands are validation-service evidence and are
+// intentionally never rendered into a worker prompt.
 func projectBlock(in Input) string {
 	var b strings.Builder
+	if strings.TrimSpace(in.RepositoryContract) != "" {
+		b.WriteString(strings.TrimSpace(in.RepositoryContract))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(ProjectContextMarker)
+	b.WriteString("\n")
 	b.WriteString("## Project: ")
 	b.WriteString(in.ProjectName)
 
-	if strings.TrimSpace(in.Conventions) != "" {
-		b.WriteString("\n\n")
-		b.WriteString(strings.TrimRight(in.Conventions, "\n"))
-	}
-
-	if in.CommitStyle == "custom" && strings.TrimSpace(in.CommitTemplate) != "" {
-		b.WriteString("\n\nCommit style: follow this project template exactly:\n")
-		b.WriteString(strings.TrimRight(in.CommitTemplate, "\n"))
-	} else {
-		b.WriteString("\n\nCommit style: Conventional Commits — `type(scope): subject` ")
-		b.WriteString("(feat|fix|docs|chore|refactor|revert|test|ci|build|perf|style; imperative, lowercase, <=72 chars).")
-	}
-
-	b.WriteString("\n\nProject gate (validation service-owned; do not run as a worker):")
-	if len(in.Gate) == 0 {
-		b.WriteString("\n- (none configured)")
-	} else {
-		writeBullets(&b, in.Gate)
-	}
-
-	if len(in.CrossGates) > 0 {
-		b.WriteString("\n\nCross-cutting gates:")
-		writeBullets(&b, in.CrossGates)
-	}
-
 	if len(in.Bootstrap) > 0 {
-		b.WriteString("\n\nWorktree bootstrap (already run for you, rerun if needed):")
+		b.WriteString("\n\nWorktree bootstrap already completed; rerun only a focused prerequisite if needed:")
 		writeBullets(&b, in.Bootstrap)
 	}
 
@@ -210,6 +142,8 @@ func WithCompletionRepair(prompt, phaseDir string) string {
 // execution plan, resume/review context, and the reporting paths.
 func volatileTail(in Input) string {
 	var b strings.Builder
+	b.WriteString(TaskClauseMarker)
+	b.WriteString("\n")
 	b.WriteString("## Task ")
 	b.WriteString(in.Bead.ID)
 	b.WriteString(": ")
@@ -276,6 +210,11 @@ func volatileTail(in Input) string {
 
 	writeResourcesBlock(&b, in.Bead)
 
+	b.WriteString("\n\n### Focused test scope")
+	b.WriteString("\nRun only checks scoped to the changed packages and acceptance criteria. ")
+	b.WriteString("The Koryph validation service owns broad repository validation. ")
+	b.WriteString("Capture each successful command and its regular log path in completion evidence.")
+
 	b.WriteString("\n\n### Reporting paths")
 	b.WriteString("\n- Phase dir: ")
 	b.WriteString(in.PhaseDir)
@@ -285,10 +224,56 @@ func volatileTail(in Input) string {
 	b.WriteString(in.StatusPath)
 	b.WriteString("\n- Log:       ")
 	b.WriteString(in.LogPath)
-	b.WriteString("\n- Inbox:     ")
+	b.WriteString("\n- Inbox (read at start, between steps, and immediately before completion): ")
 	b.WriteString(inboxPath(in.PhaseDir))
 
 	return b.String()
+}
+
+// ValidateRepositoryContract authenticates the single canonical repository
+// semantic owner before a dispatch prompt is assembled. Unknown or duplicate
+// clause markers fail closed so a stale projection cannot silently become a
+// second policy owner.
+func ValidateRepositoryContract(contract string) error {
+	return validateClauseOwners(contract, [5]int{1, 0, 0, 0, 0})
+}
+
+// ValidateRoleContract authenticates a persona as role behavior only.
+func ValidateRoleContract(contract string) error {
+	return validateClauseOwners(contract, [5]int{0, 1, 0, 0, 0})
+}
+
+// ValidateDispatchContract checks the fully compiled worker prompt. The
+// repository clause is present exactly once only for runtimes that do not
+// declare native AGENTS.md loading; role behavior is assembled separately.
+func ValidateDispatchContract(prompt string, includesRepository bool) error {
+	repositoryCount := 0
+	if includesRepository {
+		repositoryCount = 1
+	}
+	return validateClauseOwners(prompt, [5]int{repositoryCount, 0, 1, 1, 1})
+}
+
+func validateClauseOwners(text string, wants [5]int) error {
+	markers := [...]string{
+		RepositoryClauseMarker,
+		RoleClauseMarker,
+		EngineClauseMarker,
+		ProjectContextMarker,
+		TaskClauseMarker,
+	}
+	total := 0
+	for i, marker := range markers {
+		got := strings.Count(text, marker)
+		if got != wants[i] {
+			return fmt.Errorf("semantic clause %q count %d, want %d", marker, got, wants[i])
+		}
+		total += got
+	}
+	if got := strings.Count(text, semanticClauseMarkerOpen); got != total {
+		return fmt.Errorf("semantic clause marker count %d exceeds %d recognized owners", got, total)
+	}
+	return nil
 }
 
 // writeResourcesBlock appends the RESOURCES section of the volatile tail

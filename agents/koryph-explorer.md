@@ -11,8 +11,9 @@ allowed-tools:
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
+<!-- koryph-clause:role/v1 -->
 
-# Explorer (Haiku)
+# Explorer
 
 **Global fallback.** Installed by Koryph into projects that don't ship
 their own `.claude/agents/explorer.md`. A project-local persona always wins

@@ -58,17 +58,57 @@ const (
 	ExitDrained = 4
 )
 
+// SafetyTripwireKind is a stable machine-readable autonomous hard-stop key.
+// Detail is evidence for an operator; policy must branch on Kind only.
+type SafetyTripwireKind string
+
+const (
+	SafetyTripwireEngineInvariant    SafetyTripwireKind = "engine-invariant"
+	SafetyTripwireCohortAdmission    SafetyTripwireKind = "cohort-admission-violation"
+	SafetyTripwireHostMemoryPressure SafetyTripwireKind = "host-memory-pressure"
+	SafetyTripwireMissingTerminal    SafetyTripwireKind = "missing-terminal-contract"
+	SafetyTripwireUnchangedRetry     SafetyTripwireKind = "unchanged-retry"
+	SafetyTripwireDuplicateCommand   SafetyTripwireKind = "duplicate-broad-command"
+	SafetyTripwireFrontierImplement  SafetyTripwireKind = "unjustified-frontier-implementation"
+	SafetyTripwireTokenSemantics     SafetyTripwireKind = "token-semantics-inconsistent"
+)
+
+// SafetyTripwire is emitted synchronously at the engine decision point. The
+// callback configured in Options must return promptly and must not mutate
+// engine state. Autonomous supervisors use it to drain a still-running run
+// without scraping console or structured log text.
+type SafetyTripwire struct {
+	Kind   SafetyTripwireKind `json:"kind"`
+	RunID  string             `json:"run_id,omitempty"`
+	BeadID string             `json:"bead_id,omitempty"`
+	Detail string             `json:"detail,omitempty"`
+}
+
 // Options configures one engine run.
 type Options struct {
-	ProjectID    string
-	Max          int     // wave width cap (project config may lower it)
-	Once         bool    // exactly one wave
-	DryRun       bool    // plan + print, no dispatch
-	Resume       bool    // classify + re-dispatch the latest run first
-	Parent       string  // epic scope for the bd frontier
-	Only         string  // dispatch only this specific ready bead id ("" = whole frontier)
-	BudgetUSD    float64 // per-run cost ceiling in USD (0 = unlimited)
-	DefaultModel string  // model for label-less beads
+	ProjectID string
+	Max       int  // wave width cap (project config may lower it)
+	Once      bool // exactly one wave
+	DryRun    bool // plan + print, no dispatch
+	Resume    bool // classify + re-dispatch the latest run first
+	// RecoveryRunID pins Resume to one observed durable run. A non-empty value
+	// is never substituted with the latest symlink, even if a newer run exists.
+	RecoveryRunID string
+	Parent        string // epic scope for the bd frontier
+	Only          string // dispatch only this specific ready bead id ("" = whole frontier)
+	// AllowedIDs is an immutable admission allowlist for a bounded run. Empty
+	// means unrestricted. Run copies and normalizes it before reading project
+	// state; fresh scans, injections, retries, and resume all fail closed around
+	// the same set.
+	AllowedIDs []string
+	// AuthoritativeWidth makes Max an exact autonomous admission ceiling.
+	// Project/global static capacity must support it; live resize and quota
+	// scaling cannot mutate it.
+	AuthoritativeWidth bool
+	// HardStopKinds enables canary-only tripwires at their decision points.
+	HardStopKinds []SafetyTripwireKind
+	BudgetUSD     float64 // per-run cost ceiling in USD (0 = unlimited)
+	DefaultModel  string  // model for label-less beads
 	// RuntimeOnly narrows the frontier to beads whose normal runtime
 	// resolution is this runtime. It never rewrites a bead's model/runtime
 	// declaration.
@@ -113,6 +153,12 @@ type Options struct {
 	// usage error (see Run's validation).
 	DispatchMode string
 	Out          io.Writer // human-readable progress; nil = silent
+	// OnRunStart publishes the selected fresh or resumed run ID before any
+	// implementation process can launch. It must return promptly.
+	OnRunStart func(string) error
+	// OnSafetyTripwire receives typed live hard-stop events. It must return
+	// promptly; engine execution never parses its own logs to discover them.
+	OnSafetyTripwire func(SafetyTripwire)
 }
 
 // Outcome summarizes a run.

@@ -4,11 +4,22 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"text/tabwriter"
+	"time"
 
 	"github.com/koryph/koryph/internal/doctor"
+	loopsupervisor "github.com/koryph/koryph/internal/loop"
+	"github.com/koryph/koryph/internal/metrics"
+)
+
+const (
+	autonomyDoctorMaxAge        = 5 * time.Minute
+	autonomyDoctorMaxFutureSkew = 5 * time.Minute
 )
 
 func init() {
@@ -38,13 +49,17 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project", "", "run project-scoped checks for the named project")
 	matrix := fs.Bool("matrix", false, "render the integration matrix for the project at --root (or current dir)")
 	root := fs.String("root", ".", "project repository root for --matrix mode")
+	autonomyCanary := fs.Bool("autonomy-canary", false, "require valid passing fixed-cohort autonomy release evidence")
 	setUsage(fs, stdout, "health check: layout, binaries, registry, governor, leases, quota, vaults, asset drift",
-		"[--project ID] [--json] [--fix] [--force] [--matrix [--root PATH]]")
+		"[--project ID] [--autonomy-canary] [--json] [--fix] [--force] [--matrix [--root PATH]]")
 	if _, err := parseFlags(fs, args); err != nil {
 		return flagExit(err)
 	}
 
 	if *matrix {
+		if *autonomyCanary {
+			return usageErr(stderr, "doctor: --autonomy-canary requires --project and is incompatible with --matrix")
+		}
 		m, err := doctor.BuildMatrix(*root, doctor.MatrixOptions{})
 		if err != nil {
 			return fail(stderr, err)
@@ -61,6 +76,9 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 
 	var report *doctor.Report
 	var err error
+	if *autonomyCanary && *projectID == "" {
+		return usageErr(stderr, "doctor: --autonomy-canary requires --project ID")
+	}
 	if *projectID != "" {
 		report, err = doctor.RunProject(doctor.ProjectOptions{
 			ProjectID: *projectID,
@@ -73,6 +91,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	appendAutonomyDoctorFinding(report, *autonomyCanary)
 
 	if *jsonOut {
 		if err := printJSON(stdout, report); err != nil {
@@ -83,6 +102,71 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 
 	printDoctorTable(stdout, report)
 	return report.ExitCode()
+}
+
+func appendAutonomyDoctorFinding(report *doctor.Report, requested bool) {
+	if report == nil || report.Project == "" {
+		return
+	}
+	path := doctor.AutonomyReportPath(report.Home)
+	_, err := os.Lstat(path)
+	if !requested && errors.Is(err, os.ErrNotExist) {
+		return
+	}
+
+	state, stateErr := loopsupervisor.NewStore(report.Home).LoadState()
+	if stateErr != nil {
+		appendAutonomyStateError(report, "cannot load durable supervisor state: "+stateErr.Error())
+		return
+	}
+	if state.ProjectID != report.Project || state.Canary == nil {
+		appendAutonomyStateError(report, "durable supervisor state does not contain this project's canary identity")
+		return
+	}
+	if state.Canary.HardStop != "" || state.Canary.Decision != "passed" {
+		appendAutonomyStateError(report, "durable supervisor canary did not reach a passing terminal decision")
+		return
+	}
+	if filepath.Clean(state.Canary.ReportPath) != filepath.Clean(path) {
+		appendAutonomyStateError(report, "durable supervisor report path does not match the fixed canary path")
+		return
+	}
+	cohortDigest, digestErr := metrics.AutonomyCohortDigest(state.Canary.Cohort)
+	if digestErr != nil || state.Canary.CohortDigest != cohortDigest {
+		appendAutonomyStateError(report, "durable supervisor cohort identity is invalid")
+		return
+	}
+	freshAt, timeErr := time.Parse(time.RFC3339Nano, state.Canary.PublishedAt)
+	if timeErr != nil {
+		appendAutonomyStateError(report, "durable supervisor publication time is invalid")
+		return
+	}
+
+	expected := metrics.AutonomyReportExpectation{
+		ProjectID:       state.ProjectID,
+		InstalledCommit: state.Canary.InstalledCommit,
+		BinaryVersion:   state.Canary.BinaryVersion,
+		BuildIdentity:   state.Canary.BuildIdentity,
+		ContractDigest:  state.Canary.ContractDigest,
+		Cohort:          state.Canary.Cohort,
+		CohortDigest:    cohortDigest,
+		Thresholds:      metrics.DefaultAutonomyThresholds(),
+		CanaryStartedAt: state.Canary.StartedAt,
+		EvidenceDigest:  state.Canary.ReportDigest,
+		GeneratedAt:     state.Canary.ReportGeneratedAt,
+		FreshAt:         freshAt,
+		MaxAge:          autonomyDoctorMaxAge,
+		MaxFutureSkew:   autonomyDoctorMaxFutureSkew,
+	}
+	report.Findings = append(report.Findings, doctor.CheckAutonomyReport(filepath.Clean(path), expected))
+}
+
+func appendAutonomyStateError(report *doctor.Report, message string) {
+	report.Findings = append(report.Findings, doctor.Finding{
+		Check:   "autonomy-canary",
+		Level:   doctor.LevelError,
+		Message: "autonomy canary state is invalid: " + message,
+	})
 }
 
 // matrixExitCode maps matrix row statuses to an exit code:

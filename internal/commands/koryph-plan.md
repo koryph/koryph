@@ -18,9 +18,7 @@ dependency wiring, conflict validation, routing) are scheduler-correctness
 work: a mislabeled footprint or a missed dependency edge causes a
 false-parallel dispatch and a merge conflict downstream, discovered by a
 broken build rather than by re-reading the plan. These steps require the
-**frontier reasoning tier of your agent runtime** — Claude Opus-class, or
-the equivalent top tier of whatever runtime you are (codex, cursor, grok
-build, ...).
+**frontier reasoning tier of your agent runtime**.
 
 1. Check what model you are running as (your own system context states it,
    or run `/model`).
@@ -157,10 +155,12 @@ build, ...).
      design, decomposition/scoring, security review, recovery analysis, and
      final eligible hard-block escalation — never routine implementation just
      because it touches important code.
-   - `refactor-core` on any bead touching the engine's own
-     dispatch/merge/governor loop, or a protected path — these are never
-     loop-dispatched (self-hosting safety rule); file them for the
-     orchestrating session to implement on main instead.
+   - Engine implementation is ordinary schedulable work against the installed
+     koryph binary. Give it honest `area:*`/`fp:*` write tokens and dependency
+     edges; do not add a permanent self-hosting exclusion.
+   - Split changes to protected governance paths from schedulable engine work.
+     Protected-path projection is an operator-owned `HUMAN:` step labeled
+     `no-dispatch`; it must not make the engine implementation unschedulable.
    - `no-dispatch` plus a `HUMAN:` title prefix for operator-only steps
      (credentials, external approvals, anything no agent can do).
 
@@ -204,11 +204,32 @@ build, ...).
        the decision ledger, descriptions, and acceptance fields, then return
        `SHIP`. Apply at most one correction iteration; otherwise leave the
        epic blocked for design revision.
+    3. Only after both keys return `SHIP`, authenticate the filed planning
+       evidence so bounded GC may eventually reclaim it. Compute SHA-256
+       digests of the exact pre-file snapshot and strict post-file JSON; resolve
+       the commit containing the design path; append
+       `planning-graph-digest: sha256:<post-file-digest>` to the epic's Beads
+       notes; then atomically write `<pre-file-snapshot>.filed.json`:
+       ```
+       {
+         "schema": "koryph.planning-snapshot/v1",
+         "epic_id": "<epic-id>",
+         "design_path": "docs/designs/<design>.md",
+         "design_commit": "<full git object id containing design_path>",
+         "snapshot_digest": "sha256:<64 lowercase hex>",
+         "graph_digest": "sha256:<64 lowercase hex of strict post-file JSON>",
+         "post_file_path": ".plan-logs/koryph-plan/<slug>.post.json"
+       }
+       ```
+       Never write the marker before the note and both post-file gates succeed.
+       GC validates every digest, the committed design blob, and the epic note;
+       a partial, forged, corrupt, or symlinked marker fails closed and retains
+       all planning evidence.
 
 11. **Report.** The epic id, total bead count, dependency edge count,
    achievable parallel width from step 6, and any residual serialization
-   with the reason (shared write token, `refactor-core`, `domain:unknown`,
-   or `no-dispatch`), plus the strict-gate result and semantic score.
+   with the reason (shared write token, `domain:unknown`, or `no-dispatch`),
+   plus the strict-gate result and semantic score.
 
 ## Worked example
 

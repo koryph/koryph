@@ -242,7 +242,10 @@ func TestParseResultUsage(t *testing.T) {
 		if !ok {
 			t.Fatal("ParseResultUsage: ok = false, want true")
 		}
-		want := TokenUsage{InputTokens: 3861, OutputTokens: 17, CacheReadTokens: 15837, CacheCreationTokens: 3451}
+		want := TokenUsage{
+			InputTokens: 3861, OutputTokens: 17, CacheReadTokens: 15837, CacheCreationTokens: 3451,
+			TokenSemantics: "disjoint-v1",
+		}
 		if usage != want {
 			t.Errorf("ParseResultUsage = %+v, want %+v", usage, want)
 		}
@@ -267,7 +270,10 @@ func TestParseResultUsage(t *testing.T) {
 		if !ok {
 			t.Fatal("ParseResultUsage: ok = false, want true (is_error must not suppress usage, mirroring ParseResultCost)")
 		}
-		want := TokenUsage{InputTokens: 100, OutputTokens: 5, CacheReadTokens: 50, CacheCreationTokens: 10}
+		want := TokenUsage{
+			InputTokens: 100, OutputTokens: 5, CacheReadTokens: 50, CacheCreationTokens: 10,
+			TokenSemantics: "disjoint-v1",
+		}
 		if usage != want {
 			t.Errorf("ParseResultUsage = %+v, want %+v", usage, want)
 		}

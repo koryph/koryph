@@ -4,6 +4,7 @@
 package govern
 
 import (
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/procx"
+	"github.com/koryph/koryph/internal/sysmem"
 )
 
 // corruptBackupSuffix names the sibling file readFile/readFileForWrite copy a
@@ -53,6 +55,13 @@ type Store struct {
 	// agent is never mistaken for a crash).
 	ProbeTimeout time.Duration
 
+	// PressureReliefClaimTTL bounds how long an unacknowledged machine-memory
+	// relief claim remains exclusively owned after its engine dies. A takeover
+	// preserves the original target, so recovery can finish or acknowledge that
+	// one cohort without selecting and terminating another in the same pressure
+	// episode.
+	PressureReliefClaimTTL time.Duration
+
 	// Jitter returns a value in [-0.5, 0.5) for dispatch smoothing's ±50%
 	// spread (koryph-2im.11); overridable for deterministic tests. Defaults to
 	// a process-global math/rand source — jitter need only be unpredictable
@@ -76,16 +85,17 @@ type Store struct {
 // NewStore returns a Store rooted at the current KORYPH_HOME.
 func NewStore() *Store {
 	return &Store{
-		slotsDir:     paths.SlotsDir(),
-		demandDir:    paths.DemandDir(),
-		cfgPath:      paths.GovernorConfig(),
-		Now:          time.Now,
-		Alive:        processAlive,
-		RotateWindow: time.Minute,
-		DemandTTL:    10 * time.Minute,
-		LeaseTTL:     24 * time.Hour,
-		ProbeTimeout: 30 * time.Minute,
-		Jitter:       func() float64 { return mathrand.Float64() - 0.5 },
+		slotsDir:               paths.SlotsDir(),
+		demandDir:              paths.DemandDir(),
+		cfgPath:                paths.GovernorConfig(),
+		Now:                    time.Now,
+		Alive:                  processAlive,
+		RotateWindow:           time.Minute,
+		DemandTTL:              10 * time.Minute,
+		LeaseTTL:               24 * time.Hour,
+		ProbeTimeout:           30 * time.Minute,
+		PressureReliefClaimTTL: DefaultPressureReliefClaimTTL,
+		Jitter:                 func() float64 { return mathrand.Float64() - 0.5 },
 	}
 }
 
@@ -469,8 +479,9 @@ func (s *Store) Acquire(l Lease) (bool, error) {
 // returns early before the cap/fair-share section: a resource-declared probe
 // must still pass capacity, and a resource-denied probe candidate leaves the
 // probe slot open for the next caller (it never claims the probe). Every
-// clause fails open on error (I6): a denial is a normal deferral with a
-// reason, never an error.
+// Legacy clauses fail open on a lease-read error (I6 compatibility). A
+// pressure-aware HostInput instead returns a typed safety deferral: missing
+// count/reservation evidence must not restore unrestricted admission.
 func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 	pool := NormalizeProvider(l.Provider)
 	l.Provider = pool // stored state never has an empty key (koryph-v8u.11)
@@ -492,6 +503,37 @@ func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 		}
 		now := s.Now()
 
+		// A machine-global pressure episode is admission-authoritative across
+		// every runner, including a fresh process with no local PressureState.
+		// Read it under the same governor flock as the lease decision. Corrupt
+		// or unreadable shared state fails closed: uncertainty must not restore
+		// unrestricted dispatch.
+		_, episodeExists, episodeErr := s.readPressureEpisode()
+		_, claimExists, claimErr := s.readPressureReliefClaim()
+		if episodeErr != nil || claimErr != nil || episodeExists || claimExists {
+			pressure := sysmem.PressureUnknown
+			origin := sysmem.SampleDegraded
+			liveRSS := 0
+			if mem.Host != nil {
+				pressure = effectivePressure(mem.Host)
+				origin = mem.Host.Sample.Origin
+				liveRSS = mem.Host.LiveRSSMB
+			}
+			detail := "shared-pressure-episode"
+			if episodeErr != nil || claimErr != nil {
+				detail = "shared-pressure-state-unreadable"
+			}
+			result = AdmitResult{
+				Outcome:     AdmitDeniedPressure,
+				Pressure:    pressure,
+				ProbeOrigin: origin,
+				CircuitOpen: true,
+				Detail:      detail,
+				LiveRSSMB:   liveRSS,
+			}
+			return nil
+		}
+
 		// Machine-wide ceiling across ALL pools (koryph-4rk6.2): even when this
 		// pool has room under its own cap (and even for the half-open breaker
 		// probe below), the sum of live leases over EVERY provider pool must not
@@ -503,14 +545,27 @@ func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 		// error (I6), like the resource clauses: a denial is a deferral, not an
 		// error. It is a machine-wide (not per-bead) condition, so it maps to
 		// AdmitDeniedCap and the engine batch-breaks (nothing else fits either).
+		machineActiveCount := 0
+		machineCountKnown := false
 		if all, lerr := s.leases(); lerr == nil {
 			ceiling := f.MachineCeiling()
-			active := machineActive(all, l)
-			if active >= ceiling {
+			machineActiveCount = machineActive(all, l)
+			machineCountKnown = true
+			if machineActiveCount >= ceiling {
 				result = AdmitResult{Outcome: AdmitDeniedCap}
-				logMachineCeiling(pool, l.Project, l.Bead, ceiling, active)
+				logMachineCeiling(pool, l.Project, l.Bead, ceiling, machineActiveCount)
 				return nil
 			}
+		}
+
+		// Kernel pressure is machine-wide and therefore precedes provider
+		// breaker/fair-share and per-bead resource checks. A warning, critical
+		// band, rising swap/compressor trend, open pressure circuit, or
+		// unbounded degraded probe denies admission without claiming a
+		// half-open provider probe.
+		if denial := checkPressure(mem.Host, machineActiveCount, machineCountKnown); denial != nil {
+			result = *denial
+			return nil
 		}
 
 		if c.Adaptive {
@@ -619,20 +674,31 @@ func (s *Store) AcquireEx(l Lease, mem MemInput) (AdmitResult, error) {
 // reservation-aware memory. rc is the decoded machine ledger (may be nil).
 // Returns a denial AdmitResult (naming the kind/holder, or the memory verdict)
 // when a clause refuses, or nil when both pass. Pure lease-file arithmetic —
-// no subprocess (I7) — and every error path fails OPEN (returns nil, i.e.
-// admit) per I6. Callers must already hold the store's flock and have pruned.
+// no subprocess (I7). Legacy input retains I6 fail-open behavior; pressure-
+// aware input fails safe with a typed denial when the lease ledger is
+// unreadable. Callers must already hold the store's flock and have pruned.
 //
 // The candidate's own lease (same project+bead — a re-acquire or a stale
 // reservation) is excluded from both the capacity count and the ramping
 // reservation sum so it is never charged against itself.
 func (s *Store) checkResourcesLocked(rc *ResourcesConfig, cand Lease, mem MemInput, now time.Time) *AdmitResult {
-	memActive := mem.AvailMB > 0 && mem.FloorMB > 0
+	memActive := mem.Host != nil || (mem.AvailMB > 0 && mem.FloorMB > 0)
 	if len(cand.Resources) == 0 && !memActive {
 		return nil // nothing declared and no reading → no machine clause applies
 	}
 	all, err := s.leases() // every pool: machine resources are cross-pool
 	if err != nil {
-		return nil // fail open (I6)
+		if mem.Host != nil {
+			return &AdmitResult{
+				Outcome:     AdmitDeniedPressure,
+				Pressure:    effectivePressure(mem.Host),
+				ProbeOrigin: mem.Host.Sample.Origin,
+				CircuitOpen: mem.Host.CircuitOpen,
+				Detail:      "reservation-ledger-unavailable",
+				LiveRSSMB:   mem.Host.LiveRSSMB,
+			}
+		}
+		return nil // legacy compatibility: no pressure-aware safety state
 	}
 	others := make([]Lease, 0, len(all))
 	for _, l := range all {
@@ -670,10 +736,60 @@ func (s *Store) checkResourcesLocked(rc *ResourcesConfig, cand Lease, mem MemInp
 		}
 	}
 
-	// Clause 2 — reservation-aware memory (L5), only with a real reading:
+	// Clause 2a — pressure-aware reservation budget. Under NORMAL Darwin
+	// pressure, low free/speculative/purgeable page counts are not by
+	// themselves a denial. Instead, project from observed live cohort RSS and
+	// outstanding ramp reservations, charging the larger of the candidate's
+	// declared reservation and its calibrated runtime estimate:
+	//
+	//   liveRSS + rampReservations + candidateEstimate <= total - floor
+	//
+	// Warning/critical/degraded handling already ran in checkPressure.
+	if host := mem.Host; host != nil {
+		reserved := 0
+		for _, l := range others {
+			if l.MemReserveMB > 0 && leaseRamping(l, rc, now) {
+				reserved += l.MemReserveMB
+			}
+		}
+		candidateMB := cand.MemReserveMB
+		if host.ObservedEstimateMB > candidateMB {
+			candidateMB = host.ObservedEstimateMB
+		}
+		totalMB := int(host.Sample.TotalMB())
+		floorMB := mem.FloorMB
+		if floorMB < 0 {
+			floorMB = 0
+		}
+		if totalMB > 0 {
+			budget := totalMB - floorMB
+			if budget < 0 {
+				budget = 0
+			}
+			base := host.LiveRSSMB + reserved
+			if base+candidateMB > budget {
+				return &AdmitResult{
+					Outcome:           AdmitDeniedReservation,
+					CandidateTipped:   base <= budget,
+					Pressure:          effectivePressure(host),
+					ProbeOrigin:       host.Sample.Origin,
+					CircuitOpen:       host.CircuitOpen,
+					Detail:            "reservation-budget",
+					LiveRSSMB:         host.LiveRSSMB,
+					ReservedMB:        reserved,
+					CandidateMemoryMB: candidateMB,
+					MemoryBudgetMB:    budget,
+				}
+			}
+		}
+		return nil
+	}
+
+	// Clause 2b — legacy reservation-aware conservative page floor (L5), only
+	// with a real reading and no HostInput:
 	//   availMB − Σ(ramping leases' MemReserveMB) − candidate MemReserveMB ≥ floorMB
 	// Signed arithmetic avoids uint underflow when reservations exceed avail.
-	if memActive {
+	if mem.AvailMB > 0 && mem.FloorMB > 0 {
 		reserved := 0
 		for _, l := range others {
 			if l.MemReserveMB > 0 && leaseRamping(l, rc, now) {
@@ -693,6 +809,491 @@ func (s *Store) checkResourcesLocked(rc *ResourcesConfig, cand Lease, mem MemInp
 		}
 	}
 	return nil
+}
+
+// checkPressure applies the machine-wide pressure clauses. machineCountKnown
+// is false only when the lease inventory could not be read. That uncertainty
+// fails closed only for degraded pressure samples; fresh/last-good known bands
+// continue to follow their explicit kernel state.
+func checkPressure(host *HostInput, active int, machineCountKnown bool) *AdmitResult {
+	if host == nil {
+		return nil
+	}
+	pressure := effectivePressure(host)
+	denied := func(p sysmem.PressureBand, circuit bool, detail string) *AdmitResult {
+		return &AdmitResult{
+			Outcome:     AdmitDeniedPressure,
+			Pressure:    p,
+			ProbeOrigin: host.Sample.Origin,
+			CircuitOpen: circuit,
+			Detail:      detail,
+			LiveRSSMB:   host.LiveRSSMB,
+		}
+	}
+	if !machineCountKnown {
+		return denied(sysmem.PressureUnknown, host.CircuitOpen, "machine-count-unavailable")
+	}
+	if host.CircuitOpen {
+		return denied(pressure, true, "pressure-circuit-open")
+	}
+	if host.Sample.Origin == sysmem.SampleDegraded || !pressure.Known() {
+		if active >= 1 {
+			return denied(sysmem.PressureUnknown, false, "pressure-probe-degraded")
+		}
+		// With no usable probe, allow exactly the first active agent. Count,
+		// declared-resource, and provider constraints still apply below.
+		return nil
+	}
+	if !host.LiveRSSKnown && active >= 1 {
+		return denied(pressure, false, "live-rss-unavailable")
+	}
+	if pressure == sysmem.PressureCritical || pressure == sysmem.PressureWarning {
+		return denied(pressure, false, "kernel-pressure-"+pressure.String())
+	}
+	if trendWarns(host.Trend, host.Policy) {
+		return denied(sysmem.PressureWarning, false, "swap-compressor-rising")
+	}
+	return nil
+}
+
+func effectivePressure(host *HostInput) sysmem.PressureBand {
+	if host == nil {
+		return sysmem.PressureUnknown
+	}
+	if host.EffectivePressure.Known() {
+		return host.EffectivePressure
+	}
+	return host.Sample.Pressure
+}
+
+func trendWarns(trend sysmem.Trend, policy PressurePolicy) bool {
+	policy = policy.normalized()
+	const mib = int64(1024 * 1024)
+	return trend.SwapBytes >= policy.SwapRiseMB*mib ||
+		trend.CompressedBytes >= policy.CompressorRiseMB*mib
+}
+
+// AdvancePressure is the pure pressure hysteresis/calibration primitive the
+// engine calls after resolving a sysmem sample. It stops admission immediately
+// on warning/critical or a meaningful rising trend; opens the durable circuit
+// only after critical pressure is both repeated and sustained; and requires
+// several normal samples before reporting relief. A degraded probe never
+// mutates a known state because sysmem's bounded last-good resolver owns that
+// transition.
+func AdvancePressure(
+	previous PressureState,
+	sample sysmem.PressureSample,
+	trend sysmem.Trend,
+	now time.Time,
+	policy PressurePolicy,
+) PressureTransition {
+	policy = policy.normalized()
+	now = now.UTC()
+	state := previous
+	if sample.Origin == sysmem.SampleDegraded || !sample.Pressure.Known() {
+		return PressureTransition{
+			State: state, Effective: sysmem.PressureUnknown,
+		}
+	}
+	if sample.Origin == sysmem.SampleLastGood {
+		effective := state.Effective
+		if !effective.Known() {
+			effective = sample.Pressure
+		}
+		return PressureTransition{State: state, Effective: effective}
+	}
+
+	observed := sample.Pressure
+	trendWarning := trendWarns(trend, policy)
+	if observed == sysmem.PressureNormal && trendWarning {
+		observed = sysmem.PressureWarning
+	}
+
+	transition := PressureTransition{State: state, Effective: observed, TrendWarning: trendWarning}
+	switch observed {
+	case sysmem.PressureCritical:
+		if state.CriticalSince == "" {
+			state.CriticalSince = now.Format(time.RFC3339Nano)
+			state.CriticalSamples = 0
+		}
+		if state.CriticalSamples < policy.CriticalSamples {
+			state.CriticalSamples++
+		}
+		state.NormalSamples = 0
+		state.Effective = sysmem.PressureCritical
+		since := parseTime(state.CriticalSince)
+		persistent := state.CriticalSamples >= policy.CriticalSamples &&
+			!since.IsZero() && now.Sub(since) >= policy.CriticalFor
+		if persistent && !state.CircuitOpen {
+			state.CircuitOpen = true
+			transition.OpenCircuit = true
+		}
+	case sysmem.PressureWarning:
+		state.Effective = sysmem.PressureWarning
+		state.NormalSamples = 0
+		state.CriticalSince = ""
+		state.CriticalSamples = 0
+	case sysmem.PressureNormal:
+		state.CriticalSince = ""
+		state.CriticalSamples = 0
+		if state.NormalSamples < policy.RecoverySamples {
+			state.NormalSamples++
+		}
+		if !state.Effective.Known() || state.Effective == sysmem.PressureNormal ||
+			state.NormalSamples >= policy.RecoverySamples {
+			state.Effective = sysmem.PressureNormal
+		}
+		if state.CircuitOpen && state.NormalSamples >= policy.RecoverySamples {
+			transition.ReliefReady = true
+		}
+	}
+	transition.State = state
+	transition.Effective = state.Effective
+	return transition
+}
+
+// AcknowledgePressureRelief closes an open pressure circuit only after the
+// engine has completed its identity-checked graceful relief action. It is a
+// no-op until AdvancePressure has observed the configured normal hysteresis.
+func AcknowledgePressureRelief(state PressureState, policy PressurePolicy) PressureState {
+	policy = policy.normalized()
+	if state.CircuitOpen && state.Effective == sysmem.PressureNormal &&
+		state.NormalSamples >= policy.RecoverySamples {
+		state.CircuitOpen = false
+		state.CriticalSince = ""
+		state.CriticalSamples = 0
+	}
+	return state
+}
+
+const pressureReliefClaimSchema = "koryph.pressure-relief-claim/v1"
+const pressureEpisodeSchema = "koryph.pressure-episode/v1"
+
+func (s *Store) pressureReliefClaimPath() string {
+	return filepath.Join(s.slotsDir, "control", "pressure-relief.json")
+}
+
+func (s *Store) pressureEpisodePath() string {
+	return filepath.Join(s.slotsDir, "control", "pressure-episode.json")
+}
+
+func validatePressureReliefRequest(req PressureReliefRequest) error {
+	target := req.Target
+	if req.OwnerProject == "" || req.OwnerRunID == "" || req.OwnerEnginePID <= 0 ||
+		req.OwnerProcessIdentity == "" {
+		return errors.New("govern: pressure relief owner identity is incomplete")
+	}
+	if target.Project == "" || target.RunID == "" || target.PhaseID == "" ||
+		target.BeadID == "" || target.PID <= 0 || target.ProcessIdentity == "" ||
+		parseTime(target.DispatchedAt).IsZero() {
+		return errors.New("govern: pressure relief target identity is incomplete")
+	}
+	return nil
+}
+
+func (s *Store) writePressureReliefClaim(claim PressureReliefClaim) error {
+	path := s.pressureReliefClaimPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return fsx.WriteJSONAtomicPerm(path, claim, 0o600)
+}
+
+func (s *Store) readPressureReliefClaim() (PressureReliefClaim, bool, error) {
+	var claim PressureReliefClaim
+	err := fsx.ReadJSON(s.pressureReliefClaimPath(), &claim)
+	if errors.Is(err, os.ErrNotExist) {
+		return PressureReliefClaim{}, false, nil
+	}
+	if err != nil {
+		return PressureReliefClaim{}, false, err
+	}
+	if claim.Schema != pressureReliefClaimSchema || claim.ID == "" {
+		return PressureReliefClaim{}, false, errors.New("govern: invalid pressure relief claim")
+	}
+	return claim, true, nil
+}
+
+func (s *Store) writePressureEpisode(episode PressureEpisode) error {
+	path := s.pressureEpisodePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return fsx.WriteJSONAtomicPerm(path, episode, 0o600)
+}
+
+func (s *Store) readPressureEpisode() (PressureEpisode, bool, error) {
+	var episode PressureEpisode
+	err := fsx.ReadJSON(s.pressureEpisodePath(), &episode)
+	if errors.Is(err, os.ErrNotExist) {
+		return PressureEpisode{}, false, nil
+	}
+	if err != nil {
+		return PressureEpisode{}, false, err
+	}
+	if episode.Schema != pressureEpisodeSchema || episode.ID == "" ||
+		parseTime(episode.OpenedAt).IsZero() {
+		return PressureEpisode{}, false, errors.New("govern: invalid pressure episode")
+	}
+	return episode, true, nil
+}
+
+// OpenPressureEpisode publishes the admission circuit independently of target
+// election. The first caller fixes the episode ID; concurrent and later
+// callers observe the same episode until fresh-normal hysteresis CAS-recovers
+// it.
+func (s *Store) OpenPressureEpisode(
+	req PressureEpisodeRequest,
+) (PressureEpisode, bool, error) {
+	if req.Project == "" || req.RunID == "" || req.EnginePID <= 0 {
+		return PressureEpisode{}, false, errors.New("govern: pressure episode source is incomplete")
+	}
+	var result PressureEpisode
+	opened := false
+	err := s.withLock(func() error {
+		existing, exists, err := s.readPressureEpisode()
+		if err != nil {
+			return err
+		}
+		if exists {
+			result = existing
+			return nil
+		}
+		var nonce [16]byte
+		if _, err := cryptorand.Read(nonce[:]); err != nil {
+			return fmt.Errorf("govern: generate pressure episode id: %w", err)
+		}
+		now := s.Now().UTC()
+		result = PressureEpisode{
+			Schema:          pressureEpisodeSchema,
+			ID:              fmt.Sprintf("%d-%d-%x", now.UnixNano(), req.EnginePID, nonce),
+			OpenedByProject: req.Project,
+			OpenedByRunID:   req.RunID,
+			OpenedByPID:     req.EnginePID,
+			OpenedAt:        now.Format(time.RFC3339Nano),
+		}
+		if err := s.writePressureEpisode(result); err != nil {
+			return err
+		}
+		opened = true
+		return nil
+	})
+	return result, opened, err
+}
+
+// PressureEpisodeStatus returns the durable machine-global admission circuit.
+func (s *Store) PressureEpisodeStatus() (PressureEpisode, bool, error) {
+	var episode PressureEpisode
+	var exists bool
+	err := s.withLock(func() error {
+		var err error
+		episode, exists, err = s.readPressureEpisode()
+		return err
+	})
+	return episode, exists, err
+}
+
+// ClaimPressureRelief serializes the one graceful cohort action allowed during
+// a persistent machine-pressure episode. The first caller fixes Target. Other
+// runs observe but cannot act; after an unacknowledged owner's death and a
+// bounded timeout, a new owner may finish only that same target. An
+// acknowledged claim continues blocking new targets until
+// RecoverPressureRelief clears the episode after fresh normal hysteresis.
+func (s *Store) ClaimPressureRelief(
+	req PressureReliefRequest,
+) (PressureReliefClaim, bool, error) {
+	if err := validatePressureReliefRequest(req); err != nil {
+		return PressureReliefClaim{}, false, err
+	}
+	var result PressureReliefClaim
+	acquired := false
+	err := s.withLock(func() error {
+		now := s.Now().UTC()
+		existing, ok, err := s.readPressureReliefClaim()
+		if err != nil {
+			return err
+		}
+		if ok {
+			result = existing
+			if existing.AcknowledgedAt != "" {
+				return nil
+			}
+			if existing.OwnerProject == req.OwnerProject &&
+				existing.OwnerRunID == req.OwnerRunID &&
+				existing.OwnerEnginePID == req.OwnerEnginePID &&
+				existing.OwnerProcessIdentity == req.OwnerProcessIdentity {
+				acquired = true
+				return nil
+			}
+			ttl := s.PressureReliefClaimTTL
+			if ttl <= 0 {
+				ttl = DefaultPressureReliefClaimTTL
+			}
+			claimedAt := parseTime(existing.ClaimedAt)
+			ownerPIDAlive := s.Alive != nil && s.Alive(existing.OwnerEnginePID)
+			ownerIdentityKnown := req.ObservedOwnerProcessIdentity != ""
+			ownerIdentityBound := existing.OwnerProcessIdentity != ""
+			ownerIdentityMatches := ownerIdentityBound && ownerIdentityKnown &&
+				req.ObservedOwnerProcessIdentity == existing.OwnerProcessIdentity
+			// A claim written by an older binary has no process identity. Treat
+			// its live PID as the owner and require the ordinary dead-owner TTL;
+			// an absent legacy field must not masquerade as proof of PID reuse.
+			ownerReused := ownerIdentityBound && ownerIdentityKnown && !ownerIdentityMatches
+			ownerAlive := ownerPIDAlive && !ownerReused
+			if ownerAlive || claimedAt.IsZero() ||
+				(!ownerReused && now.Sub(claimedAt) < ttl) {
+				return nil
+			}
+			// Take over ownership but preserve the original immutable target.
+			existing.OwnerProject = req.OwnerProject
+			existing.OwnerRunID = req.OwnerRunID
+			existing.OwnerEnginePID = req.OwnerEnginePID
+			existing.OwnerProcessIdentity = req.OwnerProcessIdentity
+			existing.ClaimedAt = now.Format(time.RFC3339Nano)
+			if err := s.writePressureReliefClaim(existing); err != nil {
+				return err
+			}
+			result = existing
+			acquired = true
+			return nil
+		}
+
+		var nonce [16]byte
+		if _, err := cryptorand.Read(nonce[:]); err != nil {
+			return fmt.Errorf("govern: generate pressure relief claim id: %w", err)
+		}
+		result = PressureReliefClaim{
+			Schema:               pressureReliefClaimSchema,
+			ID:                   fmt.Sprintf("%d-%d-%x", now.UnixNano(), req.OwnerEnginePID, nonce),
+			OwnerProject:         req.OwnerProject,
+			OwnerRunID:           req.OwnerRunID,
+			OwnerEnginePID:       req.OwnerEnginePID,
+			OwnerProcessIdentity: req.OwnerProcessIdentity,
+			Target:               req.Target,
+			ClaimedAt:            now.Format(time.RFC3339Nano),
+		}
+		if err := s.writePressureReliefClaim(result); err != nil {
+			return err
+		}
+		acquired = true
+		return nil
+	})
+	return result, acquired, err
+}
+
+// AcknowledgePressureReliefClaim records that the claim owner either sent the
+// identity-checked SIGTERM successfully or proved the originally claimed
+// process has exited. The claim remains as the episode tombstone.
+func (s *Store) AcknowledgePressureReliefClaim(
+	claimID, ownerProject, ownerRunID string,
+	ownerEnginePID int,
+	ownerProcessIdentity string,
+) error {
+	return s.withLock(func() error {
+		claim, ok, err := s.readPressureReliefClaim()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("govern: pressure relief claim is missing")
+		}
+		if claim.ID != claimID || claim.OwnerProject != ownerProject ||
+			claim.OwnerRunID != ownerRunID ||
+			claim.OwnerEnginePID != ownerEnginePID ||
+			claim.OwnerProcessIdentity != ownerProcessIdentity {
+			return errors.New("govern: pressure relief claim ownership changed")
+		}
+		if claim.AcknowledgedAt != "" {
+			return nil
+		}
+		claim.AcknowledgedAt = s.Now().UTC().Format(time.RFC3339Nano)
+		return s.writePressureReliefClaim(claim)
+	})
+}
+
+// RecoverPressureRelief compare-and-deletes exactly expectedClaimID, and only
+// after that claim is acknowledged. It never removes an unacknowledged claim
+// or a newer episode installed after the caller's observation.
+func (s *Store) RecoverPressureRelief(expectedClaimID string) (bool, error) {
+	recovered := false
+	err := s.withLock(func() error {
+		claim, exists, err := s.readPressureReliefClaim()
+		if err != nil {
+			return err
+		}
+		if !exists {
+			recovered = true
+			return nil
+		}
+		if expectedClaimID == "" || claim.ID != expectedClaimID ||
+			claim.AcknowledgedAt == "" {
+			return nil
+		}
+		if err := os.Remove(s.pressureReliefClaimPath()); err != nil {
+			return err
+		}
+		recovered = true
+		return nil
+	})
+	return recovered, err
+}
+
+// RecoverPressureEpisode compare-and-deletes the exact episode observed after
+// fresh-normal hysteresis. If a relief claim exists, the same locked operation
+// requires the exact observed claim to be acknowledged before removing either
+// record. A claim appearing after the caller's observation therefore blocks
+// recovery rather than being orphaned or accidentally erased.
+func (s *Store) RecoverPressureEpisode(
+	expectedEpisodeID, expectedClaimID string,
+) (bool, error) {
+	recovered := false
+	err := s.withLock(func() error {
+		episode, episodeExists, err := s.readPressureEpisode()
+		if err != nil {
+			return err
+		}
+		if !episodeExists {
+			recovered = true
+			return nil
+		}
+		if expectedEpisodeID == "" || episode.ID != expectedEpisodeID {
+			return nil
+		}
+		claim, claimExists, err := s.readPressureReliefClaim()
+		if err != nil {
+			return err
+		}
+		if claimExists {
+			if expectedClaimID == "" || claim.ID != expectedClaimID ||
+				claim.AcknowledgedAt == "" {
+				return nil
+			}
+			if err := os.Remove(s.pressureReliefClaimPath()); err != nil {
+				return err
+			}
+		} else if expectedClaimID != "" {
+			return nil
+		}
+		if err := os.Remove(s.pressureEpisodePath()); err != nil {
+			return err
+		}
+		recovered = true
+		return nil
+	})
+	return recovered, err
+}
+
+// PressureReliefStatus returns the optional target-bearing relief claim without
+// mutating it. PressureEpisodeStatus is the independent admission authority.
+func (s *Store) PressureReliefStatus() (PressureReliefClaim, bool, error) {
+	var claim PressureReliefClaim
+	var ok bool
+	err := s.withLock(func() error {
+		var err error
+		claim, ok, err = s.readPressureReliefClaim()
+		return err
+	})
+	return claim, ok, err
 }
 
 // machineActive counts live leases across ALL pools for the machine-wide

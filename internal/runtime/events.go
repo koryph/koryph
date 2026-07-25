@@ -44,6 +44,12 @@ const (
 	EventOpaque EventKind = "opaque"
 )
 
+// TokenSemanticsDisjointV1 identifies usage whose input, cache-read,
+// cache-creation, and output classes are mutually exclusive. Runtime adapters
+// stamp this at the boundary after translating any provider-specific
+// inclusive counters into the normalized classes below.
+const TokenSemanticsDisjointV1 = "disjoint-v1"
+
 // Event is the normalized envelope every Runtime.ParseEvents implementation
 // produces from its native stream format. It is intentionally minimal —
 // covering only the signals the engine actually consumes today, per the
@@ -65,17 +71,27 @@ type Event struct {
 	HasCost bool    `json:"has_cost,omitempty"`
 
 	// InputTokens/OutputTokens/CacheReadTokens/CacheCreationTokens are valid
-	// only when Kind==EventResult && HasUsage — the per-attempt token
-	// composition off a Claude stream-json "result" line's usage block
-	// (koryph-77r.1, design docs/designs/2026-07-token-economy.md §3 L1).
+	// only when Kind==EventResult && HasUsage. InputTokens is fresh input:
+	// it excludes cache reads and cache creation, so all four classes are
+	// disjoint. TokenSemantics identifies the normalization contract.
 	// HasUsage exists for the same reason HasCost does: a result line with no
 	// usage block must round-trip as "unknown", not silently collapse into an
 	// all-zero reading indistinguishable from a genuinely token-free turn.
-	InputTokens         int64 `json:"input_tokens,omitempty"`
-	OutputTokens        int64 `json:"output_tokens,omitempty"`
-	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
-	HasUsage            bool  `json:"has_usage,omitempty"`
+	InputTokens         int64  `json:"input_tokens,omitempty"`
+	OutputTokens        int64  `json:"output_tokens,omitempty"`
+	CacheReadTokens     int64  `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens,omitempty"`
+	HasUsage            bool   `json:"has_usage,omitempty"`
+	TokenSemantics      string `json:"token_semantics,omitempty"`
+
+	// ProviderTotalInputTokens preserves a provider's inclusive input counter
+	// when it exposes one. It is audit evidence, not a fifth token class, and
+	// must never be added to normalized totals. Codex reports total input
+	// including cached input, so its adapter records that raw total here and
+	// puts only total-minus-cached in InputTokens. Claude has no equivalent
+	// single inclusive counter and leaves HasProviderTotalInput false.
+	ProviderTotalInputTokens int64 `json:"provider_total_input_tokens,omitempty"`
+	HasProviderTotalInput    bool  `json:"has_provider_total_input,omitempty"`
 
 	// NumTurns is the cumulative agent-turn count a terminal "result" line
 	// reports (a Claude stream-json result line's "num_turns", koryph-840):

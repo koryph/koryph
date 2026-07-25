@@ -648,7 +648,11 @@ func TestParseResultUsage(t *testing.T) {
 			t.Fatal(err)
 		}
 		usage, ok := ParseResultUsage(path)
-		want := TokenUsage{InputTokens: 3861, OutputTokens: 17, CacheReadTokens: 15837, CacheCreationTokens: 3451}
+		want := TokenUsage{
+			InputTokens: 3861, OutputTokens: 17,
+			CacheReadTokens: 15837, CacheCreationTokens: 3451,
+			TokenSemantics: "disjoint-v1",
+		}
 		if !ok || usage != want {
 			t.Errorf("ParseResultUsage = %+v, %v; want %+v, true", usage, ok, want)
 		}
@@ -672,7 +676,11 @@ func TestParseResultUsage(t *testing.T) {
 			t.Fatal(err)
 		}
 		usage, ok := ParseResultUsage(path)
-		want := TokenUsage{InputTokens: 100, OutputTokens: 5, CacheReadTokens: 50, CacheCreationTokens: 10}
+		want := TokenUsage{
+			InputTokens: 100, OutputTokens: 5,
+			CacheReadTokens: 50, CacheCreationTokens: 10,
+			TokenSemantics: "disjoint-v1",
+		}
 		if !ok || usage != want {
 			t.Errorf("ParseResultUsage = %+v, %v; want %+v, true", usage, ok, want)
 		}

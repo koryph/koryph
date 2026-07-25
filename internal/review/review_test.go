@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/koryph/koryph/internal/phasecontrol"
 )
 
 // gitIn runs git in dir, failing the test on error.
@@ -23,6 +25,17 @@ func gitIn(t *testing.T, dir string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // reviewRepo builds a repo with main + an agent branch carrying one change.
@@ -69,11 +82,30 @@ func baseOpts(t *testing.T, repo, claudeBin string) Opts {
 		Worktree:  repo,
 		Branch:    "agent/x1",
 		Base:      "main",
-		Persona:   "security-reviewer",
-		Model:     "opus",
 		OutPath:   filepath.Join(t.TempDir(), "review.json"),
 		ClaudeBin: claudeBin,
 	}
+}
+
+func evidenceContract(criteria ...string) Contract {
+	contract := Contract{}
+	for i, text := range criteria {
+		id := "AC" + strconv.Itoa(i+1)
+		if i > 0 {
+			contract.AcceptanceCriteria += "\n"
+		}
+		contract.AcceptanceCriteria += id + ": " + text
+		contract.CompletionEvidence.Acceptance = append(
+			contract.CompletionEvidence.Acceptance,
+			phasecontrol.AcceptanceEvidence{
+				CriterionID: id,
+				References: []phasecontrol.EvidenceReference{{
+					Kind: "file", Path: "feature.go", Digest: "sha256:" + strings.Repeat(strconv.Itoa(i+1), 64),
+				}},
+			},
+		)
+	}
+	return contract
 }
 
 func TestReviewBlocking(t *testing.T) {
@@ -96,13 +128,17 @@ func TestReviewBlocking(t *testing.T) {
 		t.Errorf("Findings = %+v", v.Findings)
 	}
 
-	// Raw verdict persisted to OutPath.
+	// The normalized verdict is wrapped in an authenticated cumulative artifact.
 	raw, err := os.ReadFile(o.OutPath)
 	if err != nil {
 		t.Fatalf("review.json: %v", err)
 	}
-	if !strings.Contains(string(raw), `"blocking":true`) {
-		t.Errorf("review.json = %q", raw)
+	var artifact Artifact
+	if err := json.Unmarshal(raw, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	if !artifact.Verdict.Blocking || len(artifact.History) != 1 {
+		t.Errorf("review artifact = %+v", artifact)
 	}
 
 	// The prompt carried the diff context and the strict-JSON contract.
@@ -144,12 +180,16 @@ func TestReviewContractOmissionFailsClosed(t *testing.T) {
 	capture := filepath.Join(t.TempDir(), "stdin.txt")
 	t.Setenv("KORYPH_TEST_REVIEW_STDIN", capture)
 	o := baseOpts(t, repo, fakeClaude(t, envelope))
-	o.Contract = Contract{
-		ID: "bd-42", Title: "Implement the engine behavior",
-		Description:        "Change internal/engine, not an unrelated subsystem.",
-		AcceptanceCriteria: "- Engine enforces the behavior\n- Regression test passes",
-		Labels:             []string{"fp:go:engine"}, Runtime: "codex", CompletionState: "done",
-	}
+	o.Contract = evidenceContract(
+		"Engine enforces the behavior",
+		"Regression test passes",
+	)
+	o.Contract.ID = "bd-42"
+	o.Contract.Title = "Implement the engine behavior"
+	o.Contract.Description = "Change internal/engine, not an unrelated subsystem."
+	o.Contract.Labels = []string{"fp:go:engine"}
+	o.Contract.Runtime = "codex"
+	o.Contract.CompletionState = "done"
 
 	v := Review(context.Background(), o)
 	if v.Degraded {
@@ -170,13 +210,17 @@ func TestReviewContractOmissionFailsClosed(t *testing.T) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
+	if strings.Contains(string(prompt), "AC1: AC1:") ||
+		!strings.Contains(string(prompt), "Authenticated worker evidence") {
+		t.Errorf("prompt did not preserve canonical criteria/evidence:\n%s", prompt)
+	}
 }
 
 func TestReviewUnsatisfiedCriterionIsBlocking(t *testing.T) {
 	repo := reviewRepo(t)
 	envelope := `{"type":"result","result":"{\"blocking\":false,\"criteria\":[{\"id\":\"AC1\",\"status\":\"satisfied\",\"evidence\":\"feature.go\"},{\"id\":\"AC2\",\"status\":\"unsatisfied\",\"evidence\":\"no regression test exists\"}],\"findings\":[]}"}`
 	o := baseOpts(t, repo, fakeClaude(t, envelope))
-	o.Contract = Contract{AcceptanceCriteria: "- Feature exists\n- Regression test exists"}
+	o.Contract = evidenceContract("Feature exists", "Regression test exists")
 
 	v := Review(context.Background(), o)
 	if v.Degraded {
@@ -184,6 +228,214 @@ func TestReviewUnsatisfiedCriterionIsBlocking(t *testing.T) {
 	}
 	if !v.Blocking {
 		t.Fatal("unsatisfied acceptance criterion did not force blocking")
+	}
+}
+
+func TestReviewRejectsNonCanonicalCriteriaBeforeSpawn(t *testing.T) {
+	repo := reviewRepo(t)
+	capture := filepath.Join(t.TempDir(), "stdin.txt")
+	t.Setenv("KORYPH_TEST_REVIEW_STDIN", capture)
+	o := baseOpts(t, repo, fakeClaude(t,
+		`{"type":"result","result":"{\"blocking\":false,\"findings\":[]}"}`))
+	o.Contract.AcceptanceCriteria = "- legacy unnumbered criterion"
+
+	v := Review(context.Background(), o)
+	if !v.Degraded || !strings.Contains(v.Reason, "canonical ID AC1") {
+		t.Fatalf("non-canonical criteria verdict = %+v", v)
+	}
+	if _, err := os.Stat(capture); !os.IsNotExist(err) {
+		t.Fatalf("reviewer spawned before contract validation: %v", err)
+	}
+}
+
+func TestReviewRejectsIncompleteCompletionEvidenceBeforeSpawn(t *testing.T) {
+	repo := reviewRepo(t)
+	capture := filepath.Join(t.TempDir(), "stdin.txt")
+	t.Setenv("KORYPH_TEST_REVIEW_STDIN", capture)
+	o := baseOpts(t, repo, fakeClaude(t,
+		`{"type":"result","result":"{\"blocking\":false,\"findings\":[]}"}`))
+	o.Contract = evidenceContract("feature exists", "regression exists")
+	o.Contract.CompletionEvidence.Acceptance = o.Contract.CompletionEvidence.Acceptance[:1]
+
+	v := Review(context.Background(), o)
+	if !v.Degraded || !strings.Contains(v.Reason, "omits criterion AC2") {
+		t.Fatalf("incomplete worker evidence verdict = %+v", v)
+	}
+	if _, err := os.Stat(capture); !os.IsNotExist(err) {
+		t.Fatalf("reviewer spawned before evidence validation: %v", err)
+	}
+}
+
+func TestSecurityReviewIsTargetedAndDoesNotRepeatAcceptanceAudit(t *testing.T) {
+	repo := reviewRepo(t)
+	capture := filepath.Join(t.TempDir(), "stdin.txt")
+	t.Setenv("KORYPH_TEST_REVIEW_STDIN", capture)
+	o := baseOpts(t, repo, fakeClaude(t,
+		`{"type":"result","result":"{\"blocking\":false,\"findings\":[]}"}`))
+	o.Security = true
+	// Security review deliberately ignores this invalid general-review
+	// contract: the exact gated diff and security scope are its inputs.
+	o.Contract = Contract{
+		ID: "bd-security", Title: "security-sensitive change",
+		Description:        "Touches an authentication boundary.",
+		AcceptanceCriteria: "- deliberately legacy and missing evidence",
+	}
+
+	v := Review(context.Background(), o)
+	if v.Degraded || v.Blocking {
+		t.Fatalf("targeted security verdict = %+v", v)
+	}
+	prompt, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"### Acceptance criteria", `"criteria":`, "Authenticated worker evidence"} {
+		if strings.Contains(string(prompt), unwanted) {
+			t.Errorf("security prompt repeated general acceptance audit %q:\n%s", unwanted, prompt)
+		}
+	}
+	if !strings.Contains(string(prompt), "Do not repeat the acceptance audit") {
+		t.Errorf("security prompt lacks role boundary:\n%s", prompt)
+	}
+}
+
+func TestReviewerVerdictSchemaRejectsUnknownFieldsAndSeverities(t *testing.T) {
+	tests := []struct {
+		name     string
+		security bool
+		result   string
+		want     string
+	}{
+		{
+			name:   "general critical severity",
+			result: `{"blocking":true,"findings":[{"severity":"critical","summary":"unsafe"}]}`,
+			want:   `invalid severity "critical"`,
+		},
+		{
+			name:     "security high severity",
+			security: true,
+			result:   `{"blocking":true,"findings":[{"severity":"high","summary":"unsafe"}]}`,
+			want:     `invalid severity "high"`,
+		},
+		{
+			name:   "severity aliases are not normalized",
+			result: `{"blocking":true,"findings":[{"severity":"Major","summary":"unsafe"}]}`,
+			want:   `invalid severity "Major"`,
+		},
+		{
+			name:     "security general field",
+			security: true,
+			result:   `{"blocking":false,"criteria":[],"findings":[]}`,
+			want:     `field "criteria" is not allowed in the security review schema`,
+		},
+		{
+			name:   "orchestrator field injection",
+			result: `{"blocking":false,"degraded":false,"findings":[]}`,
+			want:   `field "degraded" is not allowed`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := reviewRepo(t)
+			envelopeRaw, err := json.Marshal(map[string]any{
+				"type": "result", "result": tc.result,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := baseOpts(t, repo, fakeClaude(t, string(envelopeRaw)))
+			o.Security = tc.security
+			o.Attempts = 1
+			got := Review(context.Background(), o)
+			if !got.Degraded || !strings.Contains(got.Reason, tc.want) {
+				t.Fatalf("verdict = %+v, want degraded reason containing %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMajorFindingNormalizesBlockingAndEntersHistory(t *testing.T) {
+	repo := reviewRepo(t)
+	envelope := `{"type":"result","result":"{\"blocking\":false,\"findings\":[{\"severity\":\"major\",\"file\":\"feature.go\",\"summary\":\"regression\"}]}"}`
+	v := Review(context.Background(), baseOpts(t, repo, fakeClaude(t, envelope)))
+	if v.Degraded || !v.Blocking || len(v.BlockingHistory) != 1 {
+		t.Fatalf("major finding verdict = %+v", v)
+	}
+}
+
+func TestReviewPinsExactGatedCandidate(t *testing.T) {
+	repo := reviewRepo(t)
+	envelope := `{"type":"result","result":"{\"blocking\":false,\"findings\":[]}"}`
+	o := baseOpts(t, repo, fakeClaude(t, envelope))
+	o.CandidateSHA = gitOutput(t, repo, "rev-parse", "agent/x1")
+	o.BaseSHA = gitOutput(t, repo, "rev-parse", "main")
+
+	gitIn(t, repo, "branch", "-f", "agent/x1", "main")
+	v := Review(context.Background(), o)
+	if !v.Degraded || !strings.Contains(v.Reason, "gated candidate moved") {
+		t.Fatalf("moved gated candidate verdict = %+v", v)
+	}
+}
+
+func TestReviewPinsWorktreeHEADAndCleanliness(t *testing.T) {
+	envelope := `{"type":"result","result":"{\"blocking\":false,\"findings\":[]}"}`
+
+	t.Run("wrong HEAD", func(t *testing.T) {
+		repo := reviewRepo(t)
+		o := baseOpts(t, repo, fakeClaude(t, envelope))
+		o.CandidateSHA = gitOutput(t, repo, "rev-parse", "agent/x1")
+		o.BaseSHA = gitOutput(t, repo, "rev-parse", "main")
+		// The branch still names CandidateSHA, but the reviewer would read files
+		// from main unless the package checks the actual worktree HEAD.
+		v := Review(context.Background(), o)
+		if !v.Degraded || !strings.Contains(v.Reason, "worktree HEAD is not the gated candidate") {
+			t.Fatalf("wrong worktree HEAD verdict = %+v", v)
+		}
+	})
+
+	t.Run("dirty candidate", func(t *testing.T) {
+		repo := reviewRepo(t)
+		gitIn(t, repo, "checkout", "agent/x1")
+		o := baseOpts(t, repo, fakeClaude(t, envelope))
+		o.CandidateSHA = gitOutput(t, repo, "rev-parse", "agent/x1")
+		o.BaseSHA = gitOutput(t, repo, "rev-parse", "main")
+		if err := os.WriteFile(filepath.Join(repo, "untrusted.txt"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		v := Review(context.Background(), o)
+		if !v.Degraded || !strings.Contains(v.Reason, "worktree is not clean") {
+			t.Fatalf("dirty worktree verdict = %+v", v)
+		}
+	})
+}
+
+func TestRepairReviewRequiresEveryPriorBlockingFinding(t *testing.T) {
+	repo := reviewRepo(t)
+	priorPath := filepath.Join(t.TempDir(), "prior.json")
+	prior := `{"blocking":true,"findings":[{"severity":"blocking","file":"feature.go","line":1,"summary":"missing guard"}]}`
+	if err := os.WriteFile(priorPath, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := `{"type":"result","result":"{\"blocking\":false,\"findings\":[]}"}`
+	o := baseOpts(t, repo, fakeClaude(t, missing))
+	o.PriorVerdictPath = priorPath
+	v := Review(context.Background(), o)
+	priorID, _ := findingIdentity(Finding{
+		Severity: "blocking", File: "feature.go", Line: 1, Summary: "missing guard",
+	})
+	if v.Degraded || !v.Blocking ||
+		!strings.Contains(v.Findings[len(v.Findings)-1].Summary, priorID) {
+		t.Fatalf("omitted prior finding verdict = %+v", v)
+	}
+
+	resolved := `{"type":"result","result":"{\"blocking\":false,\"prior_findings\":[{\"id\":\"` +
+		priorID + `\",\"status\":\"resolved\",\"evidence\":\"feature.go:1 plus TestGuard\"}],\"findings\":[]}"}`
+	o = baseOpts(t, repo, fakeClaude(t, resolved))
+	o.PriorVerdictPath = priorPath
+	v = Review(context.Background(), o)
+	if v.Degraded || v.Blocking {
+		t.Fatalf("resolved prior finding verdict = %+v", v)
 	}
 }
 
@@ -506,6 +758,38 @@ func TestReviewEnvelopeSkippedWithoutOutPath(t *testing.T) {
 	}
 	if v.Blocking {
 		t.Errorf("Blocking = true, want false")
+	}
+}
+
+func TestPrepareReviewScratchUsesPrivateArtifactSibling(t *testing.T) {
+	artifactDir := filepath.Join(t.TempDir(), "evidence")
+	scratch, err := prepareReviewScratch(Opts{ArtifactDir: artifactDir})
+	if err != nil {
+		t.Fatalf("prepareReviewScratch: %v", err)
+	}
+	if want := filepath.Join(artifactDir, ".runtime-scratch"); scratch != want {
+		t.Fatalf("scratch = %q, want %q", scratch, want)
+	}
+	info, err := os.Lstat(scratch)
+	if err != nil {
+		t.Fatalf("lstat scratch: %v", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		t.Fatalf("scratch mode = %v, want private real directory", info.Mode())
+	}
+}
+
+func TestPrepareReviewScratchRejectsSymlinkLeaf(t *testing.T) {
+	artifactDir := filepath.Join(t.TempDir(), "evidence")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(artifactDir, ".runtime-scratch")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareReviewScratch(Opts{ArtifactDir: artifactDir}); err == nil {
+		t.Fatal("prepareReviewScratch accepted symlink scratch leaf")
 	}
 }
 

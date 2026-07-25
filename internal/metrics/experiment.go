@@ -79,6 +79,11 @@ type ExperimentArm struct {
 type ProjectExperiment struct {
 	ProjectID string `json:"project_id"`
 	Account   string `json:"account"`
+	// TokenSemantics identifies the only token-counter semantics included in
+	// both arms. Older/unknown runs are reported and excluded so an apparent
+	// compression win cannot be manufactured by mixing incompatible counters.
+	TokenSemantics               string         `json:"token_semantics"`
+	ExcludedRunsByTokenSemantics map[string]int `json:"excluded_runs_by_token_semantics,omitempty"`
 	// ProxyID is the project's CURRENTLY configured agent_proxy identity
 	// (registry.AgentProxy.ID()) — the proxied arm's identity. A bead
 	// recorded under a since-rotated pin is not folded into either arm below
@@ -152,12 +157,14 @@ func CollectExperiment(store *registry.Store, projectID string) (*ExperimentRepo
 // latest run's slot carries the full cumulative total, so later runs replace
 // rather than add).
 type beadArmAgg struct {
-	tier            string
-	in, out, cr, cc int64
-	costUSD         float64
-	requeued        bool
-	blockingReview  bool
-	gateFailures    int
+	tier             string
+	in, out, cr, cc  int64
+	providerTotal    int64
+	hasProviderTotal bool
+	costUSD          float64
+	requeued         bool
+	blockingReview   bool
+	gateFailures     int
 }
 
 // collectProjectExperiment aggregates one project's ledger history into its
@@ -172,11 +179,13 @@ type beadArmAgg struct {
 // blend populations calibKey deliberately keeps disjoint.
 func collectProjectExperiment(rec *registry.Record) (ProjectExperiment, error) {
 	pe := ProjectExperiment{
-		ProjectID:            rec.ProjectID,
-		Account:              rec.AccountProfile,
-		ProxyID:              rec.AgentProxy.ID(),
-		HoldoutFraction:      rec.AgentProxy.EffectiveHoldout(),
-		CalibrationSlopeSeam: calibrationSlopeSeamNote,
+		ProjectID:                    rec.ProjectID,
+		Account:                      rec.AccountProfile,
+		TokenSemantics:               ledger.CurrentTokenSemantics,
+		ExcludedRunsByTokenSemantics: map[string]int{},
+		ProxyID:                      rec.AgentProxy.ID(),
+		HoldoutFraction:              rec.AgentProxy.EffectiveHoldout(),
+		CalibrationSlopeSeam:         calibrationSlopeSeamNote,
 	}
 
 	proxiedBeads := map[string]*beadArmAgg{}
@@ -217,6 +226,11 @@ func collectProjectExperiment(rec *registry.Record) (ProjectExperiment, error) {
 		if err := fsx.ReadJSON(ledgerPath, &run); err != nil {
 			continue
 		}
+		semantics := ledger.EffectiveTokenSemantics(&run)
+		if semantics != ledger.CurrentTokenSemantics {
+			pe.ExcludedRunsByTokenSemantics[semantics]++
+			continue
+		}
 		for _, sl := range run.Slots {
 			if sl == nil || !sl.ProxyConfigured {
 				continue
@@ -240,6 +254,8 @@ func collectProjectExperiment(rec *registry.Record) (ProjectExperiment, error) {
 			agg.out = sl.OutputTokens
 			agg.cr = sl.CacheReadTokens
 			agg.cc = sl.CacheCreationTokens
+			agg.providerTotal = sl.ProviderTotalInputTokens
+			agg.hasProviderTotal = sl.HasProviderTotalInput
 			agg.costUSD = sl.CostUSD
 			agg.requeued = sl.GateRequeues > 0 || sl.MergeRequeues > 0 ||
 				sl.RateLimitRequeues > 0 || sl.BudgetKillRequeues > 0 || sl.ConflictRequeues > 0
@@ -272,13 +288,16 @@ func finalizeArm(name string, beads map[string]*beadArmAgg) ExperimentArm {
 	if len(beads) == 0 {
 		return arm
 	}
-	var totalIn, totalOut, totalCR, totalCC int64
+	var totalIn, totalOut, totalCR, totalCC, totalProvider int64
+	var hasTotalProvider bool
 	var requeuedCount, blockingCount int
 	for _, agg := range beads {
 		totalIn += agg.in
 		totalOut += agg.out
 		totalCR += agg.cr
 		totalCC += agg.cc
+		totalProvider += agg.providerTotal
+		hasTotalProvider = hasTotalProvider || agg.hasProviderTotal
 		arm.CostUSD += agg.costUSD
 		arm.GateFailures += agg.gateFailures
 		if agg.requeued {
@@ -292,11 +311,13 @@ func finalizeArm(name string, beads map[string]*beadArmAgg) ExperimentArm {
 		ts := arm.ByTier[tier]
 		ts.Tier = tier
 		ts.Slots++
-		ts.Composition = makeComposition(
+		ts.Composition = makeAuditedComposition(
 			ts.Composition.Input+agg.in,
 			ts.Composition.Output+agg.out,
 			ts.Composition.CacheRead+agg.cr,
 			ts.Composition.CacheCreation+agg.cc,
+			ts.Composition.ProviderTotalInput+agg.providerTotal,
+			ts.Composition.HasProviderTotalInput || agg.hasProviderTotal,
 		)
 		arm.ByTier[tier] = ts
 	}
@@ -308,7 +329,9 @@ func finalizeArm(name string, beads map[string]*beadArmAgg) ExperimentArm {
 	}
 
 	arm.Beads = len(beads)
-	arm.Composition = makeComposition(totalIn, totalOut, totalCR, totalCC)
+	arm.Composition = makeAuditedComposition(
+		totalIn, totalOut, totalCR, totalCC, totalProvider, hasTotalProvider,
+	)
 	arm.MeanTokensPerBead = arm.Composition.Total / int64(arm.Beads)
 	arm.MeanCostPerBead = arm.CostUSD / float64(arm.Beads)
 	arm.RequeueRate = float64(requeuedCount) / float64(arm.Beads)
@@ -354,6 +377,10 @@ func RenderExperiment(r *ExperimentReport, w io.Writer) {
 	for _, p := range r.Projects {
 		fmt.Fprintf(w, "project: %s  account: %s  proxy: %s  holdout: %.0f%%\n",
 			p.ProjectID, p.Account, p.ProxyID, p.HoldoutFraction*100)
+		fmt.Fprintf(w, "  token semantics: %s\n", p.TokenSemantics)
+		for _, semantics := range sortedCountKeys(p.ExcludedRunsByTokenSemantics) {
+			fmt.Fprintf(w, "  excluded %s runs: %d\n", semantics, p.ExcludedRunsByTokenSemantics[semantics])
+		}
 
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "  ARM\tBEADS\tTOKENS/BEAD\tCACHE_HIT\tREQUEUE_RATE\tBLOCKING_REVIEW_RATE\tGATE_FAILURES\tCOST\tCOST/BEAD\tEST_BIAS(N)")

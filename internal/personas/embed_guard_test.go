@@ -26,6 +26,7 @@ import (
 var dispatchDefaultPersonas = []string{
 	"koryph-implementer",
 	"koryph-architect",
+	"koryph-reviewer",
 	"koryph-security-reviewer",
 	"koryph-test-engineer",
 	"koryph-debugger",
@@ -37,6 +38,53 @@ var dispatchDefaultPersonas = []string{
 	"koryph-migration-analyst",
 	"koryph-quota-analyst",
 	"koryph-recovery-analyst",
+}
+
+func TestGeneralReviewerIsFocusedStandardTier(t *testing.T) {
+	data, err := agents.FS.ReadFile("koryph-reviewer.md")
+	if err != nil {
+		t.Fatalf("read koryph-reviewer.md: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"tier: standard",
+		"effort: high",
+		"exact gated candidate",
+		"canonical acceptance ID",
+		"worker evidence as a lead",
+		"prior stable finding ID",
+		"do not repeat broad validation",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("koryph-reviewer.md missing focused-review contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Bash(make gate",
+		"Bash(go test ./...",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("koryph-reviewer.md grants redundant full-gate command %q", forbidden)
+		}
+	}
+}
+
+func TestReviewPersonasUseStrictSharedSeverityVocabulary(t *testing.T) {
+	for _, name := range []string{"koryph-reviewer.md", "koryph-security-reviewer.md"} {
+		data, err := agents.FS.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(data)
+		for _, want := range []string{
+			"strict JSON",
+			"`blocking`, `major`, or",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s missing verdict contract %q", name, want)
+			}
+		}
+	}
 }
 
 func TestDispatchDefaultPersonasAreEmbedded(t *testing.T) {
@@ -52,12 +100,13 @@ func TestPlanningPersonasRequireCanonicalGateEvidence(t *testing.T) {
 	for name, wants := range map[string][]string{
 		"koryph-architect.md": {
 			"decision ledger",
-			"koryph plan --epic <id> --strict --json",
+			"schema-versioned pre-file graph evidence",
+			"post-file graph",
 		},
 		"koryph-plan-scorer.md": {
-			"canonical pre-file graph snapshot",
-			"Semantic contradictions",
-			"strict --json",
+			"canonical schema-versioned pre-file graph",
+			"contradiction count",
+			"strict-gate",
 		},
 	} {
 		data, err := agents.FS.ReadFile(name)
@@ -67,6 +116,35 @@ func TestPlanningPersonasRequireCanonicalGateEvidence(t *testing.T) {
 		for _, want := range wants {
 			if !strings.Contains(string(data), want) {
 				t.Errorf("%s missing quality-gate contract %q", name, want)
+			}
+		}
+	}
+}
+
+func TestCanonicalPersonasOwnOnlyRoleClauses(t *testing.T) {
+	for _, persona := range dispatchDefaultPersonas {
+		name := persona + ".md"
+		data, err := agents.FS.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(data)
+		if got := strings.Count(text, "<!-- koryph-clause:role/v1 -->"); got != 1 {
+			t.Errorf("%s role clause count = %d, want 1", name, got)
+		}
+		for _, forbidden := range []string{
+			"<!-- koryph-clause:repository/",
+			"<!-- koryph-clause:engine/",
+			"<!-- koryph-clause:task/",
+			"make gate",
+			"make gate-agent",
+			"git checkout main",
+			"INBOX.md",
+			"refactor-core",
+			"model:<id>",
+		} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("%s contains foreign or stale instruction %q", name, forbidden)
 			}
 		}
 	}

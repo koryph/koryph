@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/merge"
 	"github.com/koryph/koryph/internal/modelroute"
+	"github.com/koryph/koryph/internal/phasecontrol"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
 	"github.com/koryph/koryph/internal/registry"
@@ -226,6 +228,7 @@ func (r *runner) pollPass(ctx context.Context, probeProgress bool) {
 	// "one snapshot, many trees" — koryph process-metrics). nil on an
 	// unsupported platform or probe failure, in which case sampling is skipped.
 	procs := r.sampleProcTable(ctx)
+	r.pollPressureControl(procs)
 	for _, id := range r.activePhaseIDs() {
 		sl := r.run.Slots[id]
 		if sl == nil || ledger.Terminal(sl.Status) {
@@ -710,6 +713,9 @@ func parseRuntimeSignals(rt runtime.Runtime, path string) streamSignals {
 				out.tokens = dispatch.TokenUsage{
 					InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens,
 					CacheReadTokens: ev.CacheReadTokens, CacheCreationTokens: ev.CacheCreationTokens,
+					TokenSemantics:           ev.TokenSemantics,
+					ProviderTotalInputTokens: ev.ProviderTotalInputTokens,
+					HasProviderTotalInput:    ev.HasProviderTotalInput,
 				}
 				out.hasTokens = true
 			}
@@ -806,6 +812,14 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 	// totalAttemptTokens' doc for why the distinction matters.
 	var attemptUsage dispatch.TokenUsage
 	if usage, ok := signals.usage(); ok {
+		if usage.TokenSemantics != "" &&
+			usage.TokenSemantics != runtime.TokenSemanticsDisjointV1 &&
+			r.hardStopEnabled(SafetyTripwireTokenSemantics) {
+			note := fmt.Sprintf("bead %s reported token semantics %q", sl.PhaseID, usage.TokenSemantics)
+			r.dispatchCircuitReason = note
+			r.emitSafetyTripwire(SafetyTripwireTokenSemantics, sl.PhaseID, note)
+			return
+		}
 		attemptUsage = usage
 		r.applyTokenUsage(sl.PhaseID, usage)
 	} else if tc, ok := quota.SessionTokens(r.profile.ConfigDir, sl.SessionID); ok {
@@ -814,6 +828,7 @@ func (r *runner) completeSlot(ctx context.Context, sl *ledger.Slot) {
 			OutputTokens:        tc.OutputTokens,
 			CacheReadTokens:     tc.CacheReadTokens,
 			CacheCreationTokens: tc.CacheCreationTokens,
+			TokenSemantics:      runtime.TokenSemanticsDisjointV1,
 		}
 		r.applyTokenUsage(sl.PhaseID, attemptUsage)
 	} else {
@@ -970,6 +985,8 @@ func (r *runner) applyTokenUsage(beadID string, u dispatch.TokenUsage) {
 		s.OutputTokens += u.OutputTokens
 		s.CacheReadTokens += u.CacheReadTokens
 		s.CacheCreationTokens += u.CacheCreationTokens
+		s.ProviderTotalInputTokens += u.ProviderTotalInputTokens
+		s.HasProviderTotalInput = s.HasProviderTotalInput || u.HasProviderTotalInput
 	})
 	logBeadTokens(beadID, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens)
 	r.checkCacheRatioTripwire(beadID, u)
@@ -1064,13 +1081,21 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
-		issue:           r.issueFor(ctx, sl),
-		epicID:          sl.EpicID,
-		attempt:         sl.Attempts, // unchanged: environmental failure, not a bead attempt
-		resumeSHA:       r.branchHead(ctx, sl.Branch),
-		resumeSessionID: resumeSession,
-		reviewIters:     sl.ReviewIters,
-		note:            "rate-limited requeue",
+		issue:                        r.issueFor(ctx, sl),
+		epicID:                       sl.EpicID,
+		attempt:                      sl.Attempts, // unchanged: environmental failure, not a bead attempt
+		resumeSHA:                    r.branchHead(ctx, sl.Branch),
+		resumeSessionID:              resumeSession,
+		reviewIters:                  sl.ReviewIters,
+		generalReviewArtifactPath:    sl.GeneralReviewArtifactPath,
+		generalReviewArtifactDigest:  sl.GeneralReviewArtifactDigest,
+		generalReviewCandidateSHA:    sl.GeneralReviewCandidateSHA,
+		generalReviewBaseSHA:         sl.GeneralReviewBaseSHA,
+		securityReviewArtifactPath:   sl.SecurityReviewArtifactPath,
+		securityReviewArtifactDigest: sl.SecurityReviewArtifactDigest,
+		securityReviewCandidateSHA:   sl.SecurityReviewCandidateSHA,
+		securityReviewBaseSHA:        sl.SecurityReviewBaseSHA,
+		note:                         "rate-limited requeue",
 		// Its own budget increments; every other spent budget carries forward
 		// unchanged (koryph-qf6.1 — see requeueSlot's counter comment).
 		rateLimitRequeues:     requeues,
@@ -1084,10 +1109,11 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		// Freeze the model resolution from the first attempt (koryph-ehx) —
 		// see requeueSlot's identical comment. A rate-limit requeue is the
 		// same attempt continuing, so it must re-run the same model.
-		frozenModel:    sl.Model,
-		frozenPersona:  sl.Agent,
-		frozenModelWhy: sl.ModelWhy,
-		frozenEffort:   sl.Effort,
+		frozenModel:     sl.Model,
+		frozenModelTier: sl.ModelTier,
+		frozenPersona:   sl.Agent,
+		frozenModelWhy:  sl.ModelWhy,
+		frozenEffort:    sl.Effort,
 		// Carry the persisted footprint forward (koryph-2im.3): a requeue is
 		// the SAME bead attempt continuing, not a relabeled re-evaluation, so
 		// in-flight gating must stay exact across it rather than falling back
@@ -1108,10 +1134,13 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 		// Carry accumulated token composition forward too (koryph-77r.1) —
 		// same reasoning as accumulatedCostUSD.
 		accumulatedTokens: dispatch.TokenUsage{
-			InputTokens:         sl.InputTokens,
-			OutputTokens:        sl.OutputTokens,
-			CacheReadTokens:     sl.CacheReadTokens,
-			CacheCreationTokens: sl.CacheCreationTokens,
+			InputTokens:              sl.InputTokens,
+			OutputTokens:             sl.OutputTokens,
+			CacheReadTokens:          sl.CacheReadTokens,
+			CacheCreationTokens:      sl.CacheCreationTokens,
+			TokenSemantics:           runtime.TokenSemanticsDisjointV1,
+			ProviderTotalInputTokens: sl.ProviderTotalInputTokens,
+			HasProviderTotalInput:    sl.HasProviderTotalInput,
 		},
 	})
 }
@@ -1297,14 +1326,22 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
-		issue:           r.issueFor(ctx, sl),
-		epicID:          sl.EpicID,
-		attempt:         attempt,
-		resumeSHA:       r.branchHead(ctx, sl.Branch),
-		resumeSessionID: resumeSession,
-		reviewIters:     sl.ReviewIters,
-		gateRequeues:    sl.GateRequeues,
-		mergeRequeues:   sl.MergeRequeues,
+		issue:                        r.issueFor(ctx, sl),
+		epicID:                       sl.EpicID,
+		attempt:                      attempt,
+		resumeSHA:                    r.branchHead(ctx, sl.Branch),
+		resumeSessionID:              resumeSession,
+		reviewIters:                  sl.ReviewIters,
+		generalReviewArtifactPath:    sl.GeneralReviewArtifactPath,
+		generalReviewArtifactDigest:  sl.GeneralReviewArtifactDigest,
+		generalReviewCandidateSHA:    sl.GeneralReviewCandidateSHA,
+		generalReviewBaseSHA:         sl.GeneralReviewBaseSHA,
+		securityReviewArtifactPath:   sl.SecurityReviewArtifactPath,
+		securityReviewArtifactDigest: sl.SecurityReviewArtifactDigest,
+		securityReviewCandidateSHA:   sl.SecurityReviewCandidateSHA,
+		securityReviewBaseSHA:        sl.SecurityReviewBaseSHA,
+		gateRequeues:                 sl.GateRequeues,
+		mergeRequeues:                sl.MergeRequeues,
 		// Every other spent budget carries forward unchanged (koryph-qf6.1 —
 		// see requeueSlot's counter comment); only budgetKillRequeues below
 		// increments.
@@ -1318,10 +1355,11 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		// Freeze the model resolution from the first attempt (koryph-ehx) —
 		// see requeueSlot's identical comment. A budget-kill warm-resume must
 		// re-run the same model the bead was originally dispatched with.
-		frozenModel:    sl.Model,
-		frozenPersona:  sl.Agent,
-		frozenModelWhy: sl.ModelWhy,
-		frozenEffort:   sl.Effort,
+		frozenModel:     sl.Model,
+		frozenModelTier: sl.ModelTier,
+		frozenPersona:   sl.Agent,
+		frozenModelWhy:  sl.ModelWhy,
+		frozenEffort:    sl.Effort,
 		// Carry the persisted footprint forward (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,
@@ -1338,10 +1376,13 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 		// Carry accumulated token composition forward too (koryph-77r.1) —
 		// same reasoning as accumulatedCostUSD.
 		accumulatedTokens: dispatch.TokenUsage{
-			InputTokens:         sl.InputTokens,
-			OutputTokens:        sl.OutputTokens,
-			CacheReadTokens:     sl.CacheReadTokens,
-			CacheCreationTokens: sl.CacheCreationTokens,
+			InputTokens:              sl.InputTokens,
+			OutputTokens:             sl.OutputTokens,
+			CacheReadTokens:          sl.CacheReadTokens,
+			CacheCreationTokens:      sl.CacheCreationTokens,
+			TokenSemantics:           runtime.TokenSemanticsDisjointV1,
+			ProviderTotalInputTokens: sl.ProviderTotalInputTokens,
+			HasProviderTotalInput:    sl.HasProviderTotalInput,
 		},
 	})
 }
@@ -1480,23 +1521,32 @@ func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
 		// resumeSessionID deliberately left "" — a FRESH session is the whole
 		// point of this path (koryph-840); a --resume would re-read exactly the
 		// accreted context the turn ceiling exists to shed.
-		reviewIters:           sl.ReviewIters,
-		gateRequeues:          sl.GateRequeues,
-		mergeRequeues:         sl.MergeRequeues,
-		conflictRequeues:      sl.ConflictRequeues,
-		rateLimitRequeues:     sl.RateLimitRequeues,
-		budgetKillRequeues:    sl.BudgetKillRequeues,
-		turnExhaustedRequeues: requeues,
-		note:                  "turn-exhausted requeue",
-		wipSnapshotPath:       wipSnapshot,
-		retry:                 nextRetry,
+		reviewIters:                  sl.ReviewIters,
+		generalReviewArtifactPath:    sl.GeneralReviewArtifactPath,
+		generalReviewArtifactDigest:  sl.GeneralReviewArtifactDigest,
+		generalReviewCandidateSHA:    sl.GeneralReviewCandidateSHA,
+		generalReviewBaseSHA:         sl.GeneralReviewBaseSHA,
+		securityReviewArtifactPath:   sl.SecurityReviewArtifactPath,
+		securityReviewArtifactDigest: sl.SecurityReviewArtifactDigest,
+		securityReviewCandidateSHA:   sl.SecurityReviewCandidateSHA,
+		securityReviewBaseSHA:        sl.SecurityReviewBaseSHA,
+		gateRequeues:                 sl.GateRequeues,
+		mergeRequeues:                sl.MergeRequeues,
+		conflictRequeues:             sl.ConflictRequeues,
+		rateLimitRequeues:            sl.RateLimitRequeues,
+		budgetKillRequeues:           sl.BudgetKillRequeues,
+		turnExhaustedRequeues:        requeues,
+		note:                         "turn-exhausted requeue",
+		wipSnapshotPath:              wipSnapshot,
+		retry:                        nextRetry,
 		// Freeze the model resolution from the first attempt (koryph-ehx) — a
 		// requeue re-runs the same model/persona/effort the bead was dispatched
 		// with, exactly like every other requeue path.
-		frozenModel:    sl.Model,
-		frozenPersona:  sl.Agent,
-		frozenModelWhy: sl.ModelWhy,
-		frozenEffort:   sl.Effort,
+		frozenModel:     sl.Model,
+		frozenModelTier: sl.ModelTier,
+		frozenPersona:   sl.Agent,
+		frozenModelWhy:  sl.ModelWhy,
+		frozenEffort:    sl.Effort,
 		// Carry the frozen footprint/resources/features forward (koryph-2im.3/
 		// 4ql.3/qf6.3) — see requeueRateLimited's identical comments.
 		footprint: sl.Footprint,
@@ -1507,10 +1557,13 @@ func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
 		// sl.CostUSD / the slot's token fields at the top of completeSlot.
 		accumulatedCostUSD: sl.CostUSD,
 		accumulatedTokens: dispatch.TokenUsage{
-			InputTokens:         sl.InputTokens,
-			OutputTokens:        sl.OutputTokens,
-			CacheReadTokens:     sl.CacheReadTokens,
-			CacheCreationTokens: sl.CacheCreationTokens,
+			InputTokens:              sl.InputTokens,
+			OutputTokens:             sl.OutputTokens,
+			CacheReadTokens:          sl.CacheReadTokens,
+			CacheCreationTokens:      sl.CacheCreationTokens,
+			TokenSemantics:           runtime.TokenSemanticsDisjointV1,
+			ProviderTotalInputTokens: sl.ProviderTotalInputTokens,
+			HasProviderTotalInput:    sl.HasProviderTotalInput,
 		},
 	})
 }
@@ -1585,6 +1638,17 @@ func (r *runner) recoverTyped(ctx context.Context, sl *ledger.Slot, req typedRec
 		s.OutcomeClass = string(req.outcome)
 	})
 	sl.OutcomeClass = string(req.outcome)
+	if strings.Contains(decision.Reason, "unchanged") &&
+		r.hardStopEnabled(SafetyTripwireUnchangedRetry) {
+		note := decision.Reason
+		if req.reason != "" {
+			note += ": " + req.reason
+		}
+		r.dispatchCircuitReason = note
+		r.emitSafetyTripwire(SafetyTripwireUnchangedRetry, sl.PhaseID, note)
+		r.parkTypedRecovery(ctx, sl, req.outcome, note)
+		return false
+	}
 
 	switch decision.Action {
 	case RecoveryTargetedRepair, RecoveryRetrySameTier:
@@ -1659,7 +1723,7 @@ func (r *runner) recoverTyped(ctx context.Context, sl *ledger.Slot, req typedRec
 }
 
 type typedRecoveryModel struct {
-	model, persona, rationale, effort string
+	model, tier, persona, rationale, effort string
 }
 
 type retryDispatch struct {
@@ -1688,6 +1752,13 @@ func (r *runner) standardRepairModel(ctx context.Context, sl *ledger.Slot) (type
 	if standard == "" {
 		return typedRecoveryModel{}, fmt.Errorf("runtime %q has no standard-tier model", runtimeName)
 	}
+	if standard == runtime.CodexSolModel {
+		return typedRecoveryModel{}, fmt.Errorf("standard repair resolved to frontier model %q", standard)
+	}
+	switch modelroute.TierForModelID(standard) {
+	case modelroute.TierOpus, modelroute.TierFable:
+		return typedRecoveryModel{}, fmt.Errorf("standard repair resolved to frontier model %q", standard)
+	}
 	res, err := r.resolveModelForRuntime(r.implementationStage(issue), issue, standard, runtimeName)
 	if err != nil {
 		return typedRecoveryModel{}, err
@@ -1700,7 +1771,7 @@ func (r *runner) standardRepairModel(ctx context.Context, sl *ledger.Slot) (type
 		return typedRecoveryModel{}, fmt.Errorf("standard repair resolved to frontier model %q", res.Model)
 	}
 	return typedRecoveryModel{
-		model: res.Model, persona: res.Persona,
+		model: res.Model, tier: runtime.TierStandard, persona: res.Persona,
 		rationale: "typed " + string(sl.OutcomeClass) + " repair on standard tier",
 		effort:    res.Effort,
 	}, nil
@@ -1740,6 +1811,9 @@ func consumeRetryCounter(c *ledger.RetryCounters, outcome CandidateOutcomeClass,
 }
 
 func (r *runner) parkTypedRecovery(ctx context.Context, sl *ledger.Slot, outcome CandidateOutcomeClass, reason string) {
+	if r.finalizer != nil {
+		r.finalizer.invalidate(sl.PhaseID)
+	}
 	note := fmt.Sprintf("%s: %s — branch/worktree preserved", outcome, reason)
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 		s.Status = ledger.SlotBlocked
@@ -1750,6 +1824,9 @@ func (r *runner) parkTypedRecovery(ctx context.Context, sl *ledger.Slot, outcome
 	r.releaseGlobalSlot(sl.PhaseID)
 	r.progress("bead %s: blocked (%s)", sl.PhaseID, note)
 	r.auditBlocked(ctx, sl, string(outcome), reason)
+	if outcome == OutcomeEngineInvariant {
+		r.emitSafetyTripwire(SafetyTripwireEngineInvariant, sl.PhaseID, reason)
+	}
 }
 
 // finishCandidate runs the configured post-implement pipeline stages, the
@@ -1759,8 +1836,6 @@ func (r *runner) finishCandidate(ctx context.Context, sl *ledger.Slot) {
 }
 
 func (r *runner) finishAssessedCandidate(ctx context.Context, sl *ledger.Slot, assessment candidateAssessment) {
-	policy := r.mergePolicy(ctx, sl.EpicID)
-
 	// Completion is runtime-neutral: every adapter ultimately produces a git
 	// branch/worktree plus the shared status document. Refuse incomplete
 	// candidates before pipeline/review can create noise or merge can mistake
@@ -1777,6 +1852,12 @@ func (r *runner) finishAssessedCandidate(ctx context.Context, sl *ledger.Slot, a
 		reason := assessment.reason
 		if assessment.outcome == OutcomeCompletionContractMissing {
 			reason = completionContractRepairNote
+			if r.hardStopEnabled(SafetyTripwireMissingTerminal) {
+				r.dispatchCircuitReason = reason
+				r.emitSafetyTripwire(SafetyTripwireMissingTerminal, sl.PhaseID, reason)
+				r.parkTypedRecovery(ctx, sl, assessment.outcome, reason)
+				return
+			}
 		}
 		if r.recoverTyped(ctx, sl, typedRecoveryRequest{
 			outcome: assessment.outcome,
@@ -1788,14 +1869,13 @@ func (r *runner) finishAssessedCandidate(ctx context.Context, sl *ledger.Slot, a
 		}
 		return
 	}
-
-	// --direct is the owner override: skip the PR flow and merge straight to the
-	// default branch, even on a merge:pr epic. The push to a protected default
-	// branch still requires the identity to hold a branch-protection bypass —
-	// koryph does not gate on org role. A blocking review can still downgrade
-	// this to manual below, so the safety path is not bypassed (koryph-ufy.5).
-	if r.opts.Direct {
-		policy = project.PolicyAuto
+	if duplicate, proven := r.duplicateBroadCommand(r.run.RunID, sl.PhaseID); proven && duplicate &&
+		r.hardStopEnabled(SafetyTripwireDuplicateCommand) {
+		note := "candidate repeated an identical broad/gate command"
+		r.dispatchCircuitReason = note
+		r.emitSafetyTripwire(SafetyTripwireDuplicateCommand, sl.PhaseID, note)
+		r.parkTypedRecovery(ctx, sl, OutcomeCodeDefect, note)
+		return
 	}
 
 	// Post-implement stages (docs, test, ...) run in the worktree before review
@@ -1810,15 +1890,25 @@ func (r *runner) finishAssessedCandidate(ctx context.Context, sl *ledger.Slot, a
 		return
 	}
 
-	if r.opts.Review {
-		r.startReview(ctx, sl)
-		return
-	}
-
-	r.finishAfterReview(ctx, sl, policy)
+	// The deterministic gate owns the next stage for every candidate. Review
+	// consumes its exact persisted evidence; landing later authenticates that
+	// same candidate/base/config tuple under the short merge lock.
+	r.validateSlot(ctx, sl)
 }
 
 func (r *runner) startReview(ctx context.Context, sl *ledger.Slot) {
+	r.startReviewStage(ctx, sl, false, "")
+}
+
+func (r *runner) startSecurityReview(ctx context.Context, sl *ledger.Slot, reason string) {
+	r.startReviewStage(ctx, sl, true, reason)
+}
+
+func (r *runner) startReviewStage(ctx context.Context, sl *ledger.Slot, security bool, reason string) {
+	evidence, ok := r.evidenceForLanding(ctx, sl)
+	if !ok {
+		return
+	}
 	runtimeName := sl.Runtime
 	if runtimeName == "" {
 		runtimeName = r.rt.Name()
@@ -1830,38 +1920,67 @@ func (r *runner) startReview(ctx context.Context, sl *ledger.Slot) {
 	}
 	ra := r.rec.AccountFor(runtimeName)
 	reviewProfile := account.Profile{Name: r.rec.AccountProfile, ConfigDir: ra.ConfigDir}
-	outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
-	reviewPersona := modelroute.PersonaFor(modelroute.StageReview, r.cfg.Stages)
-	// The reviewer's model tier stays hardcoded opus (quality-critical, never
-	// auto-downgraded — koryph-77r.8 audit). Resolve the persona effort before
-	// handing the immutable options to the finalization worker.
+	stage := modelroute.StageReview
+	finalizationStage := finalizationReview
+	if security {
+		stage = modelroute.StageSecurityReview
+		finalizationStage = finalizationSecurityReview
+	}
+	reviewPersona := modelroute.PersonaFor(stage, r.cfg.Stages)
 	reviewEffort := ""
 	if _, metaEffort, _, err := modelroute.PersonaMeta(r.rec.Root, reviewPersona); err == nil {
 		reviewEffort = metaEffort
 	}
+	if reviewEffort == "" && !security {
+		reviewEffort = "high"
+	}
+	phaseDir := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
+	var completionEvidence phasecontrol.Evidence
+	if !security {
+		result, err := phasecontrol.LoadResult(phaseDir)
+		if err != nil {
+			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+				"load authenticated completion evidence for review: "+err.Error())
+			return
+		}
+		completionEvidence = result.Evidence
+	}
 	issue := r.issueFor(ctx, sl)
 	beadTimeout, _ := timeoutcfg.BeadTimeout(issue.Labels)
 	reviewTimeout := timeoutcfg.Resolve(beadTimeout, r.cfg.EffectiveReview().TimeoutSeconds, r.systemTimeoutSec)
-	reviewModel, rerr := r.resolveModelForRuntime(modelroute.StageReview, issue, "", runtimeName)
+	reviewModel, rerr := r.resolveReviewModelForRuntime(stage, runtimeName)
 	if rerr != nil {
 		r.blockSlot(sl.PhaseID, dispatchReq{issue: beads.Issue{ID: sl.PhaseID}}, "review model resolution: "+rerr.Error())
 		return
 	}
+	priorPath, priorOK := r.authenticatedPriorReviewArtifact(ctx, sl, security)
+	if !priorOK {
+		return
+	}
+	var priorPaths []string
+	if priorPath != "" {
+		priorPaths = []string{priorPath}
+	}
 	opts := review.Opts{
-		RepoRoot:  r.rec.Root,
-		Worktree:  sl.Worktree,
-		Branch:    sl.Branch,
-		Base:      r.rec.DefaultBranch,
-		Persona:   reviewPersona,
-		Model:     reviewModel.Model,
-		Effort:    reviewEffort,
-		Profile:   reviewProfile,
-		OutPath:   outPath,
-		ClaudeBin: os.Getenv(envClaudeBin),
-		Runtime:   reviewRT,
+		RepoRoot:          r.rec.Root,
+		Worktree:          sl.Worktree,
+		Branch:            sl.Branch,
+		Base:              r.rec.DefaultBranch,
+		CandidateSHA:      evidence.CandidateSHA,
+		BaseSHA:           evidence.BaseSHA,
+		PriorVerdictPaths: priorPaths,
+		Security:          security,
+		Persona:           reviewPersona,
+		Model:             reviewModel.Model,
+		Effort:            reviewEffort,
+		Profile:           reviewProfile,
+		ArtifactDir:       r.finalizationEvidenceDir(sl),
+		ClaudeBin:         os.Getenv(envClaudeBin),
+		Runtime:           reviewRT,
 		Contract: review.Contract{
 			ID: issue.ID, Title: issue.Title, Description: issue.Description,
 			AcceptanceCriteria: issue.AcceptanceCriteria, Labels: append([]string(nil), issue.Labels...),
+			CompletionEvidence: completionEvidence,
 			// Reaching review already required a live SHA-bound result.
 			// status.json is only a heartbeat and may still say testing or
 			// blocked from an earlier instant; do not let that advisory value
@@ -1869,58 +1988,58 @@ func (r *runner) startReview(ctx context.Context, sl *ledger.Slot) {
 			Runtime: runtimeName, CompletionState: "done",
 		},
 		TimeoutSec:   reviewTimeout,
+		Attempts:     2,
 		ProxyBaseURL: r.proxyBaseURLForSlot(sl),
 	}
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 		s.Status = ledger.SlotReview
-		s.FinalizationStage = finalizationReview
+		s.FinalizationStage = finalizationStage
 	})
-	r.checkpointSlot(sl, finalizationReview)
+	r.checkpointSlot(sl, finalizationStage)
+	if security {
+		r.progress("bead %s: starting risk-triggered frontier security review (%s)", sl.PhaseID, reason)
+	}
 	r.submitFinalization(ctx, finalizationJob{
-		generation: generationFor(sl),
-		stage:      finalizationReview,
+		generation: generationForEvidence(sl, evidence, finalizationStage),
+		stage:      finalizationStage,
 		reviewOpts: opts,
 	})
 }
 
-func (r *runner) applyReviewResult(ctx context.Context, sl *ledger.Slot, v review.Verdict) {
-	outPath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "review.json")
+func (r *runner) applyReviewResult(ctx context.Context, sl *ledger.Slot, v review.Verdict, security bool) {
+	outcome := OutcomeSemanticDefect
+	reviewKind := "acceptance"
+	if security {
+		outcome = OutcomeSecurityDefect
+		reviewKind = "security"
+	}
 	if v.Degraded {
-		decision := DecideRetry(RetryPolicyInput{
-			Outcome: OutcomeRuntimeTransient,
-			Budgets: retryBudgets(sl.Retry),
-		})
-		if decision.Action == RecoveryRetrySameTier {
-			next := sl.Retry
-			consumeRetryCounter(&next, OutcomeRuntimeTransient, decision.Action)
-			if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-				s.Retry = next
-				s.OutcomeClass = string(OutcomeRuntimeTransient)
-			}); err == nil {
-				sl.Retry = next
-				r.progress("bead %s: review transient after %d attempt(s) — retrying review (%d/2)",
-					sl.PhaseID, v.Attempts, next.TransientRetries)
-				r.startReview(ctx, sl)
-				return
-			}
-		}
 		r.parkTypedRecovery(ctx, sl, OutcomeRuntimeTransient,
-			fmt.Sprintf("review degraded after %d attempt(s): %s", v.Attempts, v.Reason))
+			fmt.Sprintf("%s review degraded after its bounded %d attempt(s): %s", reviewKind, v.Attempts, v.Reason))
+		return
+	}
+	if !r.acceptReviewArtifact(ctx, sl, v, security) {
 		return
 	}
 	if v.Blocking {
 		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 			s.ReviewIters++
 		})
-		r.progress("bead %s: blocking security review findings (iteration %d) — applying typed recovery policy",
-			sl.PhaseID, sl.ReviewIters)
+		r.progress("bead %s: blocking %s review findings (iteration %d) — applying typed recovery policy",
+			sl.PhaseID, reviewKind, sl.ReviewIters)
 		r.recoverTyped(ctx, sl, typedRecoveryRequest{
-			outcome:         OutcomeSecurityDefect,
+			outcome:         outcome,
 			evidenceChanged: true,
-			reviewPath:      outPath,
-			reason:          "blocking security review findings",
+			reviewPath:      v.ArtifactPath,
+			reason:          "blocking " + reviewKind + " review findings",
 		})
 		return
+	}
+	if !security {
+		if required, why := r.securityReviewRequired(ctx, sl, v); required {
+			r.startSecurityReview(ctx, sl, why)
+			return
+		}
 	}
 
 	policy := r.mergePolicy(ctx, sl.EpicID)
@@ -1928,6 +2047,147 @@ func (r *runner) applyReviewResult(ctx context.Context, sl *ledger.Slot, v revie
 		policy = project.PolicyAuto
 	}
 	r.finishAfterReview(ctx, sl, policy)
+}
+
+func (r *runner) acceptReviewArtifact(
+	ctx context.Context,
+	sl *ledger.Slot,
+	v review.Verdict,
+	security bool,
+) bool {
+	path := filepath.Clean(strings.TrimSpace(v.ArtifactPath))
+	evidenceDir := r.finalizationEvidenceDir(sl)
+	rel, err := filepath.Rel(evidenceDir, path)
+	if path == "." || path == "" || err != nil || rel == ".." ||
+		strings.HasPrefix(filepath.ToSlash(rel), "../") {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"review returned an artifact outside its engine-private evidence directory")
+		return false
+	}
+	read, err := fsx.ReadRegularConfined(path, 1<<20, evidenceDir)
+	if err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"authenticate persisted review artifact: "+err.Error())
+		return false
+	}
+	if strings.TrimSpace(v.ArtifactDigest) == "" ||
+		"sha256:"+read.Digest != strings.TrimSpace(v.ArtifactDigest) {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"persisted review artifact digest does not match the review result")
+		return false
+	}
+	kind := review.ReviewKindGeneral
+	if security {
+		kind = review.ReviewKindSecurity
+	}
+	artifact, err := review.ParseArtifact(read.Data, kind)
+	if err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"validate persisted review artifact schema: "+err.Error())
+		return false
+	}
+	gateEvidence, err := r.loadGateEvidence(sl)
+	if err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"bind review artifact to authoritative gate evidence: "+err.Error())
+		return false
+	}
+	if artifact.CandidateSHA != gateEvidence.CandidateSHA ||
+		artifact.BaseSHA != gateEvidence.BaseSHA {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"persisted review artifact candidate/base does not match authoritative gate evidence")
+		return false
+	}
+	path = read.Path
+	digest := "sha256:" + read.Digest
+	if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+		if security {
+			s.SecurityReviewArtifactPath = path
+			s.SecurityReviewArtifactDigest = digest
+			s.SecurityReviewCandidateSHA = artifact.CandidateSHA
+			s.SecurityReviewBaseSHA = artifact.BaseSHA
+		} else {
+			s.GeneralReviewArtifactPath = path
+			s.GeneralReviewArtifactDigest = digest
+			s.GeneralReviewCandidateSHA = artifact.CandidateSHA
+			s.GeneralReviewBaseSHA = artifact.BaseSHA
+		}
+	}); err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"persist accepted review artifact: "+err.Error())
+		return false
+	}
+	if security {
+		sl.SecurityReviewArtifactPath = path
+		sl.SecurityReviewArtifactDigest = digest
+		sl.SecurityReviewCandidateSHA = artifact.CandidateSHA
+		sl.SecurityReviewBaseSHA = artifact.BaseSHA
+	} else {
+		sl.GeneralReviewArtifactPath = path
+		sl.GeneralReviewArtifactDigest = digest
+		sl.GeneralReviewCandidateSHA = artifact.CandidateSHA
+		sl.GeneralReviewBaseSHA = artifact.BaseSHA
+	}
+	return true
+}
+
+func (r *runner) authenticatedPriorReviewArtifact(
+	ctx context.Context,
+	sl *ledger.Slot,
+	security bool,
+) (string, bool) {
+	path := sl.GeneralReviewArtifactPath
+	digest := sl.GeneralReviewArtifactDigest
+	candidateSHA := sl.GeneralReviewCandidateSHA
+	baseSHA := sl.GeneralReviewBaseSHA
+	kind := review.ReviewKindGeneral
+	if security {
+		path = sl.SecurityReviewArtifactPath
+		digest = sl.SecurityReviewArtifactDigest
+		candidateSHA = sl.SecurityReviewCandidateSHA
+		baseSHA = sl.SecurityReviewBaseSHA
+		kind = review.ReviewKindSecurity
+	}
+	if strings.TrimSpace(path) == "" {
+		if !security && sl.ReviewIters > 0 {
+			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+				"repair review has no trusted prior general-review artifact")
+			return "", false
+		}
+		return "", true
+	}
+	if strings.TrimSpace(digest) == "" ||
+		strings.TrimSpace(candidateSHA) == "" ||
+		strings.TrimSpace(baseSHA) == "" {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"prior review artifact lacks trusted digest or candidate/base identity")
+		return "", false
+	}
+	read, err := fsx.ReadRegularConfined(
+		path, 1<<20, r.finalizationEvidenceDir(sl),
+	)
+	if err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"authenticate prior review artifact: "+err.Error())
+		return "", false
+	}
+	if "sha256:"+read.Digest != strings.TrimSpace(digest) {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"prior review artifact digest does not match the trusted ledger")
+		return "", false
+	}
+	artifact, err := review.ParseArtifact(read.Data, kind)
+	if err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"validate prior review artifact: "+err.Error())
+		return "", false
+	}
+	if artifact.CandidateSHA != candidateSHA || artifact.BaseSHA != baseSHA {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"prior review artifact candidate/base does not match the trusted ledger")
+		return "", false
+	}
+	return read.Path, true
 }
 
 func (r *runner) finishAfterReview(ctx context.Context, sl *ledger.Slot, policy project.Policy) {
@@ -1969,34 +2229,33 @@ func mergeReconcilers(cfg *project.Config) []merge.Reconciler {
 }
 
 func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
-	opts := merge.Opts{
-		RepoRoot:            r.rec.Root,
-		Branch:              sl.Branch,
-		DefaultBranch:       r.rec.DefaultBranch,
-		ValidationPhaseDir:  r.store.PhaseDir(r.run.RunID, sl.PhaseID),
-		Gate:                append([]string(nil), r.cfg.Gate...),
-		Extra:               append([]string(nil), r.cfg.ProtectedPaths...),
-		Push:                true, // merge itself skips push when no remote exists
-		SlotOwner:           r.owner,
-		SlotRetries:         3,
-		Slot:                r.slotLocker(ctx),
-		RequireSigned:       r.requireSigned(),
-		RequireConventional: r.cfg.EnforceConventional(),
-		Reconcilers:         mergeReconcilers(r.cfg),
-		Prepare:             append([]string(nil), r.cfg.MergePrepare...),
-		// Keep the candidate until the poll goroutine has durably applied the
-		// worker result. If the engine dies after landing but before result
-		// application, --resume can detect the retained branch as already
-		// merged and complete finalization without coding redispatch.
-		KeepWorktree: true,
+	evidence, ok := r.evidenceForLanding(ctx, sl)
+	if !ok {
+		return
 	}
+	opts, err := r.qualityMergeOpts(sl)
+	if err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"identify running landing binary: "+err.Error())
+		return
+	}
+	opts.Validated = evidence
+	opts.Push = true // merge itself skips push when no remote exists
+	opts.SlotOwner = r.owner
+	opts.SlotRetries = 3
+	opts.Slot = r.slotLocker(ctx)
+	// Keep the candidate until the poll goroutine has durably applied the
+	// worker result. If the engine dies after landing but before result
+	// application, --resume can detect the retained branch as already merged
+	// and complete finalization without coding redispatch.
+	opts.KeepWorktree = true
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 		s.Status = ledger.SlotMerging
 		s.FinalizationStage = finalizationMerge
 	})
 	r.checkpointSlot(sl, finalizationMerge)
 	r.submitFinalization(ctx, finalizationJob{
-		generation: generationFor(sl),
+		generation: generationForEvidence(sl, evidence, finalizationMerge),
 		stage:      finalizationMerge,
 		mergeOpts:  opts,
 	})
@@ -2004,15 +2263,8 @@ func (r *runner) mergeSlot(ctx context.Context, sl *ledger.Slot) {
 
 func (r *runner) applyMergeResult(ctx context.Context, sl *ledger.Slot, res merge.Result, err error) {
 	if err != nil {
-		if sl.Retry.TransientRetries < 2 {
-			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-				s.MergeRequeues++
-			})
-		}
-		r.recoverTyped(ctx, sl, typedRecoveryRequest{
-			outcome: OutcomeRuntimeTransient,
-			reason:  mergeErrorRequeueNote + ": " + err.Error(),
-		})
+		r.parkTypedRecovery(ctx, sl, OutcomeRuntimeTransient,
+			"landing infrastructure retries exhausted: "+err.Error())
 		return
 	}
 
@@ -2142,6 +2394,44 @@ func (r *runner) auditBlocked(ctx context.Context, sl *ledger.Slot, reason, deta
 
 func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res merge.Result) (requeued bool) {
 	switch res.Status {
+	case merge.StatusEvidenceStale:
+		targetKey, err := r.revalidationTargetKey(ctx, sl, res)
+		if err != nil {
+			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+				"identify merge-base revalidation target: "+err.Error())
+			return false
+		}
+		if targetKey == sl.LastRevalidationKey {
+			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+				"identical validated candidate/base was refused twice; stopping finalization loop")
+			return false
+		}
+		next := sl.Retry
+		// Base movement is scheduler churn, not a candidate defect. There is no
+		// one-per-bead retry budget: a wave of clean siblings can legitimately
+		// advance the base many times. The durable target key above is the
+		// circuit breaker for an unchanged engine loop.
+		consumeRetryCounter(&next, OutcomeMergeBaseMoved, RecoveryRebaseRevalidate)
+		if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+			s.Retry = next
+			s.OutcomeClass = string(OutcomeMergeBaseMoved)
+			s.LastRevalidationKey = targetKey
+		}); err != nil {
+			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+				"persist merge-base revalidation target: "+err.Error())
+			return false
+		}
+		sl.Retry = next
+		sl.LastRevalidationKey = targetKey
+		r.progress("bead %s: validated base/candidate moved — rebasing and rerunning authoritative gate without model dispatch", sl.PhaseID)
+		r.validateSlot(ctx, sl)
+		return true
+
+	case merge.StatusRecoveryUnsafe:
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"partial landing recovery refused: "+res.GateOutput)
+		return true
+
 	case merge.StatusGateFailed:
 		if sl.Retry.CodeRepairs < 1 {
 			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -2241,32 +2531,31 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 // for a later landing step, so the bead parks in pr-opened rather than merged.
 func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 	iss := r.issueFor(ctx, sl)
-	opts := merge.Opts{
-		RepoRoot:            r.rec.Root,
-		Branch:              sl.Branch,
-		DefaultBranch:       r.rec.DefaultBranch,
-		ValidationPhaseDir:  r.store.PhaseDir(r.run.RunID, sl.PhaseID),
-		Gate:                append([]string(nil), r.cfg.Gate...),
-		Extra:               append([]string(nil), r.cfg.ProtectedPaths...),
-		SlotOwner:           r.owner,
-		SlotRetries:         3,
-		Slot:                r.slotLocker(ctx),
-		RequireSigned:       r.requireSigned(),
-		RequireConventional: r.cfg.EnforceConventional(),
-		Reconcilers:         mergeReconcilers(r.cfg),
-		Prepare:             append([]string(nil), r.cfg.MergePrepare...),
-		OpenPR:              true,
-		KeepWorktree:        true, // the branch parks for a later landing step
-		PRTitle:             prTitle(iss),
-		PRBody:              prBody(iss, r.run.RunID),
+	evidence, ok := r.evidenceForLanding(ctx, sl)
+	if !ok {
+		return
 	}
+	opts, err := r.qualityMergeOpts(sl)
+	if err != nil {
+		r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+			"identify running PR binary: "+err.Error())
+		return
+	}
+	opts.Validated = evidence
+	opts.SlotOwner = r.owner
+	opts.SlotRetries = 3
+	opts.Slot = r.slotLocker(ctx)
+	opts.OpenPR = true
+	opts.KeepWorktree = true // the branch parks for a later landing step
+	opts.PRTitle = prTitle(iss)
+	opts.PRBody = prBody(iss, r.run.RunID)
 	_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 		s.Status = ledger.SlotMerging
 		s.FinalizationStage = finalizationPR
 	})
 	r.checkpointSlot(sl, finalizationPR)
 	r.submitFinalization(ctx, finalizationJob{
-		generation: generationFor(sl),
+		generation: generationForEvidence(sl, evidence, finalizationPR),
 		stage:      finalizationPR,
 		mergeOpts:  opts,
 	})
@@ -2274,17 +2563,8 @@ func (r *runner) openPRSlot(ctx context.Context, sl *ledger.Slot) {
 
 func (r *runner) applyPRResult(ctx context.Context, sl *ledger.Slot, res merge.Result, err error) {
 	if err != nil {
-		// A push or gh error is usually config/auth (not a transient rebase
-		// race), so block with the reason rather than looping. The branch is
-		// kept, so a fixed remote/gh lets a --resume retry.
-		_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
-			s.Status = ledger.SlotBlocked
-			s.Note = "pr error: " + err.Error()
-		})
-		r.checkpointSlot(sl, "pr-error")
-		r.releaseGlobalSlot(sl.PhaseID)
-		r.progress("bead %s: blocked (pr error: %v)", sl.PhaseID, err)
-		r.auditBlocked(ctx, sl, "pr-error", err.Error())
+		r.parkTypedRecovery(ctx, sl, OutcomeRuntimeTransient,
+			"PR infrastructure retries exhausted: "+err.Error())
 		return
 	}
 
@@ -2520,6 +2800,9 @@ func (r *runner) requeueSlotWithRecovery(
 	reviewPath, why string,
 	recovery retryDispatch,
 ) {
+	if r.finalizer != nil {
+		r.finalizer.invalidate(sl.PhaseID)
+	}
 	// Before re-dispatching for any reason (agent death, gate-fail, review
 	// bounce, merge error) re-validate that the bead is still open. The
 	// operator may have closed or deferred it while the previous agent was
@@ -2553,10 +2836,11 @@ func (r *runner) requeueSlotWithRecovery(
 	// Attempt number never selects a model. A typed decision may select the
 	// runtime's standard implementation tier; otherwise the initial model is
 	// frozen. Frontier implementation is unavailable here by construction.
-	frozenModel, frozenWhy := sl.Model, sl.ModelWhy
+	frozenModel, frozenTier, frozenWhy := sl.Model, sl.ModelTier, sl.ModelWhy
 	frozenPersona, frozenEffort := sl.Agent, sl.Effort
 	if recovery.model.model != "" {
 		frozenModel = recovery.model.model
+		frozenTier = recovery.model.tier
 		frozenPersona = recovery.model.persona
 		frozenWhy = recovery.model.rationale
 		frozenEffort = recovery.model.effort
@@ -2581,14 +2865,22 @@ func (r *runner) requeueSlotWithRecovery(
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
-		issue:           r.issueFor(ctx, sl),
-		epicID:          sl.EpicID,
-		attempt:         attempt,
-		resumeSHA:       r.branchHead(ctx, sl.Branch),
-		resumeSessionID: resumeSession,
-		reviewPath:      reviewPath,
-		reviewIters:     sl.ReviewIters,
-		wipSnapshotPath: wipSnapshot,
+		issue:                        r.issueFor(ctx, sl),
+		epicID:                       sl.EpicID,
+		attempt:                      attempt,
+		resumeSHA:                    r.branchHead(ctx, sl.Branch),
+		resumeSessionID:              resumeSession,
+		reviewPath:                   reviewPath,
+		reviewIters:                  sl.ReviewIters,
+		generalReviewArtifactPath:    sl.GeneralReviewArtifactPath,
+		generalReviewArtifactDigest:  sl.GeneralReviewArtifactDigest,
+		generalReviewCandidateSHA:    sl.GeneralReviewCandidateSHA,
+		generalReviewBaseSHA:         sl.GeneralReviewBaseSHA,
+		securityReviewArtifactPath:   sl.SecurityReviewArtifactPath,
+		securityReviewArtifactDigest: sl.SecurityReviewArtifactDigest,
+		securityReviewCandidateSHA:   sl.SecurityReviewCandidateSHA,
+		securityReviewBaseSHA:        sl.SecurityReviewBaseSHA,
+		wipSnapshotPath:              wipSnapshot,
 		// Carry ALL the requeue counters forward: dispatchBead builds a
 		// brand-new ledger.Slot rather than mutating this one, so any counter
 		// omitted here resets to zero on the new slot and its budget silently
@@ -2611,10 +2903,11 @@ func (r *runner) requeueSlotWithRecovery(
 		// model. Same freeze rationale as the footprint just below. Attempt
 		// number never changes the model; only the typed decision supplied in
 		// recovery may select the runtime's standard repair tier.
-		frozenModel:    frozenModel,
-		frozenPersona:  frozenPersona,
-		frozenModelWhy: frozenWhy,
-		frozenEffort:   frozenEffort,
+		frozenModel:     frozenModel,
+		frozenModelTier: frozenTier,
+		frozenPersona:   frozenPersona,
+		frozenModelWhy:  frozenWhy,
+		frozenEffort:    frozenEffort,
 		// Carry the persisted footprint forward too (koryph-2im.3) — see
 		// requeueRateLimited's identical comment.
 		footprint: sl.Footprint,
@@ -2631,10 +2924,13 @@ func (r *runner) requeueSlotWithRecovery(
 		// Carry accumulated token composition forward too (koryph-77r.1) —
 		// same reasoning as accumulatedCostUSD.
 		accumulatedTokens: dispatch.TokenUsage{
-			InputTokens:         sl.InputTokens,
-			OutputTokens:        sl.OutputTokens,
-			CacheReadTokens:     sl.CacheReadTokens,
-			CacheCreationTokens: sl.CacheCreationTokens,
+			InputTokens:              sl.InputTokens,
+			OutputTokens:             sl.OutputTokens,
+			CacheReadTokens:          sl.CacheReadTokens,
+			CacheCreationTokens:      sl.CacheCreationTokens,
+			TokenSemantics:           runtime.TokenSemanticsDisjointV1,
+			ProviderTotalInputTokens: sl.ProviderTotalInputTokens,
+			HasProviderTotalInput:    sl.HasProviderTotalInput,
 		},
 	})
 }
@@ -2735,13 +3031,59 @@ func (r *runner) refreshWorktreeForRequeue(ctx context.Context, sl *ledger.Slot,
 }
 
 // slotLocker returns a bd-backed merge mutex when the project has a
-// <project>-merge-slot bead, else nil (no cross-process locking).
+// <project>-merge-slot bead. Projects without that compatibility bead still
+// receive a cross-process file lock; validation base capture and landing are
+// never allowed to race merely because tracker setup omitted the slot bead.
 func (r *runner) slotLocker(ctx context.Context) merge.SlotLocker {
 	slotID := r.opts.ProjectID + "-merge-slot"
 	if _, err := r.adapter.Show(ctx, slotID); err != nil {
-		return nil
+		return &fileSlotLocker{path: filepath.Join(r.rec.Root, ".git", "koryph-merge.lock")}
 	}
 	return &bdSlotLocker{adapter: r.adapter, slotID: slotID}
+}
+
+type fileSlotLocker struct {
+	path string
+	file *os.File
+}
+
+func (l *fileSlotLocker) Acquire(ctx context.Context, _ string) error {
+	if l.file != nil {
+		return errors.New("merge file slot is already held")
+	}
+	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			l.file = file
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			file.Close()
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			file.Close()
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (l *fileSlotLocker) Release(context.Context) error {
+	if l.file == nil {
+		return nil
+	}
+	file := l.file
+	l.file = nil
+	unlockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return errors.Join(unlockErr, file.Close())
 }
 
 // bdSlotLocker satisfies merge.SlotLocker over the beads adapter's

@@ -83,10 +83,22 @@ func TestResolvePrecedence(t *testing.T) {
 			wantRationale: "stage default (score)",
 		},
 		{
-			name:          "stage default review -> opus",
+			name:          "stage default review -> sonnet",
 			req:           Req{Stage: StageReview},
-			wantModel:     TierOpus,
+			wantModel:     TierSonnet,
 			wantRationale: "stage default (review)",
+		},
+		{
+			name:          "stage default security review -> opus",
+			req:           Req{Stage: StageSecurityReview},
+			wantModel:     TierOpus,
+			wantRationale: "stage default (security-review)",
+		},
+		{
+			name:          "stage default epic validation -> opus",
+			req:           Req{Stage: StageEpicValidation},
+			wantModel:     TierOpus,
+			wantRationale: "stage default (epic-validation)",
 		},
 		{
 			name:          "stage default implement -> sonnet",
@@ -389,16 +401,18 @@ description: no model or tier
 
 func TestPersonaFor(t *testing.T) {
 	defaults := map[string]string{
-		StageImplement: "koryph-implementer",
-		StagePlan:      "koryph-architect",
-		StageDesign:    "koryph-architect",
-		StageScore:     "koryph-plan-scorer",
-		StageReview:    "koryph-security-reviewer",
-		StageExplore:   "koryph-explorer",
-		StageDebug:     "koryph-debugger",
-		StageDocs:      "koryph-feature-docs-author",
-		StageTest:      "koryph-test-engineer",
-		"unknown":      "koryph-implementer",
+		StageImplement:      "koryph-implementer",
+		StagePlan:           "koryph-architect",
+		StageDesign:         "koryph-architect",
+		StageScore:          "koryph-plan-scorer",
+		StageReview:         "koryph-reviewer",
+		StageSecurityReview: "koryph-security-reviewer",
+		StageEpicValidation: "koryph-epic-validator",
+		StageExplore:        "koryph-explorer",
+		StageDebug:          "koryph-debugger",
+		StageDocs:           "koryph-feature-docs-author",
+		StageTest:           "koryph-test-engineer",
+		"unknown":           "koryph-implementer",
 	}
 	for stage, want := range defaults {
 		if got := PersonaFor(stage, nil); got != want {

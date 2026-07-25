@@ -14,12 +14,10 @@ import (
 
 func baseInput() Input {
 	return Input{
-		EngineVersion: "v9.9.9-test",
-		ProjectName:   "demo-project",
-		Conventions:   "Run gofmt. Keep commits small.",
-		Gate:          []string{"make lint", "make test"},
-		CrossGates:    []string{"make schema-check"},
-		Bootstrap:     []string{"pnpm install --frozen-lockfile"},
+		EngineVersion:      "v9.9.9-test",
+		ProjectName:        "demo-project",
+		RepositoryContract: RepositoryClauseMarker + "\nRepository rules.",
+		Bootstrap:          []string{"pnpm install --frozen-lockfile"},
 		Bead: beads.Issue{
 			ID:                 "bd-42",
 			Title:              "Wire the widget",
@@ -56,15 +54,13 @@ func TestCompileThreeSectionsInOrder(t *testing.T) {
 		}
 	}
 
-	// Project block content present.
+	// Project block carries the authenticated repository clause and stable
+	// non-policy project context, never validation-service commands.
 	for _, want := range []string{
-		"Run gofmt. Keep commits small.",
-		"Project gate (validation service-owned; do not run as a worker):",
-		"- make lint",
-		"- make test",
-		"Cross-cutting gates:",
-		"- make schema-check",
-		"Worktree bootstrap (already run for you, rerun if needed):",
+		RepositoryClauseMarker,
+		"Repository rules.",
+		ProjectContextMarker,
+		"Worktree bootstrap already completed; rerun only a focused prerequisite if needed:",
 		"- pnpm install --frozen-lockfile",
 	} {
 		if !strings.Contains(out, want) {
@@ -163,7 +159,6 @@ func TestPreambleForbiddenOperations(t *testing.T) {
 		"$KORYPH_SUMMARY_PATH",
 		"What shipped",
 		"Changes requiring orchestrator review",
-		"INBOX.md",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("preamble missing reporting marker %q", want)
@@ -171,36 +166,22 @@ func TestPreambleForbiddenOperations(t *testing.T) {
 	}
 }
 
-// TestPreambleTerseOutputContract verifies the output-economy section (design:
-// docs/designs/2026-07-token-economy.md §3 L4) is present in the preamble and
-// teaches agents the three key behaviours: quiet gate, file-spill wrappers,
-// and concise replies. This block is part of the engine preamble so it must be
-// byte-stable (no timestamps, no per-dispatch content).
-func TestPreambleTerseOutputContract(t *testing.T) {
-	p := Preamble("v1")
+func TestFocusedValidationLivesInVolatileTaskClause(t *testing.T) {
+	p := Compile(baseInput())
 	for _, want := range []string{
-		"output economy",
-		"Do not run make",
-		"focused checks",
-		"koryph-spill.sh",
-		"full output",
-		"Read tool",
+		TaskClauseMarker,
+		"### Focused test scope",
+		"changed packages and acceptance criteria",
+		"validation service owns broad repository validation",
 	} {
 		if !strings.Contains(p, want) {
-			t.Errorf("preamble missing output-economy marker %q", want)
+			t.Errorf("dispatch missing focused-validation marker %q", want)
 		}
 	}
-	// The output-economy block must be in the engine preamble (section [1]),
-	// not the volatile tail — it must be byte-stable across dispatches.
-	// Verify it does not contain any per-dispatch placeholders.
-	if strings.Contains(p, "$KORYPH_PHASE_DIR") {
-		// The block may reference the env var by name in prose — that is fine;
-		// what is forbidden is an unresolved shell variable that would make the
-		// text non-deterministic. We allow the literal string "$KORYPH_PHASE_DIR"
-		// in the preamble as explanatory text; the cache-stability test
-		// (TestNoTimestampsInStableSections) guards against actual timestamps.
-		// So this is informational only; no failure here.
-		_ = p
+	for _, forbidden := range []string{"make gate", "make gate-agent"} {
+		if strings.Contains(Preamble("v1"), forbidden) {
+			t.Errorf("engine clause contains validation-service command %q", forbidden)
+		}
 	}
 }
 
@@ -209,11 +190,10 @@ func TestPreambleRequiresTypedTerminalEvidence(t *testing.T) {
 	for _, want := range []string{
 		"status.json and SUMMARY.md are advisory",
 		"focused_tests",
-		`{"kind":"file","path":"..."}`,
-		`{"kind":"focused-test","command":"..."}`,
-		"exactly one acceptance entry for every AC<n>",
+		"exactly one",
+		"regular file or focused-test",
 		`koryph phase complete --evidence "$KORYPH_PHASE_DIR/completion-evidence.json"`,
-		"Do not hand-write result.json",
+		"Never hand-write result.json",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("preamble missing terminal-evidence contract %q", want)
@@ -262,16 +242,10 @@ func TestPreambleUsesPhaseControlInsteadOfSharedBeadsMutations(t *testing.T) {
 func TestPreambleClassifiesHostBlocks(t *testing.T) {
 	p := Preamble("v1")
 	for _, want := range []string{
-		"sandbox, host, or environment",
-		"ssh-agent",
-		"generic state=blocked heartbeat",
+		"sandbox, credential, tool, network, or host-resource failure",
+		"required command exits nonzero",
 		"--capability <lowercase-token>",
-		"terminal host-capability recovery",
-		"terminal exit",
-		"warning text or intermediate",
-		"zero exit is success",
-		"Darwin xcrun",
-		"terminal non-zero exit",
+		"Warnings and intermediate stderr are not terminal",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("preamble missing host-block guidance %q", want)
@@ -279,18 +253,49 @@ func TestPreambleClassifiesHostBlocks(t *testing.T) {
 	}
 }
 
-// TestPreambleInboxCheckedAtStartAndFinish is the koryph-o72 leg-3 regression
-// test: the preamble must tell the agent to read INBOX.md at the start and
-// again before finishing, not just "between steps" — a nudge landed after
-// dispatch but before the first poll (or right before the agent wraps up)
-// would otherwise go unseen.
-func TestPreambleInboxCheckedAtStartAndFinish(t *testing.T) {
-	p := Preamble("v1")
-	if !strings.Contains(p, "when you start") {
-		t.Errorf("preamble missing an explicit at-start INBOX.md check: %q", p)
+func TestDispatchHasOneInboxWithThreeCheckpoints(t *testing.T) {
+	p := Compile(baseInput())
+	if got := strings.Count(p, "/phases/p1/INBOX.md"); got != 1 {
+		t.Fatalf("phase inbox count = %d, want 1:\n%s", got, p)
 	}
-	if !strings.Contains(p, "before you finish") {
-		t.Errorf("preamble missing an explicit before-finishing INBOX.md check: %q", p)
+	for _, want := range []string{"read at start", "between steps", "immediately before completion"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("dispatch missing inbox checkpoint %q", want)
+		}
+	}
+}
+
+func TestSemanticClauseOwnershipFailsClosed(t *testing.T) {
+	if err := ValidateRepositoryContract(RepositoryClauseMarker + "\npolicy"); err != nil {
+		t.Fatalf("valid repository contract: %v", err)
+	}
+	if err := ValidateRoleContract(RoleClauseMarker + "\nrole behavior"); err != nil {
+		t.Fatalf("valid role contract: %v", err)
+	}
+	native := baseInput()
+	native.RepositoryContract = ""
+	if err := ValidateDispatchContract(Compile(native), false); err != nil {
+		t.Fatalf("valid native dispatch contract: %v", err)
+	}
+	if err := ValidateDispatchContract(Compile(baseInput()), true); err != nil {
+		t.Fatalf("valid projected dispatch contract: %v", err)
+	}
+
+	duplicate := baseInput()
+	duplicate.Bead.Description = EngineClauseMarker
+	if err := ValidateDispatchContract(Compile(duplicate), true); err == nil {
+		t.Fatal("duplicate engine clause was accepted")
+	}
+	unknown := RepositoryClauseMarker + "\n<!-- koryph-clause:future/v1 -->"
+	if err := ValidateRepositoryContract(unknown); err == nil {
+		t.Fatal("unknown repository semantic owner was accepted")
+	}
+}
+
+func TestDispatchContractCompactBudget(t *testing.T) {
+	const maxPromptBytes = 8 * 1024
+	if got := len(Compile(baseInput())); got > maxPromptBytes {
+		t.Fatalf("compact dispatch prompt = %d bytes, budget = %d", got, maxPromptBytes)
 	}
 }
 

@@ -11,8 +11,9 @@ allowed-tools:
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2026 The Koryph Developers -->
+<!-- koryph-clause:role/v1 -->
 
-# Migration Analyst (Opus, read-only)
+# Migration analyst
 
 Runs the discovery half of project onboarding: reads a candidate project's
 existing koryph fork (if any), beads state, and worktrees, and proposes
@@ -45,7 +46,7 @@ Always produces a dry-run artifact — never writes the registry itself.
    `account_profile`, `agents_source`, `project_hooks`,
    `worktree_root`, `active_worktrees[]`.
 3. For plan/task state with no structured form yet, classify the backfill
-   difficulty per item: auto / lightweight-inference / opus-assisted /
+   difficulty per item: auto / light-assisted / frontier-assisted /
    human-review / legacy-read-only. Never guess an uninferable field —
    mark it `TBD-human`.
 4. Flag any dirty or orphaned worktree by name; never propose deleting one.

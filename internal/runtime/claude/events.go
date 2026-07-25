@@ -216,6 +216,7 @@ func classify(line []byte) (runtime.Event, bool) {
 			ev.CacheReadTokens = rl.Usage.CacheReadInputTokens
 			ev.CacheCreationTokens = rl.Usage.CacheCreationInputTokens
 			ev.HasUsage = true
+			ev.TokenSemantics = runtime.TokenSemanticsDisjointV1
 		}
 		if len(rl.ModelUsage) > 0 {
 			ev.ModelUsage = make(map[string]int64, len(rl.ModelUsage))
@@ -311,10 +312,13 @@ func ParseResultCost(r io.Reader) (float64, bool) {
 // docs/designs/2026-07-token-economy.md §3 L1): input, output, cache-read,
 // and cache-creation token counts.
 type TokenUsage struct {
-	InputTokens         int64
-	OutputTokens        int64
-	CacheReadTokens     int64
-	CacheCreationTokens int64
+	InputTokens              int64
+	OutputTokens             int64
+	CacheReadTokens          int64
+	CacheCreationTokens      int64
+	TokenSemantics           string
+	ProviderTotalInputTokens int64
+	HasProviderTotalInput    bool
 }
 
 // ParseResultUsage scans r for the LAST EventResult, returning its token
@@ -337,10 +341,13 @@ func ParseResultUsage(r io.Reader) (TokenUsage, bool) {
 		if ev.Kind == runtime.EventResult {
 			if ev.HasUsage {
 				usage = TokenUsage{
-					InputTokens:         ev.InputTokens,
-					OutputTokens:        ev.OutputTokens,
-					CacheReadTokens:     ev.CacheReadTokens,
-					CacheCreationTokens: ev.CacheCreationTokens,
+					InputTokens:              ev.InputTokens,
+					OutputTokens:             ev.OutputTokens,
+					CacheReadTokens:          ev.CacheReadTokens,
+					CacheCreationTokens:      ev.CacheCreationTokens,
+					TokenSemantics:           ev.TokenSemantics,
+					ProviderTotalInputTokens: ev.ProviderTotalInputTokens,
+					HasProviderTotalInput:    ev.HasProviderTotalInput,
 				}
 				found = true
 			} else {

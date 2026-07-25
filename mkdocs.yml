@@ -68,6 +68,7 @@ nav:
           - Epic validation: user-guide/epic-validation.md
           - Recovery & escalation: user-guide/recovery.md
           - "AI runtimes: support status": user-guide/runtimes.md
+          - Autonomy SLOs: user-guide/autonomy-slos.md
           - Billing & quota: user-guide/billing-and-quota.md
           - Context economy: user-guide/context-economy.md
           - "Experimental: headroom-ai integration": user-guide/headroom-integration.md

@@ -108,6 +108,13 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 
 	for _, epicID := range ids {
 		delete(r.epicPending, epicID)
+		// A fixed admission cohort applies to every model-bearing engine
+		// action, not only implementation slots. Parent-epic validation is
+		// deliberately deferred unless the epic itself was included in the
+		// bounded cohort.
+		if !r.idAllowed(epicID) {
+			continue
+		}
 
 		epic, err := r.adapter.Show(ctx, epicID)
 		if err != nil {
@@ -209,7 +216,7 @@ func (r *runner) maybeStartEpicValidation(ctx context.Context, allowDispatch boo
 		if r.cfg.EpicValidation != nil {
 			explicitValidatorModel = r.cfg.EpicValidation.Model
 		}
-		validatorModel, modelErr := r.resolveModelForRuntime(modelroute.StageReview, epic, explicitValidatorModel, runtimeName)
+		validatorModel, modelErr := r.resolveModelForRuntime(modelroute.StageEpicValidation, epic, explicitValidatorModel, runtimeName)
 		if modelErr != nil {
 			r.progress("epic %s: validator model resolution: %v", epicID, modelErr)
 			continue
