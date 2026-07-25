@@ -153,7 +153,7 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 		// Phase-local Go caches are disposable once every slot is terminal. Prune
 		// them immediately rather than retaining them until the whole run reaches
 		// its archival age; the rest of the phase evidence remains in place.
-		prunePhaseCaches(runDir, phaseNames, &cr, opts.DryRun)
+		prunedMB := prunePhaseCaches(runDir, phaseNames, &cr, opts.DryRun)
 
 		// Determine run age from the directory mtime.
 		fi, serr := os.Lstat(runDir)
@@ -164,6 +164,13 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 		age := now.Sub(fi.ModTime())
 		ageDays := int(age.Hours() / 24)
 		sz := dirSizeMB(runDir)
+		// In a dry run, the run still includes phase caches. Account for them
+		// separately, as the live path first prunes them and then compresses the
+		// remaining run evidence.
+		compressSize := sz
+		if opts.DryRun {
+			compressSize -= prunedMB
+		}
 		cr.ScannedMB += sz
 
 		archiveName := runDir + ".tar.gz"
@@ -184,7 +191,7 @@ func gcRunDirs(repoRoot string, cfg Config, opts Options) ClassResult {
 				}
 			}
 			cr.Compressed++
-			cr.ReclaimedMB += sz
+			cr.ReclaimedMB += compressSize
 			alreadyArchived = true
 		}
 
@@ -231,16 +238,8 @@ func resolveLatest(koryphRoot string) string {
 	return filepath.Base(target)
 }
 
-// allSlotsTerminal reads ledger.json for the run and returns true only if
-// all slots are terminal (or there are no slots). A missing or unreadable
-// ledger is retained conservatively because its run state is unknown.
-func allSlotsTerminal(runDir string) bool {
-	_, terminal := terminalPhaseNames(runDir)
-	return terminal
-}
-
 // terminalPhaseNames returns the direct child directory names that belong to
-// terminal slots. The ledger is the authority for identifying phase dirs, so
+// a terminal run. The ledger is the authority for identifying phase dirs, so
 // unrelated run-level directories are never considered for cache pruning.
 func terminalPhaseNames(runDir string) ([]string, bool) {
 	ledgerPath := filepath.Join(runDir, "ledger.json")
@@ -252,22 +251,38 @@ func terminalPhaseNames(runDir string) ([]string, bool) {
 	if err := json.Unmarshal(data, &run); err != nil {
 		return nil, false
 	}
+	if !terminalRunStatus(run.Status) {
+		return nil, false
+	}
 	phaseNames := make([]string, 0, len(run.Slots))
 	for _, sl := range run.Slots {
 		if sl != nil && !ledger.Terminal(sl.Status) {
 			return nil, false
 		}
-		if sl != nil && sl.PhaseID != "" && filepath.Base(sl.PhaseID) == sl.PhaseID {
+		if sl != nil && safePhaseName(sl.PhaseID) {
 			phaseNames = append(phaseNames, sl.PhaseID)
 		}
 	}
 	return phaseNames, true
 }
 
+func terminalRunStatus(status string) bool {
+	switch status {
+	case ledger.RunDone, ledger.RunDrained, ledger.RunAborted:
+		return true
+	}
+	return false
+}
+
+func safePhaseName(name string) bool {
+	return name != "" && name != "." && name != ".." && filepath.Base(name) == name
+}
+
 // prunePhaseCaches deletes only recognized cache directories directly below a
 // phase directory. It never walks arbitrary phase contents, preserving the
 // ledger, manifests, streams, logs, summaries, and unknown diagnostics.
-func prunePhaseCaches(runDir string, phaseNames []string, cr *ClassResult, dryRun bool) {
+func prunePhaseCaches(runDir string, phaseNames []string, cr *ClassResult, dryRun bool) float64 {
+	var prunedMB float64
 	for _, phaseName := range phaseNames {
 		phaseDir := filepath.Join(runDir, phaseName)
 		entries, rerr := os.ReadDir(phaseDir)
@@ -291,9 +306,11 @@ func prunePhaseCaches(runDir string, phaseNames []string, cr *ClassResult, dryRu
 				}
 			}
 			cr.ReclaimedMB += sz
+			prunedMB += sz
 			cr.Deleted++
 		}
 	}
+	return prunedMB
 }
 
 // removeAllWritable handles Go module-cache directories whose downloaded

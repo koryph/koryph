@@ -314,6 +314,50 @@ func TestGCPhaseCachesPreserveNonterminalRuns(t *testing.T) {
 	}
 }
 
+func TestGCPhaseCachesPreserveRunsWithTerminalSlotsButNonterminalStatus(t *testing.T) {
+	for _, runStatus := range []string{"running", "paused-quota", "hard-stop-quota"} {
+		t.Run(runStatus, func(t *testing.T) {
+			repoRoot, runDir := gcCacheFixture(t, "merged")
+			ledgerData := `{"run_id":"20260724-120000","slots":{"bead1":{"phase_id":"bead1","status":"merged"}},"status":"` + runStatus + `"}`
+			if err := os.WriteFile(filepath.Join(runDir, "ledger.json"), []byte(ledgerData), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cacheDir := filepath.Join(runDir, "bead1", "go-cache")
+			if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			res := runCacheGC(t, repoRoot, false)
+			if got := classResult(t, res, "run-dirs").Deleted; got != 0 {
+				t.Errorf("deleted %d phase caches from %s run", got, runStatus)
+			}
+			if _, err := os.Stat(cacheDir); err != nil {
+				t.Errorf("cache in %s run was removed: %v", runStatus, err)
+			}
+		})
+	}
+}
+
+func TestGCPhaseCachesRejectUnsafePhaseNames(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "merged")
+	koryphRoot := filepath.Dir(runDir)
+	cacheDir := filepath.Join(koryphRoot, "go-cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ledgerData := `{"run_id":"20260724-120000","slots":{"bead1":{"phase_id":"..","status":"merged"}},"status":"done"}`
+	if err := os.WriteFile(filepath.Join(runDir, "ledger.json"), []byte(ledgerData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := classResult(t, runCacheGC(t, repoRoot, false), "run-dirs").Deleted; got != 0 {
+		t.Errorf("deleted %d cache directories for unsafe phase name", got)
+	}
+	if _, err := os.Stat(cacheDir); err != nil {
+		t.Errorf("cache outside run was removed: %v", err)
+	}
+}
+
 func TestGCPhaseCachesDryRunReportsWithoutMutation(t *testing.T) {
 	repoRoot, runDir := gcCacheFixture(t, "done")
 	cacheFile := filepath.Join(runDir, "bead1", "go-cache", "cache-data")
@@ -334,6 +378,34 @@ func TestGCPhaseCachesDryRunReportsWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestGCPhaseCacheDryRunDoesNotDoubleCountCompression(t *testing.T) {
+	repoRoot, runDir := gcCacheFixture(t, "merged")
+	cacheFile := filepath.Join(runDir, "bead1", "go-cache", "cache-data")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, make([]byte, 1024*1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * 24 * time.Hour)
+	if err := os.Chtimes(runDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KORYPH_HOME", t.TempDir())
+	cfg := Config{RunDirs: RunDirPolicy{CompressAfterDays: 1, DeleteAfterDaysNever: true}}.effective()
+	res, err := Run(Options{RepoRoot: repoRoot, DryRun: true, Config: &cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := classResult(t, res, "run-dirs")
+	if cr.Compressed != 1 {
+		t.Fatalf("compressed = %d, want 1", cr.Compressed)
+	}
+	if got, want := cr.ReclaimedMB, dirSizeMB(runDir); got != want {
+		t.Errorf("reclaimed = %f MB, want %f MB without double-counting cache", got, want)
+	}
+}
+
 func gcCacheFixture(t *testing.T, status string) (string, string) {
 	t.Helper()
 	repoRoot := t.TempDir()
@@ -341,7 +413,7 @@ func gcCacheFixture(t *testing.T, status string) (string, string) {
 	if err := os.MkdirAll(filepath.Join(runDir, "bead1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ledgerData := `{"run_id":"20260724-120000","slots":{"bead1":{"phase_id":"bead1","status":"` + status + `"}}}`
+	ledgerData := `{"run_id":"20260724-120000","slots":{"bead1":{"phase_id":"bead1","status":"` + status + `"}},"status":"done"}`
 	if err := os.WriteFile(filepath.Join(runDir, "ledger.json"), []byte(ledgerData), 0o644); err != nil {
 		t.Fatal(err)
 	}
