@@ -286,6 +286,109 @@ func (r *runner) revalidationTargetKey(
 	return fmt.Sprintf("sha256:%x", sum[:]), nil
 }
 
+// gateFailureTarget identifies one failed validation target and the candidate
+// paths that target actually changes. Broad repository gates can fail because
+// of ambient default-branch or infrastructure state. The engine uses this
+// identity to confirm a failure once without a model, then uses changedPaths
+// to keep any eventual coding repair inside the candidate's task boundary.
+func (r *runner) gateFailureTarget(
+	ctx context.Context,
+	sl *ledger.Slot,
+) (key string, changedPaths []string, err error) {
+	if r.rec == nil || sl == nil || sl.Worktree == "" || sl.Branch == "" {
+		return "", nil, errors.New("gate failure target is missing repository or candidate identity")
+	}
+	base, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: r.rec.Root, Name: "git",
+		Args: []string{"rev-parse", "--verify", r.rec.DefaultBranch + "^{commit}"},
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve failed-gate base: %w", err)
+	}
+	candidate, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: sl.Worktree, Name: "git",
+		Args: []string{"rev-parse", "--verify", sl.Branch + "^{commit}"},
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve failed-gate candidate: %w", err)
+	}
+	baseSHA := strings.TrimSpace(base.Stdout)
+	candidateSHA := strings.TrimSpace(candidate.Stdout)
+	mergeBase, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: sl.Worktree, Name: "git",
+		Args: []string{"merge-base", baseSHA, candidateSHA},
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve failed-gate merge base: %w", err)
+	}
+	diff, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: sl.Worktree, Name: "git",
+		Args: []string{
+			"diff", "--name-only", "--no-renames",
+			strings.TrimSpace(mergeBase.Stdout) + "..." + candidateSHA,
+		},
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("list failed-gate candidate paths: %w", err)
+	}
+	buildIdentity, err := exactBuildIdentity()
+	if err != nil {
+		return "", nil, err
+	}
+	raw := strings.Join([]string{
+		baseSHA,
+		candidateSHA,
+		buildIdentity,
+		"authoritative-gate-failed",
+	}, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("sha256:%x", sum[:]), strings.Fields(diff.Stdout), nil
+}
+
+// gateFailureTouchesCandidate is intentionally evidence-based rather than a
+// semantic guess. Go and most build tools report either the changed file or
+// its package/directory. A failure that names neither stays in the control
+// plane; a task worker is never asked to repair unrelated repository state.
+func gateFailureTouchesCandidate(output string, changedPaths []string) bool {
+	output = strings.ToLower(strings.ReplaceAll(output, "\\", "/"))
+	for _, changed := range changedPaths {
+		changed = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(changed, "\\", "/")))
+		if changed == "" {
+			continue
+		}
+		if containsGatePath(output, changed) {
+			return true
+		}
+		if cut := strings.LastIndex(changed, "/"); cut > 0 &&
+			containsGatePath(output, changed[:cut]) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsGatePath(output, path string) bool {
+	for offset := 0; offset < len(output); {
+		found := strings.Index(output[offset:], path)
+		if found < 0 {
+			return false
+		}
+		start := offset + found
+		end := start + len(path)
+		beforeOK := start == 0 || !gatePathIdentifierByte(output[start-1])
+		afterOK := end == len(output) || !gatePathIdentifierByte(output[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
+func gatePathIdentifierByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '_' || b == '-'
+}
+
 func (r *runner) finalizationEvidenceCurrent(
 	ctx context.Context,
 	sl *ledger.Slot,

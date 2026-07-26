@@ -256,14 +256,10 @@ func (a *Adapter) Comment(ctx context.Context, id, text string) error {
 // AppendNotes appends text to an issue's notes via
 // `bd update <id> --append-notes <text>` (bd joins with a newline separator).
 //
-// This is the reliable pre-dispatch nudge channel (koryph-o72): a bd comment
-// is a one-way audit trail — nothing reads bd's comments back into a Show/
-// Ready result, so promptc never sees it — and INBOX.md only exists once a
-// specific dispatch has created a phase dir, which may not happen in the run
-// active when the operator nudges (a still-queued bead can be dispatched by
-// an entirely later `koryph run` invocation). Notes, by contrast, are part
-// of every `bd show`/`bd ready` result (Issue.Notes) and promptc.Compile
-// folds them into whichever future dispatch actually picks the bead up.
+// Notes are durable control-plane provenance. They are used for structured
+// epic-validation and operational records but are deliberately excluded from
+// task-worker prompts; dispatch scope belongs in the bead's description,
+// design, and acceptance criteria.
 func (a *Adapter) AppendNotes(ctx context.Context, id, text string) error {
 	_, err := a.run(ctx, "update", id, "--append-notes", text)
 	return err

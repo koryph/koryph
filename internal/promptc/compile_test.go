@@ -398,32 +398,19 @@ func TestPlanBlockConditional(t *testing.T) {
 	}
 }
 
-// TestOperatorNotesAppearVerbatim is the koryph-o72 leg-1 regression test: a
-// note appended to a bead pre-dispatch (bd's --append-notes, which lands in
-// Issue.Notes via the adapter) must appear verbatim in the compiled prompt,
-// clearly delimited from the original description.
-func TestOperatorNotesAppearVerbatim(t *testing.T) {
-	// Absent by default — no phantom section when notes are empty.
-	out := Compile(baseInput())
-	if strings.Contains(out, "OPERATOR NOTES") {
-		t.Errorf("OPERATOR NOTES section should be absent when Bead.Notes is empty")
-	}
-
+func TestBeadNotesRemainControlPlaneProvenance(t *testing.T) {
 	in := baseInput()
-	in.Bead.Notes = "scope also covers the retry path — do not ship without it"
-	out = Compile(in)
-	if !strings.Contains(out, "### OPERATOR NOTES") {
-		t.Errorf("OPERATOR NOTES section missing when Bead.Notes is set:\n%s", out)
-	}
-	if !strings.Contains(out, "scope also covers the retry path — do not ship without it") {
-		t.Errorf("operator note text missing verbatim from compiled prompt:\n%s", out)
-	}
-	// Must appear in the volatile tail (after the task heading), not the
-	// cache-stable preamble/project sections.
-	iTask := strings.Index(out, "## Task bd-42")
-	iNotes := strings.Index(out, "### OPERATOR NOTES")
-	if iNotes < iTask {
-		t.Errorf("OPERATOR NOTES section should be in the volatile tail (after %d), got index %d", iTask, iNotes)
+	in.Bead.Notes = "old canary failed; previous model route was frontier; preserve generation abc"
+	out := Compile(in)
+	for _, forbidden := range []string{
+		"OPERATOR NOTES",
+		"old canary failed",
+		"previous model route",
+		"preserve generation abc",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("compiled worker prompt leaked Bead provenance %q:\n%s", forbidden, out)
+		}
 	}
 }
 

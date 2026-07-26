@@ -165,17 +165,11 @@ func volatileTail(in Input) string {
 		b.WriteString(strings.TrimRight(in.Bead.AcceptanceCriteria, "\n"))
 	}
 
-	// OPERATOR NOTES (koryph-o72): an addendum sent via `bd update
-	// --append-notes` while this bead was still queued — before any agent
-	// was dispatched to see it. Notes are operator guidance by construction
-	// (nothing else writes bd's notes field), so they are rendered as
-	// binding scope, clearly delimited from the bead's original description
-	// above so a reader can tell what was filed vs. what was added later.
-	if strings.TrimSpace(in.Bead.Notes) != "" {
-		b.WriteString("\n\n### OPERATOR NOTES\n")
-		b.WriteString("Added after this bead was filed — treat as required scope, not optional:\n\n")
-		b.WriteString(strings.TrimRight(in.Bead.Notes, "\n"))
-	}
+	// Bead notes are durable control-plane provenance, not dispatch scope.
+	// They accumulate recovery history, routing changes, and canary evidence
+	// across runs. Rendering them here silently converts old observations into
+	// current requirements. Operators must update the description, design, or
+	// acceptance criteria when the task contract itself changes.
 
 	if strings.TrimSpace(in.PlanYAML) != "" {
 		b.WriteString("\n\n### Execution plan (koryph-plan)\n```yaml\n")
@@ -219,7 +213,7 @@ func volatileTail(in Input) string {
 		b.WriteString("\n\n### Required validation repair evidence\n")
 		b.WriteString("The previous attempt failed authoritative validation. Read ")
 		b.WriteString(in.RepairPath)
-		b.WriteString(". Correct the reported root cause, then run a focused regression that covers it before you finish.")
+		b.WriteString(". Correct the reported root cause only where it is within this task contract and the candidate's existing diff, then run a focused regression that covers it before you finish. If the evidence requires unrelated changes, report the scope mismatch instead of editing outside this task.")
 	}
 
 	writeResourcesBlock(&b, in.Bead)

@@ -54,7 +54,7 @@ func TestRunOnceCapabilityBlockIsSlotLocal(t *testing.T) {
 	}
 }
 
-func TestCapabilityHoldIgnoresStatusOnlyReopenAndAllowsNoteOnce(t *testing.T) {
+func TestCapabilityHoldIgnoresStatusAndNotesAndAllowsExplicitOperatorRetry(t *testing.T) {
 	r, _, _ := candidateFixture(t)
 	r.cfg = &project.Config{}
 	issue := beads.Issue{ID: "candidate", Status: "blocked", UpdatedAt: "first"}
@@ -72,8 +72,14 @@ func TestCapabilityHoldIgnoresStatusOnlyReopenAndAllowsNoteOnce(t *testing.T) {
 	}
 
 	reopened.Notes = "operator repaired the proxy"
+	if got := r.filterCapabilityHolds(context.Background(), []beads.Issue{reopened}); len(got) != 0 {
+		t.Fatalf("historical bead note escaped capability hold: %+v", got)
+	}
+	if err := r.store.RequestCapabilityRetry(issue.ID, "operator repaired the proxy"); err != nil {
+		t.Fatal(err)
+	}
 	if got := r.filterCapabilityHolds(context.Background(), []beads.Issue{reopened}); len(got) != 1 {
-		t.Fatalf("durable note did not change evidence: %+v", got)
+		t.Fatalf("explicit operator retry did not change evidence: %+v", got)
 	}
 	if !r.consumeCapabilityRetry(issue.ID) {
 		t.Fatal("changed evidence was not consumed")

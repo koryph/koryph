@@ -10,11 +10,9 @@
 //	[3] volatile tail   — Bead contract, prior findings, resources, focused
 //	                      tests, and the one phase inbox
 //
-// OPERATOR NOTES (koryph-o72): Bead.Notes carries any addendum appended via
-// `bd update --append-notes` while the bead was still queued — i.e. before
-// any agent existed to read an INBOX.md. It is rendered as its own
-// clearly-delimited section whenever non-empty (compile.go's volatileTail),
-// so a pre-dispatch nudge is guaranteed to reach the agent it was meant for.
+// Bead.Notes is control-plane provenance and is deliberately excluded from
+// worker prompts. Scope changes belong in the description, design, or
+// acceptance criteria; retry/review evidence arrives through explicit paths.
 //
 // Implementation contract (compile.go):
 //   - Compile(Input) string — deterministic, no timestamps inside sections
@@ -42,7 +40,8 @@ type Input struct {
 	ReviewPath      string // non-empty → blocking review findings to address
 	// RepairPath is authoritative validation evidence from a prior failed
 	// attempt. It is distinct from a review: a gate failure must tell the
-	// repair worker exactly which validation result it needs to correct.
+	// repair worker exactly which validation result it needs to correct, while
+	// the prompt keeps that repair inside the existing task and candidate diff.
 	RepairPath  string // non-empty → required validation repair evidence
 	PhaseDir    string // where status.json / SUMMARY.md / INBOX.md live
 	SummaryPath string

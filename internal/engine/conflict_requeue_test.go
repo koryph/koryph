@@ -9,12 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/koryph/koryph/internal/dispatch"
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/merge"
+	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/quota"
+	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/runtime/runtimetest"
 )
 
@@ -91,30 +94,77 @@ func (b *capturingBackend) Dispatch(_ context.Context, spec dispatch.Spec) (disp
 	return dispatch.Handle{PID: 1, SessionID: spec.SessionID}, nil
 }
 
-// A gate retry is only useful when the coding worker can inspect the exact
-// authoritative failure. This guards the canary regression where a standard
-// repair received only "gate-failed requeue", ran its already-passing focused
-// test, and returned the unchanged candidate.
-func TestGateFailureRetryCarriesImmutableRepairEvidence(t *testing.T) {
-	f := newFixture(t, fixOpts{})
-	r := runnerFromFixture(t, f)
+func gateFailureFixture(t *testing.T, changedPath string) (*runner, *ledger.Slot, *capturingBackend, *finalizationLane) {
+	t.Helper()
+	r, sl, wt := candidateFixture(t)
+	reg := registry.NewStore()
+	rec, err := reg.Get("proj")
+	if err != nil {
+		t.Fatalf("registry.Get: %v", err)
+	}
+	cfg, err := project.Load(rec.Root)
+	if err != nil {
+		t.Fatalf("project.Load: %v", err)
+	}
+	worktreeRoot := rec.WorktreeRoot
+	if worktreeRoot == "" {
+		worktreeRoot = filepath.Join(filepath.Dir(rec.Root), filepath.Base(rec.Root)+"-worktrees")
+	}
+	canonicalWorktree := filepath.Join(worktreeRoot, strings.ReplaceAll(sl.Branch, "/", "-"))
+	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir worktree root: %v", err)
+	}
+	runGit(t, rec.Root, "worktree", "move", wt, canonicalWorktree)
+	wt = canonicalWorktree
+	sl.Worktree = wt
+	r.reg, r.rec, r.cfg = reg, rec, cfg
+	r.opts = Options{ProjectID: "proj"}
 	r.adapter = &fakeSource{}
 	r.quotaCfg = &quota.Config{}
 	r.rt = runtimetest.Stub{StubName: "claude"}
 	backend := &capturingBackend{}
 	r.backend = backend
-
-	sl := conflictSlot(t, r, "gate-evidence", 0)
 	sl.Model, sl.Agent, sl.ModelWhy = "sonnet", "koryph-implementer", "test frozen"
+	writeFile(t, filepath.Join(wt, changedPath), "candidate change\n", 0o644)
+	runGit(t, wt, "add", changedPath)
+	runGit(t, wt, "commit", "--no-verify", "-m", "fix(candidate): scoped change")
 	if err := r.store.SaveRun(r.run); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
-	const gateOutput = "--- FAIL: TestTypedBlockedCandidateCommentsBead\nblocked comment missing typed outcome\n"
+
+	lane := &finalizationLane{}
+	lane.gates.ready = sync.NewCond(&lane.gates.mu)
+	r.finalizer = lane
+	return r, sl, backend, lane
+}
+
+// A broad gate failure is first confirmed by the engine without spending a
+// model attempt. If the same candidate/base fails again and the evidence names
+// a candidate-changed package, the one bounded repair receives the exact
+// immutable failure.
+func TestGateFailureConfirmsThenDispatchesScopedRepairWithExactEvidence(t *testing.T) {
+	r, sl, backend, lane := gateFailureFixture(t, "internal/project/config.go")
+	const gateOutput = "--- FAIL: TestConfigRoundTrip\ninternal/project/config.go:42: bad round trip\n"
 
 	if requeued := r.handleMergeFailure(t.Context(), sl, merge.Result{
 		Status: merge.StatusGateFailed, GateOutput: gateOutput,
 	}); !requeued {
-		t.Fatal("first gate failure must dispatch a bounded repair")
+		t.Fatal("first gate failure must enter engine-owned confirmation")
+	}
+	if len(backend.specs) != 0 {
+		t.Fatalf("dispatches after first gate failure = %d, want 0", len(backend.specs))
+	}
+	if len(lane.gates.queue) != 1 {
+		t.Fatalf("queued confirmations = %d, want 1", len(lane.gates.queue))
+	}
+	if sl.LastRevalidationKey == "" {
+		t.Fatal("first gate failure did not persist its confirmation target")
+	}
+
+	if requeued := r.handleMergeFailure(t.Context(), sl, merge.Result{
+		Status: merge.StatusGateFailed, GateOutput: gateOutput,
+	}); !requeued {
+		t.Fatal("confirmed candidate-scoped gate failure must dispatch its bounded repair")
 	}
 	if len(backend.specs) != 1 {
 		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
@@ -130,10 +180,74 @@ func TestGateFailureRetryCarriesImmutableRepairEvidence(t *testing.T) {
 	for _, want := range []string{
 		"### Required validation repair evidence", evidencePath,
 		"Correct the reported root cause", "focused regression",
+		"within this task contract", "report the scope mismatch",
 	} {
 		if !strings.Contains(backend.specs[0].Prompt, want) {
 			t.Errorf("repair prompt missing %q:\n%s", want, backend.specs[0].Prompt)
 		}
+	}
+}
+
+func TestRepeatedUnrelatedGateFailureParksWithoutModelOrScopeExpansion(t *testing.T) {
+	r, sl, backend, lane := gateFailureFixture(t, "internal/project/config.go")
+	const gateOutput = "--- FAIL: TestRollingTimeout\nFAIL github.com/example/project/internal/engine\n"
+
+	if !r.handleMergeFailure(t.Context(), sl, merge.Result{
+		Status: merge.StatusGateFailed, GateOutput: gateOutput,
+	}) {
+		t.Fatal("first gate failure must enter engine-owned confirmation")
+	}
+	if len(lane.gates.queue) != 1 {
+		t.Fatalf("queued confirmations = %d, want 1", len(lane.gates.queue))
+	}
+	if r.handleMergeFailure(t.Context(), sl, merge.Result{
+		Status: merge.StatusGateFailed, GateOutput: gateOutput,
+	}) {
+		t.Fatal("repeated unrelated gate failure must park, not requeue")
+	}
+	if len(backend.specs) != 0 {
+		t.Fatalf("model dispatches = %d, want 0", len(backend.specs))
+	}
+	got := r.run.Slots[sl.PhaseID]
+	if got.Status != ledger.SlotBlocked || got.OutcomeClass != string(OutcomeCodeDefect) {
+		t.Fatalf("parked slot = status %q / outcome %q, want blocked / code-defect",
+			got.Status, got.OutcomeClass)
+	}
+	if !strings.Contains(got.Note, "without naming a candidate-changed path") ||
+		!strings.Contains(got.Note, "task scope was not expanded") {
+		t.Fatalf("parked note does not explain containment: %q", got.Note)
+	}
+	evidencePath := filepath.Join(
+		r.store.PhaseDir(r.run.RunID, sl.PhaseID),
+		"gate-failure-attempt-1.log",
+	)
+	gotEvidence, err := os.ReadFile(evidencePath)
+	if err != nil {
+		t.Fatalf("read contained failure evidence: %v", err)
+	}
+	if string(gotEvidence) != gateOutput {
+		t.Fatalf("contained evidence = %q, want %q", gotEvidence, gateOutput)
+	}
+}
+
+func TestGateFailureScopeMatchingUsesPathBoundaries(t *testing.T) {
+	changed := []string{"internal/project/config.go"}
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "exact file", output: "internal/project/config.go:42: failed", want: true},
+		{name: "package URL", output: "FAIL github.com/example/repo/internal/project", want: true},
+		{name: "adjacent package is unrelated", output: "FAIL github.com/example/repo/internal/projectcache"},
+		{name: "other package", output: "FAIL github.com/example/repo/internal/engine"},
+		{name: "empty output"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gateFailureTouchesCandidate(tc.output, changed); got != tc.want {
+				t.Fatalf("gateFailureTouchesCandidate(%q) = %v, want %v", tc.output, got, tc.want)
+			}
+		})
 	}
 }
 

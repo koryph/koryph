@@ -73,7 +73,8 @@ run_case gate-before-review \
   "./internal/engine:TestProductionCandidateEntersGateBeforeReviewAndLanding"
 
 run_case evidence-retry \
-  "./internal/engine:TestGateFailureRetryCarriesImmutableRepairEvidence" \
+  "./internal/engine:TestGateFailureConfirmsThenDispatchesScopedRepairWithExactEvidence" \
+  "./internal/engine:TestRepeatedUnrelatedGateFailureParksWithoutModelOrScopeExpansion" \
   "./internal/engine:TestDecideRetryTypedTransitionTable"
 
 run_case slot-local-failure \

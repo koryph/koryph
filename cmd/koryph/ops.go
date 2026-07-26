@@ -295,8 +295,7 @@ func tailFile(path string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// cmdNudge delivers an operator note to a bead, on exactly ONE channel chosen
-// by dispatch state (koryph-o72 leg 2):
+// cmdNudge delivers an operator note to an already-dispatched bead:
 //
 //   - Bead already dispatched (a slot for it exists in the project's latest
 //     run): the live channel — append to INBOX.md in that run's phase dir,
@@ -304,27 +303,17 @@ func tailFile(path string, n int) string {
 //     told (promptc's preamble) to read INBOX.md at start, between steps,
 //     and before finishing, and `koryph tail --follow` surfaces new entries
 //     immediately.
-//   - Bead NOT yet dispatched (no run yet, or no slot for it in the latest
-//     run): INBOX.md is NOT used, because there is no guarantee the bead's
-//     eventual dispatch lands in the run that is "latest" right now — a
-//     still-queued bead can be picked up by a later wave, or by an entirely
-//     new `koryph run` invocation, whose phase dir this call cannot predict.
-//     Writing INBOX.md there anyway is exactly the bug this bead fixes: a
-//     nudge that silently never reaches the agent. Instead the note is
-//     appended to the bead's own notes via `bd update --append-notes`:
-//     Issue.Notes is returned by every `bd show`/`bd ready` call and
-//     promptc.Compile folds it into an OPERATOR NOTES section on whichever
-//     dispatch actually happens (internal/promptc/compile.go), so this is
-//     the one channel guaranteed to survive to the right agent.
 //
-// A bd comment alone cannot serve as that channel: nothing reads bd comments
-// back into a Show/Ready result, so promptc never sees them (see
-// internal/beads's package doc) — comments here are audit trail only.
+// A bead that is not yet dispatched has no authenticated live inbox. Its task
+// contract must be changed through description/design/acceptance criteria;
+// durable bead notes are provenance and are never promoted into worker scope.
+// Capability-held beads are the exception: nudge records a hashed retry epoch
+// in the control plane, but still does not inject the note into a worker prompt.
 func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("nudge", stderr)
 	projectID := fs.String("project", "", "project id (default: the project containing the current directory)")
 	setUsage(fs, stdout,
-		"nudge a bead — live INBOX.md if it's dispatched, else a bd note delivered at its next dispatch",
+		"nudge a dispatched bead through its live INBOX.md",
 		`[--project ID] <bead-id> "text"`)
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -363,9 +352,9 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	// A held bead with no live slot has no agent polling INBOX.md. The latest
 	// run may contain no slot at all because capability filtering happens
 	// before wave construction. Treat its nudge as the explicit, durable
-	// administrative repair: append it to the bead, arm one bounded retry
+	// administrative repair: record an audit comment, arm one bounded retry
 	// epoch, and reopen the tracker item. Raw operator text never enters the
-	// hold.
+	// hold or a future worker prompt.
 	hold, held, holdErr := capabilityStore.LoadCapabilityHold(phaseID)
 	if holdErr != nil {
 		return fail(stderr, fmt.Errorf("nudge: load capability hold: %w", holdErr))
@@ -374,11 +363,11 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 		if !bd.Available() {
 			return fail(stderr, fmt.Errorf(
 				"nudge: %s is capability-blocked and bd is unavailable; "+
-					"the durable operator note and tracker reopen are required", phaseID))
+					"the durable audit comment and tracker reopen are required", phaseID))
 		}
 		note := fmt.Sprintf("[capability retry %s] %s", time.Now().UTC().Format(time.RFC3339), text)
-		if aerr := bd.AppendNotes(ctx, phaseID, note); aerr != nil {
-			return fail(stderr, fmt.Errorf("nudge: append capability-retry note: %w", aerr))
+		if aerr := bd.Comment(ctx, phaseID, note); aerr != nil {
+			return fail(stderr, fmt.Errorf("nudge: record capability-retry audit comment: %w", aerr))
 		}
 		if rerr := capabilityStore.RequestCapabilityRetry(phaseID, text); rerr != nil {
 			return fail(stderr, fmt.Errorf("nudge: record capability-retry evidence: %w", rerr))
@@ -393,20 +382,11 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if slot == nil {
-		note := fmt.Sprintf("[nudge %s] %s", time.Now().UTC().Format(time.RFC3339), text)
-		if !bd.Available() {
-			return fail(stderr, fmt.Errorf(
-				"nudge: %s is not dispatched yet and bd is unavailable here — "+
-					"run this directly so it reaches whichever dispatch picks it up: "+
-					"bd update %s --append-notes %q", phaseID, phaseID, text))
-		}
-		if aerr := bd.AppendNotes(ctx, phaseID, note); aerr != nil {
-			return fail(stderr, fmt.Errorf("nudge: %s is not dispatched yet; append-notes failed: %w", phaseID, aerr))
-		}
-		auditNudge(store, rec.ProjectID, phaseID)
-		fmt.Fprintf(stdout, "%s: not dispatched yet — recorded as a bd note "+
-			"(delivered as OPERATOR NOTES at its next dispatch)\n", phaseID)
-		return 0
+		return fail(stderr, fmt.Errorf(
+			"nudge: %s is not dispatched; update its description, design, or acceptance criteria "+
+				"in bd so the next worker receives a canonical task contract (bead notes are provenance only)",
+			phaseID,
+		))
 	}
 
 	phaseDir := filepath.Join(paths.KoryphRoot(rec.Root), run.RunID, phaseID)

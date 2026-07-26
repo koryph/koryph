@@ -42,7 +42,6 @@ func (r *runner) capabilityEvidenceHash(ctx context.Context, issue beads.Issue, 
 		EngineVersion,
 		version.Build(),
 		version.Commit(),
-		digestCapabilityPart(issue.Notes),
 		hold.OperatorHash,
 		probeHash,
 	}

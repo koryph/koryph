@@ -2478,10 +2478,37 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		return true
 
 	case merge.StatusGateFailed:
+		targetKey, changedPaths, err := r.gateFailureTarget(ctx, sl)
+		if err != nil {
+			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+				"identify authoritative gate failure target: "+err.Error())
+			return false
+		}
+		if targetKey != sl.LastRevalidationKey {
+			if err := r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
+				s.LastRevalidationKey = targetKey
+			}); err != nil {
+				r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+					"persist authoritative gate revalidation target: "+err.Error())
+				return false
+			}
+			sl.LastRevalidationKey = targetKey
+			r.progress("bead %s: authoritative gate failed — confirming exact candidate/base once without model dispatch", sl.PhaseID)
+			r.validateSlot(ctx, sl)
+			return true
+		}
 		repairPath, err := r.persistGateRepairEvidence(sl, res.GateOutput)
 		if err != nil {
 			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
 				"persist authoritative gate repair evidence: "+err.Error())
+			return false
+		}
+		if !gateFailureTouchesCandidate(res.GateOutput, changedPaths) {
+			r.parkTypedRecovery(ctx, sl, OutcomeCodeDefect,
+				fmt.Sprintf(
+					"authoritative gate failed twice without naming a candidate-changed path; "+
+						"task scope was not expanded; evidence=%s", repairPath,
+				))
 			return false
 		}
 		if sl.Retry.CodeRepairs < 1 {

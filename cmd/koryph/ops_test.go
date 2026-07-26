@@ -361,35 +361,30 @@ func TestCmdNudgeMissingText(t *testing.T) {
 	}
 }
 
-// --- cmdNudge (dispatch-state branching, koryph-o72) ------------------------
+// --- cmdNudge dispatch-state boundary --------------------------------------
 
-// TestCmdNudgePreDispatchNoRunAtAllAppendsNotes covers the real-world failure
-// this bead fixes: the bead is queued (no run has ever started for the
-// project), so there is no phase dir INBOX.md could land in. The nudge must
-// not silently create one anyway — it must go to bd notes, the channel
-// promptc.Compile actually reads at the bead's eventual dispatch.
-func TestCmdNudgePreDispatchNoRunAtAllAppendsNotes(t *testing.T) {
+// A queued bead has no authenticated live inbox. Nudge must not silently turn
+// its accumulated notes/history into worker scope; the operator must update
+// the canonical bead contract.
+func TestCmdNudgePreDispatchNoRunRequiresCanonicalContractUpdate(t *testing.T) {
 	isolate(t)
 	log := installFakeBD(t)
 	rec := registerMinimalProject(t, "proj-nudge-1")
 
-	code, out, errb := runCmd("nudge", "--project", rec.ProjectID, "bead-77", "scope also covers retries")
-	if code != 0 {
-		t.Fatalf("code = %d, stderr = %q", code, errb)
+	code, _, errb := runCmd("nudge", "--project", rec.ProjectID, "bead-77", "scope also covers retries")
+	if code == 0 {
+		t.Fatalf("code = 0, want refusal; stderr = %q", errb)
 	}
-	if !strings.Contains(out, "not dispatched yet") {
-		t.Errorf("stdout = %q, want a not-dispatched-yet notice", out)
+	for _, want := range []string{"not dispatched", "description, design, or acceptance criteria", "provenance only"} {
+		if !strings.Contains(errb, want) {
+			t.Errorf("stderr = %q, want %q", errb, want)
+		}
 	}
 
-	args := readArgvLog(t, log)
-	if len(args) != 1 {
-		t.Fatalf("bd argv log = %+v, want exactly one call", args)
-	}
-	if !strings.HasPrefix(args[0], "update bead-77 --append-notes") {
-		t.Errorf("bd argv = %q, want an --append-notes call against bead-77", args[0])
-	}
-	if !strings.Contains(args[0], "scope also covers retries") {
-		t.Errorf("bd argv = %q, want the nudge text appended", args[0])
+	if data, err := os.ReadFile(log); err == nil {
+		t.Fatalf("bd argv log = %q, want no mutation on refused queued nudge", data)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("read bd argv log: %v", err)
 	}
 
 	// No phase dir should have been fabricated for a bead with no run.
@@ -402,28 +397,24 @@ func TestCmdNudgePreDispatchNoRunAtAllAppendsNotes(t *testing.T) {
 	}
 }
 
-// TestCmdNudgePreDispatchQueuedInActiveRunAppendsNotes covers the same bug in
-// its subtler form: a run IS active, but this particular bead has no slot in
-// it yet (still queued in `bd ready`, not yet admitted into a wave). The
-// nudge must still prefer bd notes over speculatively writing an INBOX.md
-// that a future dispatch (possibly in a later run) may never look at.
-func TestCmdNudgePreDispatchQueuedInActiveRunAppendsNotes(t *testing.T) {
+func TestCmdNudgeQueuedInActiveRunRequiresCanonicalContractUpdate(t *testing.T) {
 	isolate(t)
 	log := installFakeBD(t)
 	rec := registerMinimalProject(t, "proj-nudge-2")
 	// A run exists, but with a slot for a DIFFERENT bead only.
 	seedTestRun(t, rec, []*ledger.Slot{{PhaseID: "other-bead", Status: ledger.SlotRunning}})
 
-	code, out, errb := runCmd("nudge", "--project", rec.ProjectID, "queued-bead", "must include the retry path")
-	if code != 0 {
-		t.Fatalf("code = %d, stderr = %q", code, errb)
+	code, _, errb := runCmd("nudge", "--project", rec.ProjectID, "queued-bead", "must include the retry path")
+	if code == 0 {
+		t.Fatalf("code = 0, want refusal; stderr = %q", errb)
 	}
-	if !strings.Contains(out, "not dispatched yet") {
-		t.Errorf("stdout = %q, want a not-dispatched-yet notice", out)
+	if !strings.Contains(errb, "canonical task contract") {
+		t.Errorf("stderr = %q, want canonical-contract guidance", errb)
 	}
-	args := readArgvLog(t, log)
-	if len(args) != 1 || !strings.HasPrefix(args[0], "update queued-bead --append-notes") {
-		t.Fatalf("bd argv log = %+v, want a single --append-notes call against queued-bead", args)
+	if data, err := os.ReadFile(log); err == nil {
+		t.Fatalf("bd argv log = %q, want no mutation on refused queued nudge", data)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("read bd argv log: %v", err)
 	}
 }
 
@@ -495,7 +486,7 @@ func TestCmdNudgeCapabilityBlockedArmsDurableRetry(t *testing.T) {
 	}
 	args := readArgvLog(t, log)
 	if len(args) != 2 ||
-		!strings.HasPrefix(args[0], "update held-bead --append-notes") ||
+		!strings.HasPrefix(args[0], "comment held-bead") ||
 		args[1] != "update held-bead --status open" {
 		t.Fatalf("bd argv log = %+v", args)
 	}
@@ -509,10 +500,8 @@ func TestCmdNudgeCapabilityBlockedArmsDurableRetry(t *testing.T) {
 	}
 }
 
-// TestCmdNudgePreDispatchNoBDErrorsLoudly asserts the loud-error edge case:
-// when the bead is not dispatched yet AND bd is unavailable, the nudge must
-// not silently no-op — the operator has no other reliable channel, so it
-// must fail with guidance to run `bd update --append-notes` directly.
+// The queued-bead refusal is independent of bd availability: notes never
+// become task scope, so guidance always points to the canonical contract.
 func TestCmdNudgePreDispatchNoBDErrorsLoudly(t *testing.T) {
 	isolate(t)
 	t.Setenv("KORYPH_BD_BIN", "/nonexistent/definitely-not-bd")
@@ -522,7 +511,7 @@ func TestCmdNudgePreDispatchNoBDErrorsLoudly(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("expected a non-zero exit when bd is unavailable pre-dispatch; stderr = %q", errb)
 	}
-	if !strings.Contains(errb, "--append-notes") {
-		t.Errorf("stderr = %q, want guidance to run bd update --append-notes directly", errb)
+	if !strings.Contains(errb, "description, design, or acceptance criteria") {
+		t.Errorf("stderr = %q, want canonical-contract update guidance", errb)
 	}
 }

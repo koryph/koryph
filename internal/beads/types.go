@@ -23,10 +23,8 @@
 //     --body-file -` for a single bead; returns the new id.
 //   - Comment(ctx, id, text) error
 //   - AppendNotes(ctx, id, text) error — `bd update <id> --append-notes
-//     <text>`; the reliable pre-dispatch nudge channel (koryph-o72): unlike
-//     INBOX.md (only exists once a specific dispatch's phase dir exists),
-//     `bd show`/`bd ready` always return Issue.Notes, and promptc.Compile
-//     folds it into every future dispatch's prompt.
+//     <text>`; durable control-plane provenance, deliberately not task-worker
+//     prompt scope.
 //   - Close(ctx, id, reason) error
 //   - Claim(ctx, id) error / SetStatus(ctx, id, status) error
 //   - CreateGraph(ctx, graphJSON, dryRun) (string, error)
@@ -57,13 +55,9 @@ type Issue struct {
 	CloseReason        string  `json:"close_reason,omitempty"`
 	DependencyType     string  `json:"dependency_type,omitempty"`
 	Dependencies       []Issue `json:"dependencies,omitempty"`
-	// Notes carries bd's free-form `notes` field verbatim, as populated by
-	// `bd update --notes`/`--append-notes`. This is the reliable channel for
-	// an operator addendum sent while a bead is still queued (koryph-o72):
-	// `bd show --json`/`bd ready --json` return it unconditionally, so
-	// promptc.Compile can fold it into whichever future dispatch picks the
-	// bead up — unlike INBOX.md, which only exists once a specific dispatch
-	// has created a phase dir (see cmd/koryph cmdNudge).
+	// Notes carries bd's free-form `notes` field verbatim for control-plane
+	// state, history, and operator diagnostics. It is not task-worker scope;
+	// dispatch scope comes from Description, Design, and AcceptanceCriteria.
 	Notes           string   `json:"notes,omitempty"`
 	Status          string   `json:"status"`
 	Priority        int      `json:"priority"`
