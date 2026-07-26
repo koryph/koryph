@@ -881,6 +881,50 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 	if err != nil || !retired || recovered.Canary != nil {
 		t.Fatalf("crash recovery state=%+v retired=%t err=%v", recovered, retired, err)
 	}
+
+	// A canary that stopped before starting any engine run has no evidence to
+	// archive. It may move to the repaired strict-descendant binary, but the
+	// presence of even one admitted run must keep the generation fail-closed.
+	empty := previous
+	empty.Mode = loopsupervisor.ModeStopped
+	empty.PID = 99_999_999
+	emptyCanary := *previous.Canary
+	emptyCanary.HardStop = ""
+	emptyCanary.RunIDs = []string{"admitted-run"}
+	emptyCanary.Terminal = nil
+	emptyCanary.Pressure = nil
+	emptyCanary.EndedAt = ""
+	emptyCanary.Decision = ""
+	emptyCanary.ReportDigest = ""
+	emptyCanary.ReportGeneratedAt = ""
+	emptyCanary.PublishedAt = ""
+	empty.Canary = &emptyCanary
+	if err := store.SaveState(empty); err != nil {
+		t.Fatal(err)
+	}
+	if _, rolled, err := rolloverStoppedEmptyNativeCanary(
+		t.Context(), rec.Root, rec.ProjectID, current,
+	); err == nil || rolled || !strings.Contains(err.Error(), "evidence-empty") {
+		t.Fatalf("non-empty rollover rolled=%t err=%v", rolled, err)
+	}
+
+	emptyCanary.RunIDs = nil
+	if err := store.SaveState(empty); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledgerStore.RequestDrain(); err != nil {
+		t.Fatal(err)
+	}
+	rolledState, rolled, err := rolloverStoppedEmptyNativeCanary(
+		t.Context(), rec.Root, rec.ProjectID, current,
+	)
+	if err != nil || !rolled || rolledState.Canary != nil {
+		t.Fatalf("empty rollover state=%+v rolled=%t err=%v", rolledState, rolled, err)
+	}
+	if ledgerStore.DrainRequested() || rolledState.CircuitReason != "" ||
+		rolledState.LastRunID != "" {
+		t.Fatalf("empty rollover retained stale lifecycle state: %+v", rolledState)
+	}
 }
 
 func TestConcurrentCompletedCanaryReconciliationIsIdempotent(t *testing.T) {

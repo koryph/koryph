@@ -178,6 +178,28 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if len(canaryIDs) > 0 && state.Canary != nil &&
+		state.Canary.Decision == "" {
+		target := canaryTargetWidth(canaryIDs, *max)
+		currentSpec, specErr := nativeCanarySpecWithPolicy(
+			rec.ProjectID, rec.Root, canaryIDs, target,
+			registryIdentityDigest, cfg, enginePolicy,
+		)
+		if specErr != nil {
+			return fail(stderr, specErr)
+		}
+		var rolled bool
+		state, rolled, err = rolloverStoppedEmptyNativeCanary(
+			ctx, rec.Root, rec.ProjectID, currentSpec,
+		)
+		if err != nil {
+			return fail(stderr, fmt.Errorf("loop: roll over empty canary generation: %w", err))
+		}
+		if rolled {
+			admittedSpec = currentSpec
+			fmt.Fprintf(stdout, "loop %s: rolled stopped empty canary to strict-descendant binary\n", rec.ProjectID)
+		}
+	}
+	if len(canaryIDs) > 0 && state.Canary != nil &&
 		state.Canary.Decision == "failed" {
 		target := canaryTargetWidth(canaryIDs, *max)
 		admittedSpec, err = nativeCanarySpecWithPolicy(
@@ -613,20 +635,7 @@ func retireStaleNativeCanaryEvidence(
 		}
 	}
 	if state.Canary != nil {
-		state.Canary = nil
-		state.Mode = loopsupervisor.ModeStopped
-		state.PID = 0
-		state.StartedAt = ""
-		state.LastObserved = ""
-		state.CurrentRunID = ""
-		state.LastRunID = ""
-		state.LastCode = 0
-		state.LastReason = ""
-		state.IdleBackoffMS = 0
-		state.FailureFingerprint = ""
-		state.IdenticalFailures = 0
-		state.ConsecutiveFailures = 0
-		state.CircuitReason = ""
+		resetNativeCanarySupervisorState(&state)
 		// A canary hard stop asks the engine to drain before publishing its
 		// immutable failure. Once that failed generation is authenticated and
 		// archived, the marker belongs to the retired generation. Leaving it
@@ -645,6 +654,102 @@ func retireStaleNativeCanaryEvidence(
 		}
 	}
 	return state, true, nil
+}
+
+func rolloverStoppedEmptyNativeCanary(
+	ctx context.Context,
+	root string,
+	projectID string,
+	current *loopsupervisor.CanarySpec,
+) (loopsupervisor.State, bool, error) {
+	if current == nil {
+		return loopsupervisor.State{}, false, errors.New("current canary generation is required")
+	}
+	store := loopsupervisor.NewStore(root)
+	lock, err := acquireLoopReconciliationLease(ctx, store)
+	if err != nil {
+		return loopsupervisor.State{}, false, err
+	}
+	defer lock.Unlock() //nolint:errcheck
+
+	state, err := store.LoadState()
+	if err != nil {
+		return state, false, err
+	}
+	canary := state.Canary
+	if canary == nil || canary.Decision != "" {
+		return state, false, nil
+	}
+	if state.ProjectID != "" && state.ProjectID != projectID {
+		return state, false, errors.New("durable canary belongs to a different project")
+	}
+	if state.Mode != loopsupervisor.ModeStopped || procx.Alive(state.PID) ||
+		len(canary.RunIDs) != 0 || len(canary.Terminal) != 0 ||
+		len(canary.Pressure) != 0 || canary.HardStop != "" ||
+		canary.EndedAt != "" || canary.ReportDigest != "" ||
+		canary.ReportGeneratedAt != "" || canary.PublishedAt != "" {
+		return state, false, errors.New("only a stopped evidence-empty canary generation may roll over")
+	}
+	if _, err := os.Lstat(canary.ReportPath); err == nil {
+		return state, false, errors.New("empty canary generation has an unexpected report")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return state, false, err
+	}
+	previousGeneration, err := loopsupervisor.CanaryStateGenerationDigest(
+		projectID, canary,
+	)
+	if err != nil || canary.GenerationDigest != previousGeneration {
+		return state, false, errors.New("stored canary generation identity is invalid")
+	}
+	currentGeneration, err := loopsupervisor.CanaryGenerationDigest(
+		projectID, *current,
+	)
+	if err != nil || current.GenerationDigest != currentGeneration {
+		return state, false, errors.New("current canary generation identity is invalid")
+	}
+	if previousGeneration == currentGeneration {
+		return state, false, nil
+	}
+	if !sameNativeCanaryNonBinaryPolicy(canary, current) ||
+		canary.RegistryIdentityDigest != current.RegistryIdentityDigest {
+		return state, false, errors.New("canary cohort, contract, registry, or execution policy drift requires operator resolution")
+	}
+	if canary.InstalledCommit == current.InstalledCommit ||
+		canary.BuildIdentity == current.BuildIdentity {
+		return state, false, errors.New("empty canary rollover requires a strict-descendant installed binary")
+	}
+	if err := authenticateNativeCanaryCheckout(root, current.InstalledCommit); err != nil {
+		return state, false, fmt.Errorf("authenticate empty canary rollover checkout: %w", err)
+	}
+	if err := authenticateStrictDescendantCommit(
+		root, canary.InstalledCommit, current.InstalledCommit,
+	); err != nil {
+		return state, false, err
+	}
+
+	resetNativeCanarySupervisorState(&state)
+	ledger.NewStore(root).ConsumeDrain()
+	if err := store.SaveState(state); err != nil {
+		return state, false, fmt.Errorf("roll over empty canary checkpoint: %w", err)
+	}
+	return state, true, nil
+}
+
+func resetNativeCanarySupervisorState(state *loopsupervisor.State) {
+	state.Canary = nil
+	state.Mode = loopsupervisor.ModeStopped
+	state.PID = 0
+	state.StartedAt = ""
+	state.LastObserved = ""
+	state.CurrentRunID = ""
+	state.LastRunID = ""
+	state.LastCode = 0
+	state.LastReason = ""
+	state.IdleBackoffMS = 0
+	state.FailureFingerprint = ""
+	state.IdenticalFailures = 0
+	state.ConsecutiveFailures = 0
+	state.CircuitReason = ""
 }
 
 func sameNativeCanaryHistory(left, right nativeCanaryHistoryRecord) bool {
