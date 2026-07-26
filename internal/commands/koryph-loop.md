@@ -38,5 +38,12 @@ same cohort once with `--supersede-failed-canary-policy`. Koryph still requires
 a clean strict-descendant installed commit, the exact unchanged cohort
 envelope, and authenticated failed state/report evidence. It creates an
 immutable archive recording both policy identities before releasing the fixed
-state paths. The switch cannot supersede a live, passing, same-commit,
-cohort-drifted, or corrupt generation.
+state paths.
+
+If completed members make the old cohort impossible to replay, replace only
+its membership once with `--supersede-failed-canary-cohort`. Koryph requires
+the same authenticated failed evidence and clean strict-descendant binary,
+keeps target width, inactivity limit, and report path fixed, and records both
+cohort memberships and digests in the immutable archive. Policy drift still
+requires its separate switch. Neither switch can supersede a live, passing,
+same-commit, fixed-envelope-drifted, or corrupt generation.

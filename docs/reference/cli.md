@@ -1278,6 +1278,7 @@ run the binary-native autonomous supervisor
 | `--review` | bool | `true` | require the post-validation semantic review |
 | `--runtime-equivalent` | string |  | force this runtime through equivalent capability tiers |
 | `--runtime-only` | string |  | dispatch only beads normally routed to this runtime |
+| `--supersede-failed-canary-cohort` | bool |  | explicitly archive a failed prior generation while replacing its fixed cohort |
 | `--supersede-failed-canary-policy` | bool |  | explicitly archive a failed prior generation after authenticated contract or execution-policy change |
 
 

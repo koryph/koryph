@@ -95,13 +95,17 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 		"supersede-failed-canary-policy", false,
 		"explicitly archive a failed prior generation after authenticated contract or execution-policy change",
 	)
+	supersedeFailedCanaryCohort := fs.Bool(
+		"supersede-failed-canary-cohort", false,
+		"explicitly archive a failed prior generation while replacing its fixed cohort",
+	)
 	idleMin := fs.Duration("idle-min", time.Second, "minimum model-free idle observation backoff")
 	idleMax := fs.Duration("idle-max", time.Minute, "maximum model-free idle observation backoff")
 	setGroupedUsage(fs, stdout,
 		"run the binary-native autonomous supervisor; idle launches no model and creates no run ledger",
 		"[--project ID] [flags] | status|drain|stop|inject",
 		[]flagGroup{
-			{title: "SCOPE", names: []string{"project", "parent", "max", "canary-cohort", "supersede-failed-canary-policy", "dispatch-mode"}},
+			{title: "SCOPE", names: []string{"project", "parent", "max", "canary-cohort", "supersede-failed-canary-policy", "supersede-failed-canary-cohort", "dispatch-mode"}},
 			{title: "LAND & REVIEW", names: []string{"auto-merge", "review", "direct", "default-model", "runtime-only", "runtime-equivalent"}},
 			{title: "BUDGET", names: []string{"budget", "allow-api-spend", "no-billing-guard", "require-calibration"}},
 			{title: "IDLE", names: []string{"idle-min", "idle-max"}},
@@ -122,6 +126,9 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	canaryIDs := splitIDs(*canary)
 	if *supersedeFailedCanaryPolicy && len(canaryIDs) == 0 {
 		return usageErr(stderr, "loop: --supersede-failed-canary-policy requires --canary-cohort")
+	}
+	if *supersedeFailedCanaryCohort && len(canaryIDs) == 0 {
+		return usageErr(stderr, "loop: --supersede-failed-canary-cohort requires --canary-cohort")
 	}
 	if len(canaryIDs) > 0 && (!*review || !*autoMerge) {
 		return usageErr(stderr, "loop: canary mode requires --review=true and --auto-merge=true")
@@ -240,6 +247,7 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 			ctx, rec.Root, rec.ProjectID, admittedSpec,
 			nativeCanaryRetireOptions{
 				SupersedePolicy: *supersedeFailedCanaryPolicy,
+				SupersedeCohort: *supersedeFailedCanaryCohort,
 			},
 		)
 		if err != nil {
@@ -528,14 +536,17 @@ func retireStaleNativeCanaryEvidence(
 	if previousGenerationDigest == currentGenerationDigest {
 		return state, false, nil
 	}
-	policyMatches := sameNativeCanaryNonBinaryPolicy(canary, current)
-	if !policyMatches {
-		if !option.SupersedePolicy {
-			return state, false, errors.New("canary cohort, contract, or execution policy drift requires operator resolution")
-		}
-		if !sameNativeCanaryCohortEnvelope(canary, current) {
-			return state, false, errors.New("canary cohort, width, inactivity, or report-path drift cannot be superseded")
-		}
+	cohortMatches := sameNativeCanaryCohortMembership(canary, current)
+	fixedEnvelopeMatches := sameNativeCanaryFixedEnvelope(canary, current)
+	policyMatches := sameNativeCanaryPolicyInputs(canary, current)
+	if !fixedEnvelopeMatches {
+		return state, false, errors.New("canary width, inactivity, or report-path drift cannot be superseded")
+	}
+	if !cohortMatches && !option.SupersedeCohort {
+		return state, false, errors.New("canary cohort drift requires explicit --supersede-failed-canary-cohort")
+	}
+	if !policyMatches && !option.SupersedePolicy {
+		return state, false, errors.New("canary contract or execution policy drift requires explicit --supersede-failed-canary-policy")
 	}
 	registryChanged := canary.RegistryIdentityDigest != current.RegistryIdentityDigest
 	binaryUnchanged := canary.InstalledCommit == current.InstalledCommit &&
@@ -557,8 +568,8 @@ func retireStaleNativeCanaryEvidence(
 		}
 		binaryAdvanced = true
 	}
-	if !policyMatches && !binaryAdvanced {
-		return state, false, errors.New("canary policy supersession requires a clean strict-descendant installed binary")
+	if (!cohortMatches || !policyMatches) && !binaryAdvanced {
+		return state, false, errors.New("canary supersession requires a clean strict-descendant installed binary")
 	}
 	if !registryChanged && !binaryAdvanced {
 		return state, false, nil
@@ -622,9 +633,11 @@ func retireStaleNativeCanaryEvidence(
 	}
 
 	history := nativeCanaryHistoryRecord{
-		SchemaVersion:                  nativeCanaryHistoryVersion,
-		RetiredAt:                      time.Now().UTC().Format(time.RFC3339Nano),
-		Reason:                         nativeCanaryRolloverReason(registryChanged, binaryAdvanced, !policyMatches),
+		SchemaVersion: nativeCanaryHistoryVersion,
+		RetiredAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		Reason: nativeCanaryRolloverReason(
+			registryChanged, binaryAdvanced, !policyMatches, !cohortMatches,
+		),
 		ProjectID:                      projectID,
 		PreviousGenerationDigest:       previousGenerationDigest,
 		CurrentGenerationDigest:        currentGenerationDigest,
@@ -653,6 +666,19 @@ func retireStaleNativeCanaryEvidence(
 			CurrentHardStops: loopsupervisor.CanonicalCanaryHardStops(
 				current.HardStops,
 			),
+		}
+	}
+	if !cohortMatches {
+		previousCohort := append([]string(nil), canary.Cohort...)
+		currentCohort := append([]string(nil), current.Cohort...)
+		sort.Strings(previousCohort)
+		sort.Strings(currentCohort)
+		history.CohortSupersession = &loopsupervisor.CanaryCohortSupersession{
+			OperatorRequested:    true,
+			PreviousCohort:       previousCohort,
+			CurrentCohort:        currentCohort,
+			PreviousCohortDigest: canary.CohortDigest,
+			CurrentCohortDigest:  cohortDigestForNativeCanary(currentCohort),
 		}
 	}
 	if markerExists {
@@ -966,17 +992,28 @@ func sameNativeCanaryNonBinaryPolicy(
 	previous *loopsupervisor.CanaryState,
 	current *loopsupervisor.CanarySpec,
 ) bool {
-	return sameNativeCanaryCohortEnvelope(previous, current) &&
-		slices.Equal(
-			loopsupervisor.CanonicalCanaryHardStops(previous.HardStops),
-			loopsupervisor.CanonicalCanaryHardStops(current.HardStops),
-		) &&
+	return sameNativeCanaryCohortMembership(previous, current) &&
+		sameNativeCanaryFixedEnvelope(previous, current) &&
+		sameNativeCanaryPolicyInputs(previous, current)
+}
+
+func sameNativeCanaryPolicyInputs(
+	previous *loopsupervisor.CanaryState,
+	current *loopsupervisor.CanarySpec,
+) bool {
+	if previous == nil || current == nil {
+		return false
+	}
+	return slices.Equal(
+		loopsupervisor.CanonicalCanaryHardStops(previous.HardStops),
+		loopsupervisor.CanonicalCanaryHardStops(current.HardStops),
+	) &&
 		previous.ContractDigest == current.ContractDigest &&
 		previous.AutonomyPolicyDigest == current.AutonomyPolicyDigest &&
 		previous.ExecutionPolicyDigest == current.ExecutionPolicyDigest
 }
 
-func sameNativeCanaryCohortEnvelope(
+func sameNativeCanaryCohortMembership(
 	previous *loopsupervisor.CanaryState,
 	current *loopsupervisor.CanarySpec,
 ) bool {
@@ -988,8 +1025,17 @@ func sameNativeCanaryCohortEnvelope(
 	sort.Strings(previousCohort)
 	sort.Strings(currentCohort)
 	return slices.Equal(previousCohort, currentCohort) &&
-		previous.CohortDigest == cohortDigestForNativeCanary(currentCohort) &&
-		previous.TargetWidth == current.TargetWidth &&
+		previous.CohortDigest == cohortDigestForNativeCanary(previousCohort)
+}
+
+func sameNativeCanaryFixedEnvelope(
+	previous *loopsupervisor.CanaryState,
+	current *loopsupervisor.CanarySpec,
+) bool {
+	if previous == nil || current == nil {
+		return false
+	}
+	return previous.TargetWidth == current.TargetWidth &&
 		previous.InactivityLimitMS == current.InactivityLimit.Milliseconds() &&
 		filepath.Clean(previous.ReportPath) == filepath.Clean(current.ReportPath)
 }
@@ -1071,12 +1117,21 @@ func archiveNativeCanaryFile(
 
 type nativeCanaryRetireOptions struct {
 	SupersedePolicy bool
+	SupersedeCohort bool
 }
 
 func nativeCanaryRolloverReason(
-	registryChanged, binaryAdvanced, policySuperseded bool,
+	registryChanged, binaryAdvanced, policySuperseded, cohortSuperseded bool,
 ) string {
 	switch {
+	case policySuperseded && cohortSuperseded && registryChanged:
+		return "installed binary and registry validation identity changed; operator superseded failed canary policy and cohort"
+	case policySuperseded && cohortSuperseded:
+		return "installed binary advanced; operator superseded failed canary policy and cohort"
+	case cohortSuperseded && registryChanged:
+		return "installed binary and registry validation identity changed; operator superseded failed canary cohort"
+	case cohortSuperseded:
+		return "installed binary advanced; operator superseded failed canary cohort"
 	case policySuperseded && registryChanged:
 		return "installed binary and registry validation identity changed; operator superseded failed canary policy"
 	case policySuperseded:

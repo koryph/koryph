@@ -48,7 +48,8 @@ func CheckCanaryGenerationArchives(repoRoot, currentGeneration string) (Finding,
 			archive.ProjectID == "" ||
 			archive.PreviousGenerationDigest == "" ||
 			archive.CurrentGenerationDigest == "" ||
-			!validCanaryPolicySupersession(archive.PolicySupersession) {
+			!validCanaryPolicySupersession(archive.PolicySupersession) ||
+			!validCanaryCohortSupersession(archive.CohortSupersession) {
 			return Finding{
 				Check: checkNameAutonomyCanary, Level: LevelError,
 				Message: "autonomy canary generation archive manifest is invalid: " + path,
@@ -85,6 +86,27 @@ func CheckCanaryGenerationArchives(repoRoot, currentGeneration string) (Finding,
 			current, len(files),
 		),
 	}, true
+}
+
+func validCanaryCohortSupersession(
+	supersession *loopsupervisor.CanaryCohortSupersession,
+) bool {
+	if supersession == nil {
+		return true
+	}
+	previousDigest, previousErr := metrics.AutonomyCohortDigest(
+		supersession.PreviousCohort,
+	)
+	currentDigest, currentErr := metrics.AutonomyCohortDigest(
+		supersession.CurrentCohort,
+	)
+	return previousErr == nil && currentErr == nil &&
+		supersession.OperatorRequested &&
+		len(supersession.PreviousCohort) >= 2 &&
+		len(supersession.CurrentCohort) >= 2 &&
+		supersession.PreviousCohortDigest == previousDigest &&
+		supersession.CurrentCohortDigest == currentDigest &&
+		previousDigest != currentDigest
 }
 
 func validCanaryPolicySupersession(

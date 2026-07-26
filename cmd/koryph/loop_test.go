@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,11 +55,16 @@ func TestCanaryRequiresReviewAndAutoMerge(t *testing.T) {
 	}
 }
 
-func TestCanaryPolicySupersessionRequiresExplicitCanary(t *testing.T) {
-	code, _, errb := runCmd("loop", "--supersede-failed-canary-policy")
-	if code != engine.ExitUsage ||
-		!strings.Contains(errb, "requires --canary-cohort") {
-		t.Fatalf("code=%d stderr=%q", code, errb)
+func TestCanarySupersessionRequiresExplicitCanary(t *testing.T) {
+	for _, flag := range []string{
+		"--supersede-failed-canary-policy",
+		"--supersede-failed-canary-cohort",
+	} {
+		code, _, errb := runCmd("loop", flag)
+		if code != engine.ExitUsage ||
+			!strings.Contains(errb, "requires --canary-cohort") {
+			t.Fatalf("flag=%s code=%d stderr=%q", flag, code, errb)
+		}
 	}
 }
 
@@ -821,8 +827,14 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 	if _, retired, err := retireStaleNativeCanaryEvidence(
 		t.Context(), rec.Root, rec.ProjectID, &cohortDrift,
 		nativeCanaryRetireOptions{SupersedePolicy: true},
-	); err == nil || retired || !strings.Contains(err.Error(), "cannot be superseded") {
-		t.Fatalf("cohort-drift rollover retired=%t err=%v", retired, err)
+	); err == nil || retired || !strings.Contains(err.Error(), "--supersede-failed-canary-cohort") {
+		t.Fatalf("policy-only cohort-drift rollover retired=%t err=%v", retired, err)
+	}
+	if _, retired, err := retireStaleNativeCanaryEvidence(
+		t.Context(), rec.Root, rec.ProjectID, &cohortDrift,
+		nativeCanaryRetireOptions{SupersedeCohort: true},
+	); err == nil || retired || !strings.Contains(err.Error(), "--supersede-failed-canary-policy") {
+		t.Fatalf("cohort-only policy-drift rollover retired=%t err=%v", retired, err)
 	}
 
 	passed := previous
@@ -864,8 +876,11 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 	}
 
 	state, retired, err := retireStaleNativeCanaryEvidence(
-		t.Context(), rec.Root, rec.ProjectID, &policyDrift,
-		nativeCanaryRetireOptions{SupersedePolicy: true},
+		t.Context(), rec.Root, rec.ProjectID, &cohortDrift,
+		nativeCanaryRetireOptions{
+			SupersedePolicy: true,
+			SupersedeCohort: true,
+		},
 	)
 	if err != nil || !retired || state.Canary != nil {
 		t.Fatalf("state=%+v retired=%t err=%v", state, retired, err)
@@ -896,11 +911,17 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 		t.Fatal(err)
 	}
 	if history.PreviousGenerationDigest != previous.Canary.GenerationDigest ||
-		history.CurrentGenerationDigest != policyDrift.GenerationDigest ||
+		history.CurrentGenerationDigest != cohortDrift.GenerationDigest ||
 		history.PolicySupersession == nil ||
 		!history.PolicySupersession.OperatorRequested ||
 		history.PolicySupersession.PreviousContractDigest != previous.Canary.ContractDigest ||
-		history.PolicySupersession.CurrentContractDigest != policyDrift.ContractDigest ||
+		history.PolicySupersession.CurrentContractDigest != cohortDrift.ContractDigest ||
+		history.CohortSupersession == nil ||
+		!history.CohortSupersession.OperatorRequested ||
+		!slices.Equal(history.CohortSupersession.PreviousCohort, []string{"b1", "b2"}) ||
+		!slices.Equal(history.CohortSupersession.CurrentCohort, []string{"b1", "b3"}) ||
+		history.CohortSupersession.PreviousCohortDigest != previous.Canary.CohortDigest ||
+		history.CohortSupersession.CurrentCohortDigest != cohortDigestForNativeCanary(cohortDrift.Cohort) ||
 		history.ArchivedReportDigest == "" || history.ArchivedStateDigest == "" {
 		t.Fatalf("history=%+v", history)
 	}
@@ -908,7 +929,7 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 		t.Fatalf("archived report invalid: %v", err)
 	}
 	finding, exists := doctorpkg.CheckCanaryGenerationArchives(
-		rec.Root, policyDrift.GenerationDigest,
+		rec.Root, cohortDrift.GenerationDigest,
 	)
 	if !exists || finding.Level != doctorpkg.LevelOK ||
 		!strings.Contains(finding.Message, "archived 1") {
@@ -926,8 +947,11 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 		t.Fatal(err)
 	}
 	recovered, retired, err := retireStaleNativeCanaryEvidence(
-		t.Context(), rec.Root, rec.ProjectID, &policyDrift,
-		nativeCanaryRetireOptions{SupersedePolicy: true},
+		t.Context(), rec.Root, rec.ProjectID, &cohortDrift,
+		nativeCanaryRetireOptions{
+			SupersedePolicy: true,
+			SupersedeCohort: true,
+		},
 	)
 	if err != nil || !retired || recovered.Canary != nil {
 		t.Fatalf("crash recovery state=%+v retired=%t err=%v", recovered, retired, err)
