@@ -360,41 +360,36 @@ func cmdNudge(args []string, stdout, stderr io.Writer) int {
 		slot = run.Slots[phaseID]
 	}
 
-	// A terminal capability-blocked slot has no live agent polling INBOX.md.
-	// Treat its nudge as the explicit, durable repair evidence defined by the
-	// capability-hold contract: append it to the bead, arm one bounded retry,
-	// and reopen the tracker item. Raw operator text never enters the hold.
-	if slot != nil && slot.Status == ledger.SlotBlocked {
-		hold, held, herr := capabilityStore.LoadCapabilityHold(phaseID)
-		if herr != nil {
-			return fail(stderr, fmt.Errorf("nudge: load capability hold: %w", herr))
+	// A held bead with no live slot has no agent polling INBOX.md. The latest
+	// run may contain no slot at all because capability filtering happens
+	// before wave construction. Treat its nudge as the explicit, durable
+	// administrative repair: append it to the bead, arm one bounded retry
+	// epoch, and reopen the tracker item. Raw operator text never enters the
+	// hold.
+	hold, held, holdErr := capabilityStore.LoadCapabilityHold(phaseID)
+	if holdErr != nil {
+		return fail(stderr, fmt.Errorf("nudge: load capability hold: %w", holdErr))
+	}
+	if held && (slot == nil || ledger.Terminal(slot.Status)) {
+		if !bd.Available() {
+			return fail(stderr, fmt.Errorf(
+				"nudge: %s is capability-blocked and bd is unavailable; "+
+					"the durable operator note and tracker reopen are required", phaseID))
 		}
-		if held {
-			if hold.RetryCount >= hold.RetryLimit {
-				return fail(stderr, fmt.Errorf(
-					"nudge: %s exhausted its capability retry budget (%d/%d)",
-					phaseID, hold.RetryCount, hold.RetryLimit))
-			}
-			if !bd.Available() {
-				return fail(stderr, fmt.Errorf(
-					"nudge: %s is capability-blocked and bd is unavailable; "+
-						"the durable operator note and tracker reopen are required", phaseID))
-			}
-			note := fmt.Sprintf("[capability retry %s] %s", time.Now().UTC().Format(time.RFC3339), text)
-			if aerr := bd.AppendNotes(ctx, phaseID, note); aerr != nil {
-				return fail(stderr, fmt.Errorf("nudge: append capability-retry note: %w", aerr))
-			}
-			if rerr := capabilityStore.RequestCapabilityRetry(phaseID, text); rerr != nil {
-				return fail(stderr, fmt.Errorf("nudge: record capability-retry evidence: %w", rerr))
-			}
-			if serr := bd.SetStatus(ctx, phaseID, "open"); serr != nil {
-				return fail(stderr, fmt.Errorf("nudge: reopen capability-blocked bead: %w", serr))
-			}
-			auditNudge(store, rec.ProjectID, phaseID)
-			fmt.Fprintf(stdout, "%s: capability retry armed from durable operator evidence (budget %d/%d)\n",
-				phaseID, hold.RetryCount+1, hold.RetryLimit)
-			return 0
+		note := fmt.Sprintf("[capability retry %s] %s", time.Now().UTC().Format(time.RFC3339), text)
+		if aerr := bd.AppendNotes(ctx, phaseID, note); aerr != nil {
+			return fail(stderr, fmt.Errorf("nudge: append capability-retry note: %w", aerr))
 		}
+		if rerr := capabilityStore.RequestCapabilityRetry(phaseID, text); rerr != nil {
+			return fail(stderr, fmt.Errorf("nudge: record capability-retry evidence: %w", rerr))
+		}
+		if serr := bd.SetStatus(ctx, phaseID, "open"); serr != nil {
+			return fail(stderr, fmt.Errorf("nudge: reopen capability-blocked bead: %w", serr))
+		}
+		auditNudge(store, rec.ProjectID, phaseID)
+		fmt.Fprintf(stdout, "%s: capability retry armed from durable operator evidence (budget 1/%d)\n",
+			phaseID, hold.RetryLimit)
+		return 0
 	}
 
 	if slot == nil {

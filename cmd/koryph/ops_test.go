@@ -436,6 +436,13 @@ func TestCmdNudgeDispatchedWritesInboxAndComments(t *testing.T) {
 	log := installFakeBD(t)
 	rec := registerMinimalProject(t, "proj-nudge-3")
 	run := seedTestRun(t, rec, []*ledger.Slot{{PhaseID: "live-bead", Status: ledger.SlotRunning}})
+	capabilityStore := ledger.NewStore(rec.Root)
+	if err := capabilityStore.SetCapabilityHold(ledger.CapabilityHold{
+		BeadID: "live-bead", Capability: "network", EvidenceHash: "spent",
+		RetryCount: 1, RetryLimit: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	code, out, errb := runCmd("nudge", "--project", rec.ProjectID, "live-bead", "narrow the scope now")
 	if code != 0 {
@@ -458,16 +465,23 @@ func TestCmdNudgeDispatchedWritesInboxAndComments(t *testing.T) {
 	if len(args) != 1 || !strings.HasPrefix(args[0], "comment live-bead") {
 		t.Fatalf("bd argv log = %+v, want a single comment call against live-bead", args)
 	}
+	hold, _, err := capabilityStore.LoadCapabilityHold("live-bead")
+	if err != nil || hold.RetryCount != 1 || hold.OperatorHash != "" {
+		t.Fatalf("live nudge rearmed capability hold = %+v, %v", hold, err)
+	}
 }
 
 func TestCmdNudgeCapabilityBlockedArmsDurableRetry(t *testing.T) {
 	isolate(t)
 	log := installFakeBD(t)
 	rec := registerMinimalProject(t, "proj-nudge-capability")
-	seedTestRun(t, rec, []*ledger.Slot{{PhaseID: "held-bead", Status: ledger.SlotBlocked}})
+	// The held bead was filtered before wave construction, so the latest run
+	// contains only an unrelated live slot.
+	seedTestRun(t, rec, []*ledger.Slot{{PhaseID: "other-bead", Status: ledger.SlotRunning}})
 	capabilityStore := ledger.NewStore(rec.Root)
 	if err := capabilityStore.SetCapabilityHold(ledger.CapabilityHold{
-		BeadID: "held-bead", Capability: "network", EvidenceHash: "old", RetryLimit: 1,
+		BeadID: "held-bead", Capability: "network", EvidenceHash: "old",
+		RetryCount: 1, RetryLimit: 1, LastRetryHash: "old",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +500,8 @@ func TestCmdNudgeCapabilityBlockedArmsDurableRetry(t *testing.T) {
 		t.Fatalf("bd argv log = %+v", args)
 	}
 	hold, ok, err := capabilityStore.LoadCapabilityHold("held-bead")
-	if err != nil || !ok || len(hold.OperatorHash) != 64 {
+	if err != nil || !ok || len(hold.OperatorHash) != 64 || hold.RetryCount != 0 ||
+		hold.LastRetryHash != "" {
 		t.Fatalf("hold = %+v, %v, %v", hold, ok, err)
 	}
 	if _, err := os.Stat(filepath.Join(paths.KoryphRoot(rec.Root), "held-bead", "INBOX.md")); !os.IsNotExist(err) {

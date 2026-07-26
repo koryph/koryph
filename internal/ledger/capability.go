@@ -171,8 +171,9 @@ func (s *Store) ConsumeCapabilityRetry(beadID, evidenceHash string) (bool, error
 	return true, s.saveCapabilityHolds(state)
 }
 
-// RequestCapabilityRetry records an explicit operator request as a digest.
-// The caller may pass arbitrary text; no text is persisted.
+// RequestCapabilityRetry records an explicit operator repair as a digest and
+// arms one fresh bounded retry epoch. The caller may pass arbitrary text; no
+// text is persisted.
 func (s *Store) RequestCapabilityRetry(beadID, text string) error {
 	unlock, err := s.lockCapabilityHolds()
 	if err != nil {
@@ -188,6 +189,9 @@ func (s *Store) RequestCapabilityRetry(beadID, text string) error {
 		return nil
 	}
 	hold.OperatorHash = capabilityDigest("operator", beadID, text, nowRFC3339())
+	hold.RetryCount = 0
+	hold.LastRetryAt = ""
+	hold.LastRetryHash = ""
 	state.Holds[beadID] = hold
 	return s.saveCapabilityHolds(state)
 }

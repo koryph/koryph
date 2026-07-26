@@ -32,6 +32,32 @@ func TestCapabilityHoldPersistsAndBoundsChangedEvidence(t *testing.T) {
 	}
 }
 
+func TestCapabilityRepairRequestArmsOneFreshRetryEpoch(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.SetCapabilityHold(CapabilityHold{
+		BeadID: "bead-1", Capability: "network", EvidenceHash: "old", RetryLimit: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.ConsumeCapabilityRetry("bead-1", "spent"); err != nil || !ok {
+		t.Fatalf("initial retry = %v, %v", ok, err)
+	}
+	if err := store.RequestCapabilityRetry("bead-1", "network repaired"); err != nil {
+		t.Fatal(err)
+	}
+	hold, ok, err := store.LoadCapabilityHold("bead-1")
+	if err != nil || !ok || hold.RetryCount != 0 || len(hold.OperatorHash) != 64 ||
+		hold.LastRetryAt != "" || hold.LastRetryHash != "" {
+		t.Fatalf("rearmed hold = %+v, %v, %v", hold, ok, err)
+	}
+	if ok, err := store.ConsumeCapabilityRetry("bead-1", "repaired"); err != nil || !ok {
+		t.Fatalf("rearmed retry = %v, %v", ok, err)
+	}
+	if ok, err := store.ConsumeCapabilityRetry("bead-1", "again"); err != nil || ok {
+		t.Fatalf("second retry in fresh epoch = %v, %v", ok, err)
+	}
+}
+
 func TestCapabilityHoldConcurrentWritersDoNotLoseUpdates(t *testing.T) {
 	store := NewStore(t.TempDir())
 	var wg sync.WaitGroup
