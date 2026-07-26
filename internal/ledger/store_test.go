@@ -268,6 +268,136 @@ func TestLoadRunLabelsLegacyTokenSemantics(t *testing.T) {
 	}
 }
 
+func TestLoadRunMigratesPreV2TokenReportingInMemory(t *testing.T) {
+	for _, raw := range []string{
+		`{"run_id":"20260725-120001","project_id":"p","slots":{"b1":{"phase_id":"b1"}}}`,
+		`{"schema_version":1,"run_id":"20260725-120001","project_id":"p","slots":{"b1":{"phase_id":"b1"}}}`,
+	} {
+		t.Run(raw[:1], func(t *testing.T) {
+			st := NewStore(t.TempDir())
+			runID := "20260725-120001"
+			dir := filepath.Join(st.KoryphRoot, runID)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// Pre-v2 ledgers had no token composition fields. Migration must make
+			// their zero-token reporting meaning explicit without requiring a
+			// read-only cockpit load to rewrite the historical file.
+			path := filepath.Join(dir, ledgerFile)
+			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := st.LoadRun(runID)
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			if got.SchemaVersion != schemaver.Current(schemaver.LedgerRun) || got.TokenSemantics != TokenSemanticsLegacyV0 {
+				t.Fatalf("migrated run = schema %d semantics %q, want %d/%q", got.SchemaVersion, got.TokenSemantics, schemaver.Current(schemaver.LedgerRun), TokenSemanticsLegacyV0)
+			}
+			if got.Slots["b1"].InputTokens != 0 || got.Slots["b1"].OutputTokens != 0 || got.Slots["b1"].CacheReadTokens != 0 || got.Slots["b1"].CacheCreationTokens != 0 {
+				t.Fatalf("pre-v2 tokens = %+v, want explicit zero reporting", got.Slots["b1"])
+			}
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(contents) != raw {
+				t.Fatalf("read-only migration rewrote ledger: %s", contents)
+			}
+		})
+	}
+}
+
+func TestLedgerLoadsRejectNewerDistinctSurfaceStamps(t *testing.T) {
+	st := NewStore(t.TempDir())
+	runID, phaseID := "run", "phase"
+	if err := os.MkdirAll(filepath.Join(st.KoryphRoot, runID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(st.KoryphRoot, runID, ledgerFile), []byte(`{"schema_version":99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LoadRun(runID); err == nil {
+		t.Fatal("LoadRun unexpectedly accepted newer run surface")
+	}
+	if err := os.WriteFile(filepath.Join(st.PhaseDir(runID, phaseID), manifestFile), []byte(`{"schema_version":99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LoadManifest(runID, phaseID); err == nil {
+		t.Fatal("LoadManifest unexpectedly accepted newer manifest surface")
+	}
+}
+
+func TestSaveRunRefusesNewerOnDiskStampBeforeMutation(t *testing.T) {
+	st := NewStore(t.TempDir())
+	run, err := st.NewRun("p", "bd", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(st.KoryphRoot, run.RunID, ledgerFile)
+	if err := os.WriteFile(path, []byte(`{"schema_version":99,"run_id":"newer"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run.UpdatedAt = "unchanged"
+	if err := st.SaveRun(run); err == nil {
+		t.Fatal("SaveRun unexpectedly overwrote newer ledger")
+	}
+	if run.UpdatedAt != "unchanged" {
+		t.Fatalf("SaveRun mutated run before rejecting newer stamp: %q", run.UpdatedAt)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"schema_version":99`) {
+		t.Fatalf("newer ledger was mutated: %s", contents)
+	}
+}
+
+func TestSaveManifestRefusesNewerOnDiskStampBeforeMutation(t *testing.T) {
+	st := NewStore(t.TempDir())
+	path := filepath.Join(st.PhaseDir("run", "phase"), manifestFile)
+	if err := os.WriteFile(path, []byte(`{"schema_version":99,"bead_id":"newer"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manifest{UpdatedAt: "unchanged"}
+	if err := st.SaveManifest("run", "phase", m); err == nil {
+		t.Fatal("SaveManifest unexpectedly overwrote newer manifest")
+	}
+	if m.UpdatedAt != "unchanged" {
+		t.Fatalf("SaveManifest mutated manifest before rejecting newer stamp: %q", m.UpdatedAt)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"schema_version":99`) {
+		t.Fatalf("newer manifest was mutated: %s", contents)
+	}
+}
+
+func TestLedgerFingerprintHistories(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		surface schemaver.Surface
+		file    string
+		value   any
+	}{
+		{"run", schemaver.LedgerRun, "testdata/run.fingerprint", Run{}},
+		{"manifest", schemaver.LedgerManifest, "testdata/manifest.fingerprint", Manifest{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			history, err := os.ReadFile(test.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := schemaver.VerifyFingerprint(test.surface, history, test.value); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestSetSlotArchivesAttemptsAndDistinguishesModelRelaunch(t *testing.T) {
 	store := NewStore(t.TempDir())
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)

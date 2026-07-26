@@ -4,6 +4,7 @@
 package ledger
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -209,11 +210,16 @@ func (s *Store) EvidenceDir(runID, phaseID string) string {
 func (s *Store) LoadRun(runID string) (*Run, error) {
 	var run Run
 	path := filepath.Join(s.KoryphRoot, runID, ledgerFile)
-	if err := fsx.ReadJSON(path, &run); err != nil {
+	raw, err := os.ReadFile(path)
+	if err != nil {
 		return nil, err
 	}
-	if err := schemaver.CheckRead(schemaver.LedgerRun, run.SchemaVersion); err != nil {
+	raw, _, err = schemaver.Migrate(schemaver.LedgerRun, raw)
+	if err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal(raw, &run); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if run.Slots == nil {
 		run.Slots = map[string]*Slot{}
@@ -260,12 +266,33 @@ func (s *Store) ListRuns() ([]string, error) {
 
 // SaveRun refreshes UpdatedAt and writes ledger.json atomically.
 func (s *Store) SaveRun(run *Run) error {
+	path := filepath.Join(s.KoryphRoot, run.RunID, ledgerFile)
+	if err := checkLedgerWrite(path, schemaver.LedgerRun); err != nil {
+		return err
+	}
+	run.SchemaVersion = schemaver.Current(schemaver.LedgerRun)
 	run.TokenSemantics = EffectiveTokenSemantics(run)
 	now := s.clock().Format(time.RFC3339Nano)
 	stampFinalizationTimings(run, now)
 	run.UpdatedAt = now
-	path := filepath.Join(s.KoryphRoot, run.RunID, ledgerFile)
 	return fsx.WriteJSONAtomic(path, run)
+}
+
+// checkLedgerWrite prevents an older binary from replacing a newer ledger
+// before the caller mutates its in-memory value or touches the file. Missing
+// files are new allocations and therefore safe to stamp at this build's
+// current surface version.
+func checkLedgerWrite(path string, surface schemaver.Surface) error {
+	var stamped struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := fsx.ReadJSON(path, &stamped); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return schemaver.CheckWrite(surface, stamped.SchemaVersion)
 }
 
 // SetSlot installs (or replaces) a slot keyed by its PhaseID, stamps the slot's
@@ -463,9 +490,12 @@ func (s *Store) FinalizeRun(run *Run) error {
 // SaveManifest stamps the current manifest schema version and UpdatedAt, then
 // writes the per-slot checkpoint at <run>/<phase>/manifest.json atomically.
 func (s *Store) SaveManifest(runID, phaseID string, m *Manifest) error {
+	path := filepath.Join(s.PhaseDir(runID, phaseID), manifestFile)
+	if err := checkLedgerWrite(path, schemaver.LedgerManifest); err != nil {
+		return err
+	}
 	m.SchemaVersion = schemaver.Current(schemaver.LedgerManifest)
 	m.UpdatedAt = nowRFC3339()
-	path := filepath.Join(s.PhaseDir(runID, phaseID), manifestFile)
 	return fsx.WriteJSONAtomic(path, m)
 }
 
@@ -474,11 +504,16 @@ func (s *Store) LoadManifest(runID, phaseID string) (*Manifest, error) {
 	var m Manifest
 	phaseDir := s.PhaseDir(runID, phaseID)
 	path := filepath.Join(phaseDir, manifestFile)
-	if err := fsx.ReadJSONConfined(path, &m, maxManifestBytes, phaseDir); err != nil {
+	read, err := fsx.ReadRegularConfined(path, maxManifestBytes, phaseDir)
+	if err != nil {
 		return nil, err
 	}
-	if err := schemaver.CheckRead(schemaver.LedgerManifest, m.SchemaVersion); err != nil {
+	raw, _, err := schemaver.Migrate(schemaver.LedgerManifest, read.Data)
+	if err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("%s: %w", read.Path, err)
 	}
 	return &m, nil
 }

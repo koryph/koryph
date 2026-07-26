@@ -28,7 +28,9 @@ type SlotOverride struct {
 	At     string `json:"at,omitempty"`
 }
 
-// OverrideFile is the on-disk shape of the sidecar.
+// OverrideFile is the on-disk shape of the sidecar. It is deliberately
+// unversioned ephemeral operator coordination state, not durable ledger
+// schema: directives are consumed or superseded by the engine.
 type OverrideFile struct {
 	Overrides []SlotOverride `json:"overrides"`
 	// Inject lists bead IDs the operator wants dispatched even though they fall

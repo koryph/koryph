@@ -29,7 +29,7 @@ const (
 	stopRequestDir = "stop.request"
 )
 
-// DrainSentinel is the one-shot operator drain request written by
+// DrainSentinel is the one-shot, deliberately unversioned operator drain request written by
 // `koryph drain`. Presence alone is the signal — the timestamp is
 // informational only (progress lines / debugging), never consulted for
 // control flow.
@@ -130,7 +130,7 @@ func (s *Store) ClearStops() {
 	_ = os.RemoveAll(s.stopDir())
 }
 
-// ResizeOverride is the live wave-width override written by `koryph resize`.
+// ResizeOverride is the deliberately unversioned live wave-width override written by `koryph resize`.
 // Unlike the drain sentinel it is NOT one-shot: it stays in effect (re-read
 // at every boundary) until an operator clears it with `koryph resize
 // --clear`, surviving across runs exactly like a project config change would.
