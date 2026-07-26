@@ -146,3 +146,20 @@ func TestDispatchBeadHeldUnchangedUsesZeroBackendCalls(t *testing.T) {
 		t.Fatalf("slot = %+v, want blocked", sl)
 	}
 }
+
+func TestDispatchBeadAdmittedRequeueDoesNotReconsumeCapabilityHold(t *testing.T) {
+	r, _, _ := candidateFixture(t)
+	if err := r.store.SetCapabilityHold(ledger.CapabilityHold{
+		BeadID: "candidate", Capability: "network", EvidenceHash: "spent",
+		RetryCount: 1, RetryLimit: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !r.capabilityDispatchAllowed("candidate", dispatchOriginRequeue) {
+		t.Fatal("admitted typed repair requeue was denied by the capability hold")
+	}
+	hold, ok, err := r.store.LoadCapabilityHold("candidate")
+	if err != nil || !ok || hold.RetryCount != 1 {
+		t.Fatalf("capability hold changed by typed requeue = %+v, %v, %v", hold, ok, err)
+	}
+}

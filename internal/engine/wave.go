@@ -1306,7 +1306,12 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		})
 		return
 	}
-	if !r.consumeCapabilityRetry(beadID) {
+	// Capability holds gate scheduler-frontier admission. Once a repaired
+	// capability attempt is admitted, its same-run typed requeues are governed
+	// by their own bounded retry counters; re-consuming the project-level hold
+	// here would strand an ordinary gate or review repair after successful
+	// capability recovery.
+	if !r.capabilityDispatchAllowed(beadID, q.origin) {
 		r.blockSlot(beadID, q, "capability retry denied: unchanged evidence or retry budget exhausted")
 		return
 	}

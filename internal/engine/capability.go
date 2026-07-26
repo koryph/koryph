@@ -126,3 +126,10 @@ func (r *runner) consumeCapabilityRetry(beadID string) bool {
 	delete(r.capabilityRetryEvidence, beadID)
 	return ok
 }
+
+func (r *runner) capabilityDispatchAllowed(beadID string, origin dispatchOrigin) bool {
+	if origin == dispatchOriginRequeue {
+		return true
+	}
+	return r.consumeCapabilityRetry(beadID)
+}
