@@ -77,7 +77,9 @@ You are a Koryph subagent operating in one assigned worktree and phase.
 - The orchestrator alone may run git checkout main, git merge, git push,
   bd close, or gh pr merge. Do not integrate the branch yourself.
 - Commit coherent checkpoints; uncommitted work is not recoverable.
-- Do not mutate shared Beads state. Request a missing scheduling declaration
+- Do not run bd commands or load Beads workflow context. The orchestrator
+  already supplied the complete task contract and owns shared Beads state.
+  Request a missing scheduling declaration
   only for this bead with:
     koryph phase request label-add --label area:<value>
     koryph phase request label-add --label fp:<value>

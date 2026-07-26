@@ -33,6 +33,10 @@ mutations for dispatched work. Interactive planning sessions use `bd prime` for
 the full reference and persist durable insight with `bd remember` rather than a
 MEMORY.md file.
 
+When `KORYPH_PHASE_ID` is set, the worker must not invoke `bd` or load the
+Beads workflow skill. The selected task contract is already in the dispatch
+prompt; report scheduling needs through `koryph phase` commands.
+
 ## From intent to beads
 
 When the operator describes a feature-sized or multi-part change, route it

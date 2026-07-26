@@ -140,7 +140,17 @@ func linkCanonicalPersona(source, dest string, force bool) (string, error) {
 				return scaffold.ActionUnchanged, nil
 			}
 		}
-		if !force {
+		managedProjection := false
+		if info.Mode().IsRegular() {
+			if data, readErr := os.ReadFile(dest); readErr == nil {
+				managedProjection = strings.Contains(string(data), promptc.RoleClauseMarker)
+			}
+		}
+		// Historical Koryph releases copied managed Claude projections as
+		// regular files. Migrate only authenticated role-clause projections
+		// automatically; an unrelated/custom file remains untouched unless
+		// the operator explicitly uses --force.
+		if !force && !managedProjection {
 			return scaffold.ActionSkipped, nil
 		}
 		if err := os.Remove(dest); err != nil {

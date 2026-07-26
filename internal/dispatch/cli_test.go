@@ -148,6 +148,43 @@ func argvLines(data []byte) []string {
 	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 }
 
+func TestControlPlaneBoundarySuppressesBeadsHooksAndCommands(t *testing.T) {
+	phaseDir := t.TempDir()
+	realDir := t.TempDir()
+	called := filepath.Join(t.TempDir(), "real-bd-called")
+	realBD := filepath.Join(realDir, "bd")
+	if err := os.WriteFile(realBD, []byte("#!/bin/sh\nprintf called >"+sq(called)+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env, err := installControlPlaneBoundary(phaseDir, []string{"PATH=" + realDir})
+	if err != nil {
+		t.Fatalf("installControlPlaneBoundary: %v", err)
+	}
+	shim := filepath.Join(strings.Split(environmentValue(env, "PATH"), string(filepath.ListSeparator))[0], "bd")
+
+	for _, args := range [][]string{
+		{"prime", "--hook-json"},
+		{"codex-hook", "SessionStart"},
+		{"codex-hook", "UserPromptSubmit"},
+	} {
+		cmd := exec.Command(shim, args...)
+		if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
+			t.Fatalf("bd %v: out=%q err=%v, want silent success", args, out, err)
+		}
+	}
+
+	cmd := exec.Command(shim, "list", "--status=open")
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 126 ||
+		!strings.Contains(string(out), "bd is orchestrator-only") {
+		t.Fatalf("bd list: out=%q err=%v, want orchestrator-only exit 126", out, err)
+	}
+	if _, err := os.Stat(called); !os.IsNotExist(err) {
+		t.Fatalf("real bd was invoked: %v", err)
+	}
+}
+
 func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 	// Polluted parent env must be scrubbed for the child.
 	t.Setenv("ANTHROPIC_API_KEY", "sk-polluted-parent")
@@ -287,6 +324,10 @@ func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 	}
 	if strings.Contains(env, "BEADS_DIR=") {
 		t.Errorf("child env leaked shared BEADS_DIR:\n%s", env)
+	}
+	path := environmentValue(strings.Split(strings.TrimSpace(env), "\n"), "PATH")
+	if first := strings.Split(path, string(filepath.ListSeparator))[0]; first != filepath.Join(spec.PhaseDir, "control-plane-bin") {
+		t.Errorf("child PATH first entry = %q, want control-plane shim", first)
 	}
 
 	// ParseResultCost reads the fake's result line off stream.jsonl.

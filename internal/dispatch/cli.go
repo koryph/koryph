@@ -221,6 +221,10 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 	if err != nil {
 		return Handle{}, fmt.Errorf("dispatch %s: building claude command: %w", s.PhaseID, err)
 	}
+	env, err = installControlPlaneBoundary(s.PhaseDir, env)
+	if err != nil {
+		return Handle{}, fmt.Errorf("dispatch %s: install control-plane boundary: %w", s.PhaseID, err)
+	}
 
 	// KORYPH_HOME is exported (resolved absolute) so the guard hooks registered
 	// in .claude/settings.json as ${KORYPH_HOME:-$HOME/.koryph}/hooks/*.sh
@@ -318,6 +322,76 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 	}
 
 	return handle, nil
+}
+
+// installControlPlaneBoundary keeps the shared Beads database out of every
+// dispatched runtime, including runtimes that discover repository skills or
+// install their own SessionStart hooks. Hook-shaped reads become an empty
+// no-op so a third-party hook cannot wedge launch; every interactive or
+// mutating bd command is rejected. The orchestrator already supplied the
+// selected Bead contract in prompt.md and remains the sole Beads authority.
+func installControlPlaneBoundary(phaseDir string, env []string) ([]string, error) {
+	if phaseDir == "" || !filepath.IsAbs(phaseDir) {
+		return nil, errors.New("phase path must be absolute")
+	}
+	info, err := os.Lstat(phaseDir)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("phase path is not a real directory: %s", phaseDir)
+	}
+
+	shimDir := filepath.Join(phaseDir, "control-plane-bin")
+	if err := os.Mkdir(shimDir, 0o700); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	shimInfo, err := os.Lstat(shimDir)
+	if err != nil || !shimInfo.IsDir() || shimInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("control-plane shim path is not a real directory")
+	}
+	const bdShim = `#!/bin/sh
+case "${1:-}" in
+prime)
+  [ "${2:-}" = "--hook-json" ] && exit 0
+  ;;
+codex-hook)
+  exit 0
+  ;;
+esac
+printf '%s\n' 'koryph boundary: bd is orchestrator-only; use the assigned task and koryph phase commands' >&2
+exit 126
+`
+	if err := fsx.WriteAtomic(filepath.Join(shimDir, "bd"), []byte(bdShim), 0o755); err != nil {
+		return nil, err
+	}
+
+	pathValue := environmentValue(env, "PATH")
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+	return replaceEnvironmentValue(env, "PATH", shimDir+string(filepath.ListSeparator)+pathValue), nil
+}
+
+func environmentValue(env []string, name string) string {
+	prefix := name + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return strings.TrimPrefix(env[i], prefix)
+		}
+	}
+	return ""
+}
+
+func replaceEnvironmentValue(env []string, name, value string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(env)+1)
+	for _, pair := range env {
+		if !strings.HasPrefix(pair, prefix) {
+			out = append(out, pair)
+		}
+	}
+	return append(out, prefix+value)
 }
 
 // sq single-quotes v for /bin/sh. Values are pre-screened for embedded

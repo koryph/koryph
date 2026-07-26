@@ -7,6 +7,12 @@ description: Use when working in a repository that uses bd or Beads for durable 
 
 Use Beads as the shared project task system. Local plans, scratch files, and personal memories are useful, but they are not the durable source of truth for project work.
 
+## Koryph-dispatched sessions
+
+If `KORYPH_PHASE_ID` is set, stop here. Do not run `bd`, including `bd prime`.
+Koryph already supplied the selected Bead contract and owns all task-state
+operations. Use the `koryph phase` commands named in the dispatch prompt.
+
 ## First Step
 
 Run:

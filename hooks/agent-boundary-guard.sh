@@ -17,7 +17,7 @@
 # Denied operations (Bash tool only), matched per &&/;/|-separated segment,
 # tolerant of leading whitespace and leading VAR=val env assignments:
 #   git push · git merge · git checkout main · git checkout master ·
-#   git switch main · git switch master · bd close · gh pr merge ·
+#   git switch main · git switch master · any bd command · gh pr merge ·
 #   git config WRITES to persistence vectors (core.hooksPath, core.fsmonitor,
 #   core.sshCommand, credential.helper, include.path, filter.*) and the inline
 #   `git -c <vector>=… <cmd>` form.
@@ -78,10 +78,10 @@
 #          | KORYPH_PHASE_ID=phase-12a ./agent-boundary-guard.sh
 #      → deny (git checkout main), exit 0
 #
-# 6. Dispatched, env-assignment-prefixed close → denied.
-#      $ echo '{"tool_name":"Bash","tool_input":{"command":"GH_TOKEN=x bd close sg-42"}}' \
+# 6. Dispatched, any Beads command → denied.
+#      $ echo '{"tool_name":"Bash","tool_input":{"command":"bd prime"}}' \
 #          | KORYPH_PHASE_ID=phase-12a ./agent-boundary-guard.sh
-#      → deny (bd close), exit 0
+#      → deny (bd), exit 0
 #
 # 7. Dispatched, `go test ./... -v` → denied, nudged to gate-agent.
 #      $ echo '{"tool_name":"Bash","tool_input":{"command":"go test ./... -v"}}' \
@@ -198,8 +198,8 @@ check_segment() {
   if [[ "${seg}" =~ ^git[[:space:]]+switch[[:space:]]+(main|master)([[:space:]]|$) ]]; then
     deny "git switch ${BASH_REMATCH[1]}"
   fi
-  if [[ "${seg}" =~ ^bd[[:space:]]+close([[:space:]]|$) ]]; then
-    deny "bd close"
+  if [[ "${seg}" =~ ^([^[:space:]]*/)?bd([[:space:]]|$) ]]; then
+    deny "bd"
   fi
   if [[ "${seg}" =~ ^gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$) ]]; then
     deny "gh pr merge"

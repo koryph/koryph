@@ -96,7 +96,10 @@ func TestBoundaryDenialsUnaffected(t *testing.T) {
 		{"git push denied", "git push origin HEAD", true},
 		{"git commit allowed", `git commit -m "feat: x"`, false},
 		{"git rebase onto main allowed", "git rebase origin/main", false},
+		{"bd prime denied", "bd prime", true},
+		{"bd read denied", "bd show koryph-1", true},
 		{"bd close denied", "bd close koryph-1", true},
+		{"absolute bd denied", "/opt/homebrew/bin/bd ready", true},
 		// Persistence config vectors (pre-existing).
 		{"git config hooksPath denied", "git config core.hooksPath /tmp/evil", true},
 		{"git -c inline sshCommand denied", "git -c core.sshCommand=evil status", true},

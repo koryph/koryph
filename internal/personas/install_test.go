@@ -118,6 +118,50 @@ func TestInstallClaudeLinkTracksCanonicalEdits(t *testing.T) {
 	}
 }
 
+func TestInstallMigratesHistoricalManagedClaudeProjection(t *testing.T) {
+	root := t.TempDir()
+	canonicalDir := filepath.Join(root, "agents")
+	projectionDir := filepath.Join(root, ".claude", "agents")
+	if err := os.MkdirAll(canonicalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const canonical = "<!-- koryph-clause:role/v1 -->\ncurrent role\n"
+	if err := os.WriteFile(
+		filepath.Join(canonicalDir, "koryph-implementer.md"),
+		[]byte(canonical), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	projection := filepath.Join(projectionDir, "koryph-implementer.md")
+	if err := os.WriteFile(
+		projection,
+		[]byte("<!-- koryph-clause:role/v1 -->\nstale managed role\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := personas.Install(root, false)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if got := actionOf(results, "koryph-implementer"); got != scaffold.ActionOverwritten {
+		t.Fatalf("action = %q, want overwritten migration", got)
+	}
+	info, err := os.Lstat(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("historical managed projection was not migrated to a symlink")
+	}
+	if got, err := os.ReadFile(projection); err != nil || string(got) != canonical {
+		t.Fatalf("projection = %q err=%v, want canonical", got, err)
+	}
+}
+
 // TestInstallSkipsDifferingContent verifies that a pre-existing file whose
 // content DIFFERS from the embedded persona is left untouched (skipped) without
 // --force, while the rest install.

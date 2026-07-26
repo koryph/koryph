@@ -224,6 +224,8 @@ func TestWithCompletionRepairIsNarrowAndSameWork(t *testing.T) {
 func TestPreambleUsesPhaseControlInsteadOfSharedBeadsMutations(t *testing.T) {
 	p := Preamble("v1")
 	for _, want := range []string{
+		"Do not run bd commands",
+		"complete task contract",
 		"koryph phase request label-add",
 		"area:<value>",
 		"fp:<value>",
@@ -234,7 +236,7 @@ func TestPreambleUsesPhaseControlInsteadOfSharedBeadsMutations(t *testing.T) {
 			t.Errorf("preamble missing phase-control guidance %q", want)
 		}
 	}
-	for _, forbidden := range []string{"bd dep add", "bd update <this-id>", "--add-label no-dispatch"} {
+	for _, forbidden := range []string{"bd prime", "bd ready", "bd dep add", "bd update <this-id>", "--add-label no-dispatch"} {
 		if strings.Contains(p, forbidden) {
 			t.Errorf("preamble still recommends shared Beads mutation %q", forbidden)
 		}

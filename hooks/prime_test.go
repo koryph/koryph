@@ -108,61 +108,49 @@ exit 1
 	}
 }
 
-// TestFullModeIsDefaultWhenSpawnKindUnsetOrUnknown proves full mode (bd
-// invoked, output relayed) is the conservative default for every shape that
-// is NOT one of the three slim kinds: unset (interactive/operator), a main
-// dispatch (KORYPH_PHASE_ID set, no spawn kind), and an unrecognized value.
-func TestFullModeIsDefaultWhenSpawnKindUnsetOrUnknown(t *testing.T) {
+// TestFullModeIsInteractiveOnly proves only an unmarked operator session
+// receives Beads context.
+func TestFullModeIsInteractiveOnly(t *testing.T) {
 	marker := `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"full-marker"}}`
 	dir := fakeBd(t, `printf '%s' `+shQuote(marker)+`; exit 0`)
+	fullPath := dir + string(filepath.ListSeparator) + os.Getenv("PATH")
+
+	out, _, code := runPrime(t, runPrimeOpts{pathDirs: fullPath})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if out != marker {
+		t.Errorf("stdout = %q, want the full bd prime marker output %q", out, marker)
+	}
+}
+
+// TestDispatchedModeOmitsBeadsContext proves main and secondary workers get
+// empty hook output without invoking bd.
+func TestDispatchedModeOmitsBeadsContext(t *testing.T) {
+	dir := fakeBd(t, `echo "FAKE BD SHOULD NOT HAVE BEEN INVOKED" >&2; exit 99`)
 	fullPath := dir + string(filepath.ListSeparator) + os.Getenv("PATH")
 
 	cases := []struct {
 		name string
 		opts runPrimeOpts
 	}{
-		{"unset spawn kind", runPrimeOpts{pathDirs: fullPath}},
-		{"main dispatch (phase id, no spawn kind)", runPrimeOpts{pathDirs: fullPath, phaseID: "koryph-77r.4"}},
-		{"unrecognized spawn kind", runPrimeOpts{pathDirs: fullPath, spawnKind: "banana"}},
+		{name: "main", opts: runPrimeOpts{pathDirs: fullPath, phaseID: "bead-1"}},
+		{name: "review", opts: runPrimeOpts{pathDirs: fullPath, spawnKind: "review"}},
+		{name: "stage", opts: runPrimeOpts{pathDirs: fullPath, spawnKind: "stage"}},
+		{name: "epicreview", opts: runPrimeOpts{pathDirs: fullPath, spawnKind: "epicreview"}},
+		{name: "future spawn", opts: runPrimeOpts{pathDirs: fullPath, spawnKind: "future"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, _, code := runPrime(t, tc.opts)
+			out, errOut, code := runPrime(t, tc.opts)
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0", code)
 			}
-			if out != marker {
-				t.Errorf("stdout = %q, want the full bd prime marker output %q", out, marker)
+			if out != "" {
+				t.Errorf("dispatched mode emitted context: %q", out)
 			}
-		})
-	}
-}
-
-// TestSlimModeForEachSecondarySpawnKind proves review/stage/epicreview all
-// get a small hook-json-shaped substitute payload, under the ~500 byte
-// budget, WITHOUT bd ever being invoked (a fake bd that errors loudly
-// proves that — if it ran, its distinctive output would show up).
-func TestSlimModeForEachSecondarySpawnKind(t *testing.T) {
-	dir := fakeBd(t, `echo "FAKE BD SHOULD NOT HAVE BEEN INVOKED" >&2; exit 99`)
-	fullPath := dir + string(filepath.ListSeparator) + os.Getenv("PATH")
-
-	for _, kind := range []string{"review", "stage", "epicreview"} {
-		t.Run(kind, func(t *testing.T) {
-			out, _, code := runPrime(t, runPrimeOpts{pathDirs: fullPath, spawnKind: kind})
-			if code != 0 {
-				t.Fatalf("exit code = %d, want 0", code)
-			}
-			if len(out) > 500 {
-				t.Errorf("slim payload for %q is %d bytes, want <= 500:\n%s", kind, len(out), out)
-			}
-			if !strings.Contains(out, kind) {
-				t.Errorf("slim payload for %q doesn't mention its own kind:\n%s", kind, out)
-			}
-			if !strings.Contains(out, `"hookSpecificOutput"`) || !strings.Contains(out, `"additionalContext"`) {
-				t.Errorf("slim payload for %q isn't hook-json-shaped:\n%s", kind, out)
-			}
-			if strings.Contains(out, "SHOULD NOT HAVE BEEN INVOKED") {
-				t.Errorf("slim mode for %q invoked the fake bd, it must not: %s", kind, out)
+			if strings.Contains(errOut, "SHOULD NOT HAVE BEEN INVOKED") {
+				t.Errorf("dispatched mode invoked fake bd: %s", errOut)
 			}
 		})
 	}
@@ -270,9 +258,9 @@ func TestSizeLogFallsBackToStderrWithoutKoryphDir(t *testing.T) {
 	}
 }
 
-// TestSlimModeSizeLogModeIncludesKind proves the size-log mode token
-// distinguishes which slim kind was served (not just "slim").
-func TestSlimModeSizeLogModeIncludesKind(t *testing.T) {
+// TestSuppressedModeSizeLogIncludesKind proves the size-log mode token
+// distinguishes which dispatched kind was suppressed.
+func TestSuppressedModeSizeLogIncludesKind(t *testing.T) {
 	dir := fakeBd(t, `echo "should not run" >&2; exit 99`)
 	koryphDir := t.TempDir()
 	_, _, code := runPrime(t, runPrimeOpts{
@@ -287,8 +275,8 @@ func TestSlimModeSizeLogModeIncludesKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read prime-size.log: %v", err)
 	}
-	if !strings.Contains(string(data), "mode=slim-stage") {
-		t.Errorf("size-log %q should report mode=slim-stage", data)
+	if !strings.Contains(string(data), "mode=suppressed-stage") {
+		t.Errorf("size-log %q should report mode=suppressed-stage", data)
 	}
 }
 

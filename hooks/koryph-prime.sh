@@ -15,16 +15,11 @@
 #      Appended to "$KORYPH_DIR/prime-size.log" when KORYPH_DIR is set
 #      (the koryph dispatch contract's phase dir, internal/dispatch/
 #      types.go), else written to stderr only.
-#   2. Mode selection: KORYPH_SPAWN_KIND (set by the secondary-spawn env
-#      construction, koryph-3l1.1 — NOT yet wired as of this writing) in
-#      {review, stage, epicreview} gets a SLIM profile instead: a small
-#      hook-json payload noting bead-workflow context was omitted, well
-#      under 1KB, and bd prime is never even invoked. Any other value, or
-#      the var unset — main dispatches carry KORYPH_PHASE_ID with no
-#      spawn-kind; interactive/operator sessions carry neither — gets the
-#      FULL bd prime output, byte-identical to what the bare command
-#      produced before this wrapper existed. Full is the conservative
-#      default; slim requires the explicit marker.
+#   2. Mode selection: any Koryph dispatch (KORYPH_PHASE_ID or
+#      KORYPH_SPAWN_KIND set) receives no Beads context and never invokes bd.
+#      Koryph owns task state and already injected the selected contract.
+#      Interactive/operator sessions carry neither marker and receive the
+#      full bd prime output.
 #   3. Fails open (design invariant I1): if bd is missing, exits non-zero,
 #      or emits something odd, whatever it produced (or nothing) is passed
 #      through verbatim with exit 0 — a broken wrapper must never wedge
@@ -33,7 +28,7 @@
 #      degrades no worse than the bare command already did.
 #
 # Log line format (one per invocation):
-#   <ISO-8601 UTC timestamp> bytes=<n> mode=<full|slim-<kind>|no-bd|bd-error>
+#   <ISO-8601 UTC timestamp> bytes=<n> mode=<full|suppressed-<kind>|no-bd|bd-error>
 #
 # Registered in .claude/settings.json (SessionStart, no matcher) via the
 # same central ${KORYPH_HOME:-$HOME/.koryph}/hooks/ path pattern as the
@@ -55,17 +50,12 @@ log_size() {
   printf '%s\n' "${line}" >&2
 }
 
-# --- Slim mode: secondary-spawn kinds that never touch bead workflow ------
-case "${KORYPH_SPAWN_KIND:-}" in
-review | stage | epicreview)
-  kind="${KORYPH_SPAWN_KIND}"
-  msg="${kind} session: bead-workflow context omitted to save tokens; run 'bd prime' yourself if you need it. (Full bd prime output may carry project memories and session rules not shown here.)"
-  payload="{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"${msg}\"}}"
-  printf '%s' "${payload}"
-  log_size "${#payload}" "slim-${kind}"
+# --- Dispatched mode: Beads are control-plane state -----------------------
+if [[ -n "${KORYPH_PHASE_ID:-}" || -n "${KORYPH_SPAWN_KIND:-}" ]]; then
+  kind="${KORYPH_SPAWN_KIND:-main}"
+  log_size 0 "suppressed-${kind}"
   exit 0
-  ;;
-esac
+fi
 
 # --- Full mode (default) ---------------------------------------------------
 # Fail-open: no bd on PATH at all -> nothing to inject, never block start.
