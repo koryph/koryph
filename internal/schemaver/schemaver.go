@@ -54,7 +54,7 @@ const (
 // with a read migration (older files still load); a breaking change requires a
 // new koryph major and a documented upgrade path.
 var current = map[Surface]int{
-	Registry:       1,
+	Registry:       2,
 	Quota:          1,
 	SigningVault:   1,
 	Project:        1,

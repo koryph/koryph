@@ -80,8 +80,9 @@ func testAutonomyInput() AutonomyInput {
 		SchemaVersion: AutonomyInputSchema,
 		ProjectID:     "koryph", InstalledCommit: strings.Repeat("a", 40),
 		BinaryVersion: "0.10.0", BuildIdentity: "fixture-build", ContractDigest: digest("b"),
-		Cohort:    []string{"b2", "b1"},
-		StartedAt: "2026-07-25T10:00:00Z", EndedAt: "2026-07-25T10:12:00Z",
+		RegistryIdentityDigest: digest("c"),
+		Cohort:                 []string{"b2", "b1"},
+		StartedAt:              "2026-07-25T10:00:00Z", EndedAt: "2026-07-25T10:12:00Z",
 		Thresholds: testAutonomyThresholds(),
 		Evidence: AutonomyEvidence{
 			Safety:    testSafetyEvidence(),
@@ -428,20 +429,21 @@ func TestExpectedAutonomyReportPinsReleaseIdentityAndFreshness(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := AutonomyReportExpectation{
-		ProjectID:       input.ProjectID,
-		InstalledCommit: input.InstalledCommit,
-		BinaryVersion:   input.BinaryVersion,
-		BuildIdentity:   input.BuildIdentity,
-		ContractDigest:  input.ContractDigest,
-		Cohort:          input.Cohort,
-		CohortDigest:    report.CohortDigest,
-		Thresholds:      input.Thresholds,
-		CanaryStartedAt: input.StartedAt,
-		EvidenceDigest:  report.EvidenceDigest,
-		GeneratedAt:     report.GeneratedAt,
-		FreshAt:         generated.Add(time.Minute),
-		MaxAge:          time.Hour,
-		MaxFutureSkew:   0,
+		ProjectID:              input.ProjectID,
+		InstalledCommit:        input.InstalledCommit,
+		BinaryVersion:          input.BinaryVersion,
+		BuildIdentity:          input.BuildIdentity,
+		ContractDigest:         input.ContractDigest,
+		RegistryIdentityDigest: input.RegistryIdentityDigest,
+		Cohort:                 input.Cohort,
+		CohortDigest:           report.CohortDigest,
+		Thresholds:             input.Thresholds,
+		CanaryStartedAt:        input.StartedAt,
+		EvidenceDigest:         report.EvidenceDigest,
+		GeneratedAt:            report.GeneratedAt,
+		FreshAt:                generated.Add(time.Minute),
+		MaxAge:                 time.Hour,
+		MaxFutureSkew:          0,
 	}
 	if err := ValidateAutonomyReportExpected(report, expected); err != nil {
 		t.Fatalf("expected report rejected: %v", err)
@@ -453,6 +455,7 @@ func TestExpectedAutonomyReportPinsReleaseIdentityAndFreshness(t *testing.T) {
 		{"project", func(e *AutonomyReportExpectation) { e.ProjectID = "foreign" }},
 		{"commit", func(e *AutonomyReportExpectation) { e.InstalledCommit = strings.Repeat("c", 40) }},
 		{"version", func(e *AutonomyReportExpectation) { e.BinaryVersion = "0.10.1" }},
+		{"registry identity", func(e *AutonomyReportExpectation) { e.RegistryIdentityDigest = digest("d") }},
 		{"build", func(e *AutonomyReportExpectation) { e.BuildIdentity = "foreign-build" }},
 		{"contract", func(e *AutonomyReportExpectation) { e.ContractDigest = digest("c") }},
 		{"cohort", func(e *AutonomyReportExpectation) {

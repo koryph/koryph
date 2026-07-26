@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,22 @@ func TestWriteAtomic_CreatesParentDir(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("file not created: %v", err)
+	}
+}
+
+func TestRemoveDurableRemovesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retired")
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.RemoveDurable(path); err != nil {
+		t.Fatalf("RemoveDurable: %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retired path still exists: %v", err)
+	}
+	if err := fsx.RemoveDurable(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-path error = %v, want os.ErrNotExist", err)
 	}
 }
 

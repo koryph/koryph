@@ -833,10 +833,15 @@ Run the new binary in a bounded canary with:
 
 The supervisor writes immutable evidence to
 `.plan-logs/koryph/canary/autonomous-loop-reliability.json`. The report records
-the installed source commit, binary version, cohort IDs and contract digests,
-start/end times, every attempt and typed outcome, gate/review/merge evidence
-keys and timings, process reuse/denial/RSS/CPU/duration events, normalized token
-composition, artifact bytes, pressure samples, and the final SLO decision.
+the installed source commit, binary version, cohort IDs, contract digest, and
+non-repeating registry validation identity; start/end times; every attempt and
+typed outcome; gate/review/merge evidence keys and timings; process
+reuse/denial/RSS/CPU/duration events; normalized token composition; artifact
+bytes; pressure samples; and the final SLO decision. A later account or
+canary-bound configuration generation archives this fixed-path report and its
+checkpoint under generation-keyed history before a fresh canary starts. The
+historical report remains inspectable but cannot validate or promote the new
+generation.
 
 Increase width only after five consecutive terminal outcomes with normal memory
 pressure, no duplicate process event, and no failed tripwire. The final report

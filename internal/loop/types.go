@@ -16,7 +16,7 @@ import (
 const (
 	// SchemaVersion is the on-disk supervisor and control schema understood by
 	// this binary. Loads reject newer versions rather than dropping fields.
-	SchemaVersion = 2
+	SchemaVersion = 3
 
 	ModeStarting    = "starting"
 	ModeRunning     = "running"
@@ -84,15 +84,16 @@ type Config struct {
 // CanarySpec fixes the complete admissible cohort before the canary starts.
 // TargetWidth must be at least two. Width always starts at exactly two.
 type CanarySpec struct {
-	Cohort          []string
-	TargetWidth     int
-	InactivityLimit time.Duration
-	HardStops       []string
-	InstalledCommit string
-	BinaryVersion   string
-	BuildIdentity   string
-	ContractDigest  string
-	ReportPath      string
+	Cohort                 []string
+	TargetWidth            int
+	InactivityLimit        time.Duration
+	HardStops              []string
+	InstalledCommit        string
+	BinaryVersion          string
+	BuildIdentity          string
+	ContractDigest         string
+	RegistryIdentityDigest string
+	ReportPath             string
 }
 
 // Scope is the model-free query the observer evaluates. FixedCohort is an
@@ -293,11 +294,12 @@ type CanaryState struct {
 	HardStops         []string `json:"hard_stops"`
 	HardStop          string   `json:"hard_stop,omitempty"`
 
-	InstalledCommit string `json:"installed_commit"`
-	BinaryVersion   string `json:"binary_version"`
-	BuildIdentity   string `json:"build_identity"`
-	ContractDigest  string `json:"contract_digest"`
-	ReportPath      string `json:"report_path"`
+	InstalledCommit        string `json:"installed_commit"`
+	BinaryVersion          string `json:"binary_version"`
+	BuildIdentity          string `json:"build_identity"`
+	ContractDigest         string `json:"contract_digest"`
+	RegistryIdentityDigest string `json:"registry_identity_digest"`
+	ReportPath             string `json:"report_path"`
 
 	RunIDs            []string                   `json:"run_ids,omitempty"`
 	Terminal          map[string]TerminalOutcome `json:"terminal,omitempty"`

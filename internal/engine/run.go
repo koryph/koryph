@@ -379,10 +379,8 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	if err != nil {
 		return Outcome{Code: ExitFatal}, err
 	}
-	if rec.MigrationStatus != registry.StatusValidated && !opts.AllowUnvalidated {
-		return Outcome{Code: ExitFatal}, fmt.Errorf(
-			"engine: project %s has migration status %q (want %q) — validate it or pass AllowUnvalidated for a canary run",
-			opts.ProjectID, rec.MigrationStatus, registry.StatusValidated)
+	if err := validateMigrationPosture(rec, opts, allowedIDs); err != nil {
+		return Outcome{Code: ExitFatal}, err
 	}
 
 	cfg, err := project.Load(rec.Root)
@@ -660,6 +658,34 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	stopHeartbeat()
 	logRunEnd(r.run.RunID, r.opts.ProjectID, outcome.Reason, outcome.Drained, outcome.Dispatched, outcome.Merged)
 	return outcome, loopErr
+}
+
+func validateMigrationPosture(
+	rec *registry.Record,
+	opts Options,
+	allowedIDs []string,
+) error {
+	if rec.MigrationStatus == registry.StatusValidated {
+		return nil
+	}
+	if opts.NativeCanary {
+		if rec.MigrationStatus == registry.StatusMigrated &&
+			opts.Once && opts.AuthoritativeWidth &&
+			len(allowedIDs) >= 2 && opts.Max >= 2 && opts.Max <= len(allowedIDs) {
+			return nil
+		}
+		return fmt.Errorf(
+			"engine: native canary requires migration status %q and an immutable fixed cohort",
+			registry.StatusMigrated,
+		)
+	}
+	if opts.AllowUnvalidated && rec.MigrationStatus == registry.StatusMigrated {
+		return nil
+	}
+	return fmt.Errorf(
+		"engine: project %s has migration status %q (want %q)",
+		opts.ProjectID, rec.MigrationStatus, registry.StatusValidated,
+	)
 }
 
 // runtimeForName returns a configured runtime adapter. The two built-ins use

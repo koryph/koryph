@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/koryph/koryph/internal/engine"
 	loopsupervisor "github.com/koryph/koryph/internal/loop"
 	"github.com/koryph/koryph/internal/metrics"
+	"github.com/koryph/koryph/internal/registry"
 )
 
 func autonomyCLIInput() metrics.AutonomyInput {
@@ -33,9 +35,10 @@ func autonomyCLIInput() metrics.AutonomyInput {
 		SchemaVersion: metrics.AutonomyInputSchema,
 		ProjectID:     "demo", InstalledCommit: strings.Repeat("a", 40),
 		BinaryVersion: "0.10.0", BuildIdentity: "fixture-build",
-		ContractDigest: "sha256:" + strings.Repeat("b", 64),
-		Cohort:         []string{"demo-1"},
-		StartedAt:      "2026-07-25T10:00:00Z", EndedAt: "2026-07-25T10:05:00Z",
+		ContractDigest:         "sha256:" + strings.Repeat("b", 64),
+		RegistryIdentityDigest: "sha256:" + strings.Repeat("e", 64),
+		Cohort:                 []string{"demo-1"},
+		StartedAt:              "2026-07-25T10:00:00Z", EndedAt: "2026-07-25T10:05:00Z",
 		Thresholds: thresholds,
 		Evidence: metrics.AutonomyEvidence{
 			Safety:    safety,
@@ -202,8 +205,29 @@ func TestAutonomyReportDefaultMedianThreshold(t *testing.T) {
 }
 
 func TestDoctorAutonomyFindingIsBoundToDurableCanaryState(t *testing.T) {
-	root := autonomyRealTempDir(t)
+	root := gitRepo(t)
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KORYPH_HOME", t.TempDir())
 	input := autonomyCLIInput()
+	reg := registry.NewStore()
+	if err := reg.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec := &registry.Record{
+		ProjectID:        "demo",
+		Name:             "demo",
+		Root:             root,
+		DefaultBranch:    "main",
+		AccountProfile:   registry.ProfilePersonal,
+		ExpectedIdentity: "personal@example.com",
+	}
+	if err := reg.Add(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	input.RegistryIdentityDigest = mustRegistryIdentityDigest(t, rec)
 	input.Thresholds = metrics.DefaultAutonomyThresholds()
 	input.Cohort = nil
 	input.Evidence.Attempts = nil
@@ -230,18 +254,19 @@ func TestDoctorAutonomyFindingIsBoundToDurableCanaryState(t *testing.T) {
 		ProjectID: "demo",
 		StartedAt: input.StartedAt,
 		Canary: &loopsupervisor.CanaryState{
-			Cohort:            append([]string(nil), input.Cohort...),
-			CohortDigest:      cohortDigest,
-			StartedAt:         input.StartedAt,
-			InstalledCommit:   input.InstalledCommit,
-			BinaryVersion:     input.BinaryVersion,
-			BuildIdentity:     input.BuildIdentity,
-			ContractDigest:    input.ContractDigest,
-			ReportPath:        path,
-			Decision:          "passed",
-			ReportDigest:      autonomyReport.EvidenceDigest,
-			ReportGeneratedAt: autonomyReport.GeneratedAt,
-			PublishedAt:       generated.Add(time.Second).Format(time.RFC3339Nano),
+			Cohort:                 append([]string(nil), input.Cohort...),
+			CohortDigest:           cohortDigest,
+			StartedAt:              input.StartedAt,
+			InstalledCommit:        input.InstalledCommit,
+			BinaryVersion:          input.BinaryVersion,
+			BuildIdentity:          input.BuildIdentity,
+			ContractDigest:         input.ContractDigest,
+			RegistryIdentityDigest: input.RegistryIdentityDigest,
+			ReportPath:             path,
+			Decision:               "passed",
+			ReportDigest:           autonomyReport.EvidenceDigest,
+			ReportGeneratedAt:      autonomyReport.GeneratedAt,
+			PublishedAt:            generated.Add(time.Second).Format(time.RFC3339Nano),
 		},
 	}
 	store := loopsupervisor.NewStore(root)
@@ -254,15 +279,59 @@ func TestDoctorAutonomyFindingIsBoundToDurableCanaryState(t *testing.T) {
 		t.Fatalf("valid state-bound finding = %+v", report.Findings)
 	}
 
-	state.Canary.ReportDigest = "sha256:" + strings.Repeat("c", 64)
+	archived := *state.Canary
+	if err := saveNativeCanaryPromotionMarker(root, nativeCanaryPromotionMarker{
+		ProjectID: state.ProjectID,
+		Status:    nativeCanaryPromotionValidated,
+		Canary:    archived,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state.Canary = nil
 	if err := store.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+	report.Findings = nil
+	appendAutonomyDoctorFinding(report, false)
+	if len(report.Findings) != 1 || report.Findings[0].Level != doctorpkg.LevelOK {
+		t.Fatalf("valid archived finding = %+v", report.Findings)
+	}
+
+	archived.ReportDigest = "sha256:" + strings.Repeat("c", 64)
+	if err := saveNativeCanaryPromotionMarker(root, nativeCanaryPromotionMarker{
+		ProjectID: state.ProjectID,
+		Status:    nativeCanaryPromotionValidated,
+		Canary:    archived,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	report.Findings = nil
 	appendAutonomyDoctorFinding(report, false)
 	if len(report.Findings) != 1 || report.Findings[0].Level != doctorpkg.LevelError ||
 		!strings.Contains(report.Findings[0].Message, "expected release identity") {
-		t.Fatalf("mismatched state finding = %+v", report.Findings)
+		t.Fatalf("mismatched archived finding = %+v", report.Findings)
+	}
+
+	archived.ReportDigest = autonomyReport.EvidenceDigest
+	if err := saveNativeCanaryPromotionMarker(root, nativeCanaryPromotionMarker{
+		ProjectID: state.ProjectID,
+		Status:    nativeCanaryPromotionValidated,
+		Canary:    archived,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetAccount(
+		context.Background(), rec.ProjectID, registry.ProfileWork,
+		"/tmp/koryph-work", "work@example.com", "identity changed",
+	); err != nil {
+		t.Fatal(err)
+	}
+	report.Findings = nil
+	appendAutonomyDoctorFinding(report, true)
+	if len(report.Findings) != 1 ||
+		report.Findings[0].Level != doctorpkg.LevelError ||
+		!strings.Contains(report.Findings[0].Message, "stale registry identity") {
+		t.Fatalf("stale archived finding = %+v", report.Findings)
 	}
 }
 

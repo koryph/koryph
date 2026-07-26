@@ -17,7 +17,6 @@ import (
 	"github.com/koryph/koryph/internal/adopt"
 	"github.com/koryph/koryph/internal/engine"
 	ghpkg "github.com/koryph/koryph/internal/forge/github"
-	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/onboard"
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/posture"
@@ -792,31 +791,11 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stdout, "promoted migration_status: registered -> migrated")
 			}
 		case registry.StatusMigrated:
-			// Promote to validated only on evidence of a green canary: the
-			// latest run has at least one merged slot and no failures.
-			if run, lerr := ledger.NewStore(rec.Root).LoadLatest(); lerr == nil {
-				merged, bad := 0, 0
-				for _, s := range run.Slots {
-					switch s.Status {
-					case ledger.SlotMerged:
-						merged++
-					case ledger.SlotFailed, ledger.SlotBlocked, ledger.SlotConflict:
-						bad++
-					}
-				}
-				if merged > 0 && bad == 0 {
-					rec.MigrationStatus = registry.StatusValidated
-					if serr := store.Save(ctx, rec); serr != nil {
-						fmt.Fprintln(stderr, "koryph: warning: could not promote migration status:", serr)
-					} else {
-						fmt.Fprintf(stdout, "promoted migration_status: migrated -> validated (canary run %s: %d merged, 0 failed)\n", run.RunID, merged)
-					}
-				} else {
-					fmt.Fprintf(stdout, "not promoted to validated: latest run %s has %d merged / %d failed-blocked-conflict slots (need >=1 merged, 0 bad)\n", run.RunID, merged, bad)
-				}
-			} else {
-				fmt.Fprintln(stdout, "not promoted to validated: no canary run found (run `koryph run --project "+projectID+" --once --allow-unvalidated` and re-validate)")
-			}
+			// Validation establishes onboarding readiness only. The native
+			// fixed canary is the sole migrated→validated promotion path
+			// because it authenticates immutable evidence and reconciles the
+			// registry under the supervisor lease.
+			fmt.Fprintln(stdout, "migration_status remains migrated; run the authenticated fixed native canary to promote to validated")
 		}
 	}
 	fmt.Fprintln(stdout, "OK")

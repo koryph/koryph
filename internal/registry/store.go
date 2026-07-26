@@ -5,7 +5,11 @@ package registry
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -14,6 +18,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/koryph/koryph/internal/execx"
@@ -131,6 +136,12 @@ func (s *Store) Init(ctx context.Context) error {
 // Add registers a new project. It validates the record, refuses duplicates,
 // stamps schema/timestamps, writes atomically, audits, and commits.
 func (s *Store) Add(ctx context.Context, rec *Record) error {
+	return s.withMutationLock(func() error {
+		return s.add(ctx, rec)
+	})
+}
+
+func (s *Store) add(ctx context.Context, rec *Record) error {
 	if err := validate(rec); err != nil {
 		return err
 	}
@@ -144,6 +155,13 @@ func (s *Store) Add(ctx context.Context, rec *Record) error {
 	rec.UpdatedAt = now
 	if rec.MigrationStatus == "" {
 		rec.MigrationStatus = StatusRegistered
+	}
+	if rec.ValidationGeneration == "" {
+		generation, err := newValidationGeneration()
+		if err != nil {
+			return err
+		}
+		rec.ValidationGeneration = generation
 	}
 
 	if err := s.put(rec); err != nil {
@@ -289,6 +307,12 @@ func withinOrEqual(parent, child string) bool {
 // slope is not proven invariant under a compression change, so a re-run of
 // `koryph quota calibrate` is prompted via the doctor check.
 func (s *Store) Save(ctx context.Context, rec *Record) error {
+	return s.withMutationLock(func() error {
+		return s.save(ctx, rec)
+	})
+}
+
+func (s *Store) save(ctx context.Context, rec *Record) error {
 	old, err := s.Get(rec.ProjectID)
 	if err != nil {
 		return err
@@ -296,8 +320,36 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 	if rec.AccountProfile != old.AccountProfile ||
 		rec.ClaudeConfigDir != old.ClaudeConfigDir ||
 		rec.ExpectedIdentity != old.ExpectedIdentity ||
-		!reflect.DeepEqual(rec.RuntimeAccounts, old.RuntimeAccounts) {
+		!reflect.DeepEqual(rec.RuntimeAccounts, old.RuntimeAccounts) ||
+		rec.ValidationGeneration != old.ValidationGeneration {
 		return fmt.Errorf("registry: account fields are immutable via Save; use SetAccount or SetRuntimeAccount")
+	}
+
+	oldIdentityDigest, err := ValidationIdentityDigest(old)
+	if err != nil {
+		return err
+	}
+	newIdentityDigest, err := ValidationIdentityDigest(rec)
+	if err != nil {
+		return err
+	}
+	identityChanged := oldIdentityDigest != newIdentityDigest
+	if identityChanged ||
+		(rec.ValidationGeneration == "" &&
+			old.MigrationStatus == StatusRegistered &&
+			rec.MigrationStatus == StatusMigrated) {
+		generation, err := newValidationGeneration()
+		if err != nil {
+			return err
+		}
+		rec.ValidationGeneration = generation
+	}
+	if identityChanged {
+		// Any execution-identity change invalidates the readiness decision.
+		// Resetting the posture as well as rotating the generation ensures an
+		// A→B→A edit during a canary cannot restore the old digest or admit
+		// evidence produced under a mixture of configurations.
+		rec.MigrationStatus = StatusRegistered
 	}
 
 	// Get above already refused a newer-than-supported on-disk record
@@ -330,11 +382,58 @@ func (s *Store) Save(ctx context.Context, rec *Record) error {
 	return s.commit(ctx, "chore(registry): update "+rec.ProjectID)
 }
 
+// CompareAndSetMigrationStatus atomically reloads a project record, verifies
+// its current migration posture, and persists only the requested posture
+// change under the registry's mutation lock. Callers that wait for a long
+// operation must use this instead of saving a stale Record snapshot.
+//
+// A no-op transition (from == to) intentionally still audits and commits. It
+// is the recovery path for a prior Save that wrote the record before failing
+// during its audit or git commit.
+func (s *Store) CompareAndSetMigrationStatus(
+	ctx context.Context,
+	id, from, to, expectedIdentityDigest string,
+) (*Record, error) {
+	var updated *Record
+	err := s.withMutationLock(func() error {
+		rec, err := s.Get(id)
+		if err != nil {
+			return err
+		}
+		if rec.MigrationStatus != from {
+			return fmt.Errorf(
+				"registry: project %s migration status is %q (want %q)",
+				id, rec.MigrationStatus, from,
+			)
+		}
+		identityDigest, err := ValidationIdentityDigest(rec)
+		if err != nil {
+			return err
+		}
+		if identityDigest != expectedIdentityDigest {
+			return fmt.Errorf("registry: project %s validation identity changed", id)
+		}
+		rec.MigrationStatus = to
+		if err := s.save(ctx, rec); err != nil {
+			return err
+		}
+		updated = rec
+		return nil
+	})
+	return updated, err
+}
+
 // SetAccount is the ONLY path that mutates the account triple. It requires a
 // non-empty reason, records the prior values in the audit detail, resets the
 // migration status to StatusRegistered (forcing re-validation before the next
 // dispatch), and commits.
 func (s *Store) SetAccount(ctx context.Context, id, profile, configDir, expectedIdentity, reason string) error {
+	return s.withMutationLock(func() error {
+		return s.setAccount(ctx, id, profile, configDir, expectedIdentity, reason)
+	})
+}
+
+func (s *Store) setAccount(ctx context.Context, id, profile, configDir, expectedIdentity, reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("registry: SetAccount requires a non-empty reason")
 	}
@@ -360,6 +459,11 @@ func (s *Store) SetAccount(ctx context.Context, id, profile, configDir, expected
 	rec.ClaudeConfigDir = configDir
 	rec.ExpectedIdentity = expectedIdentity
 	rec.MigrationStatus = StatusRegistered
+	generation, err := newValidationGeneration()
+	if err != nil {
+		return err
+	}
+	rec.ValidationGeneration = generation
 	rec.UpdatedAt = nowRFC3339()
 
 	if err := s.put(rec); err != nil {
@@ -388,6 +492,17 @@ func (s *Store) SetAccount(ctx context.Context, id, profile, configDir, expected
 // changing the legacy Claude account fields, so projects can dispatch Claude
 // and Codex side-by-side from one registry record.
 func (s *Store) SetRuntimeAccount(ctx context.Context, id, runtimeName string, account RuntimeAccount, reason string) error {
+	return s.withMutationLock(func() error {
+		return s.setRuntimeAccount(ctx, id, runtimeName, account, reason)
+	})
+}
+
+func (s *Store) setRuntimeAccount(
+	ctx context.Context,
+	id, runtimeName string,
+	account RuntimeAccount,
+	reason string,
+) error {
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("registry: SetRuntimeAccount requires a non-empty reason")
 	}
@@ -411,6 +526,11 @@ func (s *Store) SetRuntimeAccount(ctx context.Context, id, runtimeName string, a
 	}
 	rec.RuntimeAccounts[runtimeName] = account
 	rec.MigrationStatus = StatusRegistered
+	generation, err := newValidationGeneration()
+	if err != nil {
+		return err
+	}
+	rec.ValidationGeneration = generation
 	rec.UpdatedAt = nowRFC3339()
 
 	if err := s.put(rec); err != nil {
@@ -426,6 +546,83 @@ func (s *Store) SetRuntimeAccount(ctx context.Context, id, runtimeName string, a
 		return err
 	}
 	return s.commit(ctx, fmt.Sprintf("feat(registry): set-runtime-account %s %s", id, runtimeName))
+}
+
+func (s *Store) withMutationLock(fn func() error) error {
+	lockPath := filepath.Join(s.Home, ".git", "koryph-registry.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("registry: open mutation lock: %w", err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("registry: acquire mutation lock: %w", err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	return fn()
+}
+
+func newValidationGeneration() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("registry: generate validation generation: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+// ValidationIdentityDigest binds canary evidence to the exact execution
+// identity and a non-repeating account-mutation generation. The generation
+// closes A→B→A replay; the explicit fields make the digest independently
+// inspectable and fail closed if a record was edited outside supported APIs.
+func ValidationIdentityDigest(rec *Record) (string, error) {
+	if rec == nil || rec.ProjectID == "" {
+		return "", errors.New("registry: validation identity requires a project record")
+	}
+	identity := struct {
+		ProjectID            string                    `json:"project_id"`
+		Root                 string                    `json:"root"`
+		AccountProfile       string                    `json:"account_profile"`
+		ClaudeConfigDir      string                    `json:"claude_config_dir"`
+		ExpectedIdentity     string                    `json:"expected_identity"`
+		AuthMode             string                    `json:"auth_mode"`
+		Credential           *Credential               `json:"credential,omitempty"`
+		IdentityFingerprint  string                    `json:"identity_fingerprint"`
+		RuntimeAccounts      map[string]RuntimeAccount `json:"runtime_accounts,omitempty"`
+		AllowedModels        []string                  `json:"allowed_models"`
+		PlannerModel         string                    `json:"planner_model"`
+		ImplModel            string                    `json:"impl_model"`
+		AgentMCP             string                    `json:"agent_mcp"`
+		BatchPolicy          string                    `json:"batch_policy"`
+		APIFallback          string                    `json:"api_fallback"`
+		APIKeyEnvVar         string                    `json:"api_key_env_var"`
+		PromptCachePolicy    string                    `json:"prompt_cache_policy"`
+		BillingGuard         string                    `json:"billing_guard"`
+		QuotaProfile         string                    `json:"quota_profile"`
+		EnvPassthrough       []string                  `json:"env_passthrough"`
+		WorktreeRoot         string                    `json:"worktree_root"`
+		DefaultBranch        string                    `json:"default_branch"`
+		AgentProxy           *AgentProxy               `json:"agent_proxy,omitempty"`
+		ValidationGeneration string                    `json:"validation_generation"`
+	}{
+		ProjectID: rec.ProjectID, Root: rec.Root,
+		AccountProfile: rec.AccountProfile, ClaudeConfigDir: rec.ClaudeConfigDir,
+		ExpectedIdentity: rec.ExpectedIdentity, AuthMode: rec.EffectiveAuthMode(),
+		Credential: rec.Credential, IdentityFingerprint: rec.IdentityFingerprint,
+		RuntimeAccounts: rec.RuntimeAccounts,
+		AllowedModels:   rec.AllowedModels, PlannerModel: rec.PlannerModel, ImplModel: rec.ImplModel,
+		AgentMCP: rec.AgentMCP, BatchPolicy: rec.BatchPolicy,
+		APIFallback: rec.APIFallback, APIKeyEnvVar: rec.APIKeyEnvVar,
+		PromptCachePolicy: rec.PromptCachePolicy, BillingGuard: rec.BillingGuard,
+		QuotaProfile: rec.QuotaProfile, EnvPassthrough: rec.EnvPassthrough,
+		WorktreeRoot: rec.WorktreeRoot, DefaultBranch: rec.DefaultBranch,
+		AgentProxy: rec.AgentProxy, ValidationGeneration: rec.ValidationGeneration,
+	}
+	raw, err := json.Marshal(identity)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // Audit appends one event to the audit log (append-only; never rewritten).

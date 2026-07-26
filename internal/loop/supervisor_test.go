@@ -273,10 +273,11 @@ func testCanarySpec(t *testing.T, supervisor *Supervisor, cohort []string, targe
 	repo := filepath.Dir(filepath.Dir(supervisor.Store.Root))
 	return &CanarySpec{
 		Cohort: cohort, TargetWidth: target, InactivityLimit: DefaultCanaryInactivityLimit,
-		InstalledCommit: strings.Repeat("a", 40),
-		BinaryVersion:   "0.10.0",
-		BuildIdentity:   "test-build-identity",
-		ContractDigest:  "sha256:" + strings.Repeat("b", 64),
+		InstalledCommit:        strings.Repeat("a", 40),
+		BinaryVersion:          "0.10.0",
+		BuildIdentity:          "test-build-identity",
+		ContractDigest:         "sha256:" + strings.Repeat("b", 64),
+		RegistryIdentityDigest: "sha256:" + strings.Repeat("c", 64),
 		ReportPath: filepath.Join(
 			repo, ".plan-logs", "koryph", "canary", "autonomous-loop-reliability.json",
 		),
@@ -547,17 +548,18 @@ func TestCanaryRejectsTamperedStoredCohortDigest(t *testing.T) {
 	state := State{
 		ProjectID: "demo",
 		Canary: &CanaryState{
-			CohortDigest:    cohortDigest([]string{"b1", "b2"}),
-			Cohort:          []string{"b1", "attacker"},
-			StartedAt:       "2026-07-25T12:00:00Z",
-			TargetWidth:     2,
-			CurrentWidth:    2,
-			HardStops:       normalizedHardStops(nil),
-			InstalledCommit: supervisor.Config.Canary.InstalledCommit,
-			BinaryVersion:   supervisor.Config.Canary.BinaryVersion,
-			BuildIdentity:   supervisor.Config.Canary.BuildIdentity,
-			ContractDigest:  supervisor.Config.Canary.ContractDigest,
-			ReportPath:      supervisor.Config.Canary.ReportPath,
+			CohortDigest:           cohortDigest([]string{"b1", "b2"}),
+			Cohort:                 []string{"b1", "attacker"},
+			StartedAt:              "2026-07-25T12:00:00Z",
+			TargetWidth:            2,
+			CurrentWidth:           2,
+			HardStops:              normalizedHardStops(nil),
+			InstalledCommit:        supervisor.Config.Canary.InstalledCommit,
+			BinaryVersion:          supervisor.Config.Canary.BinaryVersion,
+			BuildIdentity:          supervisor.Config.Canary.BuildIdentity,
+			ContractDigest:         supervisor.Config.Canary.ContractDigest,
+			RegistryIdentityDigest: supervisor.Config.Canary.RegistryIdentityDigest,
+			ReportPath:             supervisor.Config.Canary.ReportPath,
 		},
 	}
 	if err := supervisor.configureCanary(&state); !errors.Is(err, ErrCanaryCohortDrift) {

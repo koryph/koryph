@@ -30,18 +30,23 @@ A report created by this command cannot satisfy release doctor by itself:
 doctor also requires the exact matching identity and publication checkpoint
 from durable native-supervisor state.
 Koryph writes the report atomically and create-once: an existing report is
-never replaced, even by identical bytes. Preserve a failed report for rollback
-analysis and choose a new canary identity before producing another report.
+never replaced, even by identical bytes. When an account or other
+canary-bound registry setting changes, the next fixed-canary invocation moves
+the prior report and checkpoint into generation-keyed history before freeing
+the fixed path for the new generation. Historical evidence is retained; it
+cannot promote the new registry identity or satisfy `doctor
+--autonomy-canary`.
 Publication and loading walk every path component relative to an open directory
 descriptor with no-follow semantics. A symlinked parent, final symlink, FIFO,
 device, socket, or other non-regular report target is rejected.
 
 The command publishes failure evidence before returning a nonzero exit status.
 The report includes the installed source commit, binary version, fixed cohort
-and its digest, contract digest, every implementation attempt and typed
-outcome, stage timings, process events, pressure samples, normalized tokens,
-artifact bytes, and the final decision. Its evidence digest authenticates all
-identity, evidence, derived metrics, and checks.
+and its digest, contract digest, non-repeating registry validation identity,
+every implementation attempt and typed outcome, stage timings, process events,
+pressure samples, normalized tokens, artifact bytes, and the final decision.
+Its evidence digest authenticates all identity, evidence, derived metrics, and
+checks.
 
 ## Initial thresholds
 

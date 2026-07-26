@@ -43,6 +43,7 @@ type fix struct {
 type fixOpts struct {
 	expectedIdentity string // registry ExpectedIdentity (default test@example.com)
 	migrationStatus  string // default validated
+	billingGuard     string
 	workSource       string // default bd
 	mergePolicy      string // default auto
 	commitStyle      string // default "" (conventional enforcement on)
@@ -338,6 +339,7 @@ func newFixture(t *testing.T, o fixOpts) *fix {
 		AllowedModels:    []string{"haiku", "sonnet", "opus"},
 		WorktreeRoot:     f.wtRoot,
 		AgentProxy:       o.agentProxy,
+		BillingGuard:     o.billingGuard,
 		EnvPassthrough:   []string{"KORYPH_TEST_KORYPH_BIN"},
 	}
 	if err := st.Add(ctx, rec); err != nil {
@@ -981,6 +983,46 @@ func TestRunRefusesUnvalidatedProject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), registry.StatusRegistered) {
 		t.Errorf("error %q does not name the migration status", err)
+	}
+}
+
+func TestRunNativeCanaryAdmitsMigratedFixedCohort(t *testing.T) {
+	newFixture(t, fixOpts{migrationStatus: registry.StatusMigrated})
+	var out bytes.Buffer
+	opts := baseOptions(&out)
+	opts.Once = true
+	opts.Max = 2
+	opts.AllowedIDs = []string{"tb1", "future"}
+	opts.AuthoritativeWidth = true
+	opts.NativeCanary = true
+	outcome, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.Dispatched != 1 {
+		t.Fatalf("native canary dispatched %d beads, want 1", outcome.Dispatched)
+	}
+}
+
+func TestRunNativeCanaryRefusesRegisteredProject(t *testing.T) {
+	newFixture(t, fixOpts{migrationStatus: registry.StatusRegistered})
+	opts := baseOptions(nil)
+	opts.Once = true
+	opts.Max = 2
+	opts.AllowedIDs = []string{"tb1", "future"}
+	opts.AuthoritativeWidth = true
+	opts.NativeCanary = true
+	_, err := Run(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), registry.StatusMigrated) {
+		t.Fatalf("registered native canary error = %v", err)
+	}
+}
+
+func TestRunMigratedSteadyModeRemainsRefused(t *testing.T) {
+	newFixture(t, fixOpts{migrationStatus: registry.StatusMigrated})
+	_, err := Run(context.Background(), baseOptions(nil))
+	if err == nil || !strings.Contains(err.Error(), registry.StatusMigrated) {
+		t.Fatalf("steady migrated project error = %v", err)
 	}
 }
 

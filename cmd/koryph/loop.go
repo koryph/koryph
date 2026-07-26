@@ -29,18 +29,21 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 	loopsupervisor "github.com/koryph/koryph/internal/loop"
 	"github.com/koryph/koryph/internal/merge"
+	"github.com/koryph/koryph/internal/metrics"
 	"github.com/koryph/koryph/internal/phasecontrol"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/review"
 	"github.com/koryph/koryph/internal/sched"
+	"github.com/koryph/koryph/internal/strictjson"
 	"github.com/koryph/koryph/internal/sysmem"
 	"github.com/koryph/koryph/internal/version"
 )
 
 var (
-	loopInstalledCommit = version.Commit
-	loopBinaryVersion   = func() string { return engine.EngineVersion }
+	loopInstalledCommit        = version.Commit
+	loopBinaryVersion          = func() string { return engine.EngineVersion }
+	loadExpectedAutonomyReport = metrics.LoadAutonomyReportExpected
 )
 
 func init() {
@@ -123,11 +126,61 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	// Unlike manual `run --allow-unvalidated`, autonomous mode has no
-	// break-glass path. Refuse before creating supervisor state.
-	if rec.MigrationStatus != registry.StatusValidated {
-		return fail(stderr, fmt.Errorf("loop: project %s has migration status %q (want %q); autonomous mode never permits --allow-unvalidated",
-			rec.ProjectID, rec.MigrationStatus, registry.StatusValidated))
+	registryIdentityDigest, err := registry.ValidationIdentityDigest(rec)
+	if err != nil {
+		return fail(stderr, fmt.Errorf("loop: authenticate registry identity: %w", err))
+	}
+	store := loopsupervisor.NewStore(rec.Root)
+	state, err := store.LoadState()
+	if err != nil {
+		return fail(stderr, fmt.Errorf("loop: load supervisor state: %w", err))
+	}
+	marker, markerExists, err := loadNativeCanaryPromotionMarker(rec.Root)
+	if err != nil {
+		return fail(stderr, fmt.Errorf("loop: load canary promotion marker: %w", err))
+	}
+	if len(canaryIDs) > 0 {
+		var retired bool
+		state, retired, err = retireStaleNativeCanaryEvidence(
+			ctx, rec.Root, registryIdentityDigest,
+		)
+		if err != nil {
+			return fail(stderr, fmt.Errorf("loop: retire stale canary evidence: %w", err))
+		}
+		if retired {
+			marker = nativeCanaryPromotionMarker{}
+			markerExists = false
+			fmt.Fprintf(stdout, "loop %s: archived stale canary generation before fresh bootstrap\n", rec.ProjectID)
+		}
+	}
+	if len(canaryIDs) > 0 &&
+		((state.Canary != nil && state.Canary.Decision == "passed") || markerExists) {
+		handled, promoted, err := reconcilePassedNativeCanary(
+			ctx, reg, rec, store, canaryIDs, canaryTargetWidth(canaryIDs, *max),
+		)
+		if err != nil {
+			return fail(stderr, fmt.Errorf("loop: recover completed canary: %w", err))
+		}
+		if handled {
+			if promoted {
+				fmt.Fprintf(stdout, "loop %s: promoted migration_status migrated -> validated from immutable passing canary\n", rec.ProjectID)
+			} else {
+				fmt.Fprintf(stdout, "loop %s: authenticated completed canary and finalized steady-mode handoff\n", rec.ProjectID)
+			}
+			return engine.ExitOK
+		}
+	}
+	promotionPending := markerExists &&
+		(marker.Status == nativeCanaryPromotionPending ||
+			!validNativeCanarySHA256(marker.Canary.RegistryIdentityDigest))
+	// Steady autonomous mode has no break-glass path. A fixed-cohort canary is
+	// the sole bootstrap from migrated to validated: it remains evidence-gated
+	// and cannot broaden its admitted work while the project is unvalidated.
+	if !loopPostureAllows(rec.MigrationStatus, len(canaryIDs) > 0, promotionPending) {
+		return fail(stderr, fmt.Errorf(
+			"loop: project %s has migration status %q (canary promotion pending=%t); steady autonomous mode requires %q with no pending promotion, and fixed-cohort canary bootstrap requires %q",
+			rec.ProjectID, rec.MigrationStatus, promotionPending, registry.StatusValidated, registry.StatusMigrated,
+		))
 	}
 
 	cfg := loopsupervisor.Config{
@@ -139,14 +192,22 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(canaryIDs) > 0 {
 		target := canaryTargetWidth(canaryIDs, *max)
-		spec, err := nativeCanarySpec(rec.Root, canaryIDs, target)
+		var spec *loopsupervisor.CanarySpec
+		if state.Canary != nil {
+			spec, err = resumedNativeCanarySpec(
+				rec.Root, canaryIDs, target, registryIdentityDigest, state,
+			)
+		} else {
+			spec, err = nativeCanarySpec(
+				rec.Root, canaryIDs, target, registryIdentityDigest,
+			)
+		}
 		if err != nil {
 			return fail(stderr, err)
 		}
 		cfg.Canary = spec
 	}
 	lstore := ledger.NewStore(rec.Root)
-	store := loopsupervisor.NewStore(rec.Root)
 	observer := &loopProjectObserver{
 		root:        rec.Root,
 		bd:          beads.New(rec.Root),
@@ -156,6 +217,7 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	runner := &loopEngine{
 		projectID:          rec.ProjectID,
 		root:               rec.Root,
+		nativeCanaryCohort: append([]string(nil), canaryIDs...),
 		parent:             *parent,
 		budget:             *budget,
 		defaultModel:       *defaultModel,
@@ -196,7 +258,543 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 		}
 		return engine.ExitFatal
 	}
+	if cfg.Canary != nil {
+		handled, promoted, err := reconcilePassedNativeCanary(
+			ctx, reg, rec, store, canaryIDs, canaryTargetWidth(canaryIDs, *max),
+		)
+		if err != nil {
+			return fail(stderr, fmt.Errorf("loop: promote passing canary: %w", err))
+		}
+		if !handled {
+			return fail(stderr, errors.New("loop: canary stopped without a passing immutable decision"))
+		}
+		if promoted {
+			fmt.Fprintf(stdout, "loop %s: promoted migration_status migrated -> validated from immutable passing canary\n", rec.ProjectID)
+		}
+	}
 	return engine.ExitOK
+}
+
+func loopPostureAllows(status string, canary, promotionPending bool) bool {
+	if promotionPending {
+		return false
+	}
+	return status == registry.StatusValidated ||
+		(canary && status == registry.StatusMigrated)
+}
+
+const (
+	nativeCanaryPromotionMarkerVersion = 2
+	nativeCanaryPromotionPending       = "pending"
+	nativeCanaryPromotionValidated     = "validated"
+	nativeCanaryPromotionMarkerFile    = "canary-promotion.json"
+	nativeCanaryHistoryDir             = "canary-history"
+	nativeCanaryHistoryVersion         = 1
+)
+
+type nativeCanaryPromotionMarker struct {
+	SchemaVersion int                        `json:"schema_version"`
+	ProjectID     string                     `json:"project_id"`
+	Status        string                     `json:"status"`
+	Canary        loopsupervisor.CanaryState `json:"canary"`
+}
+
+type nativeCanaryHistoryRecord struct {
+	SchemaVersion                  int                        `json:"schema_version"`
+	RetiredAt                      string                     `json:"retired_at"`
+	Reason                         string                     `json:"reason"`
+	ProjectID                      string                     `json:"project_id"`
+	PreviousRegistryIdentityDigest string                     `json:"previous_registry_identity_digest"`
+	CurrentRegistryIdentityDigest  string                     `json:"current_registry_identity_digest"`
+	MarkerStatus                   string                     `json:"marker_status,omitempty"`
+	Canary                         loopsupervisor.CanaryState `json:"canary"`
+	OriginalReportPath             string                     `json:"original_report_path"`
+	ArchivedReportPath             string                     `json:"archived_report_path,omitempty"`
+}
+
+func nativeCanaryPromotionMarkerPath(root string) string {
+	return filepath.Join(loopsupervisor.NewStore(root).Root, nativeCanaryPromotionMarkerFile)
+}
+
+func loadNativeCanaryPromotionMarker(root string) (nativeCanaryPromotionMarker, bool, error) {
+	var marker nativeCanaryPromotionMarker
+	loopRoot := loopsupervisor.NewStore(root).Root
+	read, err := fsx.ReadRegularConfined(
+		filepath.Join(loopRoot, nativeCanaryPromotionMarkerFile), 8<<20, loopRoot,
+	)
+	if errors.Is(err, os.ErrNotExist) {
+		return marker, false, nil
+	}
+	if err != nil {
+		return marker, false, err
+	}
+	if err := strictjson.Decode(read.Data, &marker); err != nil {
+		return marker, false, err
+	}
+	legacyUnbound := marker.SchemaVersion == 1 &&
+		strings.TrimSpace(marker.Canary.RegistryIdentityDigest) == ""
+	if (marker.SchemaVersion != nativeCanaryPromotionMarkerVersion &&
+		!legacyUnbound) ||
+		marker.ProjectID == "" || marker.Canary.CohortDigest == "" ||
+		(!legacyUnbound &&
+			!validNativeCanarySHA256(marker.Canary.RegistryIdentityDigest)) ||
+		marker.Canary.ReportDigest == "" ||
+		(marker.Status != nativeCanaryPromotionPending &&
+			marker.Status != nativeCanaryPromotionValidated) {
+		return marker, false, errors.New("loop: invalid canary promotion marker")
+	}
+	return marker, true, nil
+}
+
+func saveNativeCanaryPromotionMarker(root string, marker nativeCanaryPromotionMarker) error {
+	marker.SchemaVersion = nativeCanaryPromotionMarkerVersion
+	return fsx.WriteJSONAtomicPerm(nativeCanaryPromotionMarkerPath(root), marker, 0o600)
+}
+
+func retireStaleNativeCanaryEvidence(
+	ctx context.Context,
+	root string,
+	currentRegistryIdentityDigest string,
+) (loopsupervisor.State, bool, error) {
+	store := loopsupervisor.NewStore(root)
+	lock, err := acquireLoopReconciliationLease(ctx, store)
+	if err != nil {
+		return loopsupervisor.State{}, false, err
+	}
+	defer lock.Unlock() //nolint:errcheck
+
+	state, err := store.LoadState()
+	if err != nil {
+		return state, false, err
+	}
+	marker, markerExists, err := loadNativeCanaryPromotionMarker(root)
+	if err != nil {
+		return state, false, err
+	}
+	var canary *loopsupervisor.CanaryState
+	projectID := state.ProjectID
+	if state.Canary != nil {
+		copy := *state.Canary
+		canary = &copy
+	}
+	if markerExists {
+		if canary != nil && !sameNativeCanaryIdentity(canary, &marker.Canary) {
+			return state, false, errors.New("durable canary state and promotion marker disagree")
+		}
+		if projectID != "" && marker.ProjectID != projectID {
+			return state, false, errors.New("durable canary project and promotion marker disagree")
+		}
+		if canary == nil {
+			copy := marker.Canary
+			canary = &copy
+		}
+		projectID = marker.ProjectID
+	}
+	if canary == nil ||
+		canary.RegistryIdentityDigest == currentRegistryIdentityDigest {
+		return state, false, nil
+	}
+	legacyUnbound := strings.TrimSpace(canary.RegistryIdentityDigest) == ""
+	if (!legacyUnbound &&
+		!validNativeCanarySHA256(canary.RegistryIdentityDigest)) ||
+		!validNativeCanarySHA256(currentRegistryIdentityDigest) ||
+		projectID == "" {
+		return state, false, errors.New("stale canary identity is incomplete")
+	}
+
+	expectedReportPath := filepath.Join(
+		root, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath),
+	)
+	if filepath.Clean(canary.ReportPath) != filepath.Clean(expectedReportPath) {
+		return state, false, errors.New("stale canary report path is not the fixed native path")
+	}
+	keyMaterial := strings.Join([]string{
+		projectID,
+		canary.RegistryIdentityDigest,
+		canary.StartedAt,
+		canary.ReportDigest,
+		canary.ReportPath,
+	}, "\x00")
+	keySum := sha256.Sum256([]byte(keyMaterial))
+	historyKey := hex.EncodeToString(keySum[:])
+	loopRoot := store.Root
+	historyPath := filepath.Join(loopRoot, nativeCanaryHistoryDir, historyKey+".json")
+	archiveReportPath := filepath.Join(
+		root, ".plan-logs", "koryph", "canary", "history", historyKey,
+		filepath.Base(expectedReportPath),
+	)
+
+	sourceReport, sourceErr := fsx.ReadRegularConfined(
+		expectedReportPath, 16<<20, root,
+	)
+	archivedReport, archiveErr := fsx.ReadRegularConfined(
+		archiveReportPath, 16<<20, root,
+	)
+	switch {
+	case sourceErr == nil && archiveErr == nil &&
+		sourceReport.Digest != archivedReport.Digest:
+		return state, false, errors.New("stale canary report archive differs from source")
+	case sourceErr == nil && errors.Is(archiveErr, os.ErrNotExist):
+		if err := fsx.WriteAtomic(archiveReportPath, sourceReport.Data, 0o600); err != nil {
+			return state, false, fmt.Errorf("archive stale canary report: %w", err)
+		}
+		archivedReport = sourceReport
+	case sourceErr == nil && archiveErr != nil:
+		return state, false, fmt.Errorf("load stale canary report archive: %w", archiveErr)
+	case errors.Is(sourceErr, os.ErrNotExist) && archiveErr == nil:
+		// Idempotent recovery after the source was already retired.
+	case errors.Is(sourceErr, os.ErrNotExist) && errors.Is(archiveErr, os.ErrNotExist):
+		if canary.Decision == "passed" || markerExists {
+			return state, false, errors.New("completed stale canary report is missing")
+		}
+		archiveReportPath = ""
+	case sourceErr != nil:
+		return state, false, fmt.Errorf("load stale canary report: %w", sourceErr)
+	case archiveErr != nil:
+		return state, false, fmt.Errorf("load stale canary report archive: %w", archiveErr)
+	}
+
+	history := nativeCanaryHistoryRecord{
+		SchemaVersion:                  nativeCanaryHistoryVersion,
+		RetiredAt:                      time.Now().UTC().Format(time.RFC3339Nano),
+		Reason:                         "registry validation identity changed",
+		ProjectID:                      projectID,
+		PreviousRegistryIdentityDigest: canary.RegistryIdentityDigest,
+		CurrentRegistryIdentityDigest:  currentRegistryIdentityDigest,
+		Canary:                         *canary,
+		OriginalReportPath:             expectedReportPath,
+		ArchivedReportPath:             archiveReportPath,
+	}
+	if markerExists {
+		history.MarkerStatus = marker.Status
+	}
+	if existing, err := fsx.ReadRegularConfined(historyPath, 16<<20, loopRoot); err == nil {
+		var prior nativeCanaryHistoryRecord
+		if err := strictjson.Decode(existing.Data, &prior); err != nil ||
+			prior.ProjectID != history.ProjectID ||
+			prior.PreviousRegistryIdentityDigest != history.PreviousRegistryIdentityDigest ||
+			prior.OriginalReportPath != history.OriginalReportPath ||
+			prior.ArchivedReportPath != history.ArchivedReportPath {
+			return state, false, errors.New("stale canary history record is inconsistent")
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		if err := fsx.WriteJSONAtomicPerm(historyPath, history, 0o600); err != nil {
+			return state, false, fmt.Errorf("persist stale canary history: %w", err)
+		}
+	} else {
+		return state, false, fmt.Errorf("load stale canary history: %w", err)
+	}
+
+	if sourceErr == nil {
+		if err := fsx.RemoveDurable(expectedReportPath); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return state, false, fmt.Errorf("retire stale canary report: %w", err)
+		}
+	}
+	if state.Canary != nil {
+		state.Canary = nil
+		state.Mode = loopsupervisor.ModeStopped
+		state.PID = 0
+		if err := store.SaveState(state); err != nil {
+			return state, false, fmt.Errorf("retire stale canary checkpoint: %w", err)
+		}
+	}
+	if markerExists {
+		if err := fsx.RemoveDurable(nativeCanaryPromotionMarkerPath(root)); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return state, false, fmt.Errorf("retire stale canary marker: %w", err)
+		}
+	}
+	return state, true, nil
+}
+
+func sameNativeCanaryIdentity(left, right *loopsupervisor.CanaryState) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.RegistryIdentityDigest == right.RegistryIdentityDigest &&
+		left.CohortDigest == right.CohortDigest &&
+		left.InstalledCommit == right.InstalledCommit &&
+		left.ReportPath == right.ReportPath &&
+		left.ReportDigest == right.ReportDigest
+}
+
+func validNativeCanarySHA256(value string) bool {
+	raw := strings.TrimPrefix(strings.TrimSpace(value), "sha256:")
+	if len(raw) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(raw)
+	return err == nil && len(decoded) == sha256.Size
+}
+
+type projectRecordStore interface {
+	Get(string) (*registry.Record, error)
+	CompareAndSetMigrationStatus(
+		context.Context,
+		string,
+		string,
+		string,
+		string,
+	) (*registry.Record, error)
+}
+
+type loopStateSaver interface {
+	SaveState(loopsupervisor.State) error
+}
+
+func reconcilePassedNativeCanary(
+	ctx context.Context,
+	reg projectRecordStore,
+	rec *registry.Record,
+	store *loopsupervisor.Store,
+	requestedCohort []string,
+	requestedTarget int,
+) (bool, bool, error) {
+	lock, err := acquireLoopReconciliationLease(ctx, store)
+	if err != nil {
+		return false, false, err
+	}
+	defer lock.Unlock() //nolint:errcheck
+
+	state, err := store.LoadState()
+	if err != nil {
+		return false, false, err
+	}
+	marker, markerExists, err := loadNativeCanaryPromotionMarker(rec.Root)
+	if err != nil {
+		return false, false, err
+	}
+	archivedOnly := state.Canary == nil
+	if state.Canary == nil {
+		if !markerExists {
+			return false, false, nil
+		}
+		archived := marker.Canary
+		state.ProjectID = marker.ProjectID
+		state.Canary = &archived
+	}
+	if state.Canary.Decision != "passed" {
+		return false, false, nil
+	}
+	current, err := reg.Get(rec.ProjectID)
+	if err != nil {
+		return true, false, err
+	}
+	if archivedOnly && marker.Status == nativeCanaryPromotionValidated {
+		if err := validatePassedNativeCanaryRequest(
+			current, state, requestedCohort, requestedTarget,
+		); err != nil {
+			return true, false, err
+		}
+		if current.MigrationStatus != registry.StatusValidated {
+			return true, false, fmt.Errorf(
+				"validated canary archive cannot promote current migration status %q",
+				current.MigrationStatus,
+			)
+		}
+		return true, false, nil
+	}
+	promoted, err := completePassedNativeCanary(
+		ctx, reg, current, store, state, requestedCohort, requestedTarget,
+	)
+	return true, promoted, err
+}
+
+func acquireLoopReconciliationLease(
+	ctx context.Context,
+	store *loopsupervisor.Store,
+) (*loopsupervisor.Lock, error) {
+	for {
+		lock, err := store.Acquire()
+		if !errors.Is(err, loopsupervisor.ErrAlreadyRunning) {
+			return lock, err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func completePassedNativeCanary(
+	ctx context.Context,
+	reg projectRecordStore,
+	rec *registry.Record,
+	store loopStateSaver,
+	state loopsupervisor.State,
+	requestedCohort []string,
+	requestedTarget int,
+) (bool, error) {
+	if err := validatePassedNativeCanaryRequest(
+		rec, state, requestedCohort, requestedTarget,
+	); err != nil {
+		return false, err
+	}
+	marker, markerExists, err := loadNativeCanaryPromotionMarker(rec.Root)
+	if err != nil {
+		return false, err
+	}
+	if markerExists && (marker.ProjectID != state.ProjectID ||
+		marker.Canary.CohortDigest != state.Canary.CohortDigest ||
+		marker.Canary.ReportDigest != state.Canary.ReportDigest) {
+		return false, errors.New("canary promotion marker identity differs from completed canary")
+	}
+	recoveringPending := markerExists && marker.Status == nativeCanaryPromotionPending
+	if err := saveNativeCanaryPromotionMarker(rec.Root, nativeCanaryPromotionMarker{
+		ProjectID: state.ProjectID,
+		Status:    nativeCanaryPromotionPending,
+		Canary:    *state.Canary,
+	}); err != nil {
+		return false, fmt.Errorf("persist fail-closed canary promotion marker: %w", err)
+	}
+
+	promoted := false
+	switch rec.MigrationStatus {
+	case registry.StatusMigrated:
+		updated, updateErr := reg.CompareAndSetMigrationStatus(
+			ctx,
+			rec.ProjectID,
+			registry.StatusMigrated,
+			registry.StatusValidated,
+			state.Canary.RegistryIdentityDigest,
+		)
+		err = updateErr
+		if err != nil {
+			return false, fmt.Errorf("save validated registry posture: %w", err)
+		}
+		rec.MigrationStatus = updated.MigrationStatus
+		promoted = true
+	case registry.StatusValidated:
+		// A prior registry Save may have persisted validated before returning
+		// an audit/commit error. The pending marker keeps steady mode closed;
+		// the immutable report above authenticates this recovery.
+		if recoveringPending {
+			if _, err := reg.CompareAndSetMigrationStatus(
+				ctx,
+				rec.ProjectID,
+				registry.StatusValidated,
+				registry.StatusValidated,
+				state.Canary.RegistryIdentityDigest,
+			); err != nil {
+				return false, fmt.Errorf("complete validated registry audit and commit: %w", err)
+			}
+		}
+	default:
+		return false, fmt.Errorf(
+			"completed canary cannot promote migration status %q", rec.MigrationStatus,
+		)
+	}
+
+	completed := *state.Canary
+	state.Canary = nil
+	state.Mode = loopsupervisor.ModeStopped
+	state.PID = 0
+	if err := store.SaveState(state); err != nil {
+		return false, fmt.Errorf("finalize steady-mode supervisor state: %w", err)
+	}
+	if err := saveNativeCanaryPromotionMarker(rec.Root, nativeCanaryPromotionMarker{
+		ProjectID: state.ProjectID,
+		Status:    nativeCanaryPromotionValidated,
+		Canary:    completed,
+	}); err != nil {
+		return false, fmt.Errorf("resolve canary promotion marker: %w", err)
+	}
+	return promoted, nil
+}
+
+func validatePassedNativeCanaryRequest(
+	rec *registry.Record,
+	state loopsupervisor.State,
+	requestedCohort []string,
+	requestedTarget int,
+) error {
+	if state.Canary == nil || state.Canary.Decision != "passed" {
+		return errors.New("native canary has no completed passing decision")
+	}
+	requestedDigest, err := metrics.AutonomyCohortDigest(requestedCohort)
+	if err != nil || requestedDigest != state.Canary.CohortDigest ||
+		requestedTarget != state.Canary.TargetWidth {
+		return loopsupervisor.ErrCanaryCohortDrift
+	}
+	currentRegistryDigest, err := registry.ValidationIdentityDigest(rec)
+	if err != nil || currentRegistryDigest != state.Canary.RegistryIdentityDigest {
+		return errors.New("passing canary registry identity is stale")
+	}
+	return authenticatePassedNativeCanary(rec, state)
+}
+
+func authenticatePassedNativeCanary(
+	rec *registry.Record,
+	state loopsupervisor.State,
+) error {
+	if rec == nil || state.Canary == nil || state.Canary.Decision != "passed" {
+		return errors.New("native canary has no completed passing decision")
+	}
+	canary := state.Canary
+	if state.ProjectID != rec.ProjectID || canary.HardStop != "" {
+		return errors.New("passing canary state identity is inconsistent")
+	}
+	reportPath := filepath.Join(
+		rec.Root, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath),
+	)
+	if filepath.Clean(canary.ReportPath) != filepath.Clean(reportPath) {
+		return errors.New("passing canary report path is not the fixed native path")
+	}
+	expected, err := nativeCanaryReportExpectation(state.ProjectID, canary)
+	if err != nil {
+		return err
+	}
+	report, err := loadExpectedAutonomyReport(reportPath, expected)
+	if err != nil {
+		return fmt.Errorf("authenticate immutable report: %w", err)
+	}
+	if !report.Decision.Passed {
+		return errors.New("immutable canary report decision did not pass")
+	}
+	return nil
+}
+
+func nativeCanaryReportExpectation(
+	projectID string,
+	canary *loopsupervisor.CanaryState,
+) (metrics.AutonomyReportExpectation, error) {
+	if canary == nil {
+		return metrics.AutonomyReportExpectation{}, errors.New("missing native canary identity")
+	}
+	cohortDigest, err := metrics.AutonomyCohortDigest(canary.Cohort)
+	if err != nil || cohortDigest != canary.CohortDigest {
+		return metrics.AutonomyReportExpectation{}, errors.New("passing canary cohort identity is invalid")
+	}
+	freshAt, err := time.Parse(time.RFC3339Nano, canary.PublishedAt)
+	if err != nil {
+		return metrics.AutonomyReportExpectation{}, errors.New("passing canary publication time is invalid")
+	}
+	return metrics.AutonomyReportExpectation{
+		ProjectID:              projectID,
+		InstalledCommit:        canary.InstalledCommit,
+		BinaryVersion:          canary.BinaryVersion,
+		BuildIdentity:          canary.BuildIdentity,
+		ContractDigest:         canary.ContractDigest,
+		RegistryIdentityDigest: canary.RegistryIdentityDigest,
+		Cohort:                 canary.Cohort,
+		CohortDigest:           cohortDigest,
+		Thresholds:             metrics.DefaultAutonomyThresholds(),
+		CanaryStartedAt:        canary.StartedAt,
+		EvidenceDigest:         canary.ReportDigest,
+		GeneratedAt:            canary.ReportGeneratedAt,
+		FreshAt:                freshAt,
+		MaxAge:                 autonomyDoctorMaxAge,
+		MaxFutureSkew:          autonomyDoctorMaxFutureSkew,
+	}, nil
 }
 
 func cmdLoopStatus(args []string, stdout, stderr io.Writer) int {
@@ -469,6 +1067,7 @@ func (o *loopProjectObserver) fileWakeToken() string {
 type loopEngine struct {
 	projectID          string
 	root               string
+	nativeCanaryCohort []string
 	parent             string
 	budget             float64
 	defaultModel       string
@@ -491,6 +1090,11 @@ type loopEngine struct {
 
 func (e *loopEngine) Run(ctx context.Context, req loopsupervisor.RunRequest) (loopsupervisor.RunResult, error) {
 	only := req.Only
+	nativeCanary := len(e.nativeCanaryCohort) > 0
+	if nativeCanary && !fixedCanaryRequestMatches(e.nativeCanaryCohort, req) {
+		return loopsupervisor.RunResult{Code: engine.ExitFatal},
+			errors.New("loop: native canary engine request escaped its immutable cohort")
+	}
 	run := e.run
 	if run == nil {
 		run = engine.Run
@@ -514,6 +1118,7 @@ func (e *loopEngine) Run(ctx context.Context, req loopsupervisor.RunRequest) (lo
 		Direct:             e.direct,
 		Review:             e.review,
 		AllowAPISpend:      e.allowAPISpend,
+		NativeCanary:       nativeCanary,
 		NoBillingGuard:     e.noBillingGuard,
 		RequireCalibration: e.requireCalibration,
 		DispatchMode:       e.dispatchMode,
@@ -561,7 +1166,38 @@ func (e *loopEngine) Run(ctx context.Context, req loopsupervisor.RunRequest) (lo
 	return result, err
 }
 
-func nativeCanarySpec(root string, cohort []string, target int) (*loopsupervisor.CanarySpec, error) {
+func fixedCanaryRequestMatches(
+	cohort []string,
+	req loopsupervisor.RunRequest,
+) bool {
+	expected := splitIDs(strings.Join(cohort, ","))
+	actual := splitIDs(strings.Join(req.AllowedIDs, ","))
+	if len(expected) < 2 || len(actual) != len(expected) ||
+		!req.AuthoritativeWidth || req.Max < 2 || req.Max > len(expected) {
+		return false
+	}
+	for i := range expected {
+		if expected[i] != actual[i] {
+			return false
+		}
+	}
+	if req.Only == "" {
+		return true
+	}
+	for _, id := range expected {
+		if id == req.Only {
+			return true
+		}
+	}
+	return false
+}
+
+func nativeCanarySpec(
+	root string,
+	cohort []string,
+	target int,
+	registryIdentityDigest string,
+) (*loopsupervisor.CanarySpec, error) {
 	commit := strings.TrimSpace(loopInstalledCommit())
 	if !validNativeCanaryCommit(commit) {
 		return nil, errors.New("loop: canary requires an installed binary with a clean source commit")
@@ -585,13 +1221,99 @@ func nativeCanarySpec(root string, cohort []string, target int) (*loopsupervisor
 	}
 	return &loopsupervisor.CanarySpec{
 		Cohort: cohort, TargetWidth: target,
-		InactivityLimit: loopsupervisor.DefaultCanaryInactivityLimit,
-		InstalledCommit: commit,
-		BinaryVersion:   loopBinaryVersion(),
-		BuildIdentity:   buildIdentity,
-		ContractDigest:  "sha256:" + contract.Digest,
-		ReportPath:      reportPath,
+		InactivityLimit:        loopsupervisor.DefaultCanaryInactivityLimit,
+		InstalledCommit:        commit,
+		BinaryVersion:          loopBinaryVersion(),
+		BuildIdentity:          buildIdentity,
+		ContractDigest:         "sha256:" + contract.Digest,
+		RegistryIdentityDigest: registryIdentityDigest,
+		ReportPath:             reportPath,
 	}, nil
+}
+
+func resumedNativeCanarySpec(
+	root string,
+	cohort []string,
+	target int,
+	registryIdentityDigest string,
+	state loopsupervisor.State,
+) (*loopsupervisor.CanarySpec, error) {
+	if state.Canary == nil {
+		return nil, errors.New("loop: no durable canary identity to resume")
+	}
+	canary := state.Canary
+	digest, err := metrics.AutonomyCohortDigest(cohort)
+	if err != nil || digest != canary.CohortDigest || target != canary.TargetWidth {
+		return nil, loopsupervisor.ErrCanaryCohortDrift
+	}
+	commit := strings.TrimSpace(loopInstalledCommit())
+	binaryVersion := strings.TrimSpace(loopBinaryVersion())
+	buildIdentity, err := version.BuildIdentity(binaryVersion)
+	if err != nil {
+		return nil, fmt.Errorf("loop: authenticate installed binary: %w", err)
+	}
+	if commit != canary.InstalledCommit ||
+		binaryVersion != canary.BinaryVersion ||
+		buildIdentity != canary.BuildIdentity {
+		return nil, loopsupervisor.ErrCanaryIdentityDrift
+	}
+	if registryIdentityDigest != canary.RegistryIdentityDigest {
+		return nil, loopsupervisor.ErrCanaryIdentityDrift
+	}
+	if err := authenticateNativeCanaryResumeCheckout(root, commit); err != nil {
+		return nil, err
+	}
+	contract, err := fsx.ReadRegularConfined(filepath.Join(root, "AGENTS.md"), 1<<20, root)
+	if err != nil {
+		return nil, fmt.Errorf("loop: authenticate AGENTS.md: %w", err)
+	}
+	reportPath, err := filepath.Abs(filepath.Join(
+		root, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath),
+	))
+	if err != nil {
+		return nil, err
+	}
+	if canary.ContractDigest != "sha256:"+contract.Digest ||
+		filepath.Clean(canary.ReportPath) != filepath.Clean(reportPath) {
+		return nil, loopsupervisor.ErrCanaryIdentityDrift
+	}
+	return &loopsupervisor.CanarySpec{
+		Cohort:                 cohort,
+		TargetWidth:            target,
+		InactivityLimit:        time.Duration(canary.InactivityLimitMS) * time.Millisecond,
+		HardStops:              canary.HardStops,
+		InstalledCommit:        canary.InstalledCommit,
+		BinaryVersion:          canary.BinaryVersion,
+		BuildIdentity:          canary.BuildIdentity,
+		ContractDigest:         canary.ContractDigest,
+		RegistryIdentityDigest: canary.RegistryIdentityDigest,
+		ReportPath:             canary.ReportPath,
+	}, nil
+}
+
+func authenticateNativeCanaryResumeCheckout(root, installedCommit string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	status, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: root, Name: "git",
+		Args: []string{"status", "--porcelain=v1", "--untracked-files=all"},
+	})
+	if err != nil {
+		return fmt.Errorf("loop: authenticate clean resumed canary checkout: %w", err)
+	}
+	if nativeCanaryCheckoutDirty(status.Stdout) {
+		return errors.New("loop: resumed canary checkout has tracked or untracked changes")
+	}
+	if _, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: root, Name: "git",
+		Args: []string{"merge-base", "--is-ancestor", installedCommit, "HEAD"},
+	}); err != nil {
+		return fmt.Errorf(
+			"loop: resumed canary checkout HEAD is not descended from installed commit: %w",
+			err,
+		)
+	}
+	return nil
 }
 
 func validNativeCanaryCommit(commit string) bool {
@@ -621,10 +1343,28 @@ func authenticateNativeCanaryCheckout(root, installedCommit string) error {
 	if err != nil {
 		return fmt.Errorf("loop: authenticate clean canary checkout: %w", err)
 	}
-	if strings.TrimSpace(status.Stdout) != "" {
+	if nativeCanaryCheckoutDirty(status.Stdout) {
 		return errors.New("loop: canary checkout has tracked or untracked changes")
 	}
 	return nil
+}
+
+func nativeCanaryCheckoutDirty(status string) bool {
+	for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
+		if line == "" {
+			continue
+		}
+		if len(line) < 4 || line[:2] != "??" {
+			return true
+		}
+		path := filepath.ToSlash(strings.TrimSpace(line[3:]))
+		if path != ".koryph" && !strings.HasPrefix(path, ".koryph/") &&
+			path != ".plan-logs/koryph" &&
+			!strings.HasPrefix(path, ".plan-logs/koryph/") {
+			return true
+		}
+	}
+	return false
 }
 
 func engineHardStops(kinds []string) []engine.SafetyTripwireKind {

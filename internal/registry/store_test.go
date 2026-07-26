@@ -183,8 +183,8 @@ func TestAddGetRoundtrip(t *testing.T) {
 	if got.ProjectID != "my-proj" || got.Root != root {
 		t.Fatalf("roundtrip mismatch: %+v", got)
 	}
-	if got.SchemaVersion != 1 {
-		t.Fatalf("schema_version=%d, want 1", got.SchemaVersion)
+	if got.SchemaVersion != schemaver.Current(schemaver.Registry) {
+		t.Fatalf("schema_version=%d, want %d", got.SchemaVersion, schemaver.Current(schemaver.Registry))
 	}
 	if got.CreatedAt == "" || got.UpdatedAt == "" {
 		t.Fatalf("timestamps not set: created=%q updated=%q", got.CreatedAt, got.UpdatedAt)
@@ -261,6 +261,133 @@ func TestSaveRefusesAccountDrift(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SetAccount") {
 		t.Fatalf("error should point at SetAccount, got: %v", err)
+	}
+}
+
+func TestCompareAndSetMigrationStatusPreservesFreshRecordFields(t *testing.T) {
+	ctx := context.Background()
+	root := gitProject(t)
+	s := newInitStore(t)
+	if err := s.Add(ctx, sampleRecord("cas", root)); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := s.Get("cas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.Name = "updated while canary ran"
+	if err := s.Save(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	identityDigest, err := ValidationIdentityDigest(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := s.CompareAndSetMigrationStatus(
+		ctx, "cas", StatusRegistered, StatusMigrated, identityDigest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.MigrationStatus != StatusMigrated ||
+		updated.Name != "updated while canary ran" {
+		t.Fatalf("updated record=%+v", updated)
+	}
+	if _, err := s.CompareAndSetMigrationStatus(
+		ctx, "cas", StatusRegistered, StatusValidated, identityDigest,
+	); err == nil {
+		t.Fatal("compare-and-set accepted stale expected status")
+	}
+}
+
+func TestValidationIdentityABAInvalidatesCanaryEvidence(t *testing.T) {
+	ctx := context.Background()
+	s := newInitStore(t)
+	rec := sampleRecord("identity-aba", gitProject(t))
+	rec.AllowedModels = []string{"standard"}
+	if err := s.Add(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := s.Get(rec.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.MigrationStatus = StatusMigrated
+	if err := s.Save(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	initialGeneration := rec.ValidationGeneration
+	staleDigest, err := ValidationIdentityDigest(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec.AllowedModels = []string{"frontier"}
+	if err := s.Save(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.MigrationStatus != StatusRegistered ||
+		rec.ValidationGeneration == initialGeneration {
+		t.Fatalf("identity change did not invalidate readiness: %+v", rec)
+	}
+	intermediateGeneration := rec.ValidationGeneration
+
+	rec.AllowedModels = []string{"standard"}
+	if err := s.Save(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.MigrationStatus != StatusRegistered ||
+		rec.ValidationGeneration == intermediateGeneration ||
+		rec.ValidationGeneration == initialGeneration {
+		t.Fatalf("identity ABA did not rotate generation: %+v", rec)
+	}
+	rec.MigrationStatus = StatusMigrated
+	if err := s.Save(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.CompareAndSetMigrationStatus(
+		ctx, rec.ProjectID, StatusMigrated, StatusValidated, staleDigest,
+	); err == nil || !strings.Contains(err.Error(), "validation identity changed") {
+		t.Fatalf("stale canary evidence accepted after identity ABA: %v", err)
+	}
+}
+
+func TestRegistryMutationLockSerializesDifferentProjects(t *testing.T) {
+	ctx := context.Background()
+	s := newInitStore(t)
+	for _, id := range []string{"alpha", "beta"} {
+		if err := s.Add(ctx, sampleRecord(id, gitProject(t))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, id := range []string{"alpha", "beta"} {
+		id := id
+		go func() {
+			<-start
+			rec, err := s.Get(id)
+			if err == nil {
+				rec.Name = id + "-updated"
+				err = s.Save(ctx, rec)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"alpha", "beta"} {
+		rec, err := s.Get(id)
+		if err != nil || rec.Name != id+"-updated" {
+			t.Fatalf("%s record=%+v err=%v", id, rec, err)
+		}
 	}
 }
 

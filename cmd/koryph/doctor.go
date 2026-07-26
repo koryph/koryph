@@ -14,7 +14,7 @@ import (
 
 	"github.com/koryph/koryph/internal/doctor"
 	loopsupervisor "github.com/koryph/koryph/internal/loop"
-	"github.com/koryph/koryph/internal/metrics"
+	"github.com/koryph/koryph/internal/registry"
 )
 
 const (
@@ -119,44 +119,48 @@ func appendAutonomyDoctorFinding(report *doctor.Report, requested bool) {
 		appendAutonomyStateError(report, "cannot load durable supervisor state: "+stateErr.Error())
 		return
 	}
-	if state.ProjectID != report.Project || state.Canary == nil {
+	if state.ProjectID != report.Project {
 		appendAutonomyStateError(report, "durable supervisor state does not contain this project's canary identity")
 		return
 	}
-	if state.Canary.HardStop != "" || state.Canary.Decision != "passed" {
+	canary := state.Canary
+	if canary == nil {
+		marker, exists, markerErr := loadNativeCanaryPromotionMarker(report.Home)
+		if markerErr != nil {
+			appendAutonomyStateError(report, "cannot load archived canary identity: "+markerErr.Error())
+			return
+		}
+		if !exists || marker.Status != nativeCanaryPromotionValidated ||
+			marker.ProjectID != report.Project {
+			appendAutonomyStateError(report, "durable supervisor state does not contain this project's canary identity")
+			return
+		}
+		archived := marker.Canary
+		canary = &archived
+	}
+	if canary.HardStop != "" || canary.Decision != "passed" {
 		appendAutonomyStateError(report, "durable supervisor canary did not reach a passing terminal decision")
 		return
 	}
-	if filepath.Clean(state.Canary.ReportPath) != filepath.Clean(path) {
+	current, registryErr := registry.NewStore().Get(report.Project)
+	if registryErr != nil {
+		appendAutonomyStateError(report, "cannot load current registry identity: "+registryErr.Error())
+		return
+	}
+	currentRegistryIdentityDigest, registryErr := registry.ValidationIdentityDigest(current)
+	if registryErr != nil ||
+		currentRegistryIdentityDigest != canary.RegistryIdentityDigest {
+		appendAutonomyStateError(report, "durable supervisor canary belongs to a stale registry identity")
+		return
+	}
+	if filepath.Clean(canary.ReportPath) != filepath.Clean(path) {
 		appendAutonomyStateError(report, "durable supervisor report path does not match the fixed canary path")
 		return
 	}
-	cohortDigest, digestErr := metrics.AutonomyCohortDigest(state.Canary.Cohort)
-	if digestErr != nil || state.Canary.CohortDigest != cohortDigest {
-		appendAutonomyStateError(report, "durable supervisor cohort identity is invalid")
+	expected, identityErr := nativeCanaryReportExpectation(state.ProjectID, canary)
+	if identityErr != nil {
+		appendAutonomyStateError(report, identityErr.Error())
 		return
-	}
-	freshAt, timeErr := time.Parse(time.RFC3339Nano, state.Canary.PublishedAt)
-	if timeErr != nil {
-		appendAutonomyStateError(report, "durable supervisor publication time is invalid")
-		return
-	}
-
-	expected := metrics.AutonomyReportExpectation{
-		ProjectID:       state.ProjectID,
-		InstalledCommit: state.Canary.InstalledCommit,
-		BinaryVersion:   state.Canary.BinaryVersion,
-		BuildIdentity:   state.Canary.BuildIdentity,
-		ContractDigest:  state.Canary.ContractDigest,
-		Cohort:          state.Canary.Cohort,
-		CohortDigest:    cohortDigest,
-		Thresholds:      metrics.DefaultAutonomyThresholds(),
-		CanaryStartedAt: state.Canary.StartedAt,
-		EvidenceDigest:  state.Canary.ReportDigest,
-		GeneratedAt:     state.Canary.ReportGeneratedAt,
-		FreshAt:         freshAt,
-		MaxAge:          autonomyDoctorMaxAge,
-		MaxFutureSkew:   autonomyDoctorMaxFutureSkew,
 	}
 	report.Findings = append(report.Findings, doctor.CheckAutonomyReport(filepath.Clean(path), expected))
 }

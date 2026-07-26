@@ -387,11 +387,13 @@ func (s *Supervisor) configureCanary(state *State) error {
 	binaryVersion := strings.TrimSpace(s.Config.Canary.BinaryVersion)
 	buildIdentity := strings.TrimSpace(s.Config.Canary.BuildIdentity)
 	contractDigest := strings.TrimSpace(s.Config.Canary.ContractDigest)
+	registryIdentityDigest := strings.TrimSpace(s.Config.Canary.RegistryIdentityDigest)
 	reportPath := filepath.Clean(strings.TrimSpace(s.Config.Canary.ReportPath))
 	if !validCommit(commit) || binaryVersion == "" || buildIdentity == "" ||
-		!validDigest(contractDigest) || !filepath.IsAbs(reportPath) ||
+		!validDigest(contractDigest) || !validDigest(registryIdentityDigest) ||
+		!filepath.IsAbs(reportPath) ||
 		s.Publisher == nil {
-		return errors.New("loop: canary requires a clean installed commit, binary version, authenticated contract digest, absolute report path, and evidence publisher")
+		return errors.New("loop: canary requires a clean installed commit, binary version, authenticated contract and registry identity digests, absolute report path, and evidence publisher")
 	}
 	if state.Canary != nil {
 		stored := normalizedCohort(state.Canary.Cohort)
@@ -414,6 +416,7 @@ func (s *Supervisor) configureCanary(state *State) error {
 			state.Canary.BinaryVersion != binaryVersion ||
 			state.Canary.BuildIdentity != buildIdentity ||
 			state.Canary.ContractDigest != contractDigest ||
+			state.Canary.RegistryIdentityDigest != registryIdentityDigest ||
 			filepath.Clean(state.Canary.ReportPath) != reportPath {
 			return ErrCanaryIdentityDrift
 		}
@@ -429,20 +432,21 @@ func (s *Supervisor) configureCanary(state *State) error {
 	}
 	admittedAt := s.clock().Format(time.RFC3339Nano)
 	state.Canary = &CanaryState{
-		CohortDigest:      digest,
-		Cohort:            cohort,
-		StartedAt:         admittedAt,
-		ProgressAt:        admittedAt,
-		InactivityLimitMS: inactivityLimitMS,
-		TargetWidth:       target,
-		CurrentWidth:      2,
-		HardStops:         hardStops,
-		InstalledCommit:   commit,
-		BinaryVersion:     binaryVersion,
-		BuildIdentity:     buildIdentity,
-		ContractDigest:    contractDigest,
-		ReportPath:        reportPath,
-		Terminal:          make(map[string]TerminalOutcome),
+		CohortDigest:           digest,
+		Cohort:                 cohort,
+		StartedAt:              admittedAt,
+		ProgressAt:             admittedAt,
+		InactivityLimitMS:      inactivityLimitMS,
+		TargetWidth:            target,
+		CurrentWidth:           2,
+		HardStops:              hardStops,
+		InstalledCommit:        commit,
+		BinaryVersion:          binaryVersion,
+		BuildIdentity:          buildIdentity,
+		ContractDigest:         contractDigest,
+		RegistryIdentityDigest: registryIdentityDigest,
+		ReportPath:             reportPath,
+		Terminal:               make(map[string]TerminalOutcome),
 	}
 	return nil
 }

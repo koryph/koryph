@@ -122,8 +122,14 @@ type Options struct {
 	Review            bool // post-implementation review pass before merge
 	Manual            bool // single manual dispatch semantics (quota-exempt)
 	AllowAPISpend     bool // permit api-key billing fallback at governor stop
-	AllowUnvalidated  bool // permit runs on non-validated projects (canary)
-	NoPreflight       bool
+	// AllowUnvalidated permits an operator-driven run on a migrated project.
+	// It never admits registered projects.
+	AllowUnvalidated bool
+	// NativeCanary is an internal authority for a loop-owned, immutable
+	// fixed-cohort canary. Run validates all cohort constraints and admits
+	// exactly the migrated posture; it is not exposed as a CLI switch.
+	NativeCanary bool
+	NoPreflight  bool
 	// NoBillingGuard disables the governor's throttling constraints for
 	// this run (preflight, drain/stop blocking, slot scaling): usage is
 	// still measured, logged, and calibrated, but never blocks dispatch.

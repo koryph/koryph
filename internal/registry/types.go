@@ -97,8 +97,9 @@ type Record struct {
 	Forge string `json:"forge,omitempty"`
 
 	// Koryph
-	EngineVersion   string `json:"koryph_engine_version,omitempty"`
-	MigrationStatus string `json:"migration_status"`
+	EngineVersion        string `json:"koryph_engine_version,omitempty"`
+	MigrationStatus      string `json:"migration_status"`
+	ValidationGeneration string `json:"validation_generation,omitempty"`
 
 	// Account / environment. ClaudeConfigDir=="" means the profile uses the
 	// default unset-CLAUDE_CONFIG_DIR personal account.

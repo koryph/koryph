@@ -79,6 +79,16 @@ func fsyncDir(dir string) error {
 	return d.Sync()
 }
 
+// RemoveDurable removes path and fsyncs its parent directory so a successful
+// retirement cannot be undone by a crash that resurrects the removed
+// directory entry. Callers retain normal os.Remove error semantics.
+func RemoveDurable(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return fsyncDir(filepath.Dir(path))
+}
+
 // WriteJSONAtomic marshals v with indentation and writes it atomically (0644).
 func WriteJSONAtomic(path string, v any) error {
 	return WriteJSONAtomicPerm(path, v, 0o644)

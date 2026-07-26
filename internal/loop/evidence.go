@@ -65,17 +65,18 @@ func (p NativeCanaryPublisher) Publish(
 		return CanaryPublication{}, err
 	}
 	input := metrics.AutonomyInput{
-		SchemaVersion:   metrics.AutonomyInputSchema,
-		ProjectID:       request.ProjectID,
-		InstalledCommit: request.Canary.InstalledCommit,
-		BinaryVersion:   request.Canary.BinaryVersion,
-		BuildIdentity:   request.Canary.BuildIdentity,
-		ContractDigest:  request.Canary.ContractDigest,
-		Cohort:          append([]string(nil), request.Canary.Cohort...),
-		StartedAt:       request.StartedAt,
-		EndedAt:         request.EndedAt,
-		Thresholds:      thresholds,
-		Evidence:        evidence,
+		SchemaVersion:          metrics.AutonomyInputSchema,
+		ProjectID:              request.ProjectID,
+		InstalledCommit:        request.Canary.InstalledCommit,
+		BinaryVersion:          request.Canary.BinaryVersion,
+		BuildIdentity:          request.Canary.BuildIdentity,
+		ContractDigest:         request.Canary.ContractDigest,
+		RegistryIdentityDigest: request.Canary.RegistryIdentityDigest,
+		Cohort:                 append([]string(nil), request.Canary.Cohort...),
+		StartedAt:              request.StartedAt,
+		EndedAt:                request.EndedAt,
+		Thresholds:             thresholds,
+		Evidence:               evidence,
 	}
 	now := time.Now().UTC()
 	if p.Now != nil {

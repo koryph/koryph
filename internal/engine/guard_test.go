@@ -74,20 +74,10 @@ func TestRunBillingGuardFlagDisablesThrottling(t *testing.T) {
 // Registry billing_guard=advisory: durable per-project disable, same effect
 // without the run flag.
 func TestRunBillingGuardRegistryAdvisory(t *testing.T) {
-	f := newFixture(t, fixOpts{})
+	newFixture(t, fixOpts{billingGuard: "advisory"})
 	calibrateStopped(t, "work")
 
 	ctx := context.Background()
-	st := registry.NewStoreAt(f.home)
-	rec, err := st.Get("proj")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.BillingGuard = "advisory"
-	if err := st.Save(ctx, rec); err != nil {
-		t.Fatal(err)
-	}
-
 	var out bytes.Buffer
 	oc, err := Run(ctx, baseOptions(&out))
 	if err != nil {
