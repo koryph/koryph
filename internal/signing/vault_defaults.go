@@ -11,7 +11,16 @@ import (
 
 	"github.com/koryph/koryph/internal/fsx"
 	"github.com/koryph/koryph/internal/paths"
+	"github.com/koryph/koryph/internal/schemaver"
 )
+
+func init() {
+	if err := schemaver.RegisterMigration(schemaver.GlobalConfig, 0, func(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		return state, nil
+	}); err != nil {
+		panic(err)
+	}
+}
 
 // VaultDefaults is the vault block shared by koryph.project.json and the
 // global ~/.koryph/config.json. It records the provider-native container
@@ -84,6 +93,8 @@ func GlobalConfigPath() string {
 //
 // Add only operator-scoped preferences here — nothing project-specific.
 type GlobalConfig struct {
+	SchemaVersion int `json:"schema_version"`
+
 	// Vault sets the operator's default vault provider and container. Used by
 	// any command that stores or fetches a secret when no project-level vault
 	// block is configured (signing setup, bot create, …).
@@ -105,11 +116,18 @@ type GlobalConfig struct {
 func LoadGlobalConfig() (*GlobalConfig, error) {
 	p := GlobalConfigPath()
 	var cfg GlobalConfig
-	err := fsx.ReadJSON(p, &cfg)
+	raw, err := os.ReadFile(p)
 	if os.IsNotExist(err) {
 		return &GlobalConfig{}, nil
 	}
 	if err != nil {
+		return nil, fmt.Errorf("global config: %w", err)
+	}
+	raw, _, err = schemaver.Migrate(schemaver.GlobalConfig, raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("global config: %w", err)
 	}
 	return &cfg, nil
@@ -126,6 +144,17 @@ func SaveGlobalConfig(cfg *GlobalConfig) error {
 	if cfg.DefaultTimeoutSeconds < 0 {
 		return fmt.Errorf("global config: default_timeout_seconds must be > 0, got %d", cfg.DefaultTimeoutSeconds)
 	}
+	var onDisk GlobalConfig
+	err := fsx.ReadJSON(GlobalConfigPath(), &onDisk)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("global config: %w", err)
+	}
+	if err == nil {
+		if err := schemaver.CheckWrite(schemaver.GlobalConfig, onDisk.SchemaVersion); err != nil {
+			return err
+		}
+	}
+	cfg.SchemaVersion = schemaver.Current(schemaver.GlobalConfig)
 	return fsx.WriteJSONAtomic(GlobalConfigPath(), cfg)
 }
 

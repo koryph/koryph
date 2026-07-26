@@ -5,6 +5,7 @@ package signing
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,6 +19,14 @@ import (
 	"github.com/koryph/koryph/internal/paths"
 	"github.com/koryph/koryph/internal/schemaver"
 )
+
+func init() {
+	if err := schemaver.RegisterMigration(schemaver.SigningVault, 0, func(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		return state, nil
+	}); err != nil {
+		panic(err)
+	}
+}
 
 // VaultFileName is the vault adapter file under KoryphHome.
 const VaultFileName = "vault.json"
@@ -226,15 +235,19 @@ func DefaultVault() *VaultConfig {
 func LoadVault() (*VaultConfig, error) {
 	v := DefaultVault()
 	var onDisk VaultConfig
-	err := fsx.ReadJSON(VaultPath(), &onDisk)
+	raw, err := os.ReadFile(VaultPath())
 	if os.IsNotExist(err) {
 		return v, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("signing: %w", err)
 	}
-	if verr := schemaver.CheckRead(schemaver.SigningVault, onDisk.SchemaVersion); verr != nil {
-		return nil, verr
+	raw, _, err = schemaver.Migrate(schemaver.SigningVault, raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		return nil, fmt.Errorf("signing: %w", err)
 	}
 	for name, pt := range onDisk.Providers {
 		v.Providers[name] = pt
@@ -245,6 +258,17 @@ func LoadVault() (*VaultConfig, error) {
 // SaveVault writes the vault adapter file atomically. Templates only — never
 // secret material.
 func SaveVault(v *VaultConfig) error {
+	var onDisk VaultConfig
+	err := fsx.ReadJSON(VaultPath(), &onDisk)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("signing: %w", err)
+	}
+	if err == nil {
+		if err := schemaver.CheckWrite(schemaver.SigningVault, onDisk.SchemaVersion); err != nil {
+			return err
+		}
+	}
+	v.SchemaVersion = schemaver.Current(schemaver.SigningVault)
 	return fsx.WriteJSONAtomic(VaultPath(), v)
 }
 
