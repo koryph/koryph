@@ -224,6 +224,95 @@ func TestCanaryMissingTerminalContractStopsBeforeRepairDispatch(t *testing.T) {
 	}
 }
 
+func TestCanonicalCanaryMissingTerminalExhaustionParksOnlyItsSlot(t *testing.T) {
+	r, sl, _ := candidateFixture(t)
+	r.adapter = &fakeSource{}
+	r.reg = registry.NewStore()
+	r.opts.NativeCanary = true
+	sl.Retry.CompletionRepairs = 1
+	sibling := &ledger.Slot{
+		PhaseID: "sibling", BeadID: "sibling", Status: ledger.SlotRunning,
+	}
+	if err := r.store.SetSlot(r.run, sibling); err != nil {
+		t.Fatal(err)
+	}
+	var events []SafetyTripwire
+	r.opts.OnSafetyTripwire = func(event SafetyTripwire) {
+		events = append(events, event)
+	}
+
+	r.finishAssessedCandidate(t.Context(), sl, candidateAssessment{
+		outcome: OutcomeCompletionContractMissing,
+		reason:  "result absent",
+	})
+
+	if len(events) != 0 || r.safetyTripwireFired || r.dispatchCircuitReason != "" {
+		t.Fatalf("slot-local missing terminal opened circuit: events=%+v fired=%t reason=%q",
+			events, r.safetyTripwireFired, r.dispatchCircuitReason)
+	}
+	if got := r.run.Slots[sl.PhaseID]; got == nil || got.Status != ledger.SlotBlocked {
+		t.Fatalf("failed slot = %+v, want blocked", got)
+	}
+	if got := r.run.Slots[sibling.PhaseID]; got == nil || got.Status != ledger.SlotRunning {
+		t.Fatalf("sibling = %+v, want still running", got)
+	}
+}
+
+func TestExplicitUnchangedRetryTripwireStillStopsCanary(t *testing.T) {
+	r, sl, _ := candidateFixture(t)
+	r.adapter = &fakeSource{}
+	r.reg = registry.NewStore()
+	r.opts.NativeCanary = true
+	r.hardStopKinds = safetyTripwireSet([]SafetyTripwireKind{
+		SafetyTripwireUnchangedRetry,
+	})
+	var events []SafetyTripwire
+	r.opts.OnSafetyTripwire = func(event SafetyTripwire) {
+		events = append(events, event)
+	}
+
+	r.recoverTyped(t.Context(), sl, typedRecoveryRequest{
+		outcome: OutcomeCodeDefect,
+		reason:  "same failure evidence",
+	})
+
+	if len(events) != 1 || events[0].Kind != SafetyTripwireUnchangedRetry ||
+		!r.safetyTripwireFired || r.dispatchCircuitReason == "" {
+		t.Fatalf("explicit unchanged tripwire = events=%+v fired=%t reason=%q",
+			events, r.safetyTripwireFired, r.dispatchCircuitReason)
+	}
+}
+
+func TestExhaustedRetryDoesNotSatisfyExplicitUnchangedTripwire(t *testing.T) {
+	r, sl, _ := candidateFixture(t)
+	r.adapter = &fakeSource{}
+	r.reg = registry.NewStore()
+	r.opts.NativeCanary = true
+	r.hardStopKinds = safetyTripwireSet([]SafetyTripwireKind{
+		SafetyTripwireUnchangedRetry,
+	})
+	sl.Retry.CodeRepairs = 1
+	var events []SafetyTripwire
+	r.opts.OnSafetyTripwire = func(event SafetyTripwire) {
+		events = append(events, event)
+	}
+
+	r.recoverTyped(t.Context(), sl, typedRecoveryRequest{
+		outcome:         OutcomeCodeDefect,
+		evidenceChanged: true,
+		reason:          "new evidence after the repair budget",
+	})
+
+	if len(events) != 0 || r.safetyTripwireFired || r.dispatchCircuitReason != "" {
+		t.Fatalf("exhaustion was conflated with unchanged evidence: events=%+v fired=%t reason=%q",
+			events, r.safetyTripwireFired, r.dispatchCircuitReason)
+	}
+	if got := r.run.Slots[sl.PhaseID]; got == nil || got.Status != ledger.SlotBlocked ||
+		!strings.Contains(got.Note, "code-repair-exhausted") {
+		t.Fatalf("exhausted slot = %+v, want local exhausted park", got)
+	}
+}
+
 func TestFixedCohortDefersOutsideEpicValidationModel(t *testing.T) {
 	fake := closedEpicFixture()
 	r, calls := epicRunner(t, fake, epicreview.Verdict{Met: true})

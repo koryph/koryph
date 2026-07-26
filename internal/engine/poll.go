@@ -1642,7 +1642,7 @@ func (r *runner) recoverTyped(ctx context.Context, sl *ledger.Slot, req typedRec
 		s.OutcomeClass = string(req.outcome)
 	})
 	sl.OutcomeClass = string(req.outcome)
-	if strings.Contains(decision.Reason, "unchanged") &&
+	if retryDecisionEvidenceUnchanged(decision) &&
 		r.hardStopEnabled(SafetyTripwireUnchangedRetry) {
 		note := decision.Reason
 		if req.reason != "" {
@@ -1885,11 +1885,12 @@ func (r *runner) finishAssessedCandidate(ctx context.Context, sl *ledger.Slot, a
 		}
 		return
 	}
-	if duplicate, proven := r.duplicateBroadCommand(r.run.RunID, sl.PhaseID); proven && duplicate &&
-		r.hardStopEnabled(SafetyTripwireDuplicateCommand) {
+	if duplicate, proven := r.duplicateBroadCommand(r.run.RunID, sl.PhaseID); proven && duplicate {
 		note := "candidate repeated an identical broad/gate command"
-		r.dispatchCircuitReason = note
-		r.emitSafetyTripwire(SafetyTripwireDuplicateCommand, sl.PhaseID, note)
+		if r.hardStopEnabled(SafetyTripwireDuplicateCommand) {
+			r.dispatchCircuitReason = note
+			r.emitSafetyTripwire(SafetyTripwireDuplicateCommand, sl.PhaseID, note)
+		}
 		r.parkTypedRecovery(ctx, sl, OutcomeCodeDefect, note)
 		return
 	}

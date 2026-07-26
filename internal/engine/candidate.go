@@ -98,11 +98,15 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	capabilityDetail := ""
 	commits := 0
 	clean := false
+	engineInvariantFailure := false
+	workerDefect := false
+	completionContractMissing := false
 
 	dispatchValid := false
 	var dispatch phasecontrol.DispatchContext
 	manifest, manifestErr := r.store.LoadManifest(r.run.RunID, sl.PhaseID)
 	if manifestErr != nil {
+		engineInvariantFailure = true
 		reasons = append(reasons, "dispatch manifest is missing or unreadable: "+manifestErr.Error())
 	} else {
 		dispatch = phasecontrol.DispatchContext{
@@ -112,22 +116,31 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 		expectedGeneration := phasecontrol.DispatchGeneration(dispatch)
 		switch {
 		case sl.DispatchBaseSHA == "" || sl.DispatchGeneration == "":
+			engineInvariantFailure = true
 			reasons = append(reasons, "slot is missing trusted dispatch identity")
 		case sl.SessionID == "":
+			engineInvariantFailure = true
 			reasons = append(reasons, "slot dispatch session is missing")
 		case manifest.BeadID != sl.PhaseID:
+			engineInvariantFailure = true
 			reasons = append(reasons, "dispatch manifest phase does not match slot")
 		case manifest.Attempt != sl.Attempts:
+			engineInvariantFailure = true
 			reasons = append(reasons, "dispatch manifest attempt does not match slot")
 		case manifest.SessionID != sl.SessionID:
+			engineInvariantFailure = true
 			reasons = append(reasons, "dispatch manifest session does not match slot")
 		case manifest.BaseCommit != sl.DispatchBaseSHA:
+			engineInvariantFailure = true
 			reasons = append(reasons, "dispatch manifest base SHA does not match slot")
 		case manifest.WorktreePath != sl.Worktree || manifest.Branch != sl.Branch:
+			engineInvariantFailure = true
 			reasons = append(reasons, "dispatch manifest worktree or branch does not match slot")
 		case sl.DispatchGeneration != expectedGeneration:
+			engineInvariantFailure = true
 			reasons = append(reasons, "slot dispatch generation is invalid")
 		case manifest.DispatchGeneration != sl.DispatchGeneration:
+			engineInvariantFailure = true
 			reasons = append(reasons, "dispatch manifest generation does not match slot")
 		default:
 			dispatchValid = true
@@ -136,8 +149,10 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 
 	dirty, err := worktree.IsDirty(ctx, sl.Worktree)
 	if err != nil {
+		engineInvariantFailure = true
 		reasons = append(reasons, "cannot verify worktree cleanliness: "+err.Error())
 	} else if dirty {
+		workerDefect = true
 		reasons = append(reasons, "worktree has staged, unstaged, or untracked changes")
 	} else {
 		clean = true
@@ -149,13 +164,16 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	if dispatchValid {
 		state, err := phasecontrol.InspectCandidate(ctx, sl.Worktree, dispatch.BaseSHA)
 		if err != nil {
+			engineInvariantFailure = true
 			reasons = append(reasons, "cannot inspect candidate against dispatch base: "+err.Error())
 		} else {
 			commits, head, clean = state.CommitCount, state.SHA, state.Clean
 			if commits == 0 {
+				workerDefect = true
 				reasons = append(reasons, "branch has no commits beyond the dispatch base")
 			}
 			if !clean && !dirty {
+				workerDefect = true
 				reasons = append(reasons, "worktree became dirty during candidate inspection")
 			}
 			observedHead := head
@@ -175,6 +193,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	} else {
 		commits, head, err = r.branchProgress(ctx, sl.Worktree)
 		if err != nil {
+			engineInvariantFailure = true
 			reasons = append(reasons, "cannot verify candidate commits: "+err.Error())
 		} else {
 			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
@@ -184,6 +203,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 			sl.Commits = commits
 			sl.LastCommit = head
 			if commits == 0 {
+				workerDefect = true
 				reasons = append(reasons, "branch has no commits beyond the dispatch base")
 			}
 		}
@@ -193,6 +213,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	phaseDir := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
 	resultPath := phasecontrol.ResultPath(phaseDir)
 	if _, err := fsx.ReadRegularConfined("SUMMARY.md", 1<<20, phaseDir); err != nil {
+		workerDefect = true
 		reasons = append(reasons, "completion summary is missing or unreadable: "+err.Error())
 	}
 	result, resultErr := phasecontrol.LoadResult(phaseDir)
@@ -200,8 +221,10 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	var expectedCriteria []plan.Criterion
 	switch {
 	case resultMissing:
+		completionContractMissing = true
 		reasons = append(reasons, "terminal result manifest is missing")
 	case resultErr != nil:
+		workerDefect = true
 		reasons = append(reasons, "terminal result manifest is malformed or unreadable: "+resultErr.Error())
 	case !dispatchValid:
 		reasons = append(reasons, "terminal result cannot be matched without a valid dispatch manifest")
@@ -209,6 +232,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 		issue := r.issueFor(ctx, sl)
 		expectedCriteria, err = plan.ParseStrictCriteria(issue.AcceptanceCriteria)
 		if err != nil {
+			engineInvariantFailure = true
 			reasons = append(reasons, "issue acceptance criteria are not strict: "+err.Error())
 			break
 		}
@@ -221,6 +245,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 			WorktreeClean:    clean,
 			ExpectedCriteria: expectedCriteria,
 		}); err != nil {
+			workerDefect = true
 			reasons = append(reasons, "terminal result manifest does not match live candidate: "+err.Error())
 		} else {
 			resultValid = true
@@ -234,11 +259,13 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	if !resultValid && sl.StatusPath != "" {
 		completion, err := readCompletion(sl.StatusPath)
 		if err != nil {
+			workerDefect = true
 			reasons = append(reasons, "completion status is malformed or unreadable: "+err.Error())
 		} else {
 			switch strings.ToLower(completion.State) {
 			case "blocked", "failed", "error", "cancelled", "canceled":
 				reportedBlock = true
+				workerDefect = true
 				reasons = append(reasons, "agent reported completion state "+completion.State)
 				switch completion.BlockKind {
 				case "":
@@ -261,17 +288,14 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	}
 
 	if len(reasons) > 0 {
-		outcome := OutcomeEngineInvariant
-		if capabilityBlock {
+		outcome := OutcomeCodeDefect
+		if engineInvariantFailure {
+			outcome = OutcomeEngineInvariant
+		} else if capabilityBlock {
 			outcome = OutcomeCapabilityUnavailable
-		} else if resultMissing && len(reasons) == 1 && dispatchValid && !reportedBlock && commits > 0 && clean {
+		} else if completionContractMissing && !workerDefect && dispatchValid &&
+			!reportedBlock && commits > 0 && clean {
 			outcome = OutcomeCompletionContractMissing
-		} else if commits == 0 || !clean {
-			// Dirty or commitless exits are code-incomplete but carry no new
-			// validated failure evidence. DecideRetry therefore parks them
-			// immediately instead of treating them as an engine invariant or
-			// feeding the old generic retry ladder.
-			outcome = OutcomeCodeDefect
 		}
 		retryable := false
 		if outcome == OutcomeCompletionContractMissing && !structuredBlockMalformed {

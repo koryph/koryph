@@ -15,12 +15,15 @@ func TestDecideRetryTypedTransitionTable(t *testing.T) {
 		{"completion repair", RetryPolicyInput{Outcome: OutcomeCompletionContractMissing}, decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "completion-repair")},
 		{"completion exhausted", RetryPolicyInput{Outcome: OutcomeCompletionContractMissing, Budgets: RetryBudgets{CompletionRepairs: 1}}, decision(RecoveryPark, ModelConsequenceNone, "completion-repair-exhausted")},
 		{"code repair changed", RetryPolicyInput{Outcome: OutcomeCodeDefect, EvidenceChanged: true}, decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "code-repair")},
-		{"code unchanged", RetryPolicyInput{Outcome: OutcomeCodeDefect}, decision(RecoveryPark, ModelConsequenceNone, "code-repair-unchanged-or-exhausted")},
+		{"code unchanged", RetryPolicyInput{Outcome: OutcomeCodeDefect}, decision(RecoveryPark, ModelConsequenceNone, "code-repair-unchanged")},
+		{"code exhausted", RetryPolicyInput{Outcome: OutcomeCodeDefect, EvidenceChanged: true, Budgets: RetryBudgets{CodeRepairs: 1}}, decision(RecoveryPark, ModelConsequenceNone, "code-repair-exhausted")},
 		{"semantic repair", RetryPolicyInput{Outcome: OutcomeSemanticDefect, EvidenceChanged: true}, decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "semantic-repair")},
 		{"semantic analysis", RetryPolicyInput{Outcome: OutcomeSemanticDefect, Budgets: RetryBudgets{SemanticRepairs: 1}}, decision(RecoveryFrontierAnalysis, ModelConsequenceFrontierAnalysis, "persistent-semantic-analysis")},
 		{"persistent analysis", RetryPolicyInput{Outcome: OutcomePersistentSemanticDefect}, decision(RecoveryFrontierAnalysis, ModelConsequenceFrontierAnalysis, "persistent-semantic-analysis")},
 		{"post analysis standard", RetryPolicyInput{Outcome: OutcomePersistentSemanticDefect, EvidenceChanged: true, Budgets: RetryBudgets{RecoveryAnalyses: 1}}, decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "post-analysis-repair")},
 		{"security repair", RetryPolicyInput{Outcome: OutcomeSecurityDefect, EvidenceChanged: true}, decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "security-repair")},
+		{"security unchanged", RetryPolicyInput{Outcome: OutcomeSecurityDefect}, decision(RecoveryPark, ModelConsequenceNone, "security-repair-unchanged")},
+		{"security exhausted", RetryPolicyInput{Outcome: OutcomeSecurityDefect, EvidenceChanged: true, Budgets: RetryBudgets{SecurityRepairs: 1}}, decision(RecoveryPark, ModelConsequenceNone, "security-repair-exhausted")},
 		{"capability hold", RetryPolicyInput{Outcome: OutcomeCapabilityUnavailable}, decision(RecoveryEvidenceHold, ModelConsequenceNone, "capability-evidence-hold")},
 		{"transient retry", RetryPolicyInput{Outcome: OutcomeRuntimeTransient}, decision(RecoveryRetrySameTier, ModelConsequenceNone, "runtime-transient-retry")},
 		{"transient exhausted", RetryPolicyInput{Outcome: OutcomeRuntimeTransient, Budgets: RetryBudgets{TransientRetries: 2}}, decision(RecoveryPark, ModelConsequenceNone, "runtime-transient-exhausted")},
@@ -45,6 +48,23 @@ func TestDecideRetryTypedTransitionTable(t *testing.T) {
 				t.Fatalf("DecideRetry(%+v) = %+v, want %+v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUnchangedTripwireClassificationIsExact(t *testing.T) {
+	for _, reason := range []string{"code-repair-unchanged", "security-repair-unchanged"} {
+		if !retryDecisionEvidenceUnchanged(RecoveryDecision{Reason: reason}) {
+			t.Errorf("%q was not classified as unchanged", reason)
+		}
+	}
+	for _, reason := range []string{
+		"code-repair-exhausted",
+		"security-repair-exhausted",
+		"something-unchanged-but-not-a-policy-verdict",
+	} {
+		if retryDecisionEvidenceUnchanged(RecoveryDecision{Reason: reason}) {
+			t.Errorf("%q was incorrectly classified as unchanged", reason)
+		}
 	}
 }
 

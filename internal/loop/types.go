@@ -47,9 +47,6 @@ var (
 // must treat as an immediate drain-and-circuit event. Callers may add stricter
 // keys, but cannot remove these.
 var RequiredCanaryHardStops = []string{
-	"missing-terminal-contract",
-	"unchanged-retry",
-	"duplicate-broad-command",
 	"unjustified-frontier-implementation",
 	"engine-invariant",
 	"cohort-admission-violation",

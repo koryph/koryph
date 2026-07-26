@@ -1502,6 +1502,27 @@ func TestAutonomousRejectsAllowUnvalidated(t *testing.T) {
 	}
 }
 
+func TestCanonicalCanaryHardStopsKeepCandidateFailuresSlotLocal(t *testing.T) {
+	candidateLocal := []string{
+		"missing-terminal-contract",
+		"unchanged-retry",
+		"duplicate-broad-command",
+	}
+	defaults := normalizedHardStops(nil)
+	for _, kind := range candidateLocal {
+		if containsString(defaults, kind) {
+			t.Errorf("canonical hard stops contain slot-local candidate failure %q: %v", kind, defaults)
+		}
+	}
+
+	explicit := normalizedHardStops(candidateLocal)
+	for _, kind := range candidateLocal {
+		if !containsString(explicit, kind) {
+			t.Errorf("explicit hard stop %q was dropped: %v", kind, explicit)
+		}
+	}
+}
+
 func TestStoreControlAndStructuredNotifier(t *testing.T) {
 	repo := t.TempDir()
 	store := NewStore(repo)

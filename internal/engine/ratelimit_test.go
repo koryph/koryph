@@ -120,7 +120,7 @@ func TestOrdinaryCommitlessDeathParksImmediately(t *testing.T) {
 	if sl.Status != ledger.SlotBlocked {
 		t.Errorf("slot status = %q, want blocked", sl.Status)
 	}
-	if !strings.Contains(sl.Note, "code-repair-unchanged-or-exhausted") {
+	if !strings.Contains(sl.Note, "code-repair-unchanged") {
 		t.Errorf("slot note = %q, want unchanged-evidence code-defect park", sl.Note)
 	}
 	if sl.Attempts != 1 {

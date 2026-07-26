@@ -330,7 +330,8 @@ func TestCandidateAssessmentDoesNotBlockOnFIFOStatus(t *testing.T) {
 	go func() { done <- r.assessCandidate(context.Background(), sl) }()
 	select {
 	case a := <-done:
-		if a.eligible || a.retryableBlock || !strings.Contains(a.reason, "bounded regular file") {
+		if a.eligible || a.retryableBlock || a.outcome != OutcomeCodeDefect ||
+			!strings.Contains(a.reason, "bounded regular file") {
 			t.Fatalf("FIFO status assessment = %+v", a)
 		}
 	case <-time.After(time.Second):
@@ -349,7 +350,8 @@ func TestCandidateRejectsResultAfterCandidateSHAChanges(t *testing.T) {
 	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): second")
 
 	a := r.assessCandidate(context.Background(), sl)
-	if a.eligible || a.retryableBlock || !strings.Contains(a.reason, "candidate SHA") {
+	if a.eligible || a.retryableBlock || a.outcome != OutcomeCodeDefect ||
+		!strings.Contains(a.reason, "candidate SHA") {
 		t.Fatalf("stale result assessment = %+v", a)
 	}
 }
@@ -364,7 +366,8 @@ func TestCandidateRequiresSlotOwnedDispatchIdentity(t *testing.T) {
 	generation := sl.DispatchGeneration
 	sl.DispatchGeneration = ""
 	a := r.assessCandidate(context.Background(), sl)
-	if a.eligible || !strings.Contains(a.reason, "slot is missing trusted dispatch identity") {
+	if a.eligible || a.outcome != OutcomeEngineInvariant ||
+		!strings.Contains(a.reason, "slot is missing trusted dispatch identity") {
 		t.Fatalf("empty slot generation assessment = %+v", a)
 	}
 
@@ -378,7 +381,8 @@ func TestCandidateRequiresSlotOwnedDispatchIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	a = r.assessCandidate(context.Background(), sl)
-	if a.eligible || !strings.Contains(a.reason, "generation does not match slot") {
+	if a.eligible || a.outcome != OutcomeEngineInvariant ||
+		!strings.Contains(a.reason, "generation does not match slot") {
 		t.Fatalf("mismatched manifest generation assessment = %+v", a)
 	}
 }
@@ -403,7 +407,8 @@ func TestCandidateRejectsSymlinkedDispatchManifest(t *testing.T) {
 	}
 
 	a := r.assessCandidate(t.Context(), sl)
-	if a.eligible || !strings.Contains(a.reason, "dispatch manifest is missing or unreadable") {
+	if a.eligible || a.outcome != OutcomeEngineInvariant ||
+		!strings.Contains(a.reason, "dispatch manifest is missing or unreadable") {
 		t.Fatalf("symlinked manifest assessment = %+v", a)
 	}
 }
@@ -419,7 +424,7 @@ func TestCandidateRequiresExactIssueAcceptanceMatrix(t *testing.T) {
 	r.issues[sl.PhaseID] = issue
 
 	a := r.assessCandidate(context.Background(), sl)
-	if a.eligible || !strings.Contains(a.reason, "want 2") {
+	if a.eligible || a.outcome != OutcomeCodeDefect || !strings.Contains(a.reason, "want 2") {
 		t.Fatalf("incomplete acceptance matrix assessment = %+v", a)
 	}
 }
@@ -593,7 +598,49 @@ func TestMalformedStructuredBlockDoesNotEscalate(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := r.assessCandidate(context.Background(), sl)
-	if a.eligible || a.retryableBlock || a.capabilityBlock {
+	if a.eligible || a.retryableBlock || a.capabilityBlock || a.outcome != OutcomeCodeDefect {
 		t.Fatalf("assessment = %+v, want terminal malformed block", a)
+	}
+}
+
+func TestWorkerOwnedMalformedTerminalArtifactsAreCodeDefects(t *testing.T) {
+	tests := []struct {
+		name  string
+		write func(*testing.T, *runner, *ledger.Slot)
+		want  string
+	}{
+		{
+			name: "result",
+			write: func(t *testing.T, r *runner, sl *ledger.Slot) {
+				t.Helper()
+				phaseDir := r.store.PhaseDir(r.run.RunID, sl.PhaseID)
+				writeFile(t, filepath.Join(phaseDir, "SUMMARY.md"), "done\n", 0o644)
+				writeFile(t, phasecontrol.ResultPath(phaseDir), "{", 0o644)
+			},
+			want: "terminal result manifest is malformed",
+		},
+		{
+			name: "status",
+			write: func(t *testing.T, _ *runner, sl *ledger.Slot) {
+				t.Helper()
+				writeFile(t, sl.StatusPath, "{", 0o644)
+			},
+			want: "completion status is malformed",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r, sl, wt := candidateFixture(t)
+			writeFile(t, filepath.Join(wt, "work.txt"), "done\n", 0o644)
+			runGit(t, wt, "add", "work.txt")
+			runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): work")
+			tc.write(t, r, sl)
+
+			a := r.assessCandidate(t.Context(), sl)
+			if a.eligible || a.outcome != OutcomeCodeDefect ||
+				!strings.Contains(a.reason, tc.want) {
+				t.Fatalf("assessment = %+v, want worker-owned code defect containing %q", a, tc.want)
+			}
+		})
 	}
 }

@@ -67,7 +67,11 @@ func TestTypedBlockedCandidateCommentsBead(t *testing.T) {
 		t.Fatalf("SaveRun: %v", err)
 	}
 
-	r.completeSlot(t.Context(), sl)
+	// Exercise writeback from an already-classified worker defect. Candidate
+	// assessment is covered separately and now correctly treats this test's
+	// intentionally minimal slot (no trusted dispatch manifest) as an engine
+	// invariant.
+	r.parkTypedRecovery(t.Context(), sl, OutcomeCodeDefect, "worker result is malformed")
 
 	if got := r.run.Slots["wb3"].Status; got != ledger.SlotBlocked {
 		t.Fatalf("status = %q, want blocked", got)

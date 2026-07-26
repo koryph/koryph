@@ -60,10 +60,13 @@ func DecideRetry(in RetryPolicyInput) RecoveryDecision {
 		return decision(RecoveryPark, ModelConsequenceNone, "completion-repair-exhausted")
 
 	case OutcomeCodeDefect:
-		if in.EvidenceChanged && in.Budgets.CodeRepairs < 1 {
+		if !in.EvidenceChanged {
+			return decision(RecoveryPark, ModelConsequenceNone, "code-repair-unchanged")
+		}
+		if in.Budgets.CodeRepairs < 1 {
 			return decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "code-repair")
 		}
-		return decision(RecoveryPark, ModelConsequenceNone, "code-repair-unchanged-or-exhausted")
+		return decision(RecoveryPark, ModelConsequenceNone, "code-repair-exhausted")
 
 	case OutcomeSemanticDefect:
 		if in.EvidenceChanged && in.Budgets.SemanticRepairs < 1 {
@@ -81,10 +84,13 @@ func DecideRetry(in RetryPolicyInput) RecoveryDecision {
 		return decision(RecoveryPark, ModelConsequenceNone, "persistent-semantic-exhausted")
 
 	case OutcomeSecurityDefect:
-		if in.EvidenceChanged && in.Budgets.SecurityRepairs < 1 {
+		if !in.EvidenceChanged {
+			return decision(RecoveryPark, ModelConsequenceNone, "security-repair-unchanged")
+		}
+		if in.Budgets.SecurityRepairs < 1 {
 			return decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "security-repair")
 		}
-		return decision(RecoveryPark, ModelConsequenceNone, "security-repair-unchanged-or-exhausted")
+		return decision(RecoveryPark, ModelConsequenceNone, "security-repair-exhausted")
 
 	case OutcomeCapabilityUnavailable:
 		return decision(RecoveryEvidenceHold, ModelConsequenceNone, "capability-evidence-hold")
@@ -139,6 +145,15 @@ func DecideRetry(in RetryPolicyInput) RecoveryDecision {
 
 	default:
 		return decision(RecoveryOpenCircuit, ModelConsequenceNone, "unknown-outcome")
+	}
+}
+
+func retryDecisionEvidenceUnchanged(d RecoveryDecision) bool {
+	switch d.Reason {
+	case "code-repair-unchanged", "security-repair-unchanged":
+		return true
+	default:
+		return false
 	}
 }
 

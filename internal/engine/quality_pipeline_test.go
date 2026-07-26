@@ -103,6 +103,74 @@ func TestMovedBasesRevalidateWithoutModelAndIdenticalTargetTripsCircuit(t *testi
 	}
 }
 
+func TestDuplicateBroadCommandAlwaysBlocksCandidateAndOnlyExplicitlyTripsCircuit(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		explicit bool
+	}{
+		{name: "canonical slot-local"},
+		{name: "explicit hard stop", explicit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, sl, _ := candidateFixture(t)
+			r.adapter = &fakeSource{}
+			r.reg = registry.NewStore()
+			r.opts.NativeCanary = true
+			if tc.explicit {
+				r.hardStopKinds = safetyTripwireSet([]SafetyTripwireKind{
+					SafetyTripwireDuplicateCommand,
+				})
+			}
+			sibling := &ledger.Slot{
+				PhaseID: "sibling", BeadID: "sibling", Status: ledger.SlotRunning,
+			}
+			if err := r.store.SetSlot(r.run, sibling); err != nil {
+				t.Fatal(err)
+			}
+			commandDir := filepath.Join(
+				r.store.PhaseDir(r.run.RunID, sl.PhaseID), ".koryph-command",
+			)
+			if err := os.MkdirAll(commandDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			event := `{"schema":"koryph.command-event/v1","event":"start",` +
+				`"at":"2026-07-25T12:00:01Z","class":"broad","signature":"same"}`
+			writeFile(t, filepath.Join(commandDir, "events.jsonl"), event+"\n"+event+"\n", 0o600)
+			var events []SafetyTripwire
+			r.opts.OnSafetyTripwire = func(event SafetyTripwire) {
+				events = append(events, event)
+			}
+
+			r.finishAssessedCandidate(t.Context(), sl, candidateAssessment{
+				eligible: true,
+				outcome:  OutcomeCandidateReady,
+			})
+
+			if got := r.run.Slots[sl.PhaseID]; got == nil ||
+				got.Status != ledger.SlotBlocked ||
+				got.OutcomeClass != string(OutcomeCodeDefect) {
+				t.Fatalf("duplicate candidate = %+v, want blocked code defect", got)
+			}
+			if tc.explicit {
+				if len(events) != 1 || events[0].Kind != SafetyTripwireDuplicateCommand ||
+					!r.safetyTripwireFired || r.dispatchCircuitReason == "" {
+					t.Fatalf("explicit duplicate hard stop = events=%+v fired=%t reason=%q",
+						events, r.safetyTripwireFired, r.dispatchCircuitReason)
+				}
+			} else {
+				if len(events) != 0 || r.safetyTripwireFired || r.dispatchCircuitReason != "" {
+					t.Fatalf("slot-local duplicate opened circuit: events=%+v fired=%t reason=%q",
+						events, r.safetyTripwireFired, r.dispatchCircuitReason)
+				}
+				if got := r.run.Slots[sibling.PhaseID]; got == nil ||
+					got.Status != ledger.SlotRunning {
+					t.Fatalf("sibling = %+v, want still running", got)
+				}
+			}
+		})
+	}
+}
+
 func TestEngineValidationSharesWorkerProcessGuardAndStartsGateOnce(t *testing.T) {
 	r, sl, wt := candidateFixture(t)
 	writeFile(t, filepath.Join(wt, "guarded.txt"), "guarded\n", 0o644)

@@ -209,6 +209,12 @@ func TestUnresolvedMergeConflictParksBlockedAfterStandardRepair(t *testing.T) {
 	r.adapter = fake
 	sl := conflictSlot(t, r, "cb2", 1)
 	sl.Retry.CodeRepairs = 1
+	sibling := &ledger.Slot{
+		PhaseID: "sibling", BeadID: "sibling", Status: ledger.SlotRunning,
+	}
+	if err := r.store.SetSlot(r.run, sibling); err != nil {
+		t.Fatalf("SetSlot sibling: %v", err)
+	}
 	if err := r.store.SaveRun(r.run); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
@@ -228,6 +234,12 @@ func TestUnresolvedMergeConflictParksBlockedAfterStandardRepair(t *testing.T) {
 		if ss[0] == "cb2" && ss[1] == "open" {
 			t.Errorf("unresolved code defect must park blocked, not reopen: %v", fake.setStatus)
 		}
+	}
+	if r.dispatchCircuitReason != "" {
+		t.Fatalf("exhausted candidate opened run circuit: %q", r.dispatchCircuitReason)
+	}
+	if got := r.run.Slots[sibling.PhaseID]; got == nil || got.Status != ledger.SlotRunning {
+		t.Fatalf("sibling = %+v, want still running", got)
 	}
 }
 
