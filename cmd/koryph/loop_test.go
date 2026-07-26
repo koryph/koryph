@@ -785,6 +785,24 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 		t.Fatal(err)
 	}
 
+	liveSupervisor := previous
+	liveSupervisor.PID = os.Getpid()
+	if err := store.SaveState(liveSupervisor); err != nil {
+		t.Fatal(err)
+	}
+	if _, retired, err := retireStaleNativeCanaryEvidence(
+		t.Context(), rec.Root, rec.ProjectID, current,
+	); err == nil || retired || !strings.Contains(err.Error(), "terminal failed") {
+		t.Fatalf("live-supervisor rollover retired=%t err=%v", retired, err)
+	}
+	// A terminal failure written by a supervisor that has since exited retains
+	// its old PID in schema-v3 state. The reconciliation lease plus a negative
+	// liveness probe authorize clearing that stale ownership during rollover.
+	previous.PID = 99_999_999
+	if err := store.SaveState(previous); err != nil {
+		t.Fatal(err)
+	}
+
 	state, retired, err := retireStaleNativeCanaryEvidence(
 		t.Context(), rec.Root, rec.ProjectID, current,
 	)

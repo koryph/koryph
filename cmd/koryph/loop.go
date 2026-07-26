@@ -33,6 +33,7 @@ import (
 	"github.com/koryph/koryph/internal/merge"
 	"github.com/koryph/koryph/internal/metrics"
 	"github.com/koryph/koryph/internal/phasecontrol"
+	"github.com/koryph/koryph/internal/procx"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/review"
@@ -427,7 +428,7 @@ func retireStaleNativeCanaryEvidence(
 	}
 	if canary.Decision != "failed" || canary.EndedAt == "" ||
 		canary.ReportDigest == "" || canary.ReportGeneratedAt == "" ||
-		canary.PublishedAt == "" || state.PID != 0 ||
+		canary.PublishedAt == "" || procx.Alive(state.PID) ||
 		(state.Mode != loopsupervisor.ModeCircuitOpen &&
 			state.Mode != loopsupervisor.ModeStopped) {
 		return state, false, errors.New("only a terminal failed canary generation may be archived")
