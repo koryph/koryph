@@ -222,6 +222,7 @@ func TestPersistentCriticalPressureGracefullyStopsOnlyNewestRecoverableCohort(t 
 
 	base := time.Date(2026, 7, 25, 14, 0, 0, 0, time.UTC)
 	r.pressureNow = func() time.Time { return base }
+	r.gov.Now = func() time.Time { return base }
 	r.pressureSampleInterval = time.Nanosecond
 	band := sysmem.PressureCritical
 	r.memProbe = func() (sysmem.Stat, bool) {
@@ -565,6 +566,7 @@ func TestInspectionFailureStillPublishesPressureEpisodeForFreshRun(t *testing.T)
 		t.Skip("stable process identity unavailable")
 	}
 	now := time.Date(2026, 7, 25, 18, 0, 0, 0, time.UTC)
+	r1.gov.Now = func() time.Time { return now }
 	slot := &ledger.Slot{
 		PhaseID: "active", BeadID: "active", Status: ledger.SlotRunning,
 		PID: os.Getpid(), ProcessIdentity: selfIdentity,
@@ -624,6 +626,7 @@ func TestInspectionFailureStillPublishesPressureEpisodeForFreshRun(t *testing.T)
 		pressureSampleInterval: time.Nanosecond,
 		pressureNow:            func() time.Time { return now },
 	}
+	r2.gov.Now = func() time.Time { return now }
 	r2.memProbe = func() (sysmem.Stat, bool) {
 		return pressureStatMB(16000, sysmem.PressureNormal, 0), true
 	}
@@ -667,6 +670,7 @@ func TestFreshNormalDoesNotRepublishExternallyClearedPersistedCriticalEpisode(t 
 		t.Skip("stable process identity unavailable")
 	}
 	now := time.Date(2026, 7, 25, 19, 0, 0, 0, time.UTC)
+	r.gov.Now = func() time.Time { return now }
 	slot := &ledger.Slot{
 		PhaseID: "active", BeadID: "active", Status: ledger.SlotRunning,
 		PID: os.Getpid(), ProcessIdentity: selfIdentity,
