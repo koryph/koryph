@@ -927,6 +927,120 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 	}
 }
 
+func TestStrictDescendantFinalizesContainedInterruptedCanary(t *testing.T) {
+	isolate(t)
+	rec := addProject(t, "demo")
+	resolvedRoot, err := filepath.EvalSymlinks(rec.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Root = resolvedRoot
+	phaseGit(t, rec.Root, "config", "user.name", "Canary Test")
+	phaseGit(t, rec.Root, "config", "user.email", "canary@example.com")
+	phaseGit(t, rec.Root, "add", "-A")
+	phaseGit(t, rec.Root, "commit", "--allow-empty", "-m", "canary base")
+	previousCommit := phaseGit(t, rec.Root, "rev-parse", "HEAD")
+	phaseWrite(t, filepath.Join(rec.Root, "repair.txt"), "repair\n")
+	phaseGit(t, rec.Root, "add", "repair.txt")
+	phaseGit(t, rec.Root, "commit", "-m", "repair canary")
+	currentCommit := phaseGit(t, rec.Root, "rev-parse", "HEAD")
+
+	oldCommit := loopInstalledCommit
+	oldVersion := loopBinaryVersion
+	t.Cleanup(func() {
+		loopInstalledCommit = oldCommit
+		loopBinaryVersion = oldVersion
+	})
+	loopInstalledCommit = func() string { return currentCommit }
+	loopBinaryVersion = func() string { return "0.10.0-test" }
+	registryDigest := mustRegistryIdentityDigest(t, rec)
+	config := loopsupervisor.Config{ProjectID: rec.ProjectID}
+	enginePolicy := nativeCanaryEnginePolicy{AutoMerge: true, Review: true}
+	current, err := nativeCanarySpecWithPolicy(
+		rec.ProjectID, rec.Root, []string{"b1", "b2"}, 2,
+		registryDigest, config, enginePolicy,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now().UTC().Add(-2 * time.Minute)
+	finished := started.Add(time.Minute)
+	previous := loopsupervisor.State{
+		ProjectID: rec.ProjectID,
+		Mode:      loopsupervisor.ModeStopped,
+		Canary: &loopsupervisor.CanaryState{
+			Cohort:                 append([]string(nil), current.Cohort...),
+			CohortDigest:           cohortDigestForNativeCanary(current.Cohort),
+			StartedAt:              started.Format(time.RFC3339Nano),
+			ProgressAt:             finished.Format(time.RFC3339Nano),
+			InactivityLimitMS:      current.InactivityLimit.Milliseconds(),
+			TargetWidth:            current.TargetWidth,
+			CurrentWidth:           2,
+			HardStops:              append([]string(nil), current.HardStops...),
+			InstalledCommit:        previousCommit,
+			BinaryVersion:          current.BinaryVersion,
+			BuildIdentity:          "previous-build",
+			ContractDigest:         current.ContractDigest,
+			RegistryIdentityDigest: current.RegistryIdentityDigest,
+			AutonomyPolicyDigest:   current.AutonomyPolicyDigest,
+			ExecutionPolicyDigest:  current.ExecutionPolicyDigest,
+			ReportPath:             current.ReportPath,
+			Terminal: map[string]loopsupervisor.TerminalOutcome{
+				"b1": {BeadID: "b1", Status: ledger.SlotBlocked},
+				"b2": {BeadID: "b2", Status: ledger.SlotBlocked},
+			},
+		},
+	}
+	previous.Canary.GenerationDigest, err = loopsupervisor.CanaryStateGenerationDigest(
+		rec.ProjectID, previous.Canary,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerStore := ledger.NewStore(rec.Root)
+	run, err := ledgerStore.NewRun(rec.ProjectID, "bd", "0.10.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"b1", "b2"} {
+		if err := ledgerStore.SetSlot(run, &ledger.Slot{
+			PhaseID: id, BeadID: id, Attempts: 1,
+			DispatchGeneration: "generation-" + id,
+			DispatchedAt:       started.Format(time.RFC3339Nano),
+			FinishedAt:         finished.Format(time.RFC3339Nano),
+			Status:             ledger.SlotBlocked,
+			OutcomeClass:       "operator-stop-drain",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run.Status = ledger.RunAborted
+	if err := ledgerStore.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	previous.Canary.RunIDs = []string{run.RunID}
+	store := loopsupervisor.NewStore(rec.Root)
+	if err := store.SaveState(previous); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequestStop(); err != nil {
+		t.Fatal(err)
+	}
+
+	finalized, ok, err := finalizeStoppedNativeCanaryIntervention(
+		t.Context(), rec.Root, rec.ProjectID, current,
+	)
+	if err != nil || !ok || finalized.Canary == nil ||
+		finalized.Canary.Decision != "failed" ||
+		finalized.Canary.HardStop != "operator-intervention" {
+		t.Fatalf("finalized=%+v ok=%t err=%v", finalized, ok, err)
+	}
+	if _, err := metrics.LoadAutonomyReport(current.ReportPath); err != nil {
+		t.Fatalf("load interrupted canary report: %v", err)
+	}
+}
+
 func TestConcurrentCompletedCanaryReconciliationIsIdempotent(t *testing.T) {
 	isolate(t)
 	rec := addProject(t, "demo")
