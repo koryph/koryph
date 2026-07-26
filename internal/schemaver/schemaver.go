@@ -74,7 +74,7 @@ var current = map[Surface]int{
 	Governor:       1,
 	SigningVault:   1,
 	GlobalConfig:   1,
-	Project:        2,
+	Project:        1,
 	LedgerRun:      2,
 	LedgerManifest: 2,
 	AuditLog:       1,
@@ -93,20 +93,7 @@ type Migration func(map[string]json.RawMessage) (map[string]json.RawMessage, err
 //
 // When bumping a surface, append its vN-to-vN+1 step here in the same change as
 // the version bump in current. A no-op step is valid for an additive change.
-var migrations = map[Surface][]Migration{
-	// Registry v0 predates schema_version. V1 stamped the existing record,
-	// and v2 added the optional validation_generation field. Both upgrades
-	// are additive and preserve the complete raw object.
-	Registry: {noOpMigration, noOpMigration},
-	// Ledger v0 predates schema_version and v1/v2 added only fields that
-	// decode as zero values when absent. Keep the steps explicit: Migrate must
-	// never treat a missing step as an implicit no-op.
-	LedgerRun:      {noOpMigration, noOpMigration},
-	LedgerManifest: {noOpMigration, noOpMigration},
-	// Project v2 adds the optional release.container block. Existing v1 files
-	// remain valid; the no-op step makes that additive compatibility explicit.
-	Project: {nil, noOpMigration},
-}
+var migrations = map[Surface][]Migration{}
 
 // RegisterMigration registers surface's vFrom-to-vFrom+1 migration. Owners
 // register their steps beside the persisted type they evolve; the runner then

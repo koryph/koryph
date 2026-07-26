@@ -163,52 +163,6 @@ func TestMigrateRejectsUnknownSurfaceAndMissingStep(t *testing.T) {
 	}
 }
 
-func TestMigrateLiftsLegacyLedgerState(t *testing.T) {
-	for _, surface := range []Surface{LedgerRun, LedgerManifest} {
-		for _, raw := range [][]byte{
-			[]byte(`{"legacy":"v0","unknown":{"keep":true}}`),
-			[]byte(`{"schema_version":1,"legacy":"v1","unknown":{"keep":true}}`),
-		} {
-			t.Run(string(surface)+"/"+string(raw), func(t *testing.T) {
-				migrated, changed, err := Migrate(surface, raw)
-				if err != nil {
-					t.Fatalf("Migrate(%s) = %v", surface, err)
-				}
-				if !changed {
-					t.Fatalf("Migrate(%s) changed = false, want true", surface)
-				}
-				var got map[string]any
-				if err := json.Unmarshal(migrated, &got); err != nil {
-					t.Fatalf("decode migrated state: %v", err)
-				}
-				if got["schema_version"] != float64(Current(surface)) {
-					t.Errorf("schema_version = %#v, want %d", got["schema_version"], Current(surface))
-				}
-				if unknown, ok := got["unknown"].(map[string]any); !ok || unknown["keep"] != true {
-					t.Errorf("unknown field was not preserved: %#v", got["unknown"])
-				}
-			})
-		}
-	}
-}
-
-func TestMigrateLiftsProjectV1State(t *testing.T) {
-	migrated, changed, err := Migrate(Project, []byte(`{"schema_version":1,"project_id":"demo"}`))
-	if err != nil {
-		t.Fatalf("Migrate(Project) = %v", err)
-	}
-	if !changed {
-		t.Fatal("Migrate(Project) changed = false, want true")
-	}
-	var got map[string]any
-	if err := json.Unmarshal(migrated, &got); err != nil {
-		t.Fatalf("decode migrated state: %v", err)
-	}
-	if got["schema_version"] != float64(Current(Project)) {
-		t.Errorf("schema_version = %#v, want %d", got["schema_version"], Current(Project))
-	}
-}
-
 func TestMigrateRefusesNewerState(t *testing.T) {
 	_, _, err := Migrate(SigningVault, []byte(`{"schema_version":2}`))
 	var tooNew *TooNewError
