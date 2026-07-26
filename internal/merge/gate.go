@@ -48,22 +48,20 @@ func runGate(
 	// own .envrc, layered on top of this baseline.
 	env := execx.GateEnv()
 	var b strings.Builder
+	useDirenv := gateDirenvAvailable(ctx, dir, env)
+	if execx.LookPath("direnv") && !useDirenv {
+		// Decide the fresh-worktree fallback before entering the guarded broad
+		// command lifecycle. Otherwise the blocked direnv probe and the plain
+		// shell fallback look like two real starts of the same validation.
+		b.WriteString("(direnv blocked; running without direnv)\n")
+	}
 	for _, c := range cmds {
-		name, args := shellCmd(dir, c)
+		name, args := gateShellCmd(dir, c, useDirenv)
 		classArgv := []string{"sh", "-c", c}
 		b.WriteString("$ " + c + "\n")
 		res, err := runGateCommand(ctx, validationPhaseDir, classArgv, execx.Cmd{
 			Dir: dir, Name: name, Args: args, Env: env,
 		})
-		if err == nil && res.ExitCode != 0 && name == "direnv" && strings.Contains(res.Stderr, "is blocked") {
-			// Fresh agent worktrees carry a never-approved .envrc; direnv
-			// refuses to exec there. Fall back to a plain shell — the gate
-			// must not fail on environment ceremony.
-			b.WriteString("(direnv blocked; running without direnv)\n")
-			res, err = runGateCommand(ctx, validationPhaseDir, classArgv, execx.Cmd{
-				Dir: dir, Name: "sh", Args: []string{"-c", c}, Env: env,
-			})
-		}
 		b.WriteString(res.Stdout)
 		b.WriteString(res.Stderr)
 		if err != nil {
@@ -596,11 +594,29 @@ func guardedProcessExitCode(err error) int {
 	return guardedValidationInternalExit
 }
 
-// shellCmd builds a `sh -c` invocation, wrapped with `direnv exec <dir>` when
-// direnv is available so project env is loaded before the gate command runs.
-func shellCmd(dir, command string) (string, []string) {
-	if execx.LookPath("direnv") {
+// gateDirenvAvailable distinguishes the normal fresh-worktree "blocked" state
+// before a broad command acquires its single-flight generation. Other direnv
+// failures remain authoritative gate failures rather than silently dropping
+// the project environment.
+func gateDirenvAvailable(ctx context.Context, dir string, env []string) bool {
+	if !execx.LookPath("direnv") {
+		return false
+	}
+	res, err := execx.Run(ctx, execx.Cmd{
+		Dir: dir, Name: "direnv", Args: []string{"exec", dir, "true"}, Env: env,
+	})
+	return err != nil || res.ExitCode == 0 || !strings.Contains(res.Stderr, "is blocked")
+}
+
+func gateShellCmd(dir, command string, useDirenv bool) (string, []string) {
+	if useDirenv {
 		return "direnv", []string{"exec", dir, "sh", "-c", command}
 	}
 	return "sh", []string{"-c", command}
+}
+
+// shellCmd builds a `sh -c` invocation, wrapped with `direnv exec <dir>` when
+// direnv is available so project env is loaded before the command runs.
+func shellCmd(dir, command string) (string, []string) {
+	return gateShellCmd(dir, command, execx.LookPath("direnv"))
 }

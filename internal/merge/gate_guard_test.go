@@ -128,6 +128,69 @@ func TestMergeValidationPublishesTrustedOwnerAndWorkerReusesIt(t *testing.T) {
 	}
 }
 
+func TestRunGateChoosesBlockedDirenvFallbackBeforeBroadGuard(t *testing.T) {
+	phase, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, ".envrc"), []byte("export TEST_ENV=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin := t.TempDir()
+	direnvCalls := filepath.Join(t.TempDir(), "direnv-calls")
+	realStarts := filepath.Join(t.TempDir(), "real-starts")
+	writeExecutable(t, filepath.Join(fakeBin, "direnv"),
+		"#!/bin/sh\necho call >>"+shellTestQuote(direnvCalls)+"\necho 'direnv: error .envrc is blocked' >&2\nexit 1\n")
+	writeExecutable(t, filepath.Join(fakeBin, "go"),
+		"#!/bin/sh\necho start >>"+shellTestQuote(realStarts)+"\nexit 0\n")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+"/usr/bin:/bin")
+
+	ok, out, infraErr := runGate(
+		context.Background(), worktree, phase, []string{"go test ./..."},
+	)
+	if infraErr != nil || !ok {
+		t.Fatalf("runGate = (%t, %q, %v), want pass", ok, out, infraErr)
+	}
+	if !strings.Contains(out, "(direnv blocked; running without direnv)") {
+		t.Fatalf("gate output lacks fallback explanation:\n%s", out)
+	}
+	assertFileLineCount(t, direnvCalls, 1)
+	assertFileLineCount(t, realStarts, 1)
+	assertGateEventCount(t, phase, `"event":"start"`, 1)
+	assertGateEventCount(t, phase, `"event":"complete"`, 1)
+}
+
+func TestRunGateAppliesAllowedDirenvWithoutRetryingRealFailure(t *testing.T) {
+	phase, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := t.TempDir()
+	fakeBin := t.TempDir()
+	direnvCalls := filepath.Join(t.TempDir(), "direnv-calls")
+	realStarts := filepath.Join(t.TempDir(), "real-starts")
+	writeExecutable(t, filepath.Join(fakeBin, "direnv"),
+		"#!/bin/sh\necho call >>"+shellTestQuote(direnvCalls)+"\nshift 2\nTEST_DIRENV_APPLIED=1 exec \"$@\"\n")
+	writeExecutable(t, filepath.Join(fakeBin, "go"),
+		"#!/bin/sh\n[ \"$TEST_DIRENV_APPLIED\" = 1 ] || exit 41\necho start >>"+shellTestQuote(realStarts)+"\necho 'tool says is blocked' >&2\nexit 7\n")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+"/usr/bin:/bin")
+
+	ok, out, infraErr := runGate(
+		context.Background(), worktree, phase, []string{"go test ./..."},
+	)
+	if infraErr != nil || ok {
+		t.Fatalf("runGate = (%t, %q, %v), want ordinary gate failure", ok, out, infraErr)
+	}
+	if strings.Contains(out, "(direnv blocked; running without direnv)") {
+		t.Fatalf("real command stderr triggered a fallback:\n%s", out)
+	}
+	assertFileLineCount(t, direnvCalls, 2) // availability probe plus real gate
+	assertFileLineCount(t, realStarts, 1)
+	assertGateEventCount(t, phase, `"event":"start"`, 1)
+	assertGateEventCount(t, phase, `"event":"complete"`, 1)
+}
+
 func TestRunGateCommandWaitsOutWorkerThenPublishesValidationOwner(t *testing.T) {
 	phase, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -205,6 +268,35 @@ func TestRunGateCommandWaitsOutWorkerThenPublishesValidationOwner(t *testing.T) 
 		if !strings.Contains(string(events), want) {
 			t.Fatalf("validation provenance missing %s:\n%s", want, events)
 		}
+	}
+}
+
+func writeExecutable(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertFileLineCount(t *testing.T, path string, want int) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(strings.TrimSpace(string(data)), "\n") + 1; got != want {
+		t.Fatalf("%s lines = %d, want %d:\n%s", path, got, want, data)
+	}
+}
+
+func assertGateEventCount(t *testing.T, phase, needle string, want int) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(phase, ".koryph-command", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), needle); got != want {
+		t.Fatalf("gate events containing %s = %d, want %d:\n%s", needle, got, want, data)
 	}
 }
 
