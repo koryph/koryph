@@ -278,9 +278,9 @@ to 500 entries. To watch for escalation candidates, filter with `/fail`.
 Prompts for a bead ID then a message. If the bead is currently dispatched
 (has a live slot in the active run), the message is appended to its
 `INBOX.md` — the same path as `koryph nudge`. If the bead is queued but
-not yet dispatched, the TUI shows an instruction to use `koryph nudge`
-from the CLI instead (which can reach the `bd` notes path, which the TUI
-does not have access to).
+not yet dispatched, there is no live inbox: update the bead's description,
+design, or acceptance criteria so its next worker receives a canonical task
+contract. Bead notes remain control-plane provenance.
 
 #### Drain (`D`)
 
@@ -645,7 +645,7 @@ would not otherwise fit.
 
 ## See also
 
-- `koryph nudge` — nudge a bead from the CLI (supports queued beads).
+- `koryph nudge` — nudge a running bead or re-arm a capability-held bead.
 - `koryph drain` — request a graceful wind-down from the CLI.
 - [IDE cockpit vs terminal cockpit](../ide-integration.md#4-terminal-cockpit-vs-vs-code-cockpit)
 - [Design document](https://github.com/koryph/koryph/blob/main/docs/designs/2026-07-tui-cockpit.md)

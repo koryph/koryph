@@ -728,8 +728,10 @@ Exit 0 is also success but indicates the run stopped for another reason (quota p
 
 **nudge** — append an operator message to a running agent's `INBOX.md`. The agent polls
 the inbox between steps and adjusts course. For a capability-blocked bead, the same
-command records a durable Beads note, arms its one evidence-gated retry, and reopens it;
-no dead `INBOX.md` is written:
+command records a Beads audit comment, arms its one hashed evidence-gated retry, and
+reopens it; the comment does not become worker prompt scope and no dead `INBOX.md` is
+written. A queued bead has no live inbox: update its description, design, or acceptance
+criteria instead so the next dispatch receives a canonical task contract:
 
 ```sh
 koryph nudge --project myproject beads-042 "prefer the interface approach from issue 38"
