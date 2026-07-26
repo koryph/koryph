@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -308,6 +309,136 @@ func (r *runner) orphanWorktreeKept(ctx context.Context, sl *ledger.Slot) (bool,
 	_ = worktree.Remove(ctx, wt, false)
 	_ = worktree.DeleteBranch(ctx, r.rec.Root, branch)
 	return false, ""
+}
+
+// reopenedCandidateRecovery establishes whether a freshly-ready bead may
+// safely adopt an already-registered canonical worktree, then transactionally
+// refreshes that worktree onto this attempt's exact dispatch base. This is
+// distinct from --resume: the prior slots are terminal, so no live process or
+// native session is adopted, but their preserved branch/WIP is real candidate
+// work and must not be treated as a brand-new checkout.
+type reopenedCandidateRecoveryResult struct {
+	SchemaVersion   int    `json:"schema_version"`
+	Status          string `json:"status"`
+	PriorRunID      string `json:"prior_run_id,omitempty"`
+	Branch          string `json:"branch"`
+	Worktree        string `json:"worktree"`
+	OriginalHead    string `json:"original_head,omitempty"`
+	RefreshedHead   string `json:"refreshed_head,omitempty"`
+	DispatchBaseSHA string `json:"dispatch_base_sha"`
+	WIPSnapshotPath string `json:"wip_snapshot_path,omitempty"`
+	HadWIP          bool   `json:"had_wip"`
+	EvidencePath    string `json:"-"`
+	Error           string `json:"error,omitempty"`
+}
+
+func (r *runner) reopenedCandidateRecovery(
+	ctx context.Context,
+	beadID string,
+	wt worktree.Info,
+	dispatchBaseSHA string,
+	snapshotDir string,
+) (reopenedCandidateRecoveryResult, error) {
+	result := reopenedCandidateRecoveryResult{
+		SchemaVersion:   1,
+		Status:          "classifying",
+		Branch:          wt.Branch,
+		Worktree:        wt.Path,
+		DispatchBaseSHA: dispatchBaseSHA,
+		EvidencePath:    filepath.Join(snapshotDir, "reopened-recovery.json"),
+	}
+	persist := func(cause error) error {
+		if cause != nil {
+			result.Status = "blocked"
+			result.Error = cause.Error()
+		}
+		if err := fsx.WriteJSONAtomicPerm(result.EvidencePath, result, 0o600); err != nil {
+			if cause != nil {
+				return fmt.Errorf("%v; persist recovery evidence: %w", cause, err)
+			}
+			return fmt.Errorf("persist recovery evidence: %w", err)
+		}
+		return cause
+	}
+
+	runIDs, err := r.store.ListRuns()
+	if err != nil {
+		err = fmt.Errorf("classify attached worktree history: %w", err)
+		return result, persist(err)
+	}
+	var owner *ledger.Slot
+	for _, runID := range runIDs {
+		if r.run != nil && runID == r.run.RunID {
+			continue
+		}
+		prior, err := r.store.LoadRun(runID)
+		if err != nil {
+			err = fmt.Errorf("load prior run %s while classifying attached worktree: %w", runID, err)
+			return result, persist(err)
+		}
+		sl := prior.Slots[beadID]
+		if sl == nil {
+			continue
+		}
+		result.PriorRunID = runID
+		owner = sl
+		break // newest slot is authoritative; older runs are superseded history
+	}
+	if owner == nil {
+		err = fmt.Errorf(
+			"attached worktree %s has no terminal prior slot proving safe recovery ownership",
+			wt.Path,
+		)
+		return result, persist(err)
+	}
+	if !ledger.Terminal(owner.Status) {
+		err = fmt.Errorf(
+			"attached worktree %s is still owned by authoritative non-terminal slot %s/%s (%s)",
+			wt.Path, result.PriorRunID, beadID, owner.Status,
+		)
+		return result, persist(err)
+	}
+	if owner.Branch != wt.Branch || !sameRecoveryWorktree(owner.Worktree, wt.Path) {
+		err = fmt.Errorf(
+			"authoritative terminal slot %s/%s owns branch=%q worktree=%q, not attached branch=%q worktree=%q",
+			result.PriorRunID, beadID, owner.Branch, owner.Worktree, wt.Branch, wt.Path,
+		)
+		return result, persist(err)
+	}
+
+	recovered, err := worktree.RecoverOntoBase(ctx, worktree.RecoveryOpts{
+		RepoRoot:     r.rec.Root,
+		Path:         wt.Path,
+		Branch:       wt.Branch,
+		Base:         dispatchBaseSHA,
+		ExpectedHead: wt.Head,
+		SnapshotDir:  snapshotDir,
+	})
+	result.OriginalHead = recovered.OriginalHead
+	result.RefreshedHead = recovered.Head
+	result.WIPSnapshotPath = recovered.WIPSnapshotPath
+	result.HadWIP = recovered.HadWIP
+	if err != nil {
+		return result, persist(err)
+	}
+	result.Status = "recovered"
+	if err := persist(nil); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func sameRecoveryWorktree(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(a); err == nil {
+		a = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(b); err == nil {
+		b = resolved
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // reconcileBlockedBead writes a terminally-blocked slot's state back to bd so a

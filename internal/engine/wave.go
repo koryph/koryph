@@ -555,7 +555,7 @@ func (r *runner) waveLoop(ctx context.Context) (Outcome, error) {
 				}
 				r.issues[it.Issue.ID] = it.Issue
 				fp := it.Footprint
-				r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp,
+				r.dispatchBead(ctx, dispatchReq{origin: dispatchOriginFrontier, issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp,
 					resources: &dispatchResources{kinds: kinds, memReserveMB: memReserveMB}})
 				dispatchedThisBoundary++
 			}
@@ -1096,8 +1096,22 @@ func featuresFor(q dispatchReq) *beadFeatures {
 	}
 }
 
+type dispatchOrigin string
+
+const (
+	dispatchOriginFrontier dispatchOrigin = "frontier"
+	dispatchOriginRequeue  dispatchOrigin = "requeue"
+)
+
 // dispatchReq describes one dispatch (fresh, requeue, or review bounce).
 type dispatchReq struct {
+	// origin is an explicit authority boundary. Only scheduler-frontier
+	// dispatches may classify an attached terminal worktree as reopened work;
+	// requeues/resume paths own different preservation semantics.
+	origin dispatchOrigin
+	// beforeRecovery is a narrow test seam for the Ensure-to-recovery
+	// ownership race. Production dispatches leave it nil.
+	beforeRecovery               func()
 	issue                        beads.Issue
 	epicID                       string
 	attempt                      int
@@ -1376,6 +1390,49 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		r.blockSlot(beadID, q, "worktree: "+err.Error())
 		return
 	}
+	phaseDir := r.store.PhaseDir(r.run.RunID, beadID)
+	if !wt.Created && q.origin == "" {
+		reason := "attached worktree requires an explicit dispatch origin"
+		r.blockSlot(beadID, q, reason)
+		_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+			s.Branch = branch
+			s.Worktree = wt.Path
+			s.Note = reason
+		})
+		return
+	}
+	if !wt.Created && q.origin == dispatchOriginFrontier {
+		if q.beforeRecovery != nil {
+			q.beforeRecovery()
+		}
+		recovered, recoverErr := r.reopenedCandidateRecovery(
+			ctx, beadID, wt, dispatchBaseSHA, phaseDir,
+		)
+		if recoverErr != nil {
+			reason := "reopened candidate recovery refused: " + recoverErr.Error()
+			if recovered.EvidencePath != "" {
+				reason += "; recovery evidence=" + recovered.EvidencePath
+			}
+			r.blockSlot(beadID, q, reason)
+			_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+				s.Branch = branch
+				s.Worktree = wt.Path
+				s.ResumeSHA = recovered.OriginalHead
+				s.Note = reason
+			})
+			return
+		}
+		// The prompt's git-log baseline must be the dispatch base, not the
+		// refreshed candidate HEAD: base..HEAD truthfully shows all preserved
+		// committed work instead of an empty log.
+		q.resumeSHA = dispatchBaseSHA
+		q.wipSnapshotPath = recovered.WIPSnapshotPath
+		q.note = fmt.Sprintf(
+			"recovered reopened terminal candidate; recovery_evidence=%s prior_run=%s",
+			recovered.EvidencePath, recovered.PriorRunID,
+		)
+		r.progress("bead %s: %s", beadID, q.note)
+	}
 	if wt.Created && len(r.cfg.Bootstrap) > 0 {
 		if err := worktree.Bootstrap(ctx, wt.Path, r.cfg.Bootstrap, nil); err != nil {
 			r.blockSlot(beadID, q, "bootstrap: "+err.Error())
@@ -1394,7 +1451,6 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		return
 	}
 
-	phaseDir := r.store.PhaseDir(r.run.RunID, beadID)
 	policy := r.mergePolicy(ctx, q.epicID)
 
 	prompt := promptc.Compile(promptc.Input{

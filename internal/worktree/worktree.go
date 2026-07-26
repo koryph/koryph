@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/koryph/koryph/internal/execx"
 	"github.com/koryph/koryph/internal/fsx"
@@ -102,6 +101,17 @@ func Ensure(ctx context.Context, o EnsureOpts) (Info, error) {
 	// is a worktree (but was deleted out-of-band) does not wedge Ensure.
 	if _, err := git(ctx, repoRoot, "worktree", "prune"); err != nil {
 		return Info{}, err
+	}
+	// A previous recovery may have crashed while the worktree was temporarily
+	// detached/rebased. Replay its authenticated journal before ordinary
+	// branch validation, otherwise Ensure would reject the detached
+	// intermediate state and strand the very transaction that can restore it.
+	if fsx.Exists(target) {
+		if err := replayIncompleteRecovery(ctx, RecoveryOpts{
+			RepoRoot: repoRoot, Path: target, Branch: o.Branch, Base: o.Base,
+		}); err != nil {
+			return Info{}, fmt.Errorf("replay interrupted worktree recovery: %w", err)
+		}
 	}
 
 	list, err := List(ctx, repoRoot)
@@ -308,33 +318,6 @@ func Remove(ctx context.Context, path string, force bool) error {
 	}
 	_, _ = git(ctx, repo, "worktree", "prune")
 	return nil
-}
-
-// PatchSnapshot writes a WIP patch (tracked diff + untracked files via the
-// `git add -N` trick) to outDir and returns its path. It returns "" without
-// writing when there is nothing to capture, and never leaves intent-to-add
-// entries staged.
-func PatchSnapshot(ctx context.Context, path, outDir string) (string, error) {
-	if _, err := execx.MustSucceed(ctx, execx.Cmd{
-		Dir: path, Name: "git", Args: []string{"add", "-N", "."},
-	}); err != nil {
-		return "", err
-	}
-	defer func() { _, _ = git(ctx, path, "reset") }()
-
-	res, err := execx.MustSucceed(ctx, execx.Cmd{Dir: path, Name: "git", Args: []string{"diff"}})
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(res.Stdout) == "" {
-		return "", nil
-	}
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	out := filepath.Join(outDir, "wip-"+stamp+".patch")
-	if err := fsx.WriteAtomic(out, []byte(res.Stdout), 0o644); err != nil {
-		return "", err
-	}
-	return out, nil
 }
 
 // DeleteBranch deletes branch from repoRoot, falling back to a force delete

@@ -21,8 +21,12 @@
 //     conflict → abort rebase, write CONFLICT.md, return "conflict".
 //   - Remove(ctx, path, force) error — REFUSES dirty worktrees unless force;
 //     force is only ever set after explicit human approval upstream.
-//   - PatchSnapshot(ctx, path, outDir) (patchPath, error) — `git diff` (+
-//     untracked via `git add -N` trick) for WIP preservation.
+//   - PatchSnapshot(ctx, path, outDir) (patchPath, error) — non-mutating
+//     tracked + untracked WIP snapshot; the caller's index is never reset.
+//   - RecoverOntoBase(ctx, RecoveryOpts) (RecoveryResult, error) —
+//     transactionally checkpoint staged, unstaged, and untracked WIP; rebase
+//     onto an exact base; restore the original index/worktree state; and roll
+//     back to the exact original checkout on any conflict.
 package worktree
 
 // Info describes one worktree.
@@ -61,6 +65,31 @@ type RefreshResult struct {
 	Action  string `json:"action"` // none|advised|refreshed|deferred-dirty|conflict
 	Behind  int    `json:"behind"`
 	Overlap bool   `json:"overlap"`
+}
+
+// RecoveryOpts controls the fail-closed refresh of an attached worktree before
+// it is re-launched as a recovered candidate.
+type RecoveryOpts struct {
+	RepoRoot     string
+	Path         string
+	Branch       string
+	Base         string // exact commit SHA captured for the new dispatch
+	ExpectedHead string // HEAD observed by Ensure immediately before recovery
+	SnapshotDir  string
+
+	// beforeRebase is a deterministic test seam for caller cancellation after
+	// the transaction has durably suspended WIP. Production callers leave it
+	// nil.
+	beforeRebase func()
+}
+
+// RecoveryResult reports the immutable facts recovered before dispatch.
+type RecoveryResult struct {
+	OriginalHead    string
+	Head            string
+	WIPSnapshotPath string
+	HadWIP          bool
+	Refreshed       bool
 }
 
 // BranchFor returns the canonical branch name for a bead.

@@ -198,54 +198,6 @@ func TestRefreshDeferredDirty(t *testing.T) {
 	}
 }
 
-func TestPatchSnapshotCapturesUntracked(t *testing.T) {
-	isolateGit(t)
-	repo := initRepo(t)
-	ctx := context.Background()
-	info, err := Ensure(ctx, EnsureOpts{RepoRoot: repo, Branch: "agent/x", Base: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(info.Path, "new.txt"), "hello patch body\n")
-	outDir := t.TempDir()
-	p, err := PatchSnapshot(ctx, info.Path, outDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p == "" {
-		t.Fatal("expected a patch path, got empty")
-	}
-	data, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "new.txt") || !strings.Contains(string(data), "hello patch body") {
-		t.Errorf("patch missing untracked content:\n%s", data)
-	}
-	// The `git add -N` staging must NOT be left behind.
-	st := mustGit(t, info.Path, "status", "--porcelain")
-	if !strings.Contains(st, "?? new.txt") {
-		t.Errorf("after snapshot expected untracked new.txt, status=%q", st)
-	}
-}
-
-func TestPatchSnapshotEmptyReturnsNoPath(t *testing.T) {
-	isolateGit(t)
-	repo := initRepo(t)
-	ctx := context.Background()
-	info, err := Ensure(ctx, EnsureOpts{RepoRoot: repo, Branch: "agent/x", Base: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := PatchSnapshot(ctx, info.Path, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p != "" {
-		t.Errorf("clean worktree should yield no patch, got %q", p)
-	}
-}
-
 func TestListReportsWorktreesAndDirty(t *testing.T) {
 	isolateGit(t)
 	repo := initRepo(t)

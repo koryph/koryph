@@ -1081,6 +1081,7 @@ func (r *runner) requeueRateLimited(ctx context.Context, sl *ledger.Slot) {
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
+		origin:                       dispatchOriginRequeue,
 		issue:                        r.issueFor(ctx, sl),
 		epicID:                       sl.EpicID,
 		attempt:                      sl.Attempts, // unchanged: environmental failure, not a bead attempt
@@ -1326,6 +1327,7 @@ func (r *runner) requeueBudgetKilled(ctx context.Context, sl *ledger.Slot, commi
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
+		origin:                       dispatchOriginRequeue,
 		issue:                        r.issueFor(ctx, sl),
 		epicID:                       sl.EpicID,
 		attempt:                      attempt,
@@ -1514,6 +1516,7 @@ func (r *runner) requeueTurnExhausted(ctx context.Context, sl *ledger.Slot) {
 	wipSnapshot := r.refreshWorktreeForRequeue(ctx, sl, false)
 
 	r.dispatchBead(ctx, dispatchReq{
+		origin:    dispatchOriginRequeue,
 		issue:     r.issueFor(ctx, sl),
 		epicID:    sl.EpicID,
 		attempt:   attempt,
@@ -2865,6 +2868,7 @@ func (r *runner) requeueSlotWithRecovery(
 	}
 
 	r.dispatchBead(ctx, dispatchReq{
+		origin:                       dispatchOriginRequeue,
 		issue:                        r.issueFor(ctx, sl),
 		epicID:                       sl.EpicID,
 		attempt:                      attempt,

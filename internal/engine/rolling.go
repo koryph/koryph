@@ -279,7 +279,7 @@ func (r *runner) rollingLoop(ctx context.Context) (Outcome, error) {
 					}
 					r.issues[it.Issue.ID] = it.Issue
 					fp := it.Footprint
-					r.dispatchBead(ctx, dispatchReq{issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp,
+					r.dispatchBead(ctx, dispatchReq{origin: dispatchOriginFrontier, issue: it.Issue, epicID: it.EpicID, attempt: 1, footprint: &fp,
 						resources: &dispatchResources{kinds: kinds, memReserveMB: memReserveMB}})
 					dispatchedThisIter++
 				}
