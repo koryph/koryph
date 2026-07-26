@@ -34,7 +34,7 @@ var boundaryOps = []forbiddenOp{
 	{"git switch main", "git[[:space:]]+switch[[:space:]]+(main|master)"},
 	{"git merge", "git[[:space:]]+merge"},
 	{"git push", "git[[:space:]]+push"},
-	{"bd close", "bd[[:space:]]+close"},
+	{"bd", "([^[:space:]]*/)?bd([[:space:]]|$)"},
 	{"gh pr merge", "gh[[:space:]]+pr[[:space:]]+merge"},
 }
 
