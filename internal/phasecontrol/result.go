@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -174,11 +175,17 @@ func Complete(ctx context.Context, o CompleteOptions) (ResultManifest, error) {
 	if err != nil {
 		return ResultManifest{}, fmt.Errorf("phase complete: summary: %w", err)
 	}
-	evidence, evidencePath, evidenceDigest, err := loadEvidence(
+	evidence, _, _, err := loadEvidence(
 		o.EvidencePath, o.PhaseDir, o.Worktree,
 	)
 	if err != nil {
 		return ResultManifest{}, fmt.Errorf("phase complete: evidence: %w", err)
+	}
+	evidence, evidencePath, evidenceDigest, err := snapshotEvidence(
+		o.PhaseDir, o.Worktree, o.Dispatch, evidence,
+	)
+	if err != nil {
+		return ResultManifest{}, fmt.Errorf("phase complete: snapshot evidence: %w", err)
 	}
 
 	result := ResultManifest{
@@ -203,6 +210,60 @@ func Complete(ctx context.Context, o CompleteOptions) (ResultManifest, error) {
 		return ResultManifest{}, fmt.Errorf("phase complete: write result: %w", err)
 	}
 	return result, nil
+}
+
+func snapshotEvidence(
+	phaseDir string,
+	worktree string,
+	dispatch DispatchContext,
+	evidence Evidence,
+) (Evidence, string, string, error) {
+	for i := range evidence.FocusedTests {
+		test := &evidence.FocusedTests[i]
+		source, err := fsx.ReadRegularConfined(
+			test.LogPath, maxEvidenceBytes, phaseDir, worktree,
+		)
+		if err != nil {
+			return Evidence{}, "", "", err
+		}
+		if source.Digest != test.LogDigest {
+			return Evidence{}, "", "", errors.New("focused test log changed during completion")
+		}
+		snapshotPath := filepath.Join(phaseDir, "result-log-"+source.Digest+".log")
+		if err := fsx.WriteAtomicNoClobber(snapshotPath, source.Data, 0o600); err != nil &&
+			!errors.Is(err, os.ErrExist) {
+			return Evidence{}, "", "", err
+		}
+		snapshot, err := fsx.ReadRegularConfined(
+			snapshotPath, maxEvidenceBytes, phaseDir,
+		)
+		if err != nil || snapshot.Digest != source.Digest {
+			return Evidence{}, "", "", errors.New("focused test log snapshot differs from authenticated source")
+		}
+		test.LogPath = snapshot.Path
+		test.LogDigest = snapshot.Digest
+	}
+
+	generation := DispatchGeneration(dispatch)
+	evidencePath := filepath.Join(phaseDir, "result-evidence-"+generation+".json")
+	if err := fsx.WriteJSONAtomicNoClobberPerm(evidencePath, evidence, 0o600); err != nil &&
+		!errors.Is(err, os.ErrExist) {
+		return Evidence{}, "", "", err
+	}
+	read, err := fsx.ReadRegularConfined(evidencePath, maxEvidenceBytes, phaseDir)
+	if err != nil {
+		return Evidence{}, "", "", err
+	}
+	var persisted Evidence
+	if err := json.Unmarshal(read.Data, &persisted); err != nil {
+		return Evidence{}, "", "", err
+	}
+	left, _ := json.Marshal(evidence)
+	right, _ := json.Marshal(persisted)
+	if string(left) != string(right) {
+		return Evidence{}, "", "", errors.New("existing canonical evidence differs from current completion")
+	}
+	return persisted, read.Path, read.Digest, nil
 }
 
 // InspectCandidate returns the full candidate SHA, commit count relative to

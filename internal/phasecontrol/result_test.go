@@ -162,6 +162,34 @@ printf 'provider-owned final response\n' > "$2"
 	}
 }
 
+func TestRuntimeLogMutationAfterPhaseCompletePreservesEvidenceSnapshot(t *testing.T) {
+	opts, _ := resultFixture(t)
+	result, err := Complete(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalLog := filepath.Join(opts.PhaseDir, "focused.log")
+	snapshotLog := result.Evidence.FocusedTests[0].LogPath
+	if filepath.Clean(snapshotLog) == filepath.Clean(originalLog) ||
+		filepath.Clean(result.EvidencePath) == filepath.Clean(opts.EvidencePath) {
+		t.Fatalf("terminal evidence still aliases worker input: result=%+v", result)
+	}
+	writeResultFile(t, originalLog, "late runtime output\n")
+	want := ValidationContext{
+		PhaseDir: opts.PhaseDir, Worktree: opts.Worktree, Dispatch: opts.Dispatch,
+		CandidateSHA: result.CandidateSHA, CommitCount: result.CommitCount, WorktreeClean: true,
+		ExpectedCriteria: resultCriteria,
+	}
+	if err := ValidateResult(result, want); err != nil {
+		t.Fatalf("worker log mutation invalidated terminal snapshot: %v", err)
+	}
+	writeResultFile(t, snapshotLog, "tampered snapshot\n")
+	if err := ValidateResult(result, want); err == nil ||
+		!strings.Contains(err.Error(), "evidence") {
+		t.Fatalf("tampered snapshot error = %v", err)
+	}
+}
+
 func TestCompleteRejectsDirtyOrCommitlessCandidate(t *testing.T) {
 	t.Run("dirty", func(t *testing.T) {
 		opts, root := resultFixture(t)
