@@ -6,6 +6,7 @@ package schemaver
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -92,6 +93,15 @@ func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RegisterMigration() = %v", err)
 	}
+	if err := RegisterMigration(Registry, 1, func(state map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		if _, ok := state["renamed"]; !ok {
+			return nil, errors.New("v0-to-v1 step did not run first")
+		}
+		state["second_step"] = json.RawMessage("true")
+		return state, nil
+	}); err != nil {
+		t.Fatalf("RegisterMigration() second step = %v", err)
+	}
 
 	raw, changed, err := Migrate(Registry, []byte(`{"old_name":"value","unknown":{"keep":true}}`))
 	if err != nil {
@@ -104,8 +114,8 @@ func TestMigrateRunsOrderedStepsAndPreservesUnknownFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("decode migrated state: %v", err)
 	}
-	if got["schema_version"] != float64(1) || got["renamed"] != "value" {
-		t.Errorf("migrated state = %#v, want schema_version=1 and renamed=value", got)
+	if got["schema_version"] != float64(Current(Registry)) || got["renamed"] != "value" || got["second_step"] != true {
+		t.Errorf("migrated state = %#v, want schema_version=%d, renamed=value, and second_step=true", got, Current(Registry))
 	}
 	if unknown, ok := got["unknown"].(map[string]any); !ok || unknown["keep"] != true {
 		t.Errorf("unknown field was not preserved: %#v", got["unknown"])
@@ -215,7 +225,8 @@ func TestVerifyFingerprintRejectsMalformedHash(t *testing.T) {
 }
 
 func TestVerifyFingerprintRejectsShapeMismatchAtExistingVersion(t *testing.T) {
-	err := VerifyFingerprint(Registry, []byte("1 "+strings.Repeat("a", 64)), struct {
+	history := fmt.Sprintf("%d %s", Current(Registry), strings.Repeat("a", 64))
+	err := VerifyFingerprint(Registry, []byte(history), struct {
 		Name string `json:"name"`
 	}{})
 	if err == nil || !strings.Contains(err.Error(), "fingerprint mismatch") {
@@ -228,7 +239,7 @@ func TestAppendFingerprintAddsVersionBumpAndRefusesOverwrite(t *testing.T) {
 	current[Registry] = original + 1
 	t.Cleanup(func() { current[Registry] = original })
 
-	history := []byte("# schema-version persisted-shape-sha256\n1 " + strings.Repeat("a", 64) + "\n")
+	history := []byte(fmt.Sprintf("# schema-version persisted-shape-sha256\n%d %s\n", original, strings.Repeat("a", 64)))
 	type v2Record struct {
 		Name string `json:"name"`
 	}
