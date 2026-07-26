@@ -1762,7 +1762,17 @@ func (r *runner) standardRepairModel(ctx context.Context, sl *ledger.Slot) (type
 	case modelroute.TierOpus, modelroute.TierFable:
 		return typedRecoveryModel{}, fmt.Errorf("standard repair resolved to frontier model %q", standard)
 	}
-	res, err := r.resolveModelForRuntime(r.implementationStage(issue), issue, standard, runtimeName)
+	// The standard repair consequence is already a trusted portable tier
+	// decision. Resolve it without the bead's model labels or run defaults;
+	// passing the mapped native model as an explicit selection makes adapters
+	// such as Codex ambiguous when one concrete model serves several tiers.
+	req := r.modelRequestForRuntime(
+		r.implementationStage(issue), nil, "", runtimeName,
+	)
+	req.RunDefault = ""
+	req.RunEquivalent = ""
+	req.RepoRoot = "" // typed tier consequence outranks persona model metadata
+	res, err := modelroute.Resolve(req)
 	if err != nil {
 		return typedRecoveryModel{}, err
 	}

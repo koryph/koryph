@@ -305,6 +305,29 @@ func TestStandardRepairRejectsFrontierMappedAsStandard(t *testing.T) {
 	}
 }
 
+func TestStandardRepairUsesTrustedCodexTierWithoutExactModelAmbiguity(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r, _ := escalationRunner(t, f)
+	r.cfg.DefaultRuntime = "codex"
+	r.cfg.ModelMap = nil
+	r.cfg.Runtimes = map[string]project.RuntimeConfig{
+		"codex": {Enabled: true},
+	}
+	sl := escalationSlot(t, r, "codex-standard-repair", 1)
+	sl.Runtime = "codex"
+	sl.Model = "gpt-5.6-terra"
+	sl.OutcomeClass = string(OutcomeCodeDefect)
+
+	got, err := r.standardRepairModel(t.Context(), sl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.model != "gpt-5.6-terra" || got.tier != runtime.TierStandard ||
+		got.persona != "koryph-implementer" {
+		t.Fatalf("Codex standard repair = %+v", got)
+	}
+}
+
 func TestRepeatedStaleRecoveryUsesBoundedTypedTransientBudget(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	r, backend := escalationRunner(t, f)
