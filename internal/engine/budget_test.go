@@ -65,9 +65,9 @@ case "$1" in
   ready)
     n=$(cat "$dir/ready_n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$dir/ready_n"
     if [ "$n" = "1" ]; then
-      echo '[{"id":"tb1","title":"one","description":"x","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]'
+      echo '[{"id":"tb1","title":"one","description":"x","acceptance_criteria":"AC1: work is committed","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]'
     else
-      echo '[{"id":"tb2","title":"two","description":"x","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]'
+      echo '[{"id":"tb2","title":"two","description":"x","acceptance_criteria":"AC1: work is committed","status":"open","priority":1,"issue_type":"task","labels":["fp:core"]}]'
     fi
     ;;
   version) echo "bd version 1.0.5" ;;

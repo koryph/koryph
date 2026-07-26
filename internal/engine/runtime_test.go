@@ -38,7 +38,7 @@ case "$1" in
       echo '[]'
     else
       touch "$dir/ready_served"
-      echo '[{"id":"tb1","title":"Test bead one","description":"do the work","status":"open","priority":1,"issue_type":"task","labels":["fp:core","runtime:codex"]}]'
+      echo '[{"id":"tb1","title":"Test bead one","description":"do the work","acceptance_criteria":"AC1: runtime work is committed","status":"open","priority":1,"issue_type":"task","labels":["fp:core","runtime:codex"]}]'
     fi
     ;;
   version) echo "bd version 1.0.5" ;;

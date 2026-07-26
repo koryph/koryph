@@ -99,6 +99,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 	commits := 0
 	clean := false
 	engineInvariantFailure := false
+	inputInvalidFailure := false
 	workerDefect := false
 	completionContractMissing := false
 
@@ -232,7 +233,7 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 		issue := r.issueFor(ctx, sl)
 		expectedCriteria, err = plan.ParseStrictCriteria(issue.AcceptanceCriteria)
 		if err != nil {
-			engineInvariantFailure = true
+			inputInvalidFailure = true
 			reasons = append(reasons, "issue acceptance criteria are not strict: "+err.Error())
 			break
 		}
@@ -291,6 +292,8 @@ func (r *runner) assessCandidate(ctx context.Context, sl *ledger.Slot) candidate
 		outcome := OutcomeCodeDefect
 		if engineInvariantFailure {
 			outcome = OutcomeEngineInvariant
+		} else if inputInvalidFailure {
+			outcome = OutcomeInputInvalid
 		} else if capabilityBlock {
 			outcome = OutcomeCapabilityUnavailable
 		} else if completionContractMissing && !workerDefect && dispatchValid &&

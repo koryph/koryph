@@ -53,7 +53,8 @@ run_case() {
 
 run_case scheduling \
   "./internal/beads:TestReady" \
-  "./internal/sched:TestBuildWaveComprehensive"
+  "./internal/sched:TestBuildWaveComprehensive" \
+  "./internal/engine:TestMalformedAcceptanceParksBeforeModelDispatch"
 
 run_case isolation \
   "./internal/engine:TestRollingInFlightFootprintHeldAcrossIterations" \

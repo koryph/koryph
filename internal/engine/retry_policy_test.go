@@ -12,6 +12,7 @@ func TestDecideRetryTypedTransitionTable(t *testing.T) {
 		want RecoveryDecision
 	}{
 		{"ready", RetryPolicyInput{Outcome: OutcomeCandidateReady}, decision(RecoveryEnterValidation, ModelConsequenceNone, "candidate-ready")},
+		{"invalid input", RetryPolicyInput{Outcome: OutcomeInputInvalid}, decision(RecoveryPark, ModelConsequenceNone, "input-invalid")},
 		{"completion repair", RetryPolicyInput{Outcome: OutcomeCompletionContractMissing}, decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "completion-repair")},
 		{"completion exhausted", RetryPolicyInput{Outcome: OutcomeCompletionContractMissing, Budgets: RetryBudgets{CompletionRepairs: 1}}, decision(RecoveryPark, ModelConsequenceNone, "completion-repair-exhausted")},
 		{"code repair changed", RetryPolicyInput{Outcome: OutcomeCodeDefect, EvidenceChanged: true}, decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "code-repair")},
@@ -88,7 +89,7 @@ func TestFrontierImplementationRequiresBothDiagnosisAndOptIn(t *testing.T) {
 
 func TestNonCapabilityFailuresNeverSelectFrontierImplementation(t *testing.T) {
 	for _, outcome := range []CandidateOutcomeClass{
-		OutcomeCandidateReady, OutcomeCompletionContractMissing, OutcomeCodeDefect,
+		OutcomeCandidateReady, OutcomeInputInvalid, OutcomeCompletionContractMissing, OutcomeCodeDefect,
 		OutcomeSemanticDefect, OutcomePersistentSemanticDefect, OutcomeSecurityDefect,
 		OutcomeCapabilityUnavailable, OutcomeRuntimeTransient, OutcomeBudgetExhausted,
 		OutcomeTurnExhausted, OutcomeMergeBaseMoved,

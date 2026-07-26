@@ -9,6 +9,7 @@ type CandidateOutcomeClass string
 
 const (
 	OutcomeCandidateReady            CandidateOutcomeClass = "candidate-ready"
+	OutcomeInputInvalid              CandidateOutcomeClass = "input-invalid"
 	OutcomeCompletionContractMissing CandidateOutcomeClass = "completion-contract-missing"
 	OutcomeCodeDefect                CandidateOutcomeClass = "code-defect"
 	OutcomeSemanticDefect            CandidateOutcomeClass = "semantic-defect"

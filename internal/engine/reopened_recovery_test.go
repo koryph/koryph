@@ -44,6 +44,13 @@ func seedTerminalCandidate(t *testing.T, f *fix, beadID string) string {
 	return wt.Path
 }
 
+func recoveryIssue(id, title string) beads.Issue {
+	return beads.Issue{
+		ID: id, Title: title,
+		AcceptanceCriteria: "AC1: candidate recovery preserves the requested work",
+	}
+}
+
 func TestFreshDispatchRecoversDirtyTerminalCandidateWithTruthfulMetadata(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	const beadID = "reopened"
@@ -64,7 +71,7 @@ func TestFreshDispatchRecoversDirtyTerminalCandidateWithTruthfulMetadata(t *test
 	runGit(t, f.repo, "commit", "--no-verify", "-m", "chore: advance base")
 	base := strings.TrimSpace(runGit(t, f.repo, "rev-parse", "main"))
 
-	issue := beads.Issue{ID: beadID, Title: "reopened candidate"}
+	issue := recoveryIssue(beadID, "reopened candidate")
 	backendCalls := 0
 	r := dispatchIdentityRunner(t, f, issue, func(spec dispatch.Spec) error {
 		backendCalls++
@@ -129,7 +136,7 @@ func TestFreshDispatchRecoveryConflictFailsClosedAndPreservesWork(t *testing.T) 
 	runGit(t, f.repo, "add", "README.md")
 	runGit(t, f.repo, "commit", "--no-verify", "-m", "chore: conflicting base")
 
-	issue := beads.Issue{ID: beadID, Title: "conflicting reopened candidate"}
+	issue := recoveryIssue(beadID, "conflicting reopened candidate")
 	backendCalls := 0
 	r := dispatchIdentityRunner(t, f, issue, func(dispatch.Spec) error {
 		backendCalls++
@@ -168,7 +175,7 @@ func TestFreshDispatchRecoveryConflictFailsClosedAndPreservesWork(t *testing.T) 
 
 func TestFreshDispatchWithoutExistingWorktreeKeepsOrdinaryPath(t *testing.T) {
 	f := newFixture(t, fixOpts{})
-	issue := beads.Issue{ID: "brand-new", Title: "brand new"}
+	issue := recoveryIssue("brand-new", "brand new")
 	backendCalls := 0
 	r := dispatchIdentityRunner(t, f, issue, func(spec dispatch.Spec) error {
 		backendCalls++
@@ -190,7 +197,7 @@ func TestAttachedWorktreeRequiresExplicitFrontierOrigin(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	const beadID = "origin"
 	seedTerminalCandidate(t, f, beadID)
-	issue := beads.Issue{ID: beadID, Title: "origin required"}
+	issue := recoveryIssue(beadID, "origin required")
 	backendCalls := 0
 	r := dispatchIdentityRunner(t, f, issue, func(dispatch.Spec) error {
 		backendCalls++
@@ -241,7 +248,7 @@ func TestReopenedRecoveryUsesNewestAuthoritativeOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	issue := beads.Issue{ID: beadID, Title: "authoritative owner"}
+	issue := recoveryIssue(beadID, "authoritative owner")
 	backendCalls := 0
 	r := dispatchIdentityRunner(t, f, issue, func(dispatch.Spec) error {
 		backendCalls++
@@ -269,7 +276,7 @@ func TestReopenedRecoveryRejectsMismatchedTerminalOwnership(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	issue := beads.Issue{ID: beadID, Title: "mismatched owner"}
+	issue := recoveryIssue(beadID, "mismatched owner")
 	backendCalls := 0
 	r := dispatchIdentityRunner(t, f, issue, func(dispatch.Spec) error {
 		backendCalls++
@@ -292,7 +299,7 @@ func TestFreshDispatchOwnershipRaceRefusesWithoutBackendOrWorktreeMutation(t *te
 	const beadID = "ownership-race"
 	wtPath := seedTerminalCandidate(t, f, beadID)
 	originalHead := strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD"))
-	issue := beads.Issue{ID: beadID, Title: "ownership race"}
+	issue := recoveryIssue(beadID, "ownership race")
 	backendCalls := 0
 	r := dispatchIdentityRunner(t, f, issue, func(dispatch.Spec) error {
 		backendCalls++

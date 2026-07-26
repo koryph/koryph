@@ -53,6 +53,9 @@ func DecideRetry(in RetryPolicyInput) RecoveryDecision {
 	case OutcomeCandidateReady:
 		return decision(RecoveryEnterValidation, ModelConsequenceNone, "candidate-ready")
 
+	case OutcomeInputInvalid:
+		return decision(RecoveryPark, ModelConsequenceNone, "input-invalid")
+
 	case OutcomeCompletionContractMissing:
 		if in.Budgets.CompletionRepairs < 1 {
 			return decision(RecoveryTargetedRepair, ModelConsequenceStandardImplementation, "completion-repair")

@@ -1214,7 +1214,7 @@ func checkedAddInt64(left, right int64) (int64, bool) {
 
 func validateOutcome(outcome TypedOutcome) error {
 	switch outcome.Kind {
-	case "candidate-ready", "completion-contract-missing", "code-defect",
+	case "candidate-ready", "input-invalid", "completion-contract-missing", "code-defect",
 		"semantic-defect", "persistent-semantic-defect", "security-defect",
 		"runtime-transient", "budget-exhausted", "turn-exhausted",
 		"merge-base-moved", "commit-style-mechanical", "operator-stop-drain",

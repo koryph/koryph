@@ -495,7 +495,7 @@ func canonicalAttemptOutcome(value string, terminal bool) string {
 		}
 	}
 	switch value {
-	case "candidate-ready", "completion-contract-missing", "code-defect",
+	case "candidate-ready", "input-invalid", "completion-contract-missing", "code-defect",
 		"semantic-defect", "persistent-semantic-defect", "security-defect",
 		"runtime-transient", "budget-exhausted",
 		"turn-exhausted", "merge-base-moved", "commit-style-mechanical",
@@ -520,7 +520,7 @@ func knownAttemptOutcome(value string, terminal bool) bool {
 		}
 	}
 	switch value {
-	case "candidate-ready", "completion-contract-missing", "code-defect",
+	case "candidate-ready", "input-invalid", "completion-contract-missing", "code-defect",
 		"semantic-defect", "persistent-semantic-defect", "security-defect",
 		"capability-unavailable", "runtime-transient", "budget-exhausted",
 		"turn-exhausted", "merge-base-moved", "commit-style-mechanical",

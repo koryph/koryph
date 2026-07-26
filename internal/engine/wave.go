@@ -20,6 +20,7 @@ import (
 	"github.com/koryph/koryph/internal/ledger"
 	"github.com/koryph/koryph/internal/modelroute"
 	"github.com/koryph/koryph/internal/phasecontrol"
+	"github.com/koryph/koryph/internal/plan"
 	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/promptc"
 	"github.com/koryph/koryph/internal/quota"
@@ -1307,6 +1308,15 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		})
 		return
 	}
+	if q.origin == dispatchOriginFrontier {
+		if _, err := plan.ParseStrictCriteria(q.issue.AcceptanceCriteria); err != nil {
+			r.parkInvalidDispatchInput(
+				ctx, beadID, q,
+				"issue acceptance criteria are not strict: "+err.Error(),
+			)
+			return
+		}
+	}
 	// Capability holds gate scheduler-frontier admission. Once a repaired
 	// capability attempt is admitted, its same-run typed requeues are governed
 	// by their own bounded retry counters; re-consuming the project-level hold
@@ -1848,6 +1858,25 @@ func (r *runner) blockSlot(beadID string, q dispatchReq, why string) {
 	// frozenModel may be empty when the block precedes model resolution — the
 	// outcome event then honestly reports "model unknown" (koryph-qf6.2).
 	logSlotBlocked(beadID, why, q.frozenModel, "", q.attempt)
+}
+
+func (r *runner) parkInvalidDispatchInput(
+	ctx context.Context,
+	beadID string,
+	q dispatchReq,
+	why string,
+) {
+	_ = r.store.UpdateSlot(r.run, beadID, func(s *ledger.Slot) {
+		s.BeadID = beadID
+		s.EpicID = q.epicID
+		s.Status = ledger.SlotBlocked
+		s.Attempts = q.attempt
+		s.OutcomeClass = string(OutcomeInputInvalid)
+		s.Note = why
+	})
+	r.releaseGlobalSlot(beadID)
+	r.progress("bead %s: blocked (%s: %s)", beadID, OutcomeInputInvalid, why)
+	r.auditBlocked(ctx, r.run.Slots[beadID], string(OutcomeInputInvalid), why)
 }
 
 // mergePolicy resolves the effective merge policy: an epic merge:* label wins

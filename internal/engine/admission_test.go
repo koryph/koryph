@@ -61,6 +61,47 @@ func TestAllowedIDsFixedCohortCannotDispatchReadyOutsider(t *testing.T) {
 	}
 }
 
+func TestMalformedAcceptanceParksBeforeModelDispatch(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	issue := beads.Issue{
+		ID: "invalid-input", Title: "invalid input",
+		AcceptanceCriteria: "does one thing; does another thing",
+	}
+	r := dispatchIdentityRunner(t, f, issue, nil)
+	backend := &capturingBackend{}
+	r.backend = backend
+	r.opts.NativeCanary = true
+	var events []SafetyTripwire
+	r.opts.OnSafetyTripwire = func(event SafetyTripwire) {
+		events = append(events, event)
+	}
+
+	r.dispatchBead(t.Context(), dispatchReq{
+		origin:  dispatchOriginFrontier,
+		issue:   issue,
+		attempt: 1,
+	})
+
+	if len(backend.specs) != 0 {
+		t.Fatalf("backend launches = %d, want zero", len(backend.specs))
+	}
+	slot := r.run.Slots[issue.ID]
+	if slot == nil || slot.Status != ledger.SlotBlocked ||
+		slot.OutcomeClass != string(OutcomeInputInvalid) ||
+		slot.Model != "" || slot.Worktree != "" ||
+		!strings.Contains(slot.Note, "criterion packs multiple clauses") {
+		t.Fatalf("invalid-input slot = %+v", slot)
+	}
+	source := r.adapter.(*fakeSource)
+	if !fakeBlocked(source, issue.ID) {
+		t.Fatalf("tracker status calls = %v, want blocked", source.setStatus)
+	}
+	if len(events) != 0 || r.dispatchCircuitReason != "" {
+		t.Fatalf("invalid input opened circuit: events=%+v reason=%q",
+			events, r.dispatchCircuitReason)
+	}
+}
+
 func TestPinnedResumeNeverSubstitutesNewerLatestRun(t *testing.T) {
 	f := newFixture(t, fixOpts{})
 	store := ledger.NewStore(f.repo)

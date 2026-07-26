@@ -429,6 +429,23 @@ func TestCandidateRequiresExactIssueAcceptanceMatrix(t *testing.T) {
 	}
 }
 
+func TestCandidateClassifiesAcceptanceChangedToInvalidAsInputInvalid(t *testing.T) {
+	r, sl, wt := candidateFixture(t)
+	writeFile(t, filepath.Join(wt, "work.txt"), "done\n", 0o644)
+	runGit(t, wt, "add", "work.txt")
+	runGit(t, wt, "commit", "--no-verify", "-m", "feat(candidate): work")
+	completeCandidate(t, r, sl)
+	issue := r.issues[sl.PhaseID]
+	issue.AcceptanceCriteria = "AC1: first outcome; second outcome"
+	r.issues[sl.PhaseID] = issue
+
+	a := r.assessCandidate(t.Context(), sl)
+	if a.eligible || a.outcome != OutcomeInputInvalid ||
+		!strings.Contains(a.reason, "criterion packs multiple clauses") {
+		t.Fatalf("late-invalid acceptance assessment = %+v", a)
+	}
+}
+
 func TestAssessCandidateExplicitFailureStatesNeverReceiveCompletionRepair(t *testing.T) {
 	r, sl, wt := candidateFixture(t)
 	writeFile(t, filepath.Join(wt, "work.txt"), "done\n", 0o644)
