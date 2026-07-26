@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/koryph/koryph/internal/beads"
 	"github.com/koryph/koryph/internal/commands"
+	doctorpkg "github.com/koryph/koryph/internal/doctor"
 	"github.com/koryph/koryph/internal/engine"
 	"github.com/koryph/koryph/internal/fsx"
 	koryphgc "github.com/koryph/koryph/internal/gc"
@@ -647,130 +647,194 @@ func TestPendingCanaryCannotReplayAfterAccountIdentityChange(t *testing.T) {
 	}
 }
 
-func TestStaleCanaryGenerationIsArchivedBeforeFreshBootstrap(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		markerStatus string
-	}{
-		{name: "completed state"},
-		{name: "pending marker", markerStatus: nativeCanaryPromotionPending},
-		{name: "validated marker", markerStatus: nativeCanaryPromotionValidated},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			isolate(t)
-			rec := addProject(t, "demo")
-			phaseGit(t, rec.Root, "config", "user.name", "Canary Test")
-			phaseGit(t, rec.Root, "config", "user.email", "canary@example.com")
-			phaseGit(t, rec.Root, "add", "-A")
-			phaseGit(t, rec.Root, "commit", "--allow-empty", "-m", "canary base")
-			canaryCommit := phaseGit(t, rec.Root, "rev-parse", "HEAD")
-			reg := registry.NewStore()
-			rec.MigrationStatus = registry.StatusMigrated
-			if err := reg.Save(t.Context(), rec); err != nil {
-				t.Fatal(err)
-			}
-			_, oldState := canaryPromotionFixture(t)
-			oldState.ProjectID = rec.ProjectID
-			oldState.Mode = loopsupervisor.ModeStopped
-			oldState.Canary.RegistryIdentityDigest = mustRegistryIdentityDigest(t, rec)
-			oldState.Canary.ReportPath = filepath.Join(
-				rec.Root, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath),
-			)
-			if err := os.MkdirAll(filepath.Dir(oldState.Canary.ReportPath), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			historicalReport := []byte("{\"historical\":true}\n")
-			if err := os.WriteFile(oldState.Canary.ReportPath, historicalReport, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if tc.markerStatus == "" {
-				if err := loopsupervisor.NewStore(rec.Root).SaveState(oldState); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := saveNativeCanaryPromotionMarker(
-				rec.Root,
-				nativeCanaryPromotionMarker{
-					ProjectID: rec.ProjectID,
-					Status:    tc.markerStatus,
-					Canary:    *oldState.Canary,
-				},
-			); err != nil {
-				t.Fatal(err)
-			}
+func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.T) {
+	isolate(t)
+	rec := addProject(t, "demo")
+	resolvedRoot, err := filepath.EvalSymlinks(rec.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Root = resolvedRoot
+	phaseGit(t, rec.Root, "config", "user.name", "Canary Test")
+	phaseGit(t, rec.Root, "config", "user.email", "canary@example.com")
+	phaseGit(t, rec.Root, "add", "-A")
+	phaseGit(t, rec.Root, "commit", "--allow-empty", "-m", "canary base")
+	previousCommit := phaseGit(t, rec.Root, "rev-parse", "HEAD")
+	phaseWrite(t, filepath.Join(rec.Root, "repair.txt"), "repair\n")
+	phaseGit(t, rec.Root, "add", "repair.txt")
+	phaseGit(t, rec.Root, "commit", "-m", "repair canary")
+	currentCommit := phaseGit(t, rec.Root, "rev-parse", "HEAD")
 
-			if err := reg.SetAccount(
-				t.Context(), rec.ProjectID, registry.ProfileWork,
-				"/tmp/koryph-work", "work@example.com", "identity changed",
-			); err != nil {
-				t.Fatal(err)
-			}
-			current, err := reg.Get(rec.ProjectID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			current.MigrationStatus = registry.StatusMigrated
-			if err := reg.Save(t.Context(), current); err != nil {
-				t.Fatal(err)
-			}
-			currentDigest := mustRegistryIdentityDigest(t, current)
+	oldCommit := loopInstalledCommit
+	oldVersion := loopBinaryVersion
+	t.Cleanup(func() {
+		loopInstalledCommit = oldCommit
+		loopBinaryVersion = oldVersion
+	})
+	loopInstalledCommit = func() string { return currentCommit }
+	loopBinaryVersion = func() string { return "0.10.0-test" }
+	registryDigest := mustRegistryIdentityDigest(t, rec)
+	config := loopsupervisor.Config{ProjectID: rec.ProjectID}
+	enginePolicy := nativeCanaryEnginePolicy{AutoMerge: true, Review: true}
+	current, err := nativeCanarySpecWithPolicy(
+		rec.ProjectID, rec.Root, []string{"b1", "b2"}, 2,
+		registryDigest, config, enginePolicy,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			store := loopsupervisor.NewStore(rec.Root)
-			state, retired, err := retireStaleNativeCanaryEvidence(
-				t.Context(), rec.Root, currentDigest,
-			)
-			if err != nil || !retired || state.Canary != nil {
-				t.Fatalf("state=%+v retired=%t err=%v", state, retired, err)
-			}
-			if _, err := os.Lstat(oldState.Canary.ReportPath); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("fixed report path still occupied: %v", err)
-			}
-			if _, exists, err := loadNativeCanaryPromotionMarker(rec.Root); err != nil || exists {
-				t.Fatalf("marker exists=%t err=%v", exists, err)
-			}
-			persisted, err := store.LoadState()
-			if err != nil || persisted.Canary != nil {
-				t.Fatalf("persisted state=%+v err=%v", persisted, err)
-			}
-			historyFiles, err := filepath.Glob(
-				filepath.Join(store.Root, nativeCanaryHistoryDir, "*.json"),
-			)
-			if err != nil || len(historyFiles) != 1 {
-				t.Fatalf("history files=%v err=%v", historyFiles, err)
-			}
-			var history nativeCanaryHistoryRecord
-			if err := fsx.ReadJSON(historyFiles[0], &history); err != nil {
-				t.Fatal(err)
-			}
-			if history.PreviousRegistryIdentityDigest !=
-				oldState.Canary.RegistryIdentityDigest ||
-				history.CurrentRegistryIdentityDigest != currentDigest ||
-				history.ArchivedReportPath == "" {
-				t.Fatalf("history=%+v", history)
-			}
-			gotReport, err := os.ReadFile(history.ArchivedReportPath)
-			if err != nil || !bytes.Equal(gotReport, historicalReport) {
-				t.Fatalf("archived report=%q err=%v", gotReport, err)
-			}
+	previous := loopsupervisor.State{
+		ProjectID: rec.ProjectID, Mode: loopsupervisor.ModeCircuitOpen,
+		Canary: &loopsupervisor.CanaryState{
+			Cohort:       append([]string(nil), current.Cohort...),
+			CohortDigest: cohortDigestForNativeCanary(current.Cohort),
+			StartedAt:    "2026-07-25T10:00:00Z", ProgressAt: "2026-07-25T10:05:00Z",
+			InactivityLimitMS: current.InactivityLimit.Milliseconds(),
+			TargetWidth:       current.TargetWidth, CurrentWidth: 2,
+			HardStops: append([]string(nil), current.HardStops...),
+			HardStop:  "engine-invariant", InstalledCommit: previousCommit,
+			BinaryVersion: current.BinaryVersion, BuildIdentity: "previous-build",
+			ContractDigest: current.ContractDigest, RegistryIdentityDigest: current.RegistryIdentityDigest,
+			AutonomyPolicyDigest:  current.AutonomyPolicyDigest,
+			ExecutionPolicyDigest: current.ExecutionPolicyDigest,
+			ReportPath:            current.ReportPath, EndedAt: "2026-07-25T10:05:00Z",
+			Decision: "failed", PublishedAt: "2026-07-25T10:05:02Z",
+		},
+	}
+	previous.Canary.GenerationDigest, err = loopsupervisor.CanaryStateGenerationDigest(
+		rec.ProjectID, previous.Canary,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := autonomyCLIInput()
+	input.ProjectID = rec.ProjectID
+	input.InstalledCommit = previousCommit
+	input.BinaryVersion = previous.Canary.BinaryVersion
+	input.BuildIdentity = previous.Canary.BuildIdentity
+	input.ContractDigest = previous.Canary.ContractDigest
+	input.RegistryIdentityDigest = previous.Canary.RegistryIdentityDigest
+	input.GenerationDigest = previous.Canary.GenerationDigest
+	input.ExecutionPolicyDigest = previous.Canary.ExecutionPolicyDigest
+	input.Cohort = append([]string(nil), previous.Canary.Cohort...)
+	input.StartedAt = previous.Canary.StartedAt
+	input.EndedAt = previous.Canary.EndedAt
+	input.Evidence.Attempts[0].BeadID = "b1"
+	report, err := metrics.BuildAutonomyReport(
+		input, time.Date(2026, 7, 25, 10, 5, 1, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Decision.Passed {
+		t.Fatal("fixture report unexpectedly passed")
+	}
+	if err := metrics.WriteAutonomyReport(previous.Canary.ReportPath, report); err != nil {
+		t.Fatal(err)
+	}
+	previous.Canary.ReportDigest = report.EvidenceDigest
+	previous.Canary.ReportGeneratedAt = report.GeneratedAt
+	store := loopsupervisor.NewStore(rec.Root)
+	if err := store.SaveState(previous); err != nil {
+		t.Fatal(err)
+	}
 
-			oldCommit := loopInstalledCommit
-			oldVersion := loopBinaryVersion
-			t.Cleanup(func() {
-				loopInstalledCommit = oldCommit
-				loopBinaryVersion = oldVersion
-			})
-			loopInstalledCommit = func() string { return canaryCommit }
-			loopBinaryVersion = func() string { return "0.10.0-test" }
-			fresh, err := nativeCanarySpec(
-				rec.Root, []string{"fresh-1", "fresh-2"}, 2, currentDigest,
-			)
-			if err != nil {
-				t.Fatalf("fresh canary bootstrap remained blocked: %v", err)
-			}
-			if filepath.Clean(fresh.ReportPath) !=
-				filepath.Clean(oldState.Canary.ReportPath) {
-				t.Fatalf("fresh report path=%q, want %q", fresh.ReportPath, oldState.Canary.ReportPath)
-			}
-		})
+	sameCommit := *current
+	sameCommit.InstalledCommit = previousCommit
+	sameCommit.BuildIdentity = "same-commit-rebuild"
+	sameCommit.GenerationDigest, err = loopsupervisor.CanaryGenerationDigest(
+		rec.ProjectID, sameCommit,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, retired, err := retireStaleNativeCanaryEvidence(
+		t.Context(), rec.Root, rec.ProjectID, &sameCommit,
+	); err == nil || retired || !strings.Contains(err.Error(), "same-commit") {
+		t.Fatalf("same-commit rollover retired=%t err=%v", retired, err)
+	}
+
+	policyDrift := *current
+	policyDrift.ContractDigest = "sha256:" + strings.Repeat("9", 64)
+	policyDrift.GenerationDigest, err = loopsupervisor.CanaryGenerationDigest(
+		rec.ProjectID, policyDrift,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, retired, err := retireStaleNativeCanaryEvidence(
+		t.Context(), rec.Root, rec.ProjectID, &policyDrift,
+	); err == nil || retired || !strings.Contains(err.Error(), "policy drift") {
+		t.Fatalf("policy-drift rollover retired=%t err=%v", retired, err)
+	}
+
+	passed := previous
+	passedCanary := *previous.Canary
+	passedCanary.Decision = "passed"
+	passed.Canary = &passedCanary
+	if err := store.SaveState(passed); err != nil {
+		t.Fatal(err)
+	}
+	if _, retired, err := retireStaleNativeCanaryEvidence(
+		t.Context(), rec.Root, rec.ProjectID, current,
+	); err == nil || retired || !strings.Contains(err.Error(), "reconciled") {
+		t.Fatalf("passed rollover retired=%t err=%v", retired, err)
+	}
+	if err := store.SaveState(previous); err != nil {
+		t.Fatal(err)
+	}
+
+	state, retired, err := retireStaleNativeCanaryEvidence(
+		t.Context(), rec.Root, rec.ProjectID, current,
+	)
+	if err != nil || !retired || state.Canary != nil {
+		t.Fatalf("state=%+v retired=%t err=%v", state, retired, err)
+	}
+	if _, err := os.Lstat(previous.Canary.ReportPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixed report path still occupied: %v", err)
+	}
+	historyFiles, err := filepath.Glob(
+		filepath.Join(store.Root, nativeCanaryHistoryDir, "*.json"),
+	)
+	if err != nil || len(historyFiles) != 1 {
+		t.Fatalf("history files=%v err=%v", historyFiles, err)
+	}
+	var history nativeCanaryHistoryRecord
+	if err := fsx.ReadJSON(historyFiles[0], &history); err != nil {
+		t.Fatal(err)
+	}
+	if history.PreviousGenerationDigest != previous.Canary.GenerationDigest ||
+		history.CurrentGenerationDigest != current.GenerationDigest ||
+		history.ArchivedReportDigest == "" || history.ArchivedStateDigest == "" {
+		t.Fatalf("history=%+v", history)
+	}
+	if _, err := metrics.LoadAutonomyReport(history.ArchivedReportPath); err != nil {
+		t.Fatalf("archived report invalid: %v", err)
+	}
+	finding, exists := doctorpkg.CheckCanaryGenerationArchives(
+		rec.Root, current.GenerationDigest,
+	)
+	if !exists || finding.Level != doctorpkg.LevelOK ||
+		!strings.Contains(finding.Message, "archived 1") {
+		t.Fatalf("doctor generation finding=%+v exists=%t", finding, exists)
+	}
+
+	// Recreate the exact crash window after report retirement but before the
+	// supervisor checkpoint was cleared. Recovery must reuse the create-once
+	// archive and finish without republishing or clobbering evidence.
+	archivedState, err := os.ReadFile(history.ArchivedStatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.WriteAtomic(store.StatePath(), archivedState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recovered, retired, err := retireStaleNativeCanaryEvidence(
+		t.Context(), rec.Root, rec.ProjectID, current,
+	)
+	if err != nil || !retired || recovered.Canary != nil {
+		t.Fatalf("crash recovery state=%+v retired=%t err=%v", recovered, retired, err)
 	}
 }
 
@@ -859,7 +923,7 @@ func canaryPromotionFixture(t *testing.T) (*registry.Record, loopsupervisor.Stat
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rec, loopsupervisor.State{
+	state := loopsupervisor.State{
 		ProjectID: rec.ProjectID,
 		Canary: &loopsupervisor.CanaryState{
 			Cohort: cohort, CohortDigest: digest,
@@ -872,6 +936,8 @@ func canaryPromotionFixture(t *testing.T) (*registry.Record, loopsupervisor.Stat
 			BuildIdentity:          "fixture-build",
 			ContractDigest:         "sha256:" + strings.Repeat("b", 64),
 			RegistryIdentityDigest: registryIdentityDigest,
+			AutonomyPolicyDigest:   "sha256:" + strings.Repeat("d", 64),
+			ExecutionPolicyDigest:  "sha256:" + strings.Repeat("e", 64),
 			ReportPath: filepath.Join(
 				rec.Root, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath),
 			),
@@ -881,6 +947,13 @@ func canaryPromotionFixture(t *testing.T) (*registry.Record, loopsupervisor.Stat
 			PublishedAt:       "2026-07-25T20:10:01Z",
 		},
 	}
+	state.Canary.GenerationDigest, err = loopsupervisor.CanaryStateGenerationDigest(
+		rec.ProjectID, state.Canary,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec, state
 }
 
 func mustRegistryIdentityDigest(t *testing.T, rec *registry.Record) string {
@@ -937,7 +1010,12 @@ func TestLoopEngineForwardsImmutableFixedCohortAndRunID(t *testing.T) {
 			if err := opts.OnRunStart("run-live"); err != nil {
 				return engine.Outcome{}, err
 			}
-			return engine.Outcome{Code: engine.ExitOK, RunID: "run-live"}, nil
+			return engine.Outcome{
+				Code: engine.ExitOK, RunID: "run-live",
+				Containment: engine.ContainmentResult{
+					Required: true, Complete: true,
+				},
+			}, nil
 		},
 	}
 	var published string
@@ -961,6 +1039,9 @@ func TestLoopEngineForwardsImmutableFixedCohortAndRunID(t *testing.T) {
 	}
 	if published != "run-live" {
 		t.Fatalf("published run id = %q", published)
+	}
+	if !result.Containment.Required || !result.Containment.Complete {
+		t.Fatalf("containment result was not forwarded: %+v", result.Containment)
 	}
 }
 
@@ -1351,6 +1432,9 @@ func TestResumedNativeCanaryRequiresCleanDescendantCheckout(t *testing.T) {
 			BuildIdentity:          spec.BuildIdentity,
 			ContractDigest:         spec.ContractDigest,
 			RegistryIdentityDigest: spec.RegistryIdentityDigest,
+			AutonomyPolicyDigest:   spec.AutonomyPolicyDigest,
+			ExecutionPolicyDigest:  spec.ExecutionPolicyDigest,
+			GenerationDigest:       spec.GenerationDigest,
 			ReportPath:             spec.ReportPath,
 		},
 	}

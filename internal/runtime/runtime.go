@@ -100,6 +100,11 @@ type Runtime interface {
 	// concrete argv and env, for the caller to exec (or embed in an
 	// inspectable launch.sh, as internal/dispatch/cli.go does today). argv
 	// is the full command line INCLUDING argv[0] (the binary name/path).
+	// A runtime with native final-message capture must require
+	// spec.RuntimeOutputPath == RuntimeFinalOutputPath(spec.PhaseDir) and
+	// target only that run-private path outside PhaseDir. SUMMARY.md is owned
+	// by phase control and authenticated in result.json; writing it during
+	// process exit would invalidate an otherwise completed result.
 	//
 	// env is the COMPLETE child environment — never a fragment layered onto
 	// the caller's own process env, and never the ambient environment plus

@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/koryph/koryph/internal/runtime"
@@ -67,5 +69,95 @@ func TestDispatchInjectedRuntimeUsedForCommand(t *testing.T) {
 	}
 	if !strings.Contains(string(launch), "'stub' 'run' '--session-id' '"+spec.SessionID+"'") {
 		t.Errorf("launch.sh does not embed the stub runtime's own argv shape:\n%s", launch)
+	}
+}
+
+func TestToRuntimeSpecDerivesTrustedRuntimeOutputPath(t *testing.T) {
+	spec := baseSpec(t)
+	got := toRuntimeSpec(spec)
+	want := runtime.RuntimeFinalOutputPath(spec.PhaseDir)
+	if got.RuntimeOutputPath != want {
+		t.Fatalf("RuntimeOutputPath = %q, want %q", got.RuntimeOutputPath, want)
+	}
+	if got.RuntimeOutputPath == filepath.Join(spec.PhaseDir, "SUMMARY.md") {
+		t.Fatalf("runtime output aliases phase summary: %q", got.RuntimeOutputPath)
+	}
+	if pathWithinDispatchRoot(got.RuntimeOutputPath, spec.PhaseDir) ||
+		pathWithinDispatchRoot(got.RuntimeOutputPath, spec.Worktree) {
+		t.Fatalf("runtime output is worker-writable: %q", got.RuntimeOutputPath)
+	}
+}
+
+func TestPrepareRuntimeOutputPathRejectsSymlinks(t *testing.T) {
+	t.Run("output root", func(t *testing.T) {
+		spec := baseSpec(t)
+		if err := os.MkdirAll(spec.PhaseDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		outputRoot := filepath.Join(filepath.Dir(spec.PhaseDir), ".runtime-output")
+		if err := os.Symlink(t.TempDir(), outputRoot); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := prepareRuntimeOutputPath(spec.PhaseDir, spec.Worktree); err == nil ||
+			!strings.Contains(err.Error(), "not a real directory") {
+			t.Fatalf("prepareRuntimeOutputPath accepted symlinked root: %v", err)
+		}
+	})
+
+	t.Run("final target", func(t *testing.T) {
+		spec := baseSpec(t)
+		if err := os.MkdirAll(spec.PhaseDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		outputPath, err := prepareRuntimeOutputPath(spec.PhaseDir, spec.Worktree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(spec.PhaseDir, "SUMMARY.md"), outputPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := prepareRuntimeOutputPath(spec.PhaseDir, spec.Worktree); err == nil ||
+			!strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("prepareRuntimeOutputPath accepted symlinked target: %v", err)
+		}
+	})
+}
+
+func TestPrepareRuntimeOutputPathConcurrentSharedRoot(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	phases := []string{
+		filepath.Join(root, "run", "bead-1"),
+		filepath.Join(root, "run", "bead-2"),
+	}
+	for _, phase := range phases {
+		if err := os.MkdirAll(phase, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, len(phases))
+	var wg sync.WaitGroup
+	for _, phase := range phases {
+		phase := phase
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := prepareRuntimeOutputPath(phase, worktree)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("parallel runtime output preparation failed: %v", err)
+		}
 	}
 }

@@ -209,7 +209,15 @@ func (b CLIBackend) Dispatch(ctx context.Context, s Spec) (Handle, error) {
 	streamPath := filepath.Join(s.PhaseDir, "stream.jsonl")
 	stderrPath := filepath.Join(s.PhaseDir, "stderr.log")
 
-	argv, env, err := rt.Command(toRuntimeSpec(s))
+	runtimeOutputPath, err := prepareRuntimeOutputPath(s.PhaseDir, s.Worktree)
+	if err != nil {
+		return Handle{}, fmt.Errorf("dispatch %s: prepare runtime output: %w", s.PhaseID, err)
+	}
+	runtimeSpec := toRuntimeSpec(s)
+	if runtimeSpec.RuntimeOutputPath != runtimeOutputPath {
+		return Handle{}, fmt.Errorf("dispatch %s: runtime output path derivation drift", s.PhaseID)
+	}
+	argv, env, err := rt.Command(runtimeSpec)
 	if err != nil {
 		return Handle{}, fmt.Errorf("dispatch %s: building claude command: %w", s.PhaseID, err)
 	}
@@ -318,6 +326,63 @@ func sq(v string) string {
 	return "'" + v + "'"
 }
 
+// prepareRuntimeOutputPath creates the runtime-owned output directory outside
+// every worker-writable root. Codex opens the final file after the worker has
+// completed, so every directory component and any pre-existing target must be
+// non-symlinked before launch.
+func prepareRuntimeOutputPath(phaseDir, worktree string) (string, error) {
+	phaseDir = filepath.Clean(phaseDir)
+	worktree = filepath.Clean(worktree)
+	if !filepath.IsAbs(phaseDir) || !filepath.IsAbs(worktree) {
+		return "", errors.New("phase directory and worktree must be absolute")
+	}
+	outputPath := runtime.RuntimeFinalOutputPath(phaseDir)
+	if pathWithinDispatchRoot(outputPath, phaseDir) ||
+		pathWithinDispatchRoot(outputPath, worktree) {
+		return "", fmt.Errorf("runtime output path %q is worker-writable", outputPath)
+	}
+
+	outputRoot := filepath.Dir(filepath.Dir(outputPath))
+	outputPhaseDir := filepath.Dir(outputPath)
+	for _, dir := range []string{outputRoot, outputPhaseDir} {
+		info, err := os.Lstat(dir)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			if err := os.Mkdir(dir, 0o700); err != nil &&
+				!errors.Is(err, os.ErrExist) {
+				return "", fmt.Errorf("create private directory %q: %w", dir, err)
+			}
+			info, err = os.Lstat(dir)
+			if err != nil {
+				return "", fmt.Errorf("verify private directory %q: %w", dir, err)
+			}
+		case err != nil:
+			return "", fmt.Errorf("inspect private directory %q: %w", dir, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("private runtime output component %q is not a real directory", dir)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return "", fmt.Errorf("secure private directory %q: %w", dir, err)
+		}
+	}
+
+	if info, err := os.Lstat(outputPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("runtime output target %q is not a regular file", outputPath)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect runtime output target %q: %w", outputPath, err)
+	}
+	return outputPath, nil
+}
+
+func pathWithinDispatchRoot(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // toRuntimeProfile mirrors account.Profile -> runtime.Profile field-for-field
 // (see runtime.Profile's doc) — the same conversion the claude adapter
 // performs internally, done here so Dispatch's identity check goes through
@@ -334,33 +399,34 @@ func toRuntimeProfile(p account.Profile) runtime.Profile {
 // Dispatch's own former argv construction.
 func toRuntimeSpec(s Spec) runtime.DispatchSpec {
 	return runtime.DispatchSpec{
-		ProjectID:        s.ProjectID,
-		RepoRoot:         s.RepoRoot,
-		RunID:            s.RunID,
-		PhaseID:          s.PhaseID,
-		PhaseDir:         s.PhaseDir,
-		Worktree:         s.Worktree,
-		Branch:           s.Branch,
-		Persona:          s.Persona,
-		Model:            s.Model,
-		Effort:           s.Effort,
-		Profile:          runtime.Profile{Name: s.Profile.Name, ConfigDir: s.Profile.ConfigDir},
-		ExpectedIdentity: s.ExpectedIdentity,
-		Billing:          runtime.BillingMode(s.Billing),
-		APIKey:           s.APIKey,
-		Credential:       s.Credential,
-		CredentialEnvVar: s.CredentialEnvVar,
-		MaxBudgetUSD:     s.MaxBudgetUSD,
-		Prompt:           s.Prompt,
-		SessionID:        s.SessionID,
-		SessionName:      s.SessionName,
-		ResumeSessionID:  s.ResumeSessionID,
-		BeadsDir:         s.BeadsDir,
-		Attempt:          s.Attempt,
-		SSHAuthSock:      s.SSHAuthSock,
-		EnvPassthrough:   s.EnvPassthrough,
-		ProxyBaseURL:     s.ProxyBaseURL,
-		StrictMCP:        s.StrictMCP,
+		ProjectID:         s.ProjectID,
+		RepoRoot:          s.RepoRoot,
+		RunID:             s.RunID,
+		PhaseID:           s.PhaseID,
+		PhaseDir:          s.PhaseDir,
+		RuntimeOutputPath: runtime.RuntimeFinalOutputPath(s.PhaseDir),
+		Worktree:          s.Worktree,
+		Branch:            s.Branch,
+		Persona:           s.Persona,
+		Model:             s.Model,
+		Effort:            s.Effort,
+		Profile:           runtime.Profile{Name: s.Profile.Name, ConfigDir: s.Profile.ConfigDir},
+		ExpectedIdentity:  s.ExpectedIdentity,
+		Billing:           runtime.BillingMode(s.Billing),
+		APIKey:            s.APIKey,
+		Credential:        s.Credential,
+		CredentialEnvVar:  s.CredentialEnvVar,
+		MaxBudgetUSD:      s.MaxBudgetUSD,
+		Prompt:            s.Prompt,
+		SessionID:         s.SessionID,
+		SessionName:       s.SessionName,
+		ResumeSessionID:   s.ResumeSessionID,
+		BeadsDir:          s.BeadsDir,
+		Attempt:           s.Attempt,
+		SSHAuthSock:       s.SSHAuthSock,
+		EnvPassthrough:    s.EnvPassthrough,
+		ProxyBaseURL:      s.ProxyBaseURL,
+		StrictMCP:         s.StrictMCP,
 	}
 }
 
@@ -516,6 +582,16 @@ func CountTurns(streamPath string) int {
 // package-local name for existing callers; delegates to procx.Alive.
 func Alive(pid int) bool { return procx.Alive(pid) }
 
+// ProcessGroupAlive reports whether the detached session led by pid still has
+// any member. A dead leader is not proof that its subprocesses are gone.
+func ProcessGroupAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(-pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
 // StopGraceful sends SIGTERM to the process group of pid (agents are
 // launched with Setsid, so -pid targets the whole session), falling back
 // to the single pid. It never sends SIGKILL.
@@ -559,9 +635,56 @@ func StopForceAndReap(pid int) error {
 		return fmt.Errorf("stop and reap: invalid pid %d", pid)
 	}
 	stopErr := StopForce(pid)
-	deadline := time.Now().Add(3 * time.Second)
+	if waitProcessGroupGone(pid, 3*time.Second) {
+		return nil
+	}
+	if stopErr != nil {
+		return fmt.Errorf("stop process group %d: %w", pid, stopErr)
+	}
+	return fmt.Errorf("process group %d still present after SIGKILL", pid)
+}
+
+// StopGracefulThenForceAndReap contains a detached worker process group.
+// It first gives the runtime a bounded checkpoint window after SIGTERM, then
+// escalates to SIGKILL and does not return success until the leader has been
+// reaped (when it is our child) and the complete process group is gone.
+//
+// PID authentication deliberately remains the caller's responsibility:
+// callers must compare a durable process-start identity immediately before
+// invoking this primitive. Keeping identity policy above the signal mechanism
+// lets engine recovery fail closed on a missing or recycled identity while
+// retaining this package's narrow process-lifecycle contract.
+func StopGracefulThenForceAndReap(pid int, grace time.Duration) error {
+	if pid <= 0 {
+		return fmt.Errorf("graceful stop and reap: invalid pid %d", pid)
+	}
+	if grace < 0 {
+		return fmt.Errorf("graceful stop and reap: invalid grace %s", grace)
+	}
+	termErr := StopGraceful(pid)
+	if waitProcessGroupGone(pid, grace) {
+		return nil
+	}
+	killErr := StopForce(pid)
+	if waitProcessGroupGone(pid, 3*time.Second) {
+		return nil
+	}
+	switch {
+	case termErr != nil && killErr != nil:
+		return fmt.Errorf("stop process group %d: SIGTERM: %v; SIGKILL: %w", pid, termErr, killErr)
+	case killErr != nil:
+		return fmt.Errorf("stop process group %d with SIGKILL: %w", pid, killErr)
+	case termErr != nil:
+		return fmt.Errorf("process group %d still present after SIGKILL (initial SIGTERM: %v)", pid, termErr)
+	default:
+		return fmt.Errorf("process group %d still present after SIGKILL", pid)
+	}
+}
+
+func waitProcessGroupGone(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
 	leaderGone := false
-	for time.Now().Before(deadline) {
+	for {
 		var ws syscall.WaitStatus
 		wpid, waitErr := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
 		switch {
@@ -573,12 +696,11 @@ func StopForceAndReap(pid int) error {
 		groupErr := syscall.Kill(-pid, 0)
 		groupGone := errors.Is(groupErr, syscall.ESRCH)
 		if leaderGone && groupGone {
-			return nil
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if stopErr != nil {
-		return fmt.Errorf("stop process group %d: %w", pid, stopErr)
-	}
-	return fmt.Errorf("process group %d still present after SIGKILL", pid)
 }

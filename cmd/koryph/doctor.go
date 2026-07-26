@@ -124,6 +124,15 @@ func appendAutonomyDoctorFinding(report *doctor.Report, requested bool) {
 		return
 	}
 	canary := state.Canary
+	currentGeneration := ""
+	if canary != nil {
+		currentGeneration = canary.GenerationDigest
+	}
+	if finding, exists := doctor.CheckCanaryGenerationArchives(
+		report.Home, currentGeneration,
+	); exists {
+		report.Findings = append(report.Findings, finding)
+	}
 	if canary == nil {
 		marker, exists, markerErr := loadNativeCanaryPromotionMarker(report.Home)
 		if markerErr != nil {

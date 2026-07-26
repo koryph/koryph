@@ -64,6 +64,46 @@ func WriteAtomic(path string, data []byte, perm os.FileMode) error {
 	return fsyncDir(dir)
 }
 
+// WriteAtomicNoClobber atomically creates path without replacing any existing
+// directory entry. The bytes and mode are synced before a same-directory hard
+// link publishes them, and the parent directory is synced after publication.
+// A caller that observes fs.ErrExist must authenticate the existing file
+// rather than assuming a prior operation wrote equivalent bytes.
+func WriteAtomicNoClobber(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, path); err != nil {
+		return err
+	}
+	if err := os.Remove(tmpName); err != nil {
+		return err
+	}
+	return fsyncDir(dir)
+}
+
 // fsyncDir opens dir and fsyncs it, making a prior rename/create/remove in
 // that directory durable across a crash. Opening the directory should never
 // fail immediately after a successful rename into it, but if it does (e.g. a
@@ -102,6 +142,16 @@ func WriteJSONAtomicPerm(path string, v any, perm os.FileMode) error {
 		return err
 	}
 	return WriteAtomic(path, append(data, '\n'), perm)
+}
+
+// WriteJSONAtomicNoClobberPerm is the create-once counterpart of
+// WriteJSONAtomicPerm.
+func WriteJSONAtomicNoClobberPerm(path string, v any, perm os.FileMode) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return WriteAtomicNoClobber(path, append(data, '\n'), perm)
 }
 
 // ReadJSON unmarshals the JSON file at path into v.

@@ -26,12 +26,18 @@ import (
 	"github.com/koryph/koryph/internal/runtime/runtimetest"
 )
 
+func canonicalDispatchSpec(spec runtime.DispatchSpec) runtime.DispatchSpec {
+	spec.RuntimeOutputPath = runtime.RuntimeFinalOutputPath(spec.PhaseDir)
+	return spec
+}
+
 func TestCodexConformsToSharedRuntimeContract(t *testing.T) {
 	runtimetest.AssertConforms(t, Codex{Bin: "codex"}, runtimetest.ConformanceFixture{
 		Dispatch: runtime.DispatchSpec{
 			RepoRoot: "/repo", PhaseDir: "/phase", Model: "gpt-5.6-terra", Effort: "high",
-			Profile:     runtime.Profile{ConfigDir: "/profiles/work"},
-			SSHAuthSock: "/run/koryph-signing/signing.sock",
+			RuntimeOutputPath: "/.runtime-output/phase/runtime-final.md",
+			Profile:           runtime.Profile{ConfigDir: "/profiles/work"},
+			SSHAuthSock:       "/run/koryph-signing/signing.sock",
 		},
 		JSON: runtime.JSONSpec{
 			RepoRoot: "/repo", Model: "gpt-5.6-terra", Effort: "high",
@@ -43,11 +49,11 @@ func TestCodexConformsToSharedRuntimeContract(t *testing.T) {
 }
 
 func TestCommandRendersSafeCodexExec(t *testing.T) {
-	argv, _, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+	argv, _, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 		RepoRoot: "/repo", PhaseDir: "/phase", Model: "gpt-5.6-terra", Effort: "high",
 		Profile: runtime.Profile{ConfigDir: "/profiles/work"}, Billing: runtime.BillingSubscription,
 		SSHAuthSock: "/run/koryph-signing/signing.sock",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,10 +67,45 @@ func TestCommandRendersSafeCodexExec(t *testing.T) {
 		"-c", unixSocketRule(append([]string{"/run/koryph-signing/signing.sock"}, testAgentSockets("/phase")...)...),
 		"--dangerously-bypass-hook-trust", "--add-dir", "/phase", "--add-dir", "/repo/.git",
 		"--model", "gpt-5.6-terra", "-c", `model_reasoning_effort="high"`,
-		"--output-last-message", "/phase/SUMMARY.md",
+		"--output-last-message", "/.runtime-output/phase/runtime-final.md",
 	}
 	if !reflect.DeepEqual(argv, want) {
 		t.Errorf("argv = %q\nwant = %q", argv, want)
+	}
+	if strings.Contains(strings.Join(argv, "\x00"), filepath.Join("/phase", "SUMMARY.md")) {
+		t.Fatalf("argv targets phase-owned SUMMARY.md: %q", argv)
+	}
+}
+
+func TestCommandRejectsMissingOrNoncanonicalRuntimeOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "missing"},
+		{name: "phase summary", path: "/phase/SUMMARY.md"},
+		{name: "legacy phase-local output", path: "/phase/runtime-final.md"},
+		{name: "other phase", path: "/other/runtime-final.md"},
+		{name: "relative", path: "runtime-final.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			phase := t.TempDir()
+			path := tc.path
+			if strings.HasPrefix(path, "/phase/") {
+				path = filepath.Join(phase, filepath.Base(path))
+			}
+			_, _, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+				PhaseDir: phase, RuntimeOutputPath: path,
+			})
+			if err == nil || (!strings.Contains(err.Error(), "required") &&
+				!strings.Contains(err.Error(), "noncanonical") &&
+				!strings.Contains(err.Error(), "absolute")) {
+				t.Fatalf("Command error = %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(phase, "go-tmp")); !os.IsNotExist(statErr) {
+				t.Fatalf("Command created phase scratch before path refusal: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -124,9 +165,9 @@ func TestSigningFilesystemRuleKeepsWritesScopedAndToolchainsReadable(t *testing.
 }
 
 func TestCommandWithoutSigningKeepsWorkspaceWriteSandbox(t *testing.T) {
-	argv, _, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+	argv, _, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 		RepoRoot: "/repo", PhaseDir: "/phase",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,9 +181,9 @@ func TestCommandWithoutSigningKeepsWorkspaceWriteSandbox(t *testing.T) {
 }
 
 func TestCommandSigningCachesAreNarrowlyScoped(t *testing.T) {
-	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+	_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 		RepoRoot: "/repo", PhaseDir: "/phase", SSHAuthSock: "/signing/socket",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,9 +223,9 @@ func TestSigningSocketRuleKeepsProductionAndTestSocketsExact(t *testing.T) {
 
 func TestCommandKeepsTestSocketsShortForDeepPhaseDir(t *testing.T) {
 	phaseDir := "/private/tmp/" + strings.Repeat("deep-phase/", 16)
-	argv, _, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+	argv, _, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 		RepoRoot: "/repo", PhaseDir: phaseDir, SSHAuthSock: "/run/koryph-signing/signing.sock",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +253,7 @@ func TestCommandKeepsTestSocketsShortForDeepPhaseDir(t *testing.T) {
 }
 
 func TestCommandWithoutSigningKeepsNonModuleCachesPhaseLocal(t *testing.T) {
-	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{RepoRoot: "/repo", PhaseDir: "/phase"})
+	_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{RepoRoot: "/repo", PhaseDir: "/phase"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,10 +282,10 @@ func TestCommandSharesProjectGoCachesAcrossPhases(t *testing.T) {
 
 	envFor := func(repo, phase string) map[string]string {
 		t.Helper()
-		_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+		_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 			RepoRoot: repo,
 			PhaseDir: phase,
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -368,11 +409,11 @@ func TestProjectGoCacheRejectsRedirectedBuildLeaf(t *testing.T) {
 func TestCommandBuildCacheUsesEffectiveDispatchedTarget(t *testing.T) {
 	t.Setenv("GOOS", "linux")
 	t.Setenv("GOARCH", "amd64")
-	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+	_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 		RepoRoot:       "/repo",
 		PhaseDir:       "/phase",
 		EnvPassthrough: []string{"GOOS", "GOARCH"},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,10 +438,10 @@ func TestCommandBuildCacheUsesDispatchedToolchainNotKoryphBuild(t *testing.T) {
 	}
 	t.Cleanup(func() { resolveDispatchedGoVersion = previous })
 
-	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{
+	_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 		RepoRoot: repo,
 		PhaseDir: phase,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +483,7 @@ func TestPhaseScratchRejectsRedirectedTempLeaf(t *testing.T) {
 }
 
 func TestCommandWithoutRepoRootKeepsModuleCachePhaseLocal(t *testing.T) {
-	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{PhaseDir: "/phase"})
+	_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{PhaseDir: "/phase"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +508,7 @@ func TestCommandInstallsPolicyFreeBinaryForwardingShims(t *testing.T) {
 	t.Setenv("KORYPH_COMMAND_EVENTS", filepath.Join(t.TempDir(), "outside-events"))
 	t.Setenv("KORYPH_COMMAND_GUARD_DIR", t.TempDir())
 
-	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{PhaseDir: phaseDir})
+	_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{PhaseDir: phaseDir}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +577,7 @@ func TestCodexAdapterCommandShimUsesBinarySingleFlight(t *testing.T) {
 	commandGuardExecutable = func() (string, error) { return guardBin, nil }
 	t.Cleanup(func() { commandGuardExecutable = previous })
 	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
-	_, env, err := (Codex{Bin: "codex"}).Command(runtime.DispatchSpec{PhaseDir: phaseDir})
+	_, env, err := (Codex{Bin: "codex"}).Command(canonicalDispatchSpec(runtime.DispatchSpec{PhaseDir: phaseDir}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,9 +698,9 @@ func TestRealCodexSingleFlightCanary(t *testing.T) {
 	t.Cleanup(func() { commandGuardExecutable = previous })
 	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
 	model := runtime.CodexModelMap[runtime.TierStandard]
-	argv, env, err := (Codex{Bin: codexBin}).Command(runtime.DispatchSpec{
+	argv, env, err := (Codex{Bin: codexBin}).Command(canonicalDispatchSpec(runtime.DispatchSpec{
 		RepoRoot: worktree, PhaseDir: phaseDir, Model: model, Effort: "medium",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

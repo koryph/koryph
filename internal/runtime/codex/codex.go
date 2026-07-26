@@ -151,6 +151,25 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	if spec.MaxBudgetUSD > 0 {
 		return nil, nil, fmt.Errorf("codex: MaxBudgetUSD is unsupported")
 	}
+	wantRuntimeOutput := runtime.RuntimeFinalOutputPath(spec.PhaseDir)
+	switch {
+	case !filepath.IsAbs(spec.PhaseDir):
+		return nil, nil, fmt.Errorf("codex: phase directory must be absolute")
+	case strings.TrimSpace(spec.RuntimeOutputPath) == "":
+		return nil, nil, fmt.Errorf("codex: runtime output path is required")
+	case !filepath.IsAbs(spec.RuntimeOutputPath):
+		return nil, nil, fmt.Errorf("codex: runtime output path must be absolute")
+	case spec.RuntimeOutputPath != wantRuntimeOutput:
+		return nil, nil, fmt.Errorf(
+			"codex: runtime output path %q is noncanonical; want %q",
+			spec.RuntimeOutputPath, wantRuntimeOutput,
+		)
+	case codexPathWithin(spec.RuntimeOutputPath, spec.PhaseDir):
+		return nil, nil, fmt.Errorf("codex: runtime output path is inside worker-writable phase directory")
+	case strings.TrimSpace(spec.Worktree) != "" &&
+		codexPathWithin(spec.RuntimeOutputPath, spec.Worktree):
+		return nil, nil, fmt.Errorf("codex: runtime output path is inside worker-writable worktree")
+	}
 	// koryph owns the hook source and installs it outside the dispatched
 	// worktree. Headless runs cannot complete Codex's interactive hook-trust
 	// review, so permit these already-vetted hooks without weakening sandbox or
@@ -182,7 +201,11 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 	if spec.Effort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+tomlString(spec.Effort))
 	}
-	args = append(args, "--output-last-message", filepath.Join(spec.PhaseDir, "SUMMARY.md"))
+	// Codex writes --output-last-message only as `codex exec` exits. SUMMARY.md
+	// may already have been authenticated by `koryph phase complete` at that
+	// point, so native final-message capture must use its separate,
+	// runtime-owned artifact.
+	args = append(args, "--output-last-message", spec.RuntimeOutputPath)
 	env := c.childEnv(spec.Profile, spec.Billing, spec.APIKey, spec.CredentialEnvVar, spec.Credential, spec.SSHAuthSock, spec.EnvPassthrough)
 	if err := ensurePhaseTempDir(spec.PhaseDir); err != nil {
 		return nil, nil, fmt.Errorf("codex: prepare phase compiler temp: %w", err)
@@ -203,6 +226,12 @@ func (c Codex) Command(spec runtime.DispatchSpec) ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("codex: install phase command guard: %w", err)
 	}
 	return append([]string{c.bin()}, args...), env, nil
+}
+
+func codexPathWithin(path, root string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	return err == nil && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (c Codex) CommandJSON(spec runtime.JSONSpec) ([]string, []string, error) {

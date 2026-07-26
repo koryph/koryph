@@ -5,6 +5,7 @@ package runtimetest
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,6 +42,11 @@ func AssertConforms(t testing.TB, rt runtime.Runtime, f ConformanceFixture) {
 	if (f.Dispatch.SSHAuthSock != "" || f.JSON.SSHAuthSock != "") && !caps.ScopedSigningSocket {
 		t.Error("fixture requests scoped signing but runtime does not advertise ScopedSigningSocket")
 	}
+	wantRuntimeOutput := runtime.RuntimeFinalOutputPath(f.Dispatch.PhaseDir)
+	if f.Dispatch.RuntimeOutputPath != wantRuntimeOutput {
+		t.Fatalf("Dispatch.RuntimeOutputPath = %q, want canonical %q",
+			f.Dispatch.RuntimeOutputPath, wantRuntimeOutput)
+	}
 
 	argv, env, err := rt.Command(f.Dispatch)
 	if err != nil {
@@ -48,6 +54,17 @@ func AssertConforms(t testing.TB, rt runtime.Runtime, f ConformanceFixture) {
 	}
 	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
 		t.Errorf("Command argv = %q, want executable", argv)
+	}
+	// SUMMARY.md is authenticated phase-control evidence. A provider wrapper
+	// may capture its own final response, but never into that path; otherwise
+	// process-exit ordering can invalidate a result that phase completion
+	// already accepted.
+	summaryPath := filepath.Join(f.Dispatch.PhaseDir, "SUMMARY.md")
+	for _, arg := range argv {
+		if arg == summaryPath {
+			t.Errorf("Command argv targets phase-owned summary %q; use %q for runtime output",
+				summaryPath, f.Dispatch.RuntimeOutputPath)
+		}
 	}
 	if env == nil {
 		t.Error("Command env is nil; adapters must return an explicit child environment")

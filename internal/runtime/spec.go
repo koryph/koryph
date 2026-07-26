@@ -3,6 +3,35 @@
 
 package runtime
 
+import "path/filepath"
+
+const (
+	// RuntimeFinalOutputFileName is the phase-local artifact owned by the
+	// runtime process for its final human-readable response. It is deliberately
+	// distinct from SUMMARY.md: the phase-completion command owns SUMMARY.md
+	// and authenticates its digest in result.json before the runtime exits.
+	//
+	// Adapters that support native final-message capture (for example Codex's
+	// --output-last-message) must write only this artifact. They must never use
+	// SUMMARY.md as a native output target.
+	RuntimeFinalOutputFileName = "runtime-final.md"
+)
+
+// RuntimeFinalOutputPath returns the one canonical runtime-owned final-output
+// path for a phase. The private sibling is deliberately outside PhaseDir:
+// workers must write authenticated phase evidence there, so placing native
+// runtime output inside it would let a worker substitute a symlink before the
+// runtime's process-exit writer opens the target.
+func RuntimeFinalOutputPath(phaseDir string) string {
+	phaseDir = filepath.Clean(phaseDir)
+	return filepath.Join(
+		filepath.Dir(phaseDir),
+		".runtime-output",
+		filepath.Base(phaseDir),
+		RuntimeFinalOutputFileName,
+	)
+}
+
 // DispatchSpec fully describes one runtime-neutral dispatch request. It is a
 // deliberate field-for-field mirror of internal/dispatch.Spec, minus the
 // fields that package derives/hardcodes rather than reads (see the package
@@ -19,9 +48,17 @@ type DispatchSpec struct {
 	RepoRoot  string
 	RunID     string
 	PhaseID   string // bead id
-	PhaseDir  string // <run>/<phase>/
-	Worktree  string
-	Branch    string
+	// PhaseDir contains phase-control-owned SUMMARY.md. Runtime adapters must
+	// never write it; their final output lives in the private sibling named by
+	// RuntimeOutputPath.
+	PhaseDir string // <run>/<phase>/
+	// RuntimeOutputPath is the trusted dispatcher-derived path for the
+	// runtime's final human-readable response. Dispatchers must set it to
+	// RuntimeFinalOutputPath(PhaseDir); adapters that write native final output
+	// must fail closed when it is empty or noncanonical.
+	RuntimeOutputPath string
+	Worktree          string
+	Branch            string
 
 	// Persona is gated by Capabilities.Personas.
 	Persona string

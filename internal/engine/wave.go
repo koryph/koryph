@@ -1288,6 +1288,10 @@ func mergeStringMaps(base, overlay map[string]string) map[string]string {
 // Failures block the slot and never fall through.
 func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 	beadID := q.issue.ID
+	if r.safetyTripwireFired {
+		r.progress("bead %s: native-canary admission closed by safety tripwire", beadID)
+		return
+	}
 	if !r.idAllowed(beadID) {
 		note := fmt.Sprintf("fixed cohort refused dispatch of bead %s outside AllowedIDs", beadID)
 		r.dispatchCircuitReason = note
@@ -1667,7 +1671,12 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 
 	// The numeric PID alone is insufficient across a later engine resume: it
 	// may already belong to an unrelated process after PID reuse.
-	processIdentity := r.captureStableProcessIdentity(ctx, handle.PID)
+	// A native-canary tripwire may cancel the run between process creation and
+	// handle attachment. Still authenticate and durably attach that just-
+	// launched worker so the cancellation path can contain it; using the
+	// already-cancelled context here would erase its process identity and turn
+	// a safe stop into a manual identity hold.
+	processIdentity := r.captureStableProcessIdentity(context.WithoutCancel(ctx), handle.PID)
 
 	runningSlot := *prelaunchSlot
 	runningSlot.VerifiedIdentity = handle.VerifiedIdentity

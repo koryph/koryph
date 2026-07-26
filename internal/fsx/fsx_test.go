@@ -56,6 +56,23 @@ func TestWriteAtomic_CreatesParentDir(t *testing.T) {
 	}
 }
 
+func TestWriteAtomicNoClobberPreservesExistingBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.json")
+	if err := fsx.WriteAtomicNoClobber(path, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.WriteAtomicNoClobber(path, []byte("second"), 0o600); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second create error = %v, want exists", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first" {
+		t.Fatalf("existing bytes changed to %q", got)
+	}
+}
+
 func TestRemoveDurableRemovesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "retired")
 	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {

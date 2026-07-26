@@ -225,7 +225,7 @@ it is. Three stores plus the worktrees, with no overlap:
 | Layer | Owns | Lifetime / sync |
 |---|---|---|
 | `~/.koryph/` | Project registry (`registry.d/<id>.json`), account map, per-account quota calibration, cross-project run index, `audit.jsonl` | Itself a git repo — every mutation is an atomic write + audit append + commit, reversible |
-| `<project>/.plan-logs/` | Run ledgers, checkpoint manifests (`koryph/<run>/<bead>/manifest.json`), per-dispatch `status.json` / `SUMMARY.md` / `session.log` | Repo-local; records *where things stand*, but the durable checkpoint is the worktree commit, not the manifest |
+| `<project>/.plan-logs/` | Run ledgers, checkpoint manifests (`koryph/<run>/<bead>/manifest.json`), per-dispatch `status.json` / `SUMMARY.md` / `session.log`, and private `.runtime-output/<bead>/runtime-final.md` | Repo-local; `SUMMARY.md` is authenticated phase evidence while the sibling `runtime-final.md` is runtime-owned and outside worker-writable roots; the durable checkpoint is the worktree commit, not the manifest |
 | `<project>/.beads/` | Task/plan state, dependency graph, `koryph-plan` blocks, merge/model/risk labels | Project-local Dolt DB; syncs cross-machine via its own Dolt remote — never through worktree git merges |
 | `<project>` worktrees | In-flight agent work (committed + uncommitted) | Ephemeral; only as durable as its last commit; never removed while dirty without approval |
 

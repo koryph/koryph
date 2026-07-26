@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/koryph/koryph/internal/plan"
+	"github.com/koryph/koryph/internal/runtime"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,7 +35,7 @@ func resultFixture(t *testing.T) (CompleteOptions, string) {
 	runGitResult(t, root, "add", "work.txt")
 	runGitResult(t, root, "commit", "-m", "feat: work")
 
-	phaseDir := t.TempDir()
+	phaseDir := filepath.Join(t.TempDir(), "bead-1")
 	if err := os.MkdirAll(phaseDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +92,73 @@ func TestCompleteWritesSHAAndGenerationBoundResult(t *testing.T) {
 		ExpectedCriteria: resultCriteria,
 	}); err != nil {
 		t.Fatalf("ValidateResult: %v", err)
+	}
+}
+
+// TestRuntimeFinalOutputAfterPhaseCompletePreservesAuthenticatedSummary
+// reproduces the ordering that triggered the native autonomy hard stop:
+// `koryph phase complete` authenticates SUMMARY.md first, then the provider
+// wrapper writes its native final response while exiting. The two writes must
+// have non-overlapping ownership, and post-exit validation must remain strict.
+func TestRuntimeFinalOutputAfterPhaseCompletePreservesAuthenticatedSummary(t *testing.T) {
+	opts, _ := resultFixture(t)
+	runtimeOutput := runtime.RuntimeFinalOutputPath(opts.PhaseDir)
+	if filepath.Clean(runtimeOutput) == filepath.Clean(opts.SummaryPath) {
+		t.Fatalf("runtime output aliases authenticated summary: %s", runtimeOutput)
+	}
+	if err := os.MkdirAll(filepath.Dir(runtimeOutput), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start a real provider-wrapper process before phase completion. It stays
+	// alive until Complete publishes result.json, then models Codex's
+	// --output-last-message write during process teardown and exits.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wrapper := exec.CommandContext(ctx, "/bin/sh", "-c", `
+while [ ! -f "$1" ]; do
+	sleep 0.01
+done
+printf 'provider-owned final response\n' > "$2"
+`, "runtime-wrapper", ResultPath(opts.PhaseDir), runtimeOutput)
+	if err := wrapper.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Complete(context.Background(), opts)
+	if err != nil {
+		_ = wrapper.Process.Kill()
+		_ = wrapper.Wait()
+		t.Fatal(err)
+	}
+	summaryBefore, err := os.ReadFile(result.SummaryPath)
+	if err != nil {
+		_ = wrapper.Process.Kill()
+		_ = wrapper.Wait()
+		t.Fatal(err)
+	}
+	if err := wrapper.Wait(); err != nil {
+		t.Fatalf("runtime wrapper exit: %v", err)
+	}
+	runtimeFinal, err := os.ReadFile(runtimeOutput)
+	if err != nil || string(runtimeFinal) != "provider-owned final response\n" {
+		t.Fatalf("runtime final output = %q, %v", runtimeFinal, err)
+	}
+
+	summaryAfter, err := os.ReadFile(result.SummaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(summaryAfter, summaryBefore) {
+		t.Fatalf("runtime final output changed SUMMARY.md: before %q after %q",
+			summaryBefore, summaryAfter)
+	}
+	if err := ValidateResult(result, ValidationContext{
+		PhaseDir: opts.PhaseDir, Worktree: opts.Worktree, Dispatch: opts.Dispatch,
+		CandidateSHA: result.CandidateSHA, CommitCount: result.CommitCount, WorktreeClean: true,
+		ExpectedCriteria: resultCriteria,
+	}); err != nil {
+		t.Fatalf("post-runtime-exit ValidateResult: %v", err)
 	}
 }
 

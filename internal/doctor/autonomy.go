@@ -10,7 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/koryph/koryph/internal/fsx"
+	loopsupervisor "github.com/koryph/koryph/internal/loop"
 	"github.com/koryph/koryph/internal/metrics"
+	"github.com/koryph/koryph/internal/strictjson"
 )
 
 const checkNameAutonomyCanary = "autonomy-canary"
@@ -19,6 +22,67 @@ const checkNameAutonomyCanary = "autonomy-canary"
 // project root.
 func AutonomyReportPath(repoRoot string) string {
 	return filepath.Join(repoRoot, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath))
+}
+
+// CheckCanaryGenerationArchives authenticates create-once rollover manifests
+// and reports the current versus retained generation count. The bool is false
+// when the project has no archived generations.
+func CheckCanaryGenerationArchives(repoRoot, currentGeneration string) (Finding, bool) {
+	loopRoot := loopsupervisor.NewStore(repoRoot).Root
+	files, err := filepath.Glob(filepath.Join(loopRoot, "canary-history", "*.json"))
+	if err != nil || len(files) == 0 {
+		return Finding{}, false
+	}
+	for _, path := range files {
+		read, readErr := fsx.ReadRegularConfined(path, 16<<20, loopRoot)
+		if readErr != nil {
+			return Finding{
+				Check: checkNameAutonomyCanary, Level: LevelError,
+				Message: "autonomy canary generation archive is unreadable: " + readErr.Error(),
+			}, true
+		}
+		var archive loopsupervisor.CanaryGenerationArchive
+		if decodeErr := strictjson.Decode(read.Data, &archive); decodeErr != nil ||
+			archive.SchemaVersion != loopsupervisor.CanaryGenerationArchiveVersion ||
+			archive.ProjectID == "" ||
+			archive.PreviousGenerationDigest == "" ||
+			archive.CurrentGenerationDigest == "" {
+			return Finding{
+				Check: checkNameAutonomyCanary, Level: LevelError,
+				Message: "autonomy canary generation archive manifest is invalid: " + path,
+			}, true
+		}
+		for _, artifact := range []struct {
+			path, digest string
+		}{
+			{archive.ArchivedStatePath, archive.ArchivedStateDigest},
+			{archive.ArchivedReportPath, archive.ArchivedReportDigest},
+		} {
+			artifactRead, artifactErr := fsx.ReadRegularConfined(
+				artifact.path, 64<<20, repoRoot,
+			)
+			if artifactErr != nil || "sha256:"+artifactRead.Digest != artifact.digest {
+				return Finding{
+					Check: checkNameAutonomyCanary, Level: LevelError,
+					Message: "autonomy canary generation archive artifact is invalid: " + artifact.path,
+				}, true
+			}
+		}
+	}
+	current := strings.TrimPrefix(currentGeneration, "sha256:")
+	if len(current) > 12 {
+		current = current[:12]
+	}
+	if current == "" {
+		current = "none"
+	}
+	return Finding{
+		Check: checkNameAutonomyCanary, Level: LevelOK,
+		Message: fmt.Sprintf(
+			"autonomy canary generations: current %s, archived %d",
+			current, len(files),
+		),
+	}, true
 }
 
 // CheckAutonomyReport fails closed when the caller omits the one complete live

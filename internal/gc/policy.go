@@ -100,7 +100,7 @@ func durableEvidencePath(rel string) bool {
 	}
 	base := filepath.Base(rel)
 	switch base {
-	case "ledger.json", "manifest.json", "result.json", "SUMMARY.md",
+	case "ledger.json", "manifest.json", "result.json", "SUMMARY.md", "runtime-final.md",
 		"review.json", "review-envelope.json", "review-degraded.json",
 		"events.jsonl", "pressure-state.json",
 		"supervisor.json", "alerts.jsonl":

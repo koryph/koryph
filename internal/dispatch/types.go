@@ -53,6 +53,11 @@
 //	KORYPH_RUN_ID, KORYPH_PHASE_ID, KORYPH_DIR, KORYPH_PHASE_DIR,
 //	KORYPH_LOG_PATH, KORYPH_STATUS_PATH, KORYPH_SUMMARY_PATH,
 //	KORYPH_SESSION_ID.
+//
+// SUMMARY.md is phase-control-owned authenticated evidence.
+// The distinct runtime-final.md response is supplied only to the selected
+// runtime adapter through runtime.DispatchSpec; it is not exported as a
+// worker-owned environment variable.
 package dispatch
 
 import (

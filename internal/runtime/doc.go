@@ -33,6 +33,7 @@
 //	RunID                   RunID                        verbatim
 //	PhaseID                 PhaseID                      verbatim
 //	PhaseDir                PhaseDir                      verbatim
+//	(derived)               RuntimeOutputPath             RuntimeFinalOutputPath(PhaseDir)
 //	Worktree                Worktree                     verbatim
 //	Branch                  Branch                       verbatim
 //	Persona                 Persona                      gated by Capabilities.Personas
@@ -59,6 +60,20 @@
 // stream-json, --fallback-model sonnet, --add-dir <phaseDir>) — those become
 // each Runtime.Command implementation's own business, not part of the
 // runtime-neutral request.
+//
+// # Terminal artifact ownership
+//
+// The worker and phase-completion command own SUMMARY.md. Completion snapshots
+// its digest into result.json, and the engine validates that digest after the
+// runtime process exits. A runtime's native final-response capture is a
+// different artifact with different timing: the dispatcher sets
+// RuntimeOutputPath to RuntimeFinalOutputPath(PhaseDir), whose canonical name
+// is runtime-final.md under a run-private sibling outside the worker-writable
+// phase directory. Adapters that capture a final response must reject a
+// missing or noncanonical path. This keeps a provider wrapper that writes its
+// final response during process teardown from mutating authenticated phase
+// evidence. Runtimes without native final-response capture simply leave
+// runtime-final.md absent.
 //
 // # Normalized event envelope
 //

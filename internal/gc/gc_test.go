@@ -418,7 +418,7 @@ func TestGCPrunesOnlyRecognizedCachesFromTerminalRuns(t *testing.T) {
 	if err := os.MkdirAll(unknownDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"ledger.json", "manifest.json", "status.json", "stream.jsonl", "session.log", "SUMMARY.md"} {
+	for _, name := range []string{"ledger.json", "manifest.json", "status.json", "stream.jsonl", "session.log", "SUMMARY.md", "runtime-final.md"} {
 		if err := os.WriteFile(filepath.Join(phaseDir, name), []byte(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +433,7 @@ func TestGCPrunesOnlyRecognizedCachesFromTerminalRuns(t *testing.T) {
 			t.Errorf("recognized cache %s was not removed: %v", name, err)
 		}
 	}
-	for _, name := range append([]string{"go-build-not-a-number"}, "ledger.json", "manifest.json", "status.json", "stream.jsonl", "session.log", "SUMMARY.md") {
+	for _, name := range append([]string{"go-build-not-a-number"}, "ledger.json", "manifest.json", "status.json", "stream.jsonl", "session.log", "SUMMARY.md", "runtime-final.md") {
 		if _, err := os.Stat(filepath.Join(phaseDir, name)); err != nil {
 			t.Errorf("diagnostic evidence %s was removed: %v", name, err)
 		}

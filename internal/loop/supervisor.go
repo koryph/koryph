@@ -215,16 +215,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			(state.Canary != nil && s.canaryInactivityExpired(state)) {
 			result.HardStop = "canary-inactivity-timeout"
 			s.recordCanaryTerminals(&state, result, false)
-			return s.openHardStop(ctx, &state, "canary-inactivity-timeout")
+			return s.openEngineHardStop(ctx, &state, "canary-inactivity-timeout", result)
 		}
 		if hardStop != "" {
 			result.HardStop = hardStop
 			s.advanceCanary(&state, result)
-			return s.openHardStop(ctx, &state, hardStop)
+			return s.openEngineHardStop(ctx, &state, hardStop, result)
 		}
 		if result.HardStop != "" {
 			s.advanceCanary(&state, result)
-			return s.openHardStop(ctx, &state, result.HardStop)
+			return s.openEngineHardStop(ctx, &state, result.HardStop, result)
 		}
 		if runStartCheckpointErr != nil {
 			s.advanceCanary(&state, result)
@@ -315,27 +315,14 @@ func (s *Supervisor) validate() error {
 	if s.Store == nil || s.Observer == nil || s.Engine == nil {
 		return errors.New("loop: store, observer, and engine are required")
 	}
-	if s.Config.IdleMin <= 0 {
-		s.Config.IdleMin = time.Second
-	}
-	if s.Config.IdleMax < s.Config.IdleMin {
-		s.Config.IdleMax = time.Minute
-	}
-	if s.Config.ControlPoll <= 0 {
-		s.Config.ControlPoll = time.Second
-	}
-	if s.Config.CrashMin <= 0 {
-		s.Config.CrashMin = 2 * time.Second
-	}
-	if s.Config.CrashMax < s.Config.CrashMin {
-		s.Config.CrashMax = 30 * time.Second
-	}
-	if s.Config.FailureLimit <= 0 {
-		s.Config.FailureLimit = 3
-	}
-	if s.Config.CrashLimit < s.Config.FailureLimit {
-		s.Config.CrashLimit = 2 * s.Config.FailureLimit
-	}
+	policy := EffectiveSupervisorPolicy(s.Config)
+	s.Config.IdleMin = time.Duration(policy.IdleMinMS) * time.Millisecond
+	s.Config.IdleMax = time.Duration(policy.IdleMaxMS) * time.Millisecond
+	s.Config.ControlPoll = time.Duration(policy.ControlPollMS) * time.Millisecond
+	s.Config.CrashMin = time.Duration(policy.CrashMinMS) * time.Millisecond
+	s.Config.CrashMax = time.Duration(policy.CrashMaxMS) * time.Millisecond
+	s.Config.FailureLimit = policy.FailureLimit
+	s.Config.CrashLimit = policy.CrashLimit
 	if s.Notifier == nil {
 		s.Notifier = JSONLNotifier{Store: s.Store}
 	}
@@ -388,12 +375,23 @@ func (s *Supervisor) configureCanary(state *State) error {
 	buildIdentity := strings.TrimSpace(s.Config.Canary.BuildIdentity)
 	contractDigest := strings.TrimSpace(s.Config.Canary.ContractDigest)
 	registryIdentityDigest := strings.TrimSpace(s.Config.Canary.RegistryIdentityDigest)
+	autonomyPolicyDigest := strings.TrimSpace(s.Config.Canary.AutonomyPolicyDigest)
+	executionPolicyDigest := strings.TrimSpace(s.Config.Canary.ExecutionPolicyDigest)
+	generationDigest := strings.TrimSpace(s.Config.Canary.GenerationDigest)
 	reportPath := filepath.Clean(strings.TrimSpace(s.Config.Canary.ReportPath))
+	expectedGeneration, generationErr := CanaryGenerationDigest(
+		s.Config.ProjectID, *s.Config.Canary,
+	)
 	if !validCommit(commit) || binaryVersion == "" || buildIdentity == "" ||
 		!validDigest(contractDigest) || !validDigest(registryIdentityDigest) ||
+		!validDigest(autonomyPolicyDigest) || !validDigest(executionPolicyDigest) ||
+		generationErr != nil || !validDigest(generationDigest) ||
 		!filepath.IsAbs(reportPath) ||
 		s.Publisher == nil {
-		return errors.New("loop: canary requires a clean installed commit, binary version, authenticated contract and registry identity digests, absolute report path, and evidence publisher")
+		return errors.New("loop: canary requires a clean installed commit, binary version, authenticated contract, registry, and generation digests, absolute report path, and evidence publisher")
+	}
+	if generationDigest != expectedGeneration {
+		return ErrCanaryIdentityDrift
 	}
 	if state.Canary != nil {
 		stored := normalizedCohort(state.Canary.Cohort)
@@ -417,9 +415,20 @@ func (s *Supervisor) configureCanary(state *State) error {
 			state.Canary.BuildIdentity != buildIdentity ||
 			state.Canary.ContractDigest != contractDigest ||
 			state.Canary.RegistryIdentityDigest != registryIdentityDigest ||
+			state.Canary.AutonomyPolicyDigest != autonomyPolicyDigest ||
+			state.Canary.ExecutionPolicyDigest != executionPolicyDigest ||
 			filepath.Clean(state.Canary.ReportPath) != reportPath {
 			return ErrCanaryIdentityDrift
 		}
+		storedGeneration, generationErr := CanaryStateGenerationDigest(
+			s.Config.ProjectID, state.Canary,
+		)
+		if generationErr != nil || storedGeneration != generationDigest ||
+			(state.Canary.GenerationDigest != "" &&
+				state.Canary.GenerationDigest != storedGeneration) {
+			return ErrCanaryIdentityDrift
+		}
+		state.Canary.GenerationDigest = storedGeneration
 		if state.Canary.Terminal == nil {
 			state.Canary.Terminal = make(map[string]TerminalOutcome)
 		}
@@ -445,6 +454,9 @@ func (s *Supervisor) configureCanary(state *State) error {
 		BuildIdentity:          buildIdentity,
 		ContractDigest:         contractDigest,
 		RegistryIdentityDigest: registryIdentityDigest,
+		AutonomyPolicyDigest:   autonomyPolicyDigest,
+		ExecutionPolicyDigest:  executionPolicyDigest,
+		GenerationDigest:       generationDigest,
 		ReportPath:             reportPath,
 		Terminal:               make(map[string]TerminalOutcome),
 	}
@@ -726,6 +738,56 @@ func (s *Supervisor) reconcileCanaryPublication(ctx context.Context, state *Stat
 			"engine-invariant: reconciliation completion checkpoint failed: "+err.Error())
 	}
 	return nil
+}
+
+// openEngineHardStop enforces the final publication barrier for a cancelled
+// native-canary engine. A containment attempt that still reports a live
+// worker, nonterminal slot, lease, or error opens the circuit but deliberately
+// leaves EndedAt and Decision empty: no immutable report may claim the attempt
+// ended while admitted work is still able to mutate a worktree.
+func (s *Supervisor) openEngineHardStop(
+	ctx context.Context,
+	state *State,
+	reason string,
+	result RunResult,
+) error {
+	containment := result.Containment
+	if !containment.Required {
+		return s.openHardStop(ctx, state, reason)
+	}
+	if containment.Complete && containment.ActiveWorkers == 0 &&
+		containment.NonTerminalSlots == 0 && containment.RemainingLeases == 0 &&
+		strings.TrimSpace(containment.Error) == "" {
+		return s.openHardStop(ctx, state, reason)
+	}
+	if state == nil {
+		return fmt.Errorf("%w: native-canary containment failed without supervisor state: %s",
+			ErrCircuitOpen, reason)
+	}
+	detail := fmt.Sprintf(
+		"native-canary containment incomplete: active_workers=%d nonterminal_slots=%d remaining_leases=%d",
+		containment.ActiveWorkers, containment.NonTerminalSlots, containment.RemainingLeases,
+	)
+	if containment.Error != "" {
+		detail += ": " + containment.Error
+	}
+	state.Mode = ModeCircuitOpen
+	state.CircuitReason = "canary hard stop: " + reason + "; " + detail
+	if state.Canary != nil {
+		state.Canary.HardStop = reason
+		// EndedAt is an authority to reconcile/publish after restart. Keep it
+		// empty until containment has actually converged.
+		state.Canary.EndedAt = ""
+	}
+	if err := s.persistState(*state); err != nil {
+		appendCircuitDetail(state, "containment checkpoint failed: "+err.Error())
+	}
+	s.alert(ctx, "error", "canary-containment-incomplete", state.CircuitReason, map[string]any{
+		"active_workers":    containment.ActiveWorkers,
+		"nonterminal_slots": containment.NonTerminalSlots,
+		"remaining_leases":  containment.RemainingLeases,
+	})
+	return fmt.Errorf("%w: %s", ErrCircuitOpen, state.CircuitReason)
 }
 
 func (s *Supervisor) openHardStop(ctx context.Context, state *State, reason string) error {

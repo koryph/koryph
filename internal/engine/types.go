@@ -169,15 +169,29 @@ type Options struct {
 
 // Outcome summarizes a run.
 type Outcome struct {
-	Code       int    `json:"code"`
-	RunID      string `json:"run_id"`
-	Dispatched int    `json:"dispatched"`
-	Merged     int    `json:"merged"`
-	PROpened   int    `json:"pr_opened,omitempty"`
-	Failed     int    `json:"failed"`
-	Blocked    int    `json:"blocked"`
-	Drained    bool   `json:"drained"`
-	Reason     string `json:"reason,omitempty"`
+	Code        int               `json:"code"`
+	RunID       string            `json:"run_id"`
+	Dispatched  int               `json:"dispatched"`
+	Merged      int               `json:"merged"`
+	PROpened    int               `json:"pr_opened,omitempty"`
+	Failed      int               `json:"failed"`
+	Blocked     int               `json:"blocked"`
+	Drained     bool              `json:"drained"`
+	Reason      string            `json:"reason,omitempty"`
+	Containment ContainmentResult `json:"containment,omitempty"`
+}
+
+// ContainmentResult is the engine's synchronous proof that a native-canary
+// cancellation cannot return while an authenticated sibling worker or its
+// machine-governor lease remains active. Required is false for ordinary
+// operator interruption, which intentionally leaves resumable workers alone.
+type ContainmentResult struct {
+	Required         bool   `json:"required,omitempty"`
+	Complete         bool   `json:"complete,omitempty"`
+	ActiveWorkers    int    `json:"active_workers,omitempty"`
+	NonTerminalSlots int    `json:"nonterminal_slots,omitempty"`
+	RemainingLeases  int    `json:"remaining_leases,omitempty"`
+	Error            string `json:"error,omitempty"`
 }
 
 // EngineVersion is stamped into ledgers, manifests, and prompts. The

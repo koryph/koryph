@@ -60,6 +60,10 @@ func (p NativeCanaryPublisher) Publish(
 	if thresholds.MinEligibleBeads == 0 {
 		thresholds = metrics.DefaultAutonomyThresholds()
 	}
+	thresholdDigest, err := metrics.AutonomyThresholdsDigest(thresholds)
+	if err != nil || thresholdDigest != request.Canary.AutonomyPolicyDigest {
+		return CanaryPublication{}, errors.New("loop: autonomy publisher policy differs from admitted canary generation")
+	}
 	evidence, err := collectNativeCanaryEvidence(root, store, request)
 	if err != nil {
 		return CanaryPublication{}, err
@@ -72,6 +76,8 @@ func (p NativeCanaryPublisher) Publish(
 		BuildIdentity:          request.Canary.BuildIdentity,
 		ContractDigest:         request.Canary.ContractDigest,
 		RegistryIdentityDigest: request.Canary.RegistryIdentityDigest,
+		GenerationDigest:       request.Canary.GenerationDigest,
+		ExecutionPolicyDigest:  request.Canary.ExecutionPolicyDigest,
 		Cohort:                 append([]string(nil), request.Canary.Cohort...),
 		StartedAt:              request.StartedAt,
 		EndedAt:                request.EndedAt,
@@ -1004,7 +1010,7 @@ func nativeCompactEvidencePath(rel string) bool {
 	}
 	base := filepath.Base(rel)
 	switch base {
-	case "ledger.json", "manifest.json", "result.json", "SUMMARY.md",
+	case "ledger.json", "manifest.json", "result.json", "SUMMARY.md", "runtime-final.md",
 		"review.json", "review-envelope.json", "review-degraded.json",
 		"events.jsonl", "pressure-state.json", "supervisor.json", "alerts.jsonl":
 		return true

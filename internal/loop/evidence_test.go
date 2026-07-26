@@ -57,6 +57,10 @@ func TestNativeCanaryPublisherDerivesAttemptsAndReplaysCreateOnce(t *testing.T) 
 	)
 	thresholds := metrics.DefaultAutonomyThresholds()
 	thresholds.MinEligibleBeads = 1
+	thresholdDigest, err := metrics.AutonomyThresholdsDigest(thresholds)
+	if err != nil {
+		t.Fatal(err)
+	}
 	publisher := NativeCanaryPublisher{
 		RepoRoot: root, Ledger: store, Thresholds: thresholds,
 		Now: func() time.Time {
@@ -73,6 +77,9 @@ func TestNativeCanaryPublisherDerivesAttemptsAndReplaysCreateOnce(t *testing.T) 
 			BuildIdentity:          "fixture-build",
 			ContractDigest:         "sha256:" + hex.EncodeToString(contractSum[:]),
 			RegistryIdentityDigest: "sha256:" + strings.Repeat("d", 64),
+			AutonomyPolicyDigest:   thresholdDigest,
+			ExecutionPolicyDigest:  "sha256:" + strings.Repeat("e", 64),
+			GenerationDigest:       "sha256:" + strings.Repeat("f", 64),
 			ReportPath:             reportPath,
 			RunIDs:                 []string{run.RunID},
 			Terminal: map[string]TerminalOutcome{

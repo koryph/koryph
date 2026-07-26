@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	AutonomyInputSchema               = "koryph.autonomy-input/v2"
-	AutonomyReportSchema              = "koryph.autonomy-report/v2"
+	AutonomyInputSchema               = "koryph.autonomy-input/v3"
+	AutonomyReportSchema              = "koryph.autonomy-report/v3"
+	autonomyReportSchemaV2            = "koryph.autonomy-report/v2"
 	DefaultAutonomyReportRelativePath = ".plan-logs/koryph/canary/autonomous-loop-reliability.json"
 
 	ExclusionExternalCapability = "external-capability"
@@ -85,6 +86,20 @@ func DefaultAutonomyThresholds() AutonomyThresholds {
 	}
 }
 
+// AutonomyThresholdsDigest returns the canonical digest of the exact release
+// SLO policy used to derive an autonomy decision.
+func AutonomyThresholdsDigest(thresholds AutonomyThresholds) (string, error) {
+	if err := validateThresholds(thresholds); err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(thresholds)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
 // AutonomyInput is the complete evidence envelope from which a canary report
 // is deterministically derived. Producers must record each implementation
 // attempt separately; a cumulative attempt count is intentionally insufficient.
@@ -96,6 +111,8 @@ type AutonomyInput struct {
 	BuildIdentity          string             `json:"build_identity"`
 	ContractDigest         string             `json:"contract_digest"`
 	RegistryIdentityDigest string             `json:"registry_identity_digest"`
+	GenerationDigest       string             `json:"generation_digest"`
+	ExecutionPolicyDigest  string             `json:"execution_policy_digest"`
 	Cohort                 []string           `json:"cohort"`
 	StartedAt              string             `json:"started_at"`
 	EndedAt                string             `json:"ended_at"`
@@ -325,6 +342,8 @@ type AutonomyReport struct {
 	BuildIdentity          string             `json:"build_identity"`
 	ContractDigest         string             `json:"contract_digest"`
 	RegistryIdentityDigest string             `json:"registry_identity_digest"`
+	GenerationDigest       string             `json:"generation_digest,omitempty"`
+	ExecutionPolicyDigest  string             `json:"execution_policy_digest,omitempty"`
 	CohortDigest           string             `json:"cohort_digest"`
 	Cohort                 []string           `json:"cohort"`
 	StartedAt              string             `json:"started_at"`
@@ -346,6 +365,8 @@ type AutonomyReportExpectation struct {
 	BuildIdentity          string
 	ContractDigest         string
 	RegistryIdentityDigest string
+	GenerationDigest       string
+	ExecutionPolicyDigest  string
 	Cohort                 []string
 	CohortDigest           string
 	Thresholds             AutonomyThresholds
@@ -364,7 +385,8 @@ func BuildAutonomyReport(in AutonomyInput, now time.Time) (*AutonomyReport, erro
 	}
 	if strings.TrimSpace(in.ProjectID) == "" || !validFullCommit(in.InstalledCommit) ||
 		strings.TrimSpace(in.BinaryVersion) == "" || strings.TrimSpace(in.BuildIdentity) == "" ||
-		!validSHA256(in.ContractDigest) || !validSHA256(in.RegistryIdentityDigest) {
+		!validSHA256(in.ContractDigest) || !validSHA256(in.RegistryIdentityDigest) ||
+		!validSHA256(in.GenerationDigest) || !validSHA256(in.ExecutionPolicyDigest) {
 		return nil, errors.New("autonomy input identity is incomplete")
 	}
 	cohort, err := normalizeStrictCohort(in.Cohort)
@@ -394,6 +416,8 @@ func BuildAutonomyReport(in AutonomyInput, now time.Time) (*AutonomyReport, erro
 		ProjectID: in.ProjectID, InstalledCommit: in.InstalledCommit, BinaryVersion: in.BinaryVersion,
 		BuildIdentity: in.BuildIdentity, ContractDigest: in.ContractDigest,
 		RegistryIdentityDigest: in.RegistryIdentityDigest,
+		GenerationDigest:       in.GenerationDigest,
+		ExecutionPolicyDigest:  in.ExecutionPolicyDigest,
 		CohortDigest:           cohortDigest(cohort), Cohort: cohort,
 		StartedAt: in.StartedAt, EndedAt: in.EndedAt, Thresholds: in.Thresholds,
 		Evidence: in.Evidence, Metrics: reportMetrics, Decision: decision,
@@ -1298,13 +1322,23 @@ func autonomyDigest(report *AutonomyReport) (string, error) {
 // ValidateAutonomyReport authenticates identity/evidence and independently
 // recomputes the decision. It never trusts the persisted Passed bit.
 func ValidateAutonomyReport(report *AutonomyReport) error {
-	if report == nil || report.SchemaVersion != AutonomyReportSchema {
+	if report == nil ||
+		(report.SchemaVersion != AutonomyReportSchema &&
+			report.SchemaVersion != autonomyReportSchemaV2) {
 		return errors.New("unsupported autonomy report schema")
 	}
 	if strings.TrimSpace(report.ProjectID) == "" || !validFullCommit(report.InstalledCommit) ||
 		strings.TrimSpace(report.BinaryVersion) == "" || strings.TrimSpace(report.BuildIdentity) == "" ||
 		!validSHA256(report.RegistryIdentityDigest) {
 		return errors.New("autonomy report identity is incomplete")
+	}
+	if report.SchemaVersion == AutonomyReportSchema {
+		if !validSHA256(report.GenerationDigest) ||
+			!validSHA256(report.ExecutionPolicyDigest) {
+			return errors.New("autonomy report generation identity is incomplete")
+		}
+	} else if report.GenerationDigest != "" || report.ExecutionPolicyDigest != "" {
+		return errors.New("legacy autonomy report carries unsupported generation identity")
 	}
 	cohort, err := normalizeStrictCohort(report.Cohort)
 	if err != nil {
@@ -1364,6 +1398,8 @@ func ValidateAutonomyReportExpected(report *AutonomyReport, expected AutonomyRep
 		report.BuildIdentity != expected.BuildIdentity ||
 		report.ContractDigest != expected.ContractDigest ||
 		report.RegistryIdentityDigest != expected.RegistryIdentityDigest ||
+		report.GenerationDigest != expected.GenerationDigest ||
+		report.ExecutionPolicyDigest != expected.ExecutionPolicyDigest ||
 		report.CohortDigest != expected.CohortDigest ||
 		!jsonEqual(report.Cohort, expectedCohort) ||
 		report.Thresholds != expected.Thresholds ||
@@ -1394,6 +1430,8 @@ func validateAutonomyExpectation(expected AutonomyReportExpectation) error {
 		strings.TrimSpace(expected.BuildIdentity) == "" ||
 		!validSHA256(expected.ContractDigest) ||
 		!validSHA256(expected.RegistryIdentityDigest) ||
+		!validSHA256(expected.GenerationDigest) ||
+		!validSHA256(expected.ExecutionPolicyDigest) ||
 		!validSHA256(expected.CohortDigest) ||
 		expected.CohortDigest != cohortDigest(cohort) ||
 		!validSHA256(expected.EvidenceDigest) ||

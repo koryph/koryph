@@ -106,6 +106,12 @@ func (r *runner) validateAllowedResume(run *ledger.Run) error {
 }
 
 func (r *runner) emitSafetyTripwire(kind SafetyTripwireKind, beadID, detail string) {
+	if r.opts.NativeCanary {
+		// The engine loop is the sole admission owner. Latch before publishing
+		// so a zero-stagger batch cannot launch a sibling in the short interval
+		// before the supervisor receives this event and cancels the context.
+		r.safetyTripwireFired = true
+	}
 	if r.opts.OnSafetyTripwire == nil {
 		return
 	}

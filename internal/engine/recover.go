@@ -44,6 +44,36 @@ func (r *runner) resume(ctx context.Context, recoveryRunID string) (bool, error)
 	}
 
 	r.run = latest
+	if r.opts.NativeCanary {
+		pending := false
+		for _, sl := range latest.Slots {
+			if sl != nil &&
+				sl.DeathReason == deathReasonCanaryContainment &&
+				latest.Status != ledger.RunAborted {
+				pending = true
+				break
+			}
+		}
+		if pending {
+			containment := r.containNativeCanaryHardStop()
+			r.replayedContainment = &containment
+			if !containment.Complete {
+				return false, fmt.Errorf(
+					"replay native-canary containment: %s", containment.Error,
+				)
+			}
+			r.emitSafetyTripwire(
+				SafetyTripwireEngineInvariant, "",
+				"replayed durable native-canary hard-stop containment",
+			)
+			// Containment already terminalized every admitted slot and
+			// durably marked the run aborted. Do not pass it through generic
+			// stale-run finalization, which would rewrite RunAborted to
+			// RunDone and erase the hard-stop disposition before publication.
+			r.pinnedTerminal = true
+			return true, nil
+		}
+	}
 	decisions := ledger.Classify(latest, ledger.Probe{
 		AliveSlot: func(sl *ledger.Slot) bool {
 			return r.slotProcessMatches(ctx, sl)

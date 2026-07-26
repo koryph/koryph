@@ -81,6 +81,8 @@ func testAutonomyInput() AutonomyInput {
 		ProjectID:     "koryph", InstalledCommit: strings.Repeat("a", 40),
 		BinaryVersion: "0.10.0", BuildIdentity: "fixture-build", ContractDigest: digest("b"),
 		RegistryIdentityDigest: digest("c"),
+		GenerationDigest:       digest("d"),
+		ExecutionPolicyDigest:  digest("e"),
 		Cohort:                 []string{"b2", "b1"},
 		StartedAt:              "2026-07-25T10:00:00Z", EndedAt: "2026-07-25T10:12:00Z",
 		Thresholds: testAutonomyThresholds(),
@@ -435,6 +437,8 @@ func TestExpectedAutonomyReportPinsReleaseIdentityAndFreshness(t *testing.T) {
 		BuildIdentity:          input.BuildIdentity,
 		ContractDigest:         input.ContractDigest,
 		RegistryIdentityDigest: input.RegistryIdentityDigest,
+		GenerationDigest:       input.GenerationDigest,
+		ExecutionPolicyDigest:  input.ExecutionPolicyDigest,
 		Cohort:                 input.Cohort,
 		CohortDigest:           report.CohortDigest,
 		Thresholds:             input.Thresholds,
@@ -458,6 +462,8 @@ func TestExpectedAutonomyReportPinsReleaseIdentityAndFreshness(t *testing.T) {
 		{"registry identity", func(e *AutonomyReportExpectation) { e.RegistryIdentityDigest = digest("d") }},
 		{"build", func(e *AutonomyReportExpectation) { e.BuildIdentity = "foreign-build" }},
 		{"contract", func(e *AutonomyReportExpectation) { e.ContractDigest = digest("c") }},
+		{"generation", func(e *AutonomyReportExpectation) { e.GenerationDigest = digest("f") }},
+		{"execution policy", func(e *AutonomyReportExpectation) { e.ExecutionPolicyDigest = digest("f") }},
 		{"cohort", func(e *AutonomyReportExpectation) {
 			e.Cohort = []string{"b1", "b3"}
 			e.CohortDigest, _ = AutonomyCohortDigest(e.Cohort)
@@ -485,6 +491,39 @@ func TestExpectedAutonomyReportPinsReleaseIdentityAndFreshness(t *testing.T) {
 	}
 	if err := ValidateAutonomyReportExpected(report, AutonomyReportExpectation{}); err == nil {
 		t.Fatal("missing release expectation accepted")
+	}
+}
+
+func TestLegacyV2ReportRemainsAuthenticatableButCannotSatisfyLiveExpectation(t *testing.T) {
+	input := testAutonomyInput()
+	report, err := BuildAutonomyReport(
+		input, time.Date(2026, 7, 25, 10, 12, 1, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report.SchemaVersion = autonomyReportSchemaV2
+	report.GenerationDigest = ""
+	report.ExecutionPolicyDigest = ""
+	report.EvidenceDigest, err = autonomyDigest(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAutonomyReport(report); err != nil {
+		t.Fatalf("legacy immutable report rejected: %v", err)
+	}
+	expected := AutonomyReportExpectation{
+		ProjectID: input.ProjectID, InstalledCommit: input.InstalledCommit,
+		BinaryVersion: input.BinaryVersion, BuildIdentity: input.BuildIdentity,
+		ContractDigest: input.ContractDigest, RegistryIdentityDigest: input.RegistryIdentityDigest,
+		GenerationDigest: input.GenerationDigest, ExecutionPolicyDigest: input.ExecutionPolicyDigest,
+		Cohort: input.Cohort, CohortDigest: report.CohortDigest, Thresholds: input.Thresholds,
+		CanaryStartedAt: input.StartedAt, EvidenceDigest: report.EvidenceDigest,
+		GeneratedAt: report.GeneratedAt, FreshAt: time.Date(2026, 7, 25, 10, 13, 0, 0, time.UTC),
+		MaxAge: time.Hour,
+	}
+	if err := ValidateAutonomyReportExpected(report, expected); err == nil {
+		t.Fatal("legacy report satisfied generation-bound live expectation")
 	}
 }
 

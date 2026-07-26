@@ -271,17 +271,36 @@ func testCanarySpec(t *testing.T, supervisor *Supervisor, cohort []string, targe
 	t.Helper()
 	supervisor.Publisher = &fakeCanaryPublisher{}
 	repo := filepath.Dir(filepath.Dir(supervisor.Store.Root))
-	return &CanarySpec{
+	spec := &CanarySpec{
 		Cohort: cohort, TargetWidth: target, InactivityLimit: DefaultCanaryInactivityLimit,
 		InstalledCommit:        strings.Repeat("a", 40),
 		BinaryVersion:          "0.10.0",
 		BuildIdentity:          "test-build-identity",
 		ContractDigest:         "sha256:" + strings.Repeat("b", 64),
 		RegistryIdentityDigest: "sha256:" + strings.Repeat("c", 64),
+		AutonomyPolicyDigest:   "sha256:" + strings.Repeat("d", 64),
+		ExecutionPolicyDigest:  "sha256:" + strings.Repeat("e", 64),
 		ReportPath: filepath.Join(
 			repo, ".plan-logs", "koryph", "canary", "autonomous-loop-reliability.json",
 		),
 	}
+	var err error
+	spec.GenerationDigest, err = CanaryGenerationDigest(supervisor.Config.ProjectID, *spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec
+}
+
+func refreshTestCanaryGeneration(t *testing.T, supervisor *Supervisor) {
+	t.Helper()
+	digest, err := CanaryGenerationDigest(
+		supervisor.Config.ProjectID, *supervisor.Config.Canary,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor.Config.Canary.GenerationDigest = digest
 }
 
 func TestIdleCreatesNoRunDirectoryAndNeverCallsEngine(t *testing.T) {
@@ -559,6 +578,9 @@ func TestCanaryRejectsTamperedStoredCohortDigest(t *testing.T) {
 			BuildIdentity:          supervisor.Config.Canary.BuildIdentity,
 			ContractDigest:         supervisor.Config.Canary.ContractDigest,
 			RegistryIdentityDigest: supervisor.Config.Canary.RegistryIdentityDigest,
+			AutonomyPolicyDigest:   supervisor.Config.Canary.AutonomyPolicyDigest,
+			ExecutionPolicyDigest:  supervisor.Config.Canary.ExecutionPolicyDigest,
+			GenerationDigest:       supervisor.Config.Canary.GenerationDigest,
 			ReportPath:             supervisor.Config.Canary.ReportPath,
 		},
 	}
@@ -668,6 +690,74 @@ func TestCanaryHardStopPublishesFailedEvidenceBeforeCircuit(t *testing.T) {
 		state.Canary.HardStop != "duplicate-broad-command" ||
 		len(state.Canary.Terminal) != 1 {
 		t.Fatalf("hard-stop state = %+v; requests=%d", state.Canary, len(publisher.requests))
+	}
+}
+
+func TestCanaryHardStopPublicationWaitsForContainmentConvergence(t *testing.T) {
+	supervisor := testSupervisor(t, &fakeObserver{}, &fakeEngine{})
+	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
+	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
+	publisher.publication = CanaryPublication{
+		Path:     supervisor.Config.Canary.ReportPath,
+		Digest:   "sha256:" + strings.Repeat("c", 64),
+		Decision: "failed", GeneratedAt: "2026-07-25T12:00:01Z",
+	}
+	state := State{ProjectID: supervisor.Config.ProjectID}
+	if err := supervisor.configureCanary(&state); err != nil {
+		t.Fatal(err)
+	}
+
+	err := supervisor.openEngineHardStop(
+		context.Background(), &state, "engine-invariant: test",
+		RunResult{Containment: ContainmentResult{
+			Required: true, ActiveWorkers: 1, NonTerminalSlots: 1,
+			RemainingLeases: 1, Error: "process identity mismatch",
+		}},
+	)
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("openEngineHardStop error = %v", err)
+	}
+	if len(publisher.requests) != 0 {
+		t.Fatalf("publication calls = %d, want zero before containment", len(publisher.requests))
+	}
+	if state.Mode != ModeCircuitOpen || state.Canary.EndedAt != "" ||
+		state.Canary.Decision != "" || state.Canary.PublishedAt != "" ||
+		!strings.Contains(state.CircuitReason, "containment incomplete") {
+		t.Fatalf("uncontained state = %+v", state)
+	}
+	checkpoint, loadErr := supervisor.Store.LoadState()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if checkpoint.Canary.EndedAt != "" || checkpoint.Canary.Decision != "" {
+		t.Fatalf("uncontained checkpoint authorized publication: %+v", checkpoint.Canary)
+	}
+}
+
+func TestCanaryHardStopPublishesOnlyAfterCompleteContainment(t *testing.T) {
+	supervisor := testSupervisor(t, &fakeObserver{}, &fakeEngine{})
+	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
+	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
+	publisher.publication = CanaryPublication{
+		Path:     supervisor.Config.Canary.ReportPath,
+		Digest:   "sha256:" + strings.Repeat("d", 64),
+		Decision: "failed", GeneratedAt: "2026-07-25T12:00:01Z",
+	}
+	state := State{ProjectID: supervisor.Config.ProjectID}
+	if err := supervisor.configureCanary(&state); err != nil {
+		t.Fatal(err)
+	}
+
+	err := supervisor.openEngineHardStop(
+		context.Background(), &state, "engine-invariant: test",
+		RunResult{Containment: ContainmentResult{Required: true, Complete: true}},
+	)
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("openEngineHardStop error = %v", err)
+	}
+	if len(publisher.requests) != 1 || state.Canary.EndedAt == "" ||
+		state.Canary.Decision != "failed" {
+		t.Fatalf("contained state = %+v; publication calls=%d", state.Canary, len(publisher.requests))
 	}
 }
 
@@ -813,6 +903,7 @@ func TestCanaryInactivityIdentityAndProgressSurviveRestart(t *testing.T) {
 	spec := testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
 	spec.InactivityLimit = 10 * time.Minute
 	supervisor.Config.Canary = spec
+	refreshTestCanaryGeneration(t, supervisor)
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
 	supervisor.now = func() time.Time { return now }
 	state := State{ProjectID: "demo"}
@@ -867,6 +958,7 @@ func TestIdleCanaryInactivityPublishesFailedPartialReport(t *testing.T) {
 	supervisor.Config.IdleMax = time.Minute
 	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
 	supervisor.Config.Canary.InactivityLimit = 2 * time.Minute
+	refreshTestCanaryGeneration(t, supervisor)
 	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
 	publisher.publication = CanaryPublication{
 		Path: supervisor.Config.Canary.ReportPath, Digest: "sha256:" + strings.Repeat("f", 64),
@@ -905,6 +997,7 @@ func TestCanaryIdleWaitIsCappedAtInactivityDeadline(t *testing.T) {
 	supervisor.Config.IdleMax = 10 * time.Minute
 	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
 	supervisor.Config.Canary.InactivityLimit = 2 * time.Minute
+	refreshTestCanaryGeneration(t, supervisor)
 	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
 	publisher.publication = CanaryPublication{
 		Path: supervisor.Config.Canary.ReportPath, Digest: "sha256:" + strings.Repeat("4", 64),
@@ -944,6 +1037,7 @@ func TestCanaryCrashWaitIsCappedAtInactivityDeadline(t *testing.T) {
 	supervisor.Config.FailureLimit = 3
 	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
 	supervisor.Config.Canary.InactivityLimit = 2 * time.Minute
+	refreshTestCanaryGeneration(t, supervisor)
 	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
 	publisher.publication = CanaryPublication{
 		Path: supervisor.Config.Canary.ReportPath, Digest: "sha256:" + strings.Repeat("5", 64),
@@ -1005,6 +1099,7 @@ func TestCanaryInactivityBoundsBlockingObservation(t *testing.T) {
 	supervisor := testSupervisor(t, observer, engine)
 	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
 	supervisor.Config.Canary.InactivityLimit = 20 * time.Millisecond
+	refreshTestCanaryGeneration(t, supervisor)
 	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
 	publisher.publication = CanaryPublication{
 		Path: supervisor.Config.Canary.ReportPath, Digest: "sha256:" + strings.Repeat("7", 64),
@@ -1062,6 +1157,7 @@ func TestEngineReplyAtCanaryDeadlineRecordsEvidenceWithoutRefreshingProgress(t *
 	supervisor.now = func() time.Time { return now }
 	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2", "b3"}, 3)
 	supervisor.Config.Canary.InactivityLimit = 2 * time.Minute
+	refreshTestCanaryGeneration(t, supervisor)
 	supervisor.after = func(delay time.Duration) <-chan time.Time {
 		now = now.Add(delay)
 		ready := make(chan time.Time, 1)
@@ -1105,6 +1201,7 @@ func TestRestartCapsCanaryWaitToPersistedRemainingInterval(t *testing.T) {
 	supervisor.Config.IdleMax = 10 * time.Minute
 	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
 	supervisor.Config.Canary.InactivityLimit = 2 * time.Minute
+	refreshTestCanaryGeneration(t, supervisor)
 	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
 	publisher.publication = CanaryPublication{
 		Path: supervisor.Config.Canary.ReportPath, Digest: "sha256:" + strings.Repeat("6", 64),
@@ -1137,6 +1234,7 @@ func TestRestartCannotResetExpiredCanaryInactivity(t *testing.T) {
 	supervisor.now = func() time.Time { return now }
 	supervisor.Config.Canary = testCanarySpec(t, supervisor, []string{"b1", "b2"}, 2)
 	supervisor.Config.Canary.InactivityLimit = 2 * time.Minute
+	refreshTestCanaryGeneration(t, supervisor)
 	publisher := supervisor.Publisher.(*fakeCanaryPublisher)
 	publisher.publication = CanaryPublication{
 		Path: supervisor.Config.Canary.ReportPath, Digest: "sha256:" + strings.Repeat("1", 64),

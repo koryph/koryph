@@ -60,6 +60,10 @@ func TestTerminalTranscriptAgesOutButCompactEvidenceAndCanaryRemain(t *testing.T
 	for _, name := range []string{"manifest.json", "result.json", "SUMMARY.md", "gate-output.log"} {
 		writeGCFile(t, filepath.Join(phase, name), []byte(name))
 	}
+	writeGCFile(t,
+		filepath.Join(runDir, ".runtime-output", "bead1", "runtime-final.md"),
+		[]byte("runtime-final.md"),
+	)
 	evidence := filepath.Join(runDir, ".evidence", "bead1", "general-review.json")
 	writeGCFile(t, evidence, []byte(`{"schema":"koryph.review-artifact/v1"}`))
 	canary := filepath.Join(repo, ".plan-logs", "koryph", "canary", "autonomous-loop-reliability.json")
@@ -95,6 +99,7 @@ func TestTerminalTranscriptAgesOutButCompactEvidenceAndCanaryRemain(t *testing.T
 		filepath.Join(phase, "manifest.json"),
 		filepath.Join(phase, "result.json"),
 		filepath.Join(phase, "SUMMARY.md"),
+		filepath.Join(runDir, ".runtime-output", "bead1", "runtime-final.md"),
 		filepath.Join(phase, "gate-output.log"),
 		evidence,
 		canary,
@@ -563,6 +568,7 @@ func TestCompressionCreatesCompactEvidenceArchiveWithoutTranscript(t *testing.T)
 	phase := filepath.Join(runDir, "bead1")
 	writeGCFile(t, filepath.Join(phase, "manifest.json"), []byte(`{"ok":true}`))
 	writeGCFile(t, filepath.Join(phase, "SUMMARY.md"), []byte("summary"))
+	writeGCFile(t, filepath.Join(runDir, ".runtime-output", "bead1", "runtime-final.md"), []byte("runtime response"))
 	writeGCFile(t, filepath.Join(phase, "stream.jsonl"), []byte("large transcript"))
 	old := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(runDir, old, old); err != nil {
@@ -582,7 +588,8 @@ func TestCompressionCreatesCompactEvidenceArchiveWithoutTranscript(t *testing.T)
 	names := tarNames(t, evidencePath)
 	if !containsSuffix(names, "/ledger.json") ||
 		!containsSuffix(names, "/bead1/manifest.json") ||
-		!containsSuffix(names, "/bead1/SUMMARY.md") {
+		!containsSuffix(names, "/bead1/SUMMARY.md") ||
+		!containsSuffix(names, "/.runtime-output/bead1/runtime-final.md") {
 		t.Fatalf("compact evidence archive missing durable files: %v", names)
 	}
 	if containsSuffix(names, "/bead1/stream.jsonl") {
@@ -751,6 +758,7 @@ func TestCompactEvidenceRejectsBroadReviewNamedWorkerLogs(t *testing.T) {
 	}{
 		{"bead/review.json", true},
 		{"bead/review-envelope.json", true},
+		{"bead/runtime-final.md", true},
 		{".engine-evidence/bead/general-review-candidate.json", true},
 		{".engine-evidence/bead/.runtime-scratch/session.log", false},
 		{".evidence/bead/general-review-candidate.json", true},

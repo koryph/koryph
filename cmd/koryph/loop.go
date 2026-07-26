@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,6 +132,20 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, fmt.Errorf("loop: authenticate registry identity: %w", err))
 	}
+	cfg := loopsupervisor.Config{
+		ProjectID: rec.ProjectID,
+		Parent:    *parent,
+		Max:       *max,
+		IdleMin:   *idleMin,
+		IdleMax:   *idleMax,
+	}
+	enginePolicy := nativeCanaryEnginePolicy{
+		Parent: *parent, Budget: *budget, DefaultModel: *defaultModel,
+		RuntimeOnly: *runtimeOnly, RuntimeEquivalent: *runtimeEquivalent,
+		AutoMerge: *autoMerge, Direct: *direct, Review: *review,
+		AllowAPISpend: *allowAPISpend, NoBillingGuard: *noBillingGuard,
+		RequireCalibration: *requireCalibration, DispatchMode: *dispatchMode,
+	}
 	store := loopsupervisor.NewStore(rec.Root)
 	state, err := store.LoadState()
 	if err != nil {
@@ -139,20 +155,7 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, fmt.Errorf("loop: load canary promotion marker: %w", err))
 	}
-	if len(canaryIDs) > 0 {
-		var retired bool
-		state, retired, err = retireStaleNativeCanaryEvidence(
-			ctx, rec.Root, registryIdentityDigest,
-		)
-		if err != nil {
-			return fail(stderr, fmt.Errorf("loop: retire stale canary evidence: %w", err))
-		}
-		if retired {
-			marker = nativeCanaryPromotionMarker{}
-			markerExists = false
-			fmt.Fprintf(stdout, "loop %s: archived stale canary generation before fresh bootstrap\n", rec.ProjectID)
-		}
-	}
+	var admittedSpec *loopsupervisor.CanarySpec
 	if len(canaryIDs) > 0 &&
 		((state.Canary != nil && state.Canary.Decision == "passed") || markerExists) {
 		handled, promoted, err := reconcilePassedNativeCanary(
@@ -169,6 +172,35 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 			}
 			return engine.ExitOK
 		}
+		if markerExists {
+			return fail(stderr, errors.New("loop: canary promotion marker could not be reconciled"))
+		}
+	}
+	if len(canaryIDs) > 0 && state.Canary != nil &&
+		state.Canary.Decision == "failed" {
+		target := canaryTargetWidth(canaryIDs, *max)
+		admittedSpec, err = nativeCanarySpecWithPolicy(
+			rec.ProjectID, rec.Root, canaryIDs, target,
+			registryIdentityDigest, cfg, enginePolicy,
+		)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		var retired bool
+		state, retired, err = retireStaleNativeCanaryEvidence(
+			ctx, rec.Root, rec.ProjectID, admittedSpec,
+		)
+		if err != nil {
+			return fail(stderr, fmt.Errorf("loop: retire stale canary evidence: %w", err))
+		}
+		if !retired {
+			return fail(stderr, errors.New(
+				"loop: failed canary evidence belongs to the current generation; install a clean strict-descendant build before retrying",
+			))
+		}
+		marker = nativeCanaryPromotionMarker{}
+		markerExists = false
+		fmt.Fprintf(stdout, "loop %s: archived stale canary generation before fresh bootstrap\n", rec.ProjectID)
 	}
 	promotionPending := markerExists &&
 		(marker.Status == nativeCanaryPromotionPending ||
@@ -183,23 +215,20 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 		))
 	}
 
-	cfg := loopsupervisor.Config{
-		ProjectID: rec.ProjectID,
-		Parent:    *parent,
-		Max:       *max,
-		IdleMin:   *idleMin,
-		IdleMax:   *idleMax,
-	}
 	if len(canaryIDs) > 0 {
 		target := canaryTargetWidth(canaryIDs, *max)
 		var spec *loopsupervisor.CanarySpec
-		if state.Canary != nil {
-			spec, err = resumedNativeCanarySpec(
-				rec.Root, canaryIDs, target, registryIdentityDigest, state,
+		if admittedSpec != nil {
+			spec = admittedSpec
+		} else if state.Canary != nil {
+			spec, err = resumedNativeCanarySpecWithPolicy(
+				rec.ProjectID, rec.Root, canaryIDs, target,
+				registryIdentityDigest, state, cfg, enginePolicy,
 			)
 		} else {
-			spec, err = nativeCanarySpec(
-				rec.Root, canaryIDs, target, registryIdentityDigest,
+			spec, err = nativeCanarySpecWithPolicy(
+				rec.ProjectID, rec.Root, canaryIDs, target,
+				registryIdentityDigest, cfg, enginePolicy,
 			)
 		}
 		if err != nil {
@@ -284,12 +313,12 @@ func loopPostureAllows(status string, canary, promotionPending bool) bool {
 }
 
 const (
-	nativeCanaryPromotionMarkerVersion = 2
+	nativeCanaryPromotionMarkerVersion = 3
 	nativeCanaryPromotionPending       = "pending"
 	nativeCanaryPromotionValidated     = "validated"
 	nativeCanaryPromotionMarkerFile    = "canary-promotion.json"
 	nativeCanaryHistoryDir             = "canary-history"
-	nativeCanaryHistoryVersion         = 1
+	nativeCanaryHistoryVersion         = loopsupervisor.CanaryGenerationArchiveVersion
 )
 
 type nativeCanaryPromotionMarker struct {
@@ -299,18 +328,7 @@ type nativeCanaryPromotionMarker struct {
 	Canary        loopsupervisor.CanaryState `json:"canary"`
 }
 
-type nativeCanaryHistoryRecord struct {
-	SchemaVersion                  int                        `json:"schema_version"`
-	RetiredAt                      string                     `json:"retired_at"`
-	Reason                         string                     `json:"reason"`
-	ProjectID                      string                     `json:"project_id"`
-	PreviousRegistryIdentityDigest string                     `json:"previous_registry_identity_digest"`
-	CurrentRegistryIdentityDigest  string                     `json:"current_registry_identity_digest"`
-	MarkerStatus                   string                     `json:"marker_status,omitempty"`
-	Canary                         loopsupervisor.CanaryState `json:"canary"`
-	OriginalReportPath             string                     `json:"original_report_path"`
-	ArchivedReportPath             string                     `json:"archived_report_path,omitempty"`
-}
+type nativeCanaryHistoryRecord = loopsupervisor.CanaryGenerationArchive
 
 func nativeCanaryPromotionMarkerPath(root string) string {
 	return filepath.Join(loopsupervisor.NewStore(root).Root, nativeCanaryPromotionMarkerFile)
@@ -331,14 +349,18 @@ func loadNativeCanaryPromotionMarker(root string) (nativeCanaryPromotionMarker, 
 	if err := strictjson.Decode(read.Data, &marker); err != nil {
 		return marker, false, err
 	}
-	legacyUnbound := marker.SchemaVersion == 1 &&
-		strings.TrimSpace(marker.Canary.RegistryIdentityDigest) == ""
+	legacyUnbound := (marker.SchemaVersion == 1 &&
+		strings.TrimSpace(marker.Canary.RegistryIdentityDigest) == "") ||
+		(marker.SchemaVersion == 2 &&
+			strings.TrimSpace(marker.Canary.GenerationDigest) == "")
 	if (marker.SchemaVersion != nativeCanaryPromotionMarkerVersion &&
 		!legacyUnbound) ||
 		marker.ProjectID == "" || marker.Canary.CohortDigest == "" ||
 		(!legacyUnbound &&
 			!validNativeCanarySHA256(marker.Canary.RegistryIdentityDigest)) ||
 		marker.Canary.ReportDigest == "" ||
+		(marker.SchemaVersion == nativeCanaryPromotionMarkerVersion &&
+			!validNativeCanarySHA256(marker.Canary.GenerationDigest)) ||
 		(marker.Status != nativeCanaryPromotionPending &&
 			marker.Status != nativeCanaryPromotionValidated) {
 		return marker, false, errors.New("loop: invalid canary promotion marker")
@@ -354,8 +376,12 @@ func saveNativeCanaryPromotionMarker(root string, marker nativeCanaryPromotionMa
 func retireStaleNativeCanaryEvidence(
 	ctx context.Context,
 	root string,
-	currentRegistryIdentityDigest string,
+	projectID string,
+	current *loopsupervisor.CanarySpec,
 ) (loopsupervisor.State, bool, error) {
+	if current == nil {
+		return loopsupervisor.State{}, false, errors.New("current canary generation is required")
+	}
 	store := loopsupervisor.NewStore(root)
 	lock, err := acquireLoopReconciliationLease(ctx, store)
 	if err != nil {
@@ -372,7 +398,7 @@ func retireStaleNativeCanaryEvidence(
 		return state, false, err
 	}
 	var canary *loopsupervisor.CanaryState
-	projectID := state.ProjectID
+	durableProjectID := state.ProjectID
 	if state.Canary != nil {
 		copy := *state.Canary
 		canary = &copy
@@ -381,36 +407,96 @@ func retireStaleNativeCanaryEvidence(
 		if canary != nil && !sameNativeCanaryIdentity(canary, &marker.Canary) {
 			return state, false, errors.New("durable canary state and promotion marker disagree")
 		}
-		if projectID != "" && marker.ProjectID != projectID {
+		if durableProjectID != "" && marker.ProjectID != durableProjectID {
 			return state, false, errors.New("durable canary project and promotion marker disagree")
 		}
 		if canary == nil {
 			copy := marker.Canary
 			canary = &copy
 		}
-		projectID = marker.ProjectID
+		durableProjectID = marker.ProjectID
 	}
-	if canary == nil ||
-		canary.RegistryIdentityDigest == currentRegistryIdentityDigest {
+	if canary == nil {
 		return state, false, nil
 	}
-	legacyUnbound := strings.TrimSpace(canary.RegistryIdentityDigest) == ""
-	if (!legacyUnbound &&
-		!validNativeCanarySHA256(canary.RegistryIdentityDigest)) ||
-		!validNativeCanarySHA256(currentRegistryIdentityDigest) ||
-		projectID == "" {
-		return state, false, errors.New("stale canary identity is incomplete")
+	if durableProjectID != "" && durableProjectID != projectID {
+		return state, false, errors.New("durable canary belongs to a different project")
+	}
+	if canary.Decision == "passed" || markerExists {
+		return state, false, errors.New("passing or publication-pending canary must be reconciled before rollover")
+	}
+	if canary.Decision != "failed" || canary.EndedAt == "" ||
+		canary.ReportDigest == "" || canary.ReportGeneratedAt == "" ||
+		canary.PublishedAt == "" || state.PID != 0 ||
+		(state.Mode != loopsupervisor.ModeCircuitOpen &&
+			state.Mode != loopsupervisor.ModeStopped) {
+		return state, false, errors.New("only a terminal failed canary generation may be archived")
 	}
 
 	expectedReportPath := filepath.Join(
 		root, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath),
 	)
-	if filepath.Clean(canary.ReportPath) != filepath.Clean(expectedReportPath) {
-		return state, false, errors.New("stale canary report path is not the fixed native path")
+	if filepath.Clean(canary.ReportPath) != filepath.Clean(expectedReportPath) ||
+		filepath.Clean(current.ReportPath) != filepath.Clean(expectedReportPath) {
+		return state, false, errors.New("canary report path is not the fixed native path")
 	}
+
+	// Schema-v3 checkpoints did not persist the policy/generation digests. The
+	// one-time upgrade binds their otherwise complete identity to the exact
+	// current execution policy; raw cohort/contract/registry fields below must
+	// still match, and same-commit rebuilds remain ineligible.
+	if canary.AutonomyPolicyDigest == "" {
+		canary.AutonomyPolicyDigest = current.AutonomyPolicyDigest
+	}
+	if canary.ExecutionPolicyDigest == "" {
+		canary.ExecutionPolicyDigest = current.ExecutionPolicyDigest
+	}
+	previousGenerationDigest, err := loopsupervisor.CanaryStateGenerationDigest(
+		projectID, canary,
+	)
+	if err != nil ||
+		(canary.GenerationDigest != "" &&
+			canary.GenerationDigest != previousGenerationDigest) {
+		return state, false, errors.New("stored canary generation identity is invalid")
+	}
+	canary.GenerationDigest = previousGenerationDigest
+	currentGenerationDigest, err := loopsupervisor.CanaryGenerationDigest(projectID, *current)
+	if err != nil || current.GenerationDigest != currentGenerationDigest {
+		return state, false, errors.New("current canary generation identity is invalid")
+	}
+	if previousGenerationDigest == currentGenerationDigest {
+		return state, false, nil
+	}
+	if !sameNativeCanaryNonBinaryPolicy(canary, current) {
+		return state, false, errors.New("canary cohort, contract, or execution policy drift requires operator resolution")
+	}
+	registryChanged := canary.RegistryIdentityDigest != current.RegistryIdentityDigest
+	binaryUnchanged := canary.InstalledCommit == current.InstalledCommit &&
+		canary.BinaryVersion == current.BinaryVersion &&
+		canary.BuildIdentity == current.BuildIdentity
+	binaryAdvanced := false
+	if !binaryUnchanged {
+		if canary.InstalledCommit == current.InstalledCommit ||
+			canary.BuildIdentity == current.BuildIdentity {
+			return state, false, errors.New("same-commit rebuild cannot supersede failed canary evidence")
+		}
+		if err := authenticateNativeCanaryCheckout(root, current.InstalledCommit); err != nil {
+			return state, false, fmt.Errorf("authenticate rollover checkout: %w", err)
+		}
+		if err := authenticateStrictDescendantCommit(
+			root, canary.InstalledCommit, current.InstalledCommit,
+		); err != nil {
+			return state, false, err
+		}
+		binaryAdvanced = true
+	}
+	if !registryChanged && !binaryAdvanced {
+		return state, false, nil
+	}
+
 	keyMaterial := strings.Join([]string{
 		projectID,
-		canary.RegistryIdentityDigest,
+		previousGenerationDigest,
 		canary.StartedAt,
 		canary.ReportDigest,
 		canary.ReportPath,
@@ -419,75 +505,109 @@ func retireStaleNativeCanaryEvidence(
 	historyKey := hex.EncodeToString(keySum[:])
 	loopRoot := store.Root
 	historyPath := filepath.Join(loopRoot, nativeCanaryHistoryDir, historyKey+".json")
-	archiveReportPath := filepath.Join(
+	archiveDir := filepath.Join(
 		root, ".plan-logs", "koryph", "canary", "history", historyKey,
-		filepath.Base(expectedReportPath),
 	)
+	archiveReportPath := filepath.Join(archiveDir, filepath.Base(expectedReportPath))
 
-	sourceReport, sourceErr := fsx.ReadRegularConfined(
-		expectedReportPath, 16<<20, root,
+	reportPathToLoad := expectedReportPath
+	report, err := metrics.LoadAutonomyReport(reportPathToLoad)
+	if errors.Is(err, os.ErrNotExist) {
+		reportPathToLoad = archiveReportPath
+		report, err = metrics.LoadAutonomyReport(reportPathToLoad)
+	}
+	if err != nil {
+		return state, false, fmt.Errorf("authenticate failed canary report: %w", err)
+	}
+	if err := authenticateRetirableCanaryReport(
+		projectID, canary, previousGenerationDigest, report,
+	); err != nil {
+		return state, false, err
+	}
+
+	sourceReport, err := fsx.ReadRegularConfined(expectedReportPath, 64<<20, root)
+	sourceReportPresent := true
+	if errors.Is(err, os.ErrNotExist) {
+		sourceReportPresent = false
+		sourceReport, err = fsx.ReadRegularConfined(archiveReportPath, 64<<20, root)
+	}
+	if err != nil {
+		return state, false, fmt.Errorf("read failed canary report for archive: %w", err)
+	}
+	reportArchiveDigest, err := archiveNativeCanaryFile(
+		archiveReportPath, sourceReport, root,
 	)
-	archivedReport, archiveErr := fsx.ReadRegularConfined(
-		archiveReportPath, 16<<20, root,
-	)
-	switch {
-	case sourceErr == nil && archiveErr == nil &&
-		sourceReport.Digest != archivedReport.Digest:
-		return state, false, errors.New("stale canary report archive differs from source")
-	case sourceErr == nil && errors.Is(archiveErr, os.ErrNotExist):
-		if err := fsx.WriteAtomic(archiveReportPath, sourceReport.Data, 0o600); err != nil {
-			return state, false, fmt.Errorf("archive stale canary report: %w", err)
-		}
-		archivedReport = sourceReport
-	case sourceErr == nil && archiveErr != nil:
-		return state, false, fmt.Errorf("load stale canary report archive: %w", archiveErr)
-	case errors.Is(sourceErr, os.ErrNotExist) && archiveErr == nil:
-		// Idempotent recovery after the source was already retired.
-	case errors.Is(sourceErr, os.ErrNotExist) && errors.Is(archiveErr, os.ErrNotExist):
-		if canary.Decision == "passed" || markerExists {
-			return state, false, errors.New("completed stale canary report is missing")
-		}
-		archiveReportPath = ""
-	case sourceErr != nil:
-		return state, false, fmt.Errorf("load stale canary report: %w", sourceErr)
-	case archiveErr != nil:
-		return state, false, fmt.Errorf("load stale canary report archive: %w", archiveErr)
+	if err != nil {
+		return state, false, fmt.Errorf("archive failed canary report: %w", err)
+	}
+
+	stateRead, stateErr := fsx.ReadRegularConfined(store.StatePath(), 16<<20, loopRoot)
+	if stateErr != nil {
+		return state, false, fmt.Errorf("read failed canary state for archive: %w", stateErr)
+	}
+	archiveStatePath := filepath.Join(archiveDir, filepath.Base(store.StatePath()))
+	stateArchiveDigest, err := archiveNativeCanaryFile(archiveStatePath, stateRead, root)
+	if err != nil {
+		return state, false, fmt.Errorf("archive failed canary state: %w", err)
 	}
 
 	history := nativeCanaryHistoryRecord{
 		SchemaVersion:                  nativeCanaryHistoryVersion,
 		RetiredAt:                      time.Now().UTC().Format(time.RFC3339Nano),
-		Reason:                         "registry validation identity changed",
+		Reason:                         nativeCanaryRolloverReason(registryChanged, binaryAdvanced),
 		ProjectID:                      projectID,
+		PreviousGenerationDigest:       previousGenerationDigest,
+		CurrentGenerationDigest:        currentGenerationDigest,
 		PreviousRegistryIdentityDigest: canary.RegistryIdentityDigest,
-		CurrentRegistryIdentityDigest:  currentRegistryIdentityDigest,
+		CurrentRegistryIdentityDigest:  current.RegistryIdentityDigest,
 		Canary:                         *canary,
+		OriginalStatePath:              store.StatePath(),
+		ArchivedStatePath:              archiveStatePath,
+		ArchivedStateDigest:            stateArchiveDigest,
 		OriginalReportPath:             expectedReportPath,
 		ArchivedReportPath:             archiveReportPath,
+		ArchivedReportDigest:           reportArchiveDigest,
 	}
 	if markerExists {
 		history.MarkerStatus = marker.Status
 	}
+	markerPath := nativeCanaryPromotionMarkerPath(root)
+	if markerExists {
+		markerRead, markerErr := fsx.ReadRegularConfined(markerPath, 8<<20, loopRoot)
+		if markerErr != nil {
+			return state, false, fmt.Errorf("read canary marker for archive: %w", markerErr)
+		}
+		archiveMarkerPath := filepath.Join(archiveDir, filepath.Base(markerPath))
+		markerDigest, markerErr := archiveNativeCanaryFile(
+			archiveMarkerPath, markerRead, root,
+		)
+		if markerErr != nil {
+			return state, false, fmt.Errorf("archive canary marker: %w", markerErr)
+		}
+		history.OriginalMarkerPath = markerPath
+		history.ArchivedMarkerPath = archiveMarkerPath
+		history.ArchivedMarkerDigest = markerDigest
+	}
 	if existing, err := fsx.ReadRegularConfined(historyPath, 16<<20, loopRoot); err == nil {
 		var prior nativeCanaryHistoryRecord
 		if err := strictjson.Decode(existing.Data, &prior); err != nil ||
-			prior.ProjectID != history.ProjectID ||
-			prior.PreviousRegistryIdentityDigest != history.PreviousRegistryIdentityDigest ||
-			prior.OriginalReportPath != history.OriginalReportPath ||
-			prior.ArchivedReportPath != history.ArchivedReportPath {
+			!sameNativeCanaryHistory(prior, history) {
 			return state, false, errors.New("stale canary history record is inconsistent")
 		}
 	} else if errors.Is(err, os.ErrNotExist) {
-		if err := fsx.WriteJSONAtomicPerm(historyPath, history, 0o600); err != nil {
+		if err := fsx.WriteJSONAtomicNoClobberPerm(historyPath, history, 0o600); err != nil {
 			return state, false, fmt.Errorf("persist stale canary history: %w", err)
 		}
 	} else {
 		return state, false, fmt.Errorf("load stale canary history: %w", err)
 	}
 
-	if sourceErr == nil {
-		if err := fsx.RemoveDurable(expectedReportPath); err != nil &&
-			!errors.Is(err, os.ErrNotExist) {
+	if sourceReportPresent {
+		currentReport, err := fsx.ReadRegularConfined(expectedReportPath, 64<<20, root)
+		if err != nil || currentReport.Digest != sourceReport.Digest {
+			return state, false, errors.New("failed canary report changed during archive transaction")
+		}
+		if err := fsx.RemoveDurable(expectedReportPath); err != nil {
 			return state, false, fmt.Errorf("retire stale canary report: %w", err)
 		}
 	}
@@ -508,13 +628,137 @@ func retireStaleNativeCanaryEvidence(
 	return state, true, nil
 }
 
+func sameNativeCanaryHistory(left, right nativeCanaryHistoryRecord) bool {
+	// Retirement time records the first successful manifest publication and
+	// naturally differs during crash replay. Every identity, disposition,
+	// embedded state field, path, and artifact digest must remain exact.
+	left.RetiredAt = ""
+	right.RetiredAt = ""
+	return reflect.DeepEqual(left, right)
+}
+
+func sameNativeCanaryNonBinaryPolicy(
+	previous *loopsupervisor.CanaryState,
+	current *loopsupervisor.CanarySpec,
+) bool {
+	if previous == nil || current == nil {
+		return false
+	}
+	previousCohort := append([]string(nil), previous.Cohort...)
+	currentCohort := append([]string(nil), current.Cohort...)
+	sort.Strings(previousCohort)
+	sort.Strings(currentCohort)
+	return slices.Equal(previousCohort, currentCohort) &&
+		previous.CohortDigest == cohortDigestForNativeCanary(currentCohort) &&
+		previous.TargetWidth == current.TargetWidth &&
+		previous.InactivityLimitMS == current.InactivityLimit.Milliseconds() &&
+		slices.Equal(
+			loopsupervisor.CanonicalCanaryHardStops(previous.HardStops),
+			loopsupervisor.CanonicalCanaryHardStops(current.HardStops),
+		) &&
+		previous.ContractDigest == current.ContractDigest &&
+		previous.AutonomyPolicyDigest == current.AutonomyPolicyDigest &&
+		previous.ExecutionPolicyDigest == current.ExecutionPolicyDigest &&
+		filepath.Clean(previous.ReportPath) == filepath.Clean(current.ReportPath)
+}
+
+func cohortDigestForNativeCanary(cohort []string) string {
+	digest, _ := metrics.AutonomyCohortDigest(cohort)
+	return digest
+}
+
+func authenticateStrictDescendantCommit(root, previous, current string) error {
+	if !validNativeCanaryCommit(previous) || !validNativeCanaryCommit(current) ||
+		previous == current {
+		return errors.New("canary rollover requires a new clean installed commit")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := execx.MustSucceed(ctx, execx.Cmd{
+		Dir: root, Name: "git",
+		Args: []string{"merge-base", "--is-ancestor", previous, current},
+	}); err != nil {
+		return fmt.Errorf("installed canary commit is not a strict descendant: %w", err)
+	}
+	return nil
+}
+
+func authenticateRetirableCanaryReport(
+	projectID string,
+	canary *loopsupervisor.CanaryState,
+	generationDigest string,
+	report *metrics.AutonomyReport,
+) error {
+	if report == nil || report.Decision.Passed ||
+		report.ProjectID != projectID ||
+		report.InstalledCommit != canary.InstalledCommit ||
+		report.BinaryVersion != canary.BinaryVersion ||
+		report.BuildIdentity != canary.BuildIdentity ||
+		report.ContractDigest != canary.ContractDigest ||
+		report.RegistryIdentityDigest != canary.RegistryIdentityDigest ||
+		report.CohortDigest != canary.CohortDigest ||
+		report.StartedAt != canary.StartedAt ||
+		report.EvidenceDigest != canary.ReportDigest ||
+		(report.GenerationDigest != "" &&
+			report.GenerationDigest != generationDigest) ||
+		(report.ExecutionPolicyDigest != "" &&
+			report.ExecutionPolicyDigest != canary.ExecutionPolicyDigest) {
+		return errors.New("failed canary report does not match durable generation identity")
+	}
+	return nil
+}
+
+func archiveNativeCanaryFile(
+	path string,
+	source fsx.ConfinedRead,
+	root string,
+) (string, error) {
+	existing, err := fsx.ReadRegularConfined(path, int64(len(source.Data))+1, root)
+	if err == nil {
+		if existing.Digest != source.Digest {
+			return "", errors.New("existing canary archive differs from source")
+		}
+		return "sha256:" + existing.Digest, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := fsx.WriteAtomicNoClobber(path, source.Data, 0o600); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+		existing, readErr := fsx.ReadRegularConfined(
+			path, int64(len(source.Data))+1, root,
+		)
+		if readErr != nil || existing.Digest != source.Digest {
+			return "", errors.New("concurrent canary archive differs from source")
+		}
+	}
+	return "sha256:" + source.Digest, nil
+}
+
+func nativeCanaryRolloverReason(registryChanged, binaryAdvanced bool) string {
+	switch {
+	case registryChanged && binaryAdvanced:
+		return "installed binary and registry validation identity changed"
+	case binaryAdvanced:
+		return "installed binary advanced"
+	default:
+		return "registry validation identity changed"
+	}
+}
+
 func sameNativeCanaryIdentity(left, right *loopsupervisor.CanaryState) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
 	return left.RegistryIdentityDigest == right.RegistryIdentityDigest &&
+		left.GenerationDigest == right.GenerationDigest &&
 		left.CohortDigest == right.CohortDigest &&
 		left.InstalledCommit == right.InstalledCommit &&
+		left.BuildIdentity == right.BuildIdentity &&
+		left.ContractDigest == right.ContractDigest &&
+		left.ExecutionPolicyDigest == right.ExecutionPolicyDigest &&
 		left.ReportPath == right.ReportPath &&
 		left.ReportDigest == right.ReportDigest
 }
@@ -785,6 +1029,8 @@ func nativeCanaryReportExpectation(
 		BuildIdentity:          canary.BuildIdentity,
 		ContractDigest:         canary.ContractDigest,
 		RegistryIdentityDigest: canary.RegistryIdentityDigest,
+		GenerationDigest:       canary.GenerationDigest,
+		ExecutionPolicyDigest:  canary.ExecutionPolicyDigest,
 		Cohort:                 canary.Cohort,
 		CohortDigest:           cohortDigest,
 		Thresholds:             metrics.DefaultAutonomyThresholds(),
@@ -1131,6 +1377,14 @@ func (e *loopEngine) Run(ctx context.Context, req loopsupervisor.RunRequest) (lo
 		Code:       outcome.Code,
 		Reason:     outcome.Reason,
 		Dispatched: outcome.Dispatched,
+		Containment: loopsupervisor.ContainmentResult{
+			Required:         outcome.Containment.Required,
+			Complete:         outcome.Containment.Complete,
+			ActiveWorkers:    outcome.Containment.ActiveWorkers,
+			NonTerminalSlots: outcome.Containment.NonTerminalSlots,
+			RemainingLeases:  outcome.Containment.RemainingLeases,
+			Error:            outcome.Containment.Error,
+		},
 	}
 	if stat, memErr := sysmem.Available(); memErr == nil {
 		result.PressureNormal = stat.Pressure == sysmem.PressureNormal
@@ -1192,11 +1446,80 @@ func fixedCanaryRequestMatches(
 	return false
 }
 
+type nativeCanaryEnginePolicy struct {
+	Parent             string  `json:"parent,omitempty"`
+	Budget             float64 `json:"budget"`
+	DefaultModel       string  `json:"default_model,omitempty"`
+	RuntimeOnly        string  `json:"runtime_only,omitempty"`
+	RuntimeEquivalent  string  `json:"runtime_equivalent,omitempty"`
+	AutoMerge          bool    `json:"auto_merge"`
+	Direct             bool    `json:"direct"`
+	Review             bool    `json:"review"`
+	AllowAPISpend      bool    `json:"allow_api_spend"`
+	NoBillingGuard     bool    `json:"no_billing_guard"`
+	RequireCalibration bool    `json:"require_calibration"`
+	DispatchMode       string  `json:"dispatch_mode,omitempty"`
+}
+
+type nativeCanaryExecutionPolicy struct {
+	SchemaVersion        string                          `json:"schema_version"`
+	Supervisor           loopsupervisor.SupervisorPolicy `json:"supervisor"`
+	Engine               nativeCanaryEnginePolicy        `json:"engine"`
+	TargetWidth          int                             `json:"target_width"`
+	InactivityLimitMS    int64                           `json:"inactivity_limit_ms"`
+	HardStops            []string                        `json:"hard_stops"`
+	ReportPath           string                          `json:"report_path"`
+	AutonomyPolicyDigest string                          `json:"autonomy_policy_digest"`
+}
+
+func nativeCanaryExecutionPolicyDigest(
+	config loopsupervisor.Config,
+	spec loopsupervisor.CanarySpec,
+	enginePolicy nativeCanaryEnginePolicy,
+	autonomyPolicyDigest string,
+) (string, error) {
+	policy := nativeCanaryExecutionPolicy{
+		SchemaVersion:        "koryph.canary-execution-policy/v1",
+		Supervisor:           loopsupervisor.EffectiveSupervisorPolicy(config),
+		Engine:               enginePolicy,
+		TargetWidth:          spec.TargetWidth,
+		InactivityLimitMS:    spec.InactivityLimit.Milliseconds(),
+		HardStops:            append([]string(nil), spec.HardStops...),
+		ReportPath:           filepath.Clean(spec.ReportPath),
+		AutonomyPolicyDigest: autonomyPolicyDigest,
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// nativeCanarySpec keeps the narrow package-test seam; production admission
+// always uses nativeCanarySpecWithPolicy with the resolved project and command
+// policy.
 func nativeCanarySpec(
 	root string,
 	cohort []string,
 	target int,
 	registryIdentityDigest string,
+) (*loopsupervisor.CanarySpec, error) {
+	config := loopsupervisor.Config{ProjectID: "demo"}
+	return nativeCanarySpecWithPolicy(
+		"demo", root, cohort, target, registryIdentityDigest, config,
+		nativeCanaryEnginePolicy{AutoMerge: true, Review: true},
+	)
+}
+
+func nativeCanarySpecWithPolicy(
+	projectID string,
+	root string,
+	cohort []string,
+	target int,
+	registryIdentityDigest string,
+	config loopsupervisor.Config,
+	enginePolicy nativeCanaryEnginePolicy,
 ) (*loopsupervisor.CanarySpec, error) {
 	commit := strings.TrimSpace(loopInstalledCommit())
 	if !validNativeCanaryCommit(commit) {
@@ -1219,16 +1542,35 @@ func nativeCanarySpec(
 	if err != nil {
 		return nil, fmt.Errorf("loop: authenticate installed binary: %w", err)
 	}
-	return &loopsupervisor.CanarySpec{
+	autonomyPolicyDigest, err := metrics.AutonomyThresholdsDigest(
+		metrics.DefaultAutonomyThresholds(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loop: authenticate autonomy thresholds: %w", err)
+	}
+	spec := &loopsupervisor.CanarySpec{
 		Cohort: cohort, TargetWidth: target,
 		InactivityLimit:        loopsupervisor.DefaultCanaryInactivityLimit,
+		HardStops:              loopsupervisor.CanonicalCanaryHardStops(nil),
 		InstalledCommit:        commit,
 		BinaryVersion:          loopBinaryVersion(),
 		BuildIdentity:          buildIdentity,
 		ContractDigest:         "sha256:" + contract.Digest,
 		RegistryIdentityDigest: registryIdentityDigest,
+		AutonomyPolicyDigest:   autonomyPolicyDigest,
 		ReportPath:             reportPath,
-	}, nil
+	}
+	spec.ExecutionPolicyDigest, err = nativeCanaryExecutionPolicyDigest(
+		config, *spec, enginePolicy, autonomyPolicyDigest,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loop: authenticate canary execution policy: %w", err)
+	}
+	spec.GenerationDigest, err = loopsupervisor.CanaryGenerationDigest(projectID, *spec)
+	if err != nil {
+		return nil, err
+	}
+	return spec, nil
 }
 
 func resumedNativeCanarySpec(
@@ -1237,6 +1579,27 @@ func resumedNativeCanarySpec(
 	target int,
 	registryIdentityDigest string,
 	state loopsupervisor.State,
+) (*loopsupervisor.CanarySpec, error) {
+	projectID := strings.TrimSpace(state.ProjectID)
+	if projectID == "" {
+		projectID = "demo"
+	}
+	config := loopsupervisor.Config{ProjectID: projectID}
+	return resumedNativeCanarySpecWithPolicy(
+		projectID, root, cohort, target, registryIdentityDigest, state, config,
+		nativeCanaryEnginePolicy{AutoMerge: true, Review: true},
+	)
+}
+
+func resumedNativeCanarySpecWithPolicy(
+	projectID string,
+	root string,
+	cohort []string,
+	target int,
+	registryIdentityDigest string,
+	state loopsupervisor.State,
+	config loopsupervisor.Config,
+	enginePolicy nativeCanaryEnginePolicy,
 ) (*loopsupervisor.CanarySpec, error) {
 	if state.Canary == nil {
 		return nil, errors.New("loop: no durable canary identity to resume")
@@ -1277,7 +1640,7 @@ func resumedNativeCanarySpec(
 		filepath.Clean(canary.ReportPath) != filepath.Clean(reportPath) {
 		return nil, loopsupervisor.ErrCanaryIdentityDrift
 	}
-	return &loopsupervisor.CanarySpec{
+	spec := &loopsupervisor.CanarySpec{
 		Cohort:                 cohort,
 		TargetWidth:            target,
 		InactivityLimit:        time.Duration(canary.InactivityLimitMS) * time.Millisecond,
@@ -1287,8 +1650,28 @@ func resumedNativeCanarySpec(
 		BuildIdentity:          canary.BuildIdentity,
 		ContractDigest:         canary.ContractDigest,
 		RegistryIdentityDigest: canary.RegistryIdentityDigest,
+		AutonomyPolicyDigest:   canary.AutonomyPolicyDigest,
+		ExecutionPolicyDigest:  canary.ExecutionPolicyDigest,
+		GenerationDigest:       canary.GenerationDigest,
 		ReportPath:             canary.ReportPath,
-	}, nil
+	}
+	expectedAutonomyPolicy, err := metrics.AutonomyThresholdsDigest(
+		metrics.DefaultAutonomyThresholds(),
+	)
+	if err != nil || expectedAutonomyPolicy != spec.AutonomyPolicyDigest {
+		return nil, loopsupervisor.ErrCanaryIdentityDrift
+	}
+	expectedExecutionPolicy, err := nativeCanaryExecutionPolicyDigest(
+		config, *spec, enginePolicy, expectedAutonomyPolicy,
+	)
+	if err != nil || expectedExecutionPolicy != spec.ExecutionPolicyDigest {
+		return nil, loopsupervisor.ErrCanaryIdentityDrift
+	}
+	expectedGeneration, err := loopsupervisor.CanaryGenerationDigest(projectID, *spec)
+	if err != nil || expectedGeneration != spec.GenerationDigest {
+		return nil, loopsupervisor.ErrCanaryIdentityDrift
+	}
+	return spec, nil
 }
 
 func authenticateNativeCanaryResumeCheckout(root, installedCommit string) error {

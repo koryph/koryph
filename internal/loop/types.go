@@ -16,7 +16,7 @@ import (
 const (
 	// SchemaVersion is the on-disk supervisor and control schema understood by
 	// this binary. Loads reject newer versions rather than dropping fields.
-	SchemaVersion = 3
+	SchemaVersion = 4
 
 	ModeStarting    = "starting"
 	ModeRunning     = "running"
@@ -93,6 +93,9 @@ type CanarySpec struct {
 	BuildIdentity          string
 	ContractDigest         string
 	RegistryIdentityDigest string
+	AutonomyPolicyDigest   string
+	ExecutionPolicyDigest  string
+	GenerationDigest       string
 	ReportPath             string
 }
 
@@ -163,6 +166,19 @@ type RunResult struct {
 	PressureNormal bool
 	Pressure       PressureSample
 	HardStop       string
+	Containment    ContainmentResult
+}
+
+// ContainmentResult is the engine-owned barrier proof attached to a
+// native-canary cancellation. Required=false preserves ordinary Engine
+// implementations and operator-interrupt resumability.
+type ContainmentResult struct {
+	Required         bool
+	Complete         bool
+	ActiveWorkers    int
+	NonTerminalSlots int
+	RemainingLeases  int
+	Error            string
 }
 
 // PressureSample is the supervisor's durable, provider-neutral host sample at
@@ -299,6 +315,9 @@ type CanaryState struct {
 	BuildIdentity          string `json:"build_identity"`
 	ContractDigest         string `json:"contract_digest"`
 	RegistryIdentityDigest string `json:"registry_identity_digest"`
+	AutonomyPolicyDigest   string `json:"autonomy_policy_digest"`
+	ExecutionPolicyDigest  string `json:"execution_policy_digest"`
+	GenerationDigest       string `json:"generation_digest"`
 	ReportPath             string `json:"report_path"`
 
 	RunIDs            []string                   `json:"run_ids,omitempty"`

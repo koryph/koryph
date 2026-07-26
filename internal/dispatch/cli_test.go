@@ -198,6 +198,9 @@ func TestDispatchLaunchesDetachedAgent(t *testing.T) {
 			t.Errorf("launch.sh missing %q:\n%s", want, launch)
 		}
 	}
+	if strings.Contains(launch, "KORYPH_RUNTIME_OUTPUT_PATH") {
+		t.Errorf("launch.sh exported runtime-owned output path:\n%s", launch)
+	}
 	if strings.Contains(launch, "BEADS_DIR=") {
 		t.Errorf("launch.sh leaked shared BEADS_DIR:\n%s", launch)
 	}
@@ -883,5 +886,56 @@ func TestStopForce(t *testing.T) {
 func TestStopForceInvalidPID(t *testing.T) {
 	if err := StopForce(0); err == nil {
 		t.Error("StopForce(0) should error")
+	}
+}
+
+func TestStopGracefulThenForceAndReapAllowsCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	checkpoint := filepath.Join(dir, "checkpoint")
+	ready := filepath.Join(dir, "ready")
+	cmd := exec.Command("/bin/sh", "-c",
+		`trap 'printf checkpoint > "$1"; exit 0' TERM; printf ready > "$2"; while :; do :; done`,
+		"hard-stop-worker", checkpoint, ready,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	waitForFile(t, ready)
+	if err := StopGracefulThenForceAndReap(pid, 2*time.Second); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("StopGracefulThenForceAndReap: %v", err)
+	}
+	if got, err := os.ReadFile(checkpoint); err != nil || string(got) != "checkpoint" {
+		t.Fatalf("checkpoint = %q, %v; graceful TERM was not observed", got, err)
+	}
+	if Alive(pid) {
+		t.Fatalf("pid %d is still alive after graceful containment", pid)
+	}
+}
+
+func TestStopGracefulThenForceAndReapEscalatesResistantGroup(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.Command("/bin/sh", "-c",
+		`trap '' TERM; printf ready > "$1"; while :; do :; done`,
+		"hard-stop-worker", ready,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	waitForFile(t, ready)
+	started := time.Now()
+	if err := StopGracefulThenForceAndReap(pid, 50*time.Millisecond); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("StopGracefulThenForceAndReap: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 40*time.Millisecond || elapsed > 4*time.Second {
+		t.Fatalf("bounded escalation took %s", elapsed)
+	}
+	if Alive(pid) {
+		t.Fatalf("resistant pid %d is still alive after force containment", pid)
 	}
 }

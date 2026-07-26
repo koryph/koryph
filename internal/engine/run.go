@@ -211,6 +211,10 @@ type runner struct {
 	// dispatch.StopForceAndReap.
 	launchedSlotPersist func(*ledger.Slot) error
 	rollbackStop        func(int) error
+	// containmentStop is the native-canary hard-stop lifecycle seam. The
+	// production path performs bounded TERM→KILL escalation and reaps the
+	// complete detached process group.
+	containmentStop func(int, time.Duration) error
 	// dispatchCircuitReason is set on an engine invariant that makes further
 	// automated launches unsafe. Direct and wave/rolling dispatch gates both
 	// honor it for the remainder of the run.
@@ -312,8 +316,13 @@ type runner struct {
 	// goroutine only ever reads it via snapshot().
 	hb heartbeatState
 
-	hardStopKinds  map[SafetyTripwireKind]struct{}
-	pinnedTerminal bool
+	hardStopKinds map[SafetyTripwireKind]struct{}
+	// safetyTripwireFired closes native-canary admission synchronously at the
+	// decision point, before the supervisor goroutine observes the event and
+	// cancels the run context.
+	safetyTripwireFired bool
+	pinnedTerminal      bool
+	replayedContainment *ContainmentResult
 }
 
 // slotResUsage is one slot's in-memory resource accumulation plus the PID it is
@@ -641,10 +650,14 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 		}
 	}
 	if r.pinnedTerminal {
-		return Outcome{
+		outcome := Outcome{
 			Code: ExitOK, RunID: r.run.RunID,
 			Reason: "pinned recovery run already terminal",
-		}, nil
+		}
+		if r.replayedContainment != nil {
+			outcome.Containment = *r.replayedContainment
+		}
+		return outcome, nil
 	}
 	logRunStart(r.run.RunID, r.opts.ProjectID, r.dispatchMode())
 	r.finalizer = newFinalizationLane(ctx)
@@ -830,6 +843,19 @@ func (r *runner) outcome(code int, reason string, drained bool) Outcome {
 // interrupted checkpoints every non-terminal slot's manifest and leaves the
 // run in status running so a later --resume can classify and re-adopt it.
 func (r *runner) interrupted() (Outcome, error) {
+	if r.opts.NativeCanary {
+		// Cancellation has closed admission in the single engine loop. Wait
+		// for every asynchronous validation/landing worker to observe that
+		// cancellation before changing any slot or signalling a runtime, so no
+		// finalizer can race the containment terminal checkpoint.
+		if r.finalizer != nil {
+			r.finalizer.close()
+		}
+		containment := r.containNativeCanaryHardStop()
+		outcome := r.outcome(ExitOK, "canary-hard-stop-contained", false)
+		outcome.Containment = containment
+		return outcome, nil
+	}
 	for _, id := range r.activePhaseIDs() {
 		r.checkpointSlot(r.run.Slots[id], "interrupted")
 	}
