@@ -92,4 +92,4 @@ running at the edge of what your plan allows and never past it.
   (`koryph governor set --account`) or a persisted default
   (`koryph quota set-threads`) — see [Billing &
   quota](../user-guide/billing-and-quota.md#per-account-concurrency-default-koryph-1o23)
-  and the [design doc](../developer-guide/global-governor.md#per-account-governor-pools-koryph-v8u11--koryph-1o21-l5c).
+  and the [design doc](../developer-guide/global-governor.md#per-account-governor-pools).

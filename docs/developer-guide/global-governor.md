@@ -234,7 +234,7 @@ circuit breaker is open/half-open (calling out "flapping" once
 is a signal the account is being persistently rate-limited, or `--hard-max`/
 `--break-sec` need attention.
 
-### Per-account governor pools (koryph-v8u.11 → koryph-1o2.1, L5c)
+### Per-account governor pools (koryph-v8u.11 → koryph-1o2.1, L5c) { #per-account-governor-pools }
 
 Different LLM accounts — even on the same provider (a 20x Max subscription vs. a
 work seat), and across providers (Anthropic/claude, OpenAI/codex, …) — enforce
