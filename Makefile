@@ -147,6 +147,10 @@ lint-agent: ## Like lint, without inline source snippets per issue (same verdict
 gate-agent: ## Agent-facing green gate: same checks/verdict as gate, quiet stdout, full logs under GATE_LOG_DIR
 	@scripts/gate-agent.sh "$(GATE_LOG_DIR)"
 
+.PHONY: production-acceptance
+production-acceptance: ## Deterministic, network-free production-kernel release acceptance
+	@scripts/production-acceptance.sh "$(GATE_LOG_DIR)/production-acceptance"
+
 ##@ VS Code Extension
 
 .PHONY: ext-build

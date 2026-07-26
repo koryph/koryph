@@ -171,6 +171,37 @@ func TestDuplicateBroadCommandAlwaysBlocksCandidateAndOnlyExplicitlyTripsCircuit
 	}
 }
 
+func TestProductionCandidateEntersGateBeforeReviewAndLanding(t *testing.T) {
+	r, sl, _ := candidateFixture(t)
+	r.adapter = &fakeSource{}
+	r.reg = registry.NewStore()
+	r.cfg = &project.Config{}
+	r.opts = Options{ProjectID: "proj", Review: true, AutoMerge: true}
+	lane := &finalizationLane{}
+	lane.gates.ready = sync.NewCond(&lane.gates.mu)
+	lane.reviews.ready = sync.NewCond(&lane.reviews.mu)
+	lane.merges.ready = sync.NewCond(&lane.merges.mu)
+	r.finalizer = lane
+
+	r.finishAssessedCandidate(t.Context(), sl, candidateAssessment{
+		eligible: true,
+		outcome:  OutcomeCandidateReady,
+	})
+
+	if len(lane.gates.queue) != 1 {
+		t.Fatalf("gate queue = %d, want exactly one authoritative validation", len(lane.gates.queue))
+	}
+	if len(lane.reviews.queue) != 0 || len(lane.merges.queue) != 0 {
+		t.Fatalf("candidate reached review/landing before gate: reviews=%d landings=%d",
+			len(lane.reviews.queue), len(lane.merges.queue))
+	}
+	if got := r.run.Slots[sl.PhaseID]; got == nil ||
+		got.Status != ledger.SlotMerging ||
+		got.FinalizationStage != finalizationGate {
+		t.Fatalf("candidate stage = %+v, want authoritative gate", got)
+	}
+}
+
 func TestEngineValidationSharesWorkerProcessGuardAndStartsGateOnce(t *testing.T) {
 	r, sl, wt := candidateFixture(t)
 	writeFile(t, filepath.Join(wt, "guarded.txt"), "guarded\n", 0o644)

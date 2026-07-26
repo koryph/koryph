@@ -103,8 +103,8 @@ renaming them is a later compatibility migration.
 
 ## Deterministic release acceptance
 
-One documented command must run network-free fixtures and fail if any required
-scenario is absent:
+`make production-acceptance` runs network-free fixtures and fails if any
+required scenario is absent:
 
 1. only eligible dependency-ready work is scheduled;
 2. footprint and resource conflicts do not overlap;
