@@ -192,6 +192,8 @@ func TestPreambleRequiresTypedTerminalEvidence(t *testing.T) {
 		"focused_tests",
 		"exactly one",
 		"regular file or focused-test",
+		"narrowest check that covers an acceptance criterion",
+		"unrelated failures from that probe",
 		`koryph phase complete --evidence "$KORYPH_PHASE_DIR/completion-evidence.json"`,
 		"Never hand-write result.json",
 	} {

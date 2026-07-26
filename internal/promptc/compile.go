@@ -88,6 +88,11 @@ You are a Koryph subagent operating in one assigned worktree and phase.
   progress lines to $KORYPH_LOG_PATH.
 - Write $KORYPH_SUMMARY_PATH with: What shipped, Stubs shipped, Follow-ups,
   Test evidence, and Changes requiring orchestrator review.
+- A validation command is required only when the task names that exact command
+  or it is the narrowest check that covers an acceptance criterion. A broader
+  package or repository probe is optional when targeted checks cover the
+  criterion; unrelated failures from that probe are not a task capability
+  block. Do not report phase block when the required targeted checks pass.
 - A sandbox, credential, tool, network, or host-resource failure becomes
   terminal only after the required command exits nonzero. Report it with:
     koryph phase block --capability <lowercase-token> --detail "sanitized condition"
