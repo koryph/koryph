@@ -43,10 +43,12 @@ func CheckCanaryGenerationArchives(repoRoot, currentGeneration string) (Finding,
 		}
 		var archive loopsupervisor.CanaryGenerationArchive
 		if decodeErr := strictjson.Decode(read.Data, &archive); decodeErr != nil ||
-			archive.SchemaVersion != loopsupervisor.CanaryGenerationArchiveVersion ||
+			archive.SchemaVersion < 2 ||
+			archive.SchemaVersion > loopsupervisor.CanaryGenerationArchiveVersion ||
 			archive.ProjectID == "" ||
 			archive.PreviousGenerationDigest == "" ||
-			archive.CurrentGenerationDigest == "" {
+			archive.CurrentGenerationDigest == "" ||
+			!validCanaryPolicySupersession(archive.PolicySupersession) {
 			return Finding{
 				Check: checkNameAutonomyCanary, Level: LevelError,
 				Message: "autonomy canary generation archive manifest is invalid: " + path,
@@ -83,6 +85,21 @@ func CheckCanaryGenerationArchives(repoRoot, currentGeneration string) (Finding,
 			current, len(files),
 		),
 	}, true
+}
+
+func validCanaryPolicySupersession(
+	supersession *loopsupervisor.CanaryPolicySupersession,
+) bool {
+	if supersession == nil {
+		return true
+	}
+	return supersession.OperatorRequested &&
+		supersession.PreviousContractDigest != "" &&
+		supersession.CurrentContractDigest != "" &&
+		supersession.PreviousAutonomyPolicyDigest != "" &&
+		supersession.CurrentAutonomyPolicyDigest != "" &&
+		supersession.PreviousExecutionPolicyDigest != "" &&
+		supersession.CurrentExecutionPolicyDigest != ""
 }
 
 // CheckAutonomyReport fails closed when the caller omits the one complete live

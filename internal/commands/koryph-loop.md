@@ -31,3 +31,12 @@ five consecutive fully authenticated merged outcomes under normal host
 pressure. Canary mode requires both `--review=true` and `--auto-merge=true`;
 its required hard stops drain immediately and open the durable supervisor
 circuit.
+
+When a terminal failed generation was produced by an older binary and the
+repair also changed the authenticated contract or execution policy, start the
+same cohort once with `--supersede-failed-canary-policy`. Koryph still requires
+a clean strict-descendant installed commit, the exact unchanged cohort
+envelope, and authenticated failed state/report evidence. It creates an
+immutable archive recording both policy identities before releasing the fixed
+state paths. The switch cannot supersede a live, passing, same-commit,
+cohort-drifted, or corrupt generation.

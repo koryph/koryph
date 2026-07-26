@@ -21,8 +21,26 @@ const (
 	// CanaryGenerationArchiveVersion is the durable retirement manifest
 	// schema. Archive artifacts are create-once and authenticated by this
 	// manifest before the fixed report path is released.
-	CanaryGenerationArchiveVersion = 2
+	CanaryGenerationArchiveVersion = 3
 )
+
+// CanaryPolicySupersession records the explicit operator authorization that
+// allowed a repaired strict-descendant binary to replace a terminal failed
+// generation after its authenticated contract or execution policy changed.
+// Cohort and report-path drift are never supersedable.
+type CanaryPolicySupersession struct {
+	OperatorRequested bool `json:"operator_requested"`
+
+	PreviousContractDigest        string `json:"previous_contract_digest"`
+	CurrentContractDigest         string `json:"current_contract_digest"`
+	PreviousAutonomyPolicyDigest  string `json:"previous_autonomy_policy_digest"`
+	CurrentAutonomyPolicyDigest   string `json:"current_autonomy_policy_digest"`
+	PreviousExecutionPolicyDigest string `json:"previous_execution_policy_digest"`
+	CurrentExecutionPolicyDigest  string `json:"current_execution_policy_digest"`
+
+	PreviousHardStops []string `json:"previous_hard_stops"`
+	CurrentHardStops  []string `json:"current_hard_stops"`
+}
 
 // CanaryGenerationArchive is the complete create-once manifest for one
 // retired canary generation.
@@ -37,7 +55,8 @@ type CanaryGenerationArchive struct {
 	PreviousRegistryIdentityDigest string `json:"previous_registry_identity_digest"`
 	CurrentRegistryIdentityDigest  string `json:"current_registry_identity_digest"`
 
-	Canary CanaryState `json:"canary"`
+	Canary             CanaryState               `json:"canary"`
+	PolicySupersession *CanaryPolicySupersession `json:"policy_supersession,omitempty"`
 
 	OriginalStatePath   string `json:"original_state_path,omitempty"`
 	ArchivedStatePath   string `json:"archived_state_path,omitempty"`
