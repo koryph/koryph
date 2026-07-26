@@ -465,7 +465,23 @@ func prepareReviewScratch(o Opts) (string, error) {
 		return "", err
 	}
 	if err := os.Mkdir(scratch, 0o700); err != nil {
-		return "", err
+		if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+		// Concurrent review lanes share the engine-private artifact directory.
+		// Another lane may create the scratch directory after Lstat and before
+		// Mkdir. Revalidate the winner instead of turning that harmless race
+		// into a retry that changes the content-addressed verdict.
+		info, statErr := os.Lstat(scratch)
+		if statErr != nil {
+			return "", statErr
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("%s is not a real directory", scratch)
+		}
+		if err := os.Chmod(scratch, 0o700); err != nil {
+			return "", err
+		}
 	}
 	return scratch, nil
 }
