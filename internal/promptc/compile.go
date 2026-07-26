@@ -213,6 +213,13 @@ func volatileTail(in Input) string {
 		b.WriteString(". Read that file and resolve every finding before you finish.")
 	}
 
+	if in.RepairPath != "" {
+		b.WriteString("\n\n### Required validation repair evidence\n")
+		b.WriteString("The previous attempt failed authoritative validation. Read ")
+		b.WriteString(in.RepairPath)
+		b.WriteString(". Correct the reported root cause, then run a focused regression that covers it before you finish.")
+	}
+
 	writeResourcesBlock(&b, in.Bead)
 
 	b.WriteString("\n\n### Focused test scope")

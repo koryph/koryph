@@ -6,6 +6,9 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/koryph/koryph/internal/dispatch"
@@ -86,6 +89,52 @@ type capturingBackend struct{ specs []dispatch.Spec }
 func (b *capturingBackend) Dispatch(_ context.Context, spec dispatch.Spec) (dispatch.Handle, error) {
 	b.specs = append(b.specs, spec)
 	return dispatch.Handle{PID: 1, SessionID: spec.SessionID}, nil
+}
+
+// A gate retry is only useful when the coding worker can inspect the exact
+// authoritative failure. This guards the canary regression where a standard
+// repair received only "gate-failed requeue", ran its already-passing focused
+// test, and returned the unchanged candidate.
+func TestGateFailureRetryCarriesImmutableRepairEvidence(t *testing.T) {
+	f := newFixture(t, fixOpts{})
+	r := runnerFromFixture(t, f)
+	r.adapter = &fakeSource{}
+	r.quotaCfg = &quota.Config{}
+	r.rt = runtimetest.Stub{StubName: "claude"}
+	backend := &capturingBackend{}
+	r.backend = backend
+
+	sl := conflictSlot(t, r, "gate-evidence", 0)
+	sl.Model, sl.Agent, sl.ModelWhy = "sonnet", "koryph-implementer", "test frozen"
+	if err := r.store.SaveRun(r.run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	const gateOutput = "--- FAIL: TestTypedBlockedCandidateCommentsBead\nblocked comment missing typed outcome\n"
+
+	if requeued := r.handleMergeFailure(t.Context(), sl, merge.Result{
+		Status: merge.StatusGateFailed, GateOutput: gateOutput,
+	}); !requeued {
+		t.Fatal("first gate failure must dispatch a bounded repair")
+	}
+	if len(backend.specs) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(backend.specs))
+	}
+	evidencePath := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID), "gate-failure-attempt-1.log")
+	gotEvidence, err := os.ReadFile(evidencePath)
+	if err != nil {
+		t.Fatalf("read repair evidence: %v", err)
+	}
+	if string(gotEvidence) != gateOutput {
+		t.Fatalf("repair evidence = %q, want exact gate output %q", gotEvidence, gateOutput)
+	}
+	for _, want := range []string{
+		"### Required validation repair evidence", evidencePath,
+		"Correct the reported root cause", "focused regression",
+	} {
+		if !strings.Contains(backend.specs[0].Prompt, want) {
+			t.Errorf("repair prompt missing %q:\n%s", want, backend.specs[0].Prompt)
+		}
+	}
 }
 
 // koryph-qf6.1 regression: dispatchBead builds a brand-new Slot on requeue,

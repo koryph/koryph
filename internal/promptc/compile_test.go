@@ -310,11 +310,15 @@ func TestResumeAndReviewBlocksConditional(t *testing.T) {
 	if strings.Contains(out, "### Blocking review findings") {
 		t.Errorf("review block should be absent when ReviewPath is empty")
 	}
+	if strings.Contains(out, "### Required validation repair evidence") {
+		t.Errorf("repair block should be absent when RepairPath is empty")
+	}
 
 	// Present when set.
 	in := baseInput()
 	in.ResumeSHA = "abc1234"
 	in.ReviewPath = "/phases/p1/review.md"
+	in.RepairPath = "/phases/p1/gate-failure-attempt-1.log"
 	out = Compile(in)
 	if !strings.Contains(out, "### RESUMING") {
 		t.Errorf("RESUMING block missing when ResumeSHA is set")
@@ -327,6 +331,12 @@ func TestResumeAndReviewBlocksConditional(t *testing.T) {
 	}
 	if !strings.Contains(out, "/phases/p1/review.md") {
 		t.Errorf("review block missing the review path")
+	}
+	if !strings.Contains(out, "### Required validation repair evidence") {
+		t.Errorf("repair block missing when RepairPath is set")
+	}
+	if !strings.Contains(out, "/phases/p1/gate-failure-attempt-1.log") {
+		t.Errorf("repair block missing the repair path")
 	}
 }
 

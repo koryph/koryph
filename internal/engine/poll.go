@@ -1623,6 +1623,7 @@ type typedRecoveryRequest struct {
 	evidenceChanged              bool
 	deterministicRepairAvailable bool
 	reviewPath                   string
+	repairPath                   string
 	reason                       string
 }
 
@@ -1680,6 +1681,7 @@ func (r *runner) recoverTyped(ctx context.Context, sl *ledger.Slot, req typedRec
 			outcome:          req.outcome,
 			decision:         decision,
 			model:            model,
+			repairPath:       req.repairPath,
 			completionRepair: req.outcome == OutcomeCompletionContractMissing,
 		})
 		return true
@@ -1733,6 +1735,7 @@ type retryDispatch struct {
 	outcome          CandidateOutcomeClass
 	decision         RecoveryDecision
 	model            typedRecoveryModel
+	repairPath       string
 	completionRepair bool
 }
 
@@ -2405,6 +2408,34 @@ func (r *runner) auditBlocked(ctx context.Context, sl *ledger.Slot, reason, deta
 	})
 }
 
+// persistGateRepairEvidence publishes the authoritative failure that a repair
+// retry must address. The attempt number makes the path immutable within a
+// phase: duplicate finalization may reuse identical evidence, but conflicting
+// output for the same attempt is an engine invariant rather than permission to
+// overwrite what a worker was instructed to read.
+func (r *runner) persistGateRepairEvidence(sl *ledger.Slot, output string) (string, error) {
+	path := filepath.Join(r.store.PhaseDir(r.run.RunID, sl.PhaseID),
+		fmt.Sprintf("gate-failure-attempt-%d.log", sl.Attempts))
+	if output == "" {
+		output = "authoritative gate failed without emitted output\n"
+	}
+	bytes := []byte(output)
+	if err := fsx.WriteAtomicNoClobber(path, bytes, 0o600); err == nil {
+		return path, nil
+	} else if !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read existing evidence: %w", err)
+	}
+	if string(existing) != output {
+		return "", fmt.Errorf("conflicting evidence already exists at %s", path)
+	}
+	return path, nil
+}
+
 func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res merge.Result) (requeued bool) {
 	switch res.Status {
 	case merge.StatusEvidenceStale:
@@ -2446,6 +2477,12 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		return true
 
 	case merge.StatusGateFailed:
+		repairPath, err := r.persistGateRepairEvidence(sl, res.GateOutput)
+		if err != nil {
+			r.parkTypedRecovery(ctx, sl, OutcomeEngineInvariant,
+				"persist authoritative gate repair evidence: "+err.Error())
+			return false
+		}
 		if sl.Retry.CodeRepairs < 1 {
 			_ = r.store.UpdateSlot(r.run, sl.PhaseID, func(s *ledger.Slot) {
 				s.GateRequeues++
@@ -2454,6 +2491,7 @@ func (r *runner) handleMergeFailure(ctx context.Context, sl *ledger.Slot, res me
 		return r.recoverTyped(ctx, sl, typedRecoveryRequest{
 			outcome:         OutcomeCodeDefect,
 			evidenceChanged: true,
+			repairPath:      repairPath,
 			reason:          gateRequeueNote,
 		})
 
@@ -2885,6 +2923,7 @@ func (r *runner) requeueSlotWithRecovery(
 		resumeSHA:                    r.branchHead(ctx, sl.Branch),
 		resumeSessionID:              resumeSession,
 		reviewPath:                   reviewPath,
+		repairPath:                   recovery.repairPath,
 		reviewIters:                  sl.ReviewIters,
 		generalReviewArtifactPath:    sl.GeneralReviewArtifactPath,
 		generalReviewArtifactDigest:  sl.GeneralReviewArtifactDigest,

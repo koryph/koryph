@@ -40,8 +40,12 @@ type Input struct {
 	// resume from).
 	WIPSnapshotPath string
 	ReviewPath      string // non-empty → blocking review findings to address
-	PhaseDir        string // where status.json / SUMMARY.md / INBOX.md live
-	SummaryPath     string
-	StatusPath      string
-	LogPath         string
+	// RepairPath is authoritative validation evidence from a prior failed
+	// attempt. It is distinct from a review: a gate failure must tell the
+	// repair worker exactly which validation result it needs to correct.
+	RepairPath  string // non-empty → required validation repair evidence
+	PhaseDir    string // where status.json / SUMMARY.md / INBOX.md live
+	SummaryPath string
+	StatusPath  string
+	LogPath     string
 }

@@ -1118,6 +1118,7 @@ type dispatchReq struct {
 	resumeSHA                    string
 	resumeSessionID              string
 	reviewPath                   string
+	repairPath                   string
 	reviewIters                  int
 	generalReviewArtifactPath    string
 	generalReviewArtifactDigest  string
@@ -1471,6 +1472,7 @@ func (r *runner) dispatchBead(ctx context.Context, q dispatchReq) {
 		ResumeSHA:          q.resumeSHA,
 		WIPSnapshotPath:    q.wipSnapshotPath,
 		ReviewPath:         q.reviewPath,
+		RepairPath:         q.repairPath,
 		PhaseDir:           phaseDir,
 		SummaryPath:        filepath.Join(phaseDir, "SUMMARY.md"),
 		StatusPath:         filepath.Join(phaseDir, "status.json"),
