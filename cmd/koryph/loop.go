@@ -616,6 +616,24 @@ func retireStaleNativeCanaryEvidence(
 		state.Canary = nil
 		state.Mode = loopsupervisor.ModeStopped
 		state.PID = 0
+		state.StartedAt = ""
+		state.LastObserved = ""
+		state.CurrentRunID = ""
+		state.LastRunID = ""
+		state.LastCode = 0
+		state.LastReason = ""
+		state.IdleBackoffMS = 0
+		state.FailureFingerprint = ""
+		state.IdenticalFailures = 0
+		state.ConsecutiveFailures = 0
+		state.CircuitReason = ""
+		// A canary hard stop asks the engine to drain before publishing its
+		// immutable failure. Once that failed generation is authenticated and
+		// archived, the marker belongs to the retired generation. Leaving it
+		// behind makes the fresh supervisor observe an operator drain before
+		// its first engine run. A concurrent `koryph drain` is still preserved
+		// by the supervisor control sidecar and fails the canary closed.
+		ledger.NewStore(root).ConsumeDrain()
 		if err := store.SaveState(state); err != nil {
 			return state, false, fmt.Errorf("retire stale canary checkpoint: %w", err)
 		}

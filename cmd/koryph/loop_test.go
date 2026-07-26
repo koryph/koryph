@@ -686,6 +686,17 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 
 	previous := loopsupervisor.State{
 		ProjectID: rec.ProjectID, Mode: loopsupervisor.ModeCircuitOpen,
+		StartedAt:           "2026-07-25T09:59:00Z",
+		LastObserved:        "2026-07-25T10:05:00Z",
+		CurrentRunID:        "old-current-run",
+		LastRunID:           "old-last-run",
+		LastCode:            1,
+		LastReason:          "old-hard-stop",
+		IdleBackoffMS:       5000,
+		FailureFingerprint:  "old-fingerprint",
+		IdenticalFailures:   2,
+		ConsecutiveFailures: 3,
+		CircuitReason:       "old-circuit",
 		Canary: &loopsupervisor.CanaryState{
 			Cohort:       append([]string(nil), current.Cohort...),
 			CohortDigest: cohortDigestForNativeCanary(current.Cohort),
@@ -802,12 +813,28 @@ func TestFailedCanaryGenerationArchivesOnlyForStrictDescendantBinary(t *testing.
 	if err := store.SaveState(previous); err != nil {
 		t.Fatal(err)
 	}
+	ledgerStore := ledger.NewStore(rec.Root)
+	if err := ledgerStore.RequestDrain(); err != nil {
+		t.Fatal(err)
+	}
 
 	state, retired, err := retireStaleNativeCanaryEvidence(
 		t.Context(), rec.Root, rec.ProjectID, current,
 	)
 	if err != nil || !retired || state.Canary != nil {
 		t.Fatalf("state=%+v retired=%t err=%v", state, retired, err)
+	}
+	if state.Mode != loopsupervisor.ModeStopped || state.PID != 0 ||
+		state.StartedAt != "" || state.LastObserved != "" ||
+		state.CurrentRunID != "" || state.LastRunID != "" ||
+		state.LastCode != 0 || state.LastReason != "" ||
+		state.IdleBackoffMS != 0 || state.FailureFingerprint != "" ||
+		state.IdenticalFailures != 0 || state.ConsecutiveFailures != 0 ||
+		state.CircuitReason != "" {
+		t.Fatalf("retired supervisor metadata was not reset: %+v", state)
+	}
+	if ledgerStore.DrainRequested() {
+		t.Fatal("retired canary drain marker still present")
 	}
 	if _, err := os.Lstat(previous.Canary.ReportPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("fixed report path still occupied: %v", err)
