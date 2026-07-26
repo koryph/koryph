@@ -678,26 +678,23 @@ func validateMigrationPosture(
 	opts Options,
 	allowedIDs []string,
 ) error {
-	if rec.MigrationStatus == registry.StatusValidated {
-		return nil
-	}
 	if opts.NativeCanary {
-		if rec.MigrationStatus == registry.StatusMigrated &&
+		if registry.SteadyModeReady(rec.MigrationStatus) &&
 			opts.Once && opts.AuthoritativeWidth &&
 			len(allowedIDs) >= 2 && opts.Max >= 2 && opts.Max <= len(allowedIDs) {
 			return nil
 		}
 		return fmt.Errorf(
-			"engine: native canary requires migration status %q and an immutable fixed cohort",
-			registry.StatusMigrated,
+			"engine: native canary requires onboarding-complete migration status and an immutable fixed cohort",
 		)
 	}
-	if opts.AllowUnvalidated && rec.MigrationStatus == registry.StatusMigrated {
+	if registry.SteadyModeReady(rec.MigrationStatus) {
 		return nil
 	}
 	return fmt.Errorf(
-		"engine: project %s has migration status %q (want %q)",
-		opts.ProjectID, rec.MigrationStatus, registry.StatusValidated,
+		"engine: project %s has migration status %q (ordinary scheduling requires %q or %q)",
+		opts.ProjectID, rec.MigrationStatus,
+		registry.StatusMigrated, registry.StatusValidated,
 	)
 }
 

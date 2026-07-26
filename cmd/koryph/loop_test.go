@@ -26,6 +26,7 @@ import (
 	"github.com/koryph/koryph/internal/merge"
 	"github.com/koryph/koryph/internal/metrics"
 	"github.com/koryph/koryph/internal/phasecontrol"
+	"github.com/koryph/koryph/internal/project"
 	"github.com/koryph/koryph/internal/registry"
 	"github.com/koryph/koryph/internal/review"
 )
@@ -53,12 +54,12 @@ func TestCanaryRequiresReviewAndAutoMerge(t *testing.T) {
 	}
 }
 
-func TestLoopRefusesUnvalidatedBeforeSupervisorState(t *testing.T) {
+func TestLoopRefusesIncompleteOnboardingBeforeSupervisorState(t *testing.T) {
 	isolate(t)
 	rec := addProject(t, "demo")
 	code, _, errb := runCmd("loop", "--project", "demo")
 	if code != engine.ExitFatal ||
-		!strings.Contains(errb, "steady autonomous mode requires \"validated\"") {
+		!strings.Contains(errb, "require onboarding-complete status") {
 		t.Fatalf("code=%d stderr=%q", code, errb)
 	}
 	if state, err := loopsupervisor.NewStore(rec.Root).LoadState(); err != nil || state.ProjectID != "" {
@@ -66,7 +67,7 @@ func TestLoopRefusesUnvalidatedBeforeSupervisorState(t *testing.T) {
 	}
 }
 
-func TestLoopPostureAllowsOnlyMigratedFixedCanaryBootstrap(t *testing.T) {
+func TestLoopPostureAllowsOnboardingCompleteSteadyAndCanaryModes(t *testing.T) {
 	for _, tc := range []struct {
 		name, status     string
 		canary           bool
@@ -75,12 +76,15 @@ func TestLoopPostureAllowsOnlyMigratedFixedCanaryBootstrap(t *testing.T) {
 	}{
 		{name: "validated steady", status: registry.StatusValidated, want: true},
 		{name: "validated canary", status: registry.StatusValidated, canary: true, want: true},
-		{name: "migrated steady", status: registry.StatusMigrated, want: false},
+		{name: "migrated steady", status: registry.StatusMigrated, want: true},
 		{name: "migrated canary", status: registry.StatusMigrated, canary: true, want: true},
 		{name: "registered steady", status: registry.StatusRegistered, want: false},
 		{name: "registered canary", status: registry.StatusRegistered, canary: true, want: false},
+		{name: "inventoried steady", status: registry.StatusInventoried, want: false},
 		{name: "unknown canary", status: "future", canary: true, want: false},
-		{name: "validated pending", status: registry.StatusValidated, promotionPending: true, want: false},
+		{name: "validated steady ignores pending", status: registry.StatusValidated, promotionPending: true, want: true},
+		{name: "migrated steady ignores pending", status: registry.StatusMigrated, promotionPending: true, want: true},
+		{name: "validated canary pending", status: registry.StatusValidated, canary: true, promotionPending: true, want: false},
 		{name: "migrated canary pending", status: registry.StatusMigrated, canary: true, promotionPending: true, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -89,6 +93,28 @@ func TestLoopPostureAllowsOnlyMigratedFixedCanaryBootstrap(t *testing.T) {
 					tc.status, tc.canary, tc.promotionPending, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoopRejectsMalformedProjectBeforeSupervisorState(t *testing.T) {
+	isolate(t)
+	rec := addProject(t, "demo")
+	reg := registry.NewStore()
+	rec.MigrationStatus = registry.StatusMigrated
+	if err := reg.Save(t.Context(), rec); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(rec.Root, project.ConfigFileName)
+	if err := os.WriteFile(configPath, []byte(`{"schema_version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, errb := runCmd("loop", "--project", rec.ProjectID)
+	if code != engine.ExitFatal || !strings.Contains(errb, "load project configuration") {
+		t.Fatalf("code=%d stderr=%q", code, errb)
+	}
+	if state, err := loopsupervisor.NewStore(rec.Root).LoadState(); err != nil || state.ProjectID != "" {
+		t.Fatalf("malformed project reached supervisor: state=%+v err=%v", state, err)
 	}
 }
 
@@ -236,7 +262,7 @@ func TestNativeCanaryPromotionFailsClosed(t *testing.T) {
 		}
 	})
 
-	t.Run("registry failure before write leaves durable steady-mode block", func(t *testing.T) {
+	t.Run("registry failure before write leaves durable canary block", func(t *testing.T) {
 		rec, state := canaryPromotionFixture(t)
 		oldLoader := loadExpectedAutonomyReport
 		t.Cleanup(func() { loadExpectedAutonomyReport = oldLoader })
@@ -258,7 +284,7 @@ func TestNativeCanaryPromotionFailsClosed(t *testing.T) {
 			reg.record.MigrationStatus != registry.StatusMigrated ||
 			markerErr != nil || !exists ||
 			marker.Status != nativeCanaryPromotionPending ||
-			loopPostureAllows(registry.StatusValidated, false, true) {
+			loopPostureAllows(registry.StatusValidated, true, true) {
 			t.Fatalf("promoted=%t err=%v marker=%+v exists=%t markerErr=%v",
 				promoted, err, marker, exists, markerErr)
 		}
@@ -399,33 +425,30 @@ func TestCompletedNativeCanaryRecoveryRejectsRequestedCohortDrift(t *testing.T) 
 	}
 }
 
-func TestLoopPendingPromotionMarkerBlocksValidatedSteadyMode(t *testing.T) {
+func TestLoopOrdinaryModeIgnoresPromotionMarkerButRefusesCanaryOverlap(t *testing.T) {
 	isolate(t)
 	rec := addProject(t, "demo")
 	reg := registry.NewStore()
-	rec.MigrationStatus = registry.StatusValidated
+	rec.MigrationStatus = registry.StatusMigrated
 	if err := reg.Save(t.Context(), rec); err != nil {
 		t.Fatal(err)
 	}
-	_, fixture := canaryPromotionFixture(t)
-	fixture.Canary.ReportPath = filepath.Join(
-		rec.Root, filepath.FromSlash(metrics.DefaultAutonomyReportRelativePath),
-	)
-	if err := saveNativeCanaryPromotionMarker(rec.Root, nativeCanaryPromotionMarker{
+	store := loopsupervisor.NewStore(rec.Root)
+	if err := store.SaveState(loopsupervisor.State{
 		ProjectID: rec.ProjectID,
-		Status:    nativeCanaryPromotionPending,
-		Canary:    *fixture.Canary,
+		Canary:    &loopsupervisor.CanaryState{},
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nativeCanaryPromotionMarkerPath(rec.Root), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	code, _, errb := runCmd("loop", "--project", rec.ProjectID)
-	if code != engine.ExitFatal || !strings.Contains(errb, "canary promotion pending=true") {
+	if code != engine.ExitFatal ||
+		!strings.Contains(errb, loopsupervisor.ErrCanaryCohortDrift.Error()) ||
+		strings.Contains(errb, "load canary promotion marker") {
 		t.Fatalf("code=%d stderr=%q", code, errb)
-	}
-	state, err := loopsupervisor.NewStore(rec.Root).LoadState()
-	if err != nil || state.ProjectID != "" {
-		t.Fatalf("steady mode reached supervisor: state=%+v err=%v", state, err)
 	}
 }
 

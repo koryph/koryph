@@ -129,6 +129,9 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
+	if _, err := project.Load(rec.Root); err != nil {
+		return fail(stderr, fmt.Errorf("loop: load project configuration: %w", err))
+	}
 	registryIdentityDigest, err := registry.ValidationIdentityDigest(rec)
 	if err != nil {
 		return fail(stderr, fmt.Errorf("loop: authenticate registry identity: %w", err))
@@ -152,9 +155,13 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, fmt.Errorf("loop: load supervisor state: %w", err))
 	}
-	marker, markerExists, err := loadNativeCanaryPromotionMarker(rec.Root)
-	if err != nil {
-		return fail(stderr, fmt.Errorf("loop: load canary promotion marker: %w", err))
+	var marker nativeCanaryPromotionMarker
+	var markerExists bool
+	if len(canaryIDs) > 0 {
+		marker, markerExists, err = loadNativeCanaryPromotionMarker(rec.Root)
+		if err != nil {
+			return fail(stderr, fmt.Errorf("loop: load canary promotion marker: %w", err))
+		}
 	}
 	var admittedSpec *loopsupervisor.CanarySpec
 	if len(canaryIDs) > 0 &&
@@ -237,16 +244,18 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 		markerExists = false
 		fmt.Fprintf(stdout, "loop %s: archived stale canary generation before fresh bootstrap\n", rec.ProjectID)
 	}
-	promotionPending := markerExists &&
+	promotionPending := len(canaryIDs) > 0 && markerExists &&
 		(marker.Status == nativeCanaryPromotionPending ||
 			!validNativeCanarySHA256(marker.Canary.RegistryIdentityDigest))
-	// Steady autonomous mode has no break-glass path. A fixed-cohort canary is
-	// the sole bootstrap from migrated to validated: it remains evidence-gated
-	// and cannot broaden its admitted work while the project is unvalidated.
+	// Onboarding-complete projects enter ordinary steady mode directly.
+	// Promotion evidence is enforced only for an explicitly requested canary;
+	// durable canary state remains shared with the supervisor and therefore
+	// still prevents an ordinary loop from overlapping an unfinished canary.
 	if !loopPostureAllows(rec.MigrationStatus, len(canaryIDs) > 0, promotionPending) {
 		return fail(stderr, fmt.Errorf(
-			"loop: project %s has migration status %q (canary promotion pending=%t); steady autonomous mode requires %q with no pending promotion, and fixed-cohort canary bootstrap requires %q",
-			rec.ProjectID, rec.MigrationStatus, promotionPending, registry.StatusValidated, registry.StatusMigrated,
+			"loop: project %s has migration status %q (canary promotion pending=%t); ordinary and canary scheduling require onboarding-complete status %q or %q",
+			rec.ProjectID, rec.MigrationStatus, promotionPending,
+			registry.StatusMigrated, registry.StatusValidated,
 		))
 	}
 
@@ -340,11 +349,10 @@ func cmdLoop(args []string, stdout, stderr io.Writer) int {
 }
 
 func loopPostureAllows(status string, canary, promotionPending bool) bool {
-	if promotionPending {
+	if canary && promotionPending {
 		return false
 	}
-	return status == registry.StatusValidated ||
-		(canary && status == registry.StatusMigrated)
+	return registry.SteadyModeReady(status)
 }
 
 const (

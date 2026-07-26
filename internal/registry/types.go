@@ -35,9 +35,17 @@ const (
 const (
 	StatusRegistered  = "registered"  // known; not yet validated
 	StatusInventoried = "inventoried" // mode-5 inventory only
-	StatusMigrated    = "migrated"    // onboarding complete, not validated
-	StatusValidated   = "validated"   // canary dispatch green; dispatchable
+	StatusMigrated    = "migrated"    // onboarding complete; steady-mode ready
+	StatusValidated   = "validated"   // legacy canary evidence; steady-mode ready
 )
+
+// SteadyModeReady reports whether onboarding established enough project
+// posture for ordinary scheduling. StatusValidated remains accepted for
+// backward compatibility, but release-canary promotion is not a prerequisite
+// for the production loop.
+func SteadyModeReady(status string) bool {
+	return status == StatusMigrated || status == StatusValidated
+}
 
 // Auth modes (koryph-i3b, design docs/designs/2026-07-api-key-auth.md §4).
 // AuthModeSubscription is the default and today's only behavior: OAuth

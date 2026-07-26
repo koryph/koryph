@@ -11,6 +11,26 @@ import (
 	"testing"
 )
 
+func TestSteadyModeReady(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   bool
+	}{
+		{status: StatusMigrated, want: true},
+		{status: StatusValidated, want: true},
+		{status: StatusRegistered, want: false},
+		{status: StatusInventoried, want: false},
+		{status: "future", want: false},
+		{status: "", want: false},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			if got := SteadyModeReady(tc.status); got != tc.want {
+				t.Fatalf("SteadyModeReady(%q) = %t, want %t", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAccountForFallsBackToFlatFields proves RuntimeAccounts is fully
 // additive (koryph-v8u.5): a record with no runtime_accounts block at all —
 // every record written before this bead — resolves AccountFor for any name

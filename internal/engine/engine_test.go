@@ -1013,16 +1013,51 @@ func TestRunNativeCanaryRefusesRegisteredProject(t *testing.T) {
 	opts.AuthoritativeWidth = true
 	opts.NativeCanary = true
 	_, err := Run(context.Background(), opts)
-	if err == nil || !strings.Contains(err.Error(), registry.StatusMigrated) {
+	if err == nil || !strings.Contains(err.Error(), "onboarding-complete") {
 		t.Fatalf("registered native canary error = %v", err)
 	}
 }
 
-func TestRunMigratedSteadyModeRemainsRefused(t *testing.T) {
+func TestRunNativeCanaryRequiresFixedCohortForValidatedProject(t *testing.T) {
+	err := validateMigrationPosture(
+		&registry.Record{MigrationStatus: registry.StatusValidated},
+		Options{ProjectID: "proj", NativeCanary: true},
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "immutable fixed cohort") {
+		t.Fatalf("validated native canary error = %v", err)
+	}
+}
+
+func TestRunMigratedSteadyModeIsAdmitted(t *testing.T) {
 	newFixture(t, fixOpts{migrationStatus: registry.StatusMigrated})
-	_, err := Run(context.Background(), baseOptions(nil))
-	if err == nil || !strings.Contains(err.Error(), registry.StatusMigrated) {
-		t.Fatalf("steady migrated project error = %v", err)
+	var out bytes.Buffer
+	outcome, err := Run(context.Background(), baseOptions(&out))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.Dispatched != 1 {
+		t.Fatalf("migrated steady mode dispatched %d beads, want 1", outcome.Dispatched)
+	}
+}
+
+func TestRunOrdinaryModeRefusesIncompleteAndUnknownPostures(t *testing.T) {
+	for _, status := range []string{
+		registry.StatusRegistered,
+		registry.StatusInventoried,
+		"future",
+		"",
+	} {
+		t.Run(status, func(t *testing.T) {
+			err := validateMigrationPosture(
+				&registry.Record{MigrationStatus: status},
+				Options{ProjectID: "proj"},
+				nil,
+			)
+			if err == nil {
+				t.Fatalf("migration status %q was admitted", status)
+			}
+		})
 	}
 }
 
