@@ -4,13 +4,14 @@ go 1.26.5
 
 require (
 	filippo.io/age v1.3.1
-	github.com/anthropics/anthropic-sdk-go v1.58.0
+	github.com/anthropics/anthropic-sdk-go v1.66.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260629091435-9c70f75e26a4
 	github.com/invopop/jsonschema v0.14.0
 	github.com/lrstanley/bubblezone v1.0.0
+	go.yaml.in/yaml/v4 v4.0.0-rc.2
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 )
@@ -46,7 +47,6 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
