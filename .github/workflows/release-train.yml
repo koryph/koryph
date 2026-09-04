@@ -273,7 +273,7 @@ jobs:
       # ── MODE B: goreleaser owns the draft release ──────────────────────
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'goreleaser'
-      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'goreleaser'
       # Homebrew tap publishing (optional): mint a bot installation token
       # scoped to ONLY the tap repo so goreleaser can push the cask there —
@@ -351,7 +351,7 @@ jobs:
           if [ ! -f "$ARTIFACTS_DIR/checksums.txt" ] && [ -n "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f 2>/dev/null)" ]; then
             ( cd "$ARTIFACTS_DIR" && sha256sum -- * > checksums.txt )
           fi
-      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'commands' && inputs.sbom
       - name: Generate per-artifact SBOMs (mode A)
         if: steps.detect.outputs.release == 'true' && inputs.build_mode == 'commands' && inputs.sbom
